@@ -3,7 +3,7 @@ scipy
 pandas
 matplotlib
 seaborn
-xarray
+xarray==2025.10.1
 h5netcdf
 netCDF4
 cftime
