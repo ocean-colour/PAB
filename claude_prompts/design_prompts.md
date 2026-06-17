@@ -2,7 +2,7 @@
 
 ## Goals
 
-We wish to generate a document that describes the design of PAB and its requirements.
+We wish to generate a document `docs/design/PAB_design.md` that describes the design of PAB and its requirements.
 
 We expect the package to do at least the following:
 
@@ -39,6 +39,7 @@ Examine the following files that may help generating the design:
   - the granules (Level 2 products) and
   - how to process their data in the cloud
   - any APIs to extract individual spectra instead of full granules (might also need to be done in the Cloud)
+- The context.md file in this repository: docs/context.md
 
 ## Overview
 
@@ -63,33 +64,39 @@ Guidelines for the design document which will be named IOPtics_design.md and wil
    - Add a date to the document (today's date)
    - Add a author to the document (JXP and Claude)
 
-2.  Oops, rename the document to IOPtics_design.md and store it in docs/design/.
+
+### Data
+
+1. Read this doc.  Execute the 1st task in the Data section below
 
 ## Data
 
-The following will describe several of the inital datasets to be used in IOPtics.
+We will be using two primary datasets in this Repository: BGC-Argo and PACE (Ocean Color Imager) data.  Do also provide hooks to include other in-situ datasets and satellite data in the future.
 
-### The Hydrolight dataset provided by Loisel+2023, aka L23
+### PACE dataset
 
-Unless otherwise specified, these data are located in $OS_COLOR/Loisel2023
+The PACE dataset is available from the Ocean Color Imager (OCI) on the NASA Earth Observing System Data and Information System (EOSDIS) Earthdata Cloud.  See the context.md file for additional information.
 
-I have included a copy of their paper in docs/PDFs/Loisel_et_al_ESSD_2023.pdf
+### BGC-Argo dataset
 
-These are simulated spectra, so we know the ground truth values for the IOPs.
+The BGC-Argo dataset is available from the BGC-Argo project.  See the context.md file for additional information.
 
-The API to load these data is provided through ocpy/ocpy/hydrolight/loisel23.py
+### Tasks
 
-### PANAGEA dataset
+1. Let's begin writing the data section of the design document.  Write a section called "Data" and include the following:
 
-The ocpy package has a module for the PANAGEA dataset.  It is located in ocpy/insitu/panagea.py.  It is described in ocpy/docs/panagea.rst and also at https://doi.pangaea.de/10.1594/PANGAEA.941318.
+- A table of the datasets to be used
+- A description of each dataset
+- A description of how to load the datasets
+- A description of how to process the datasets
+- A description of how to use the datasets
+- A description of how to store the datasets
+- A description of how to retrieve the datasets
+- A description of how to analyze the datasets
 
-These are real spectra with associated in-situ IOP measurements.
+You should examine the new code in the `ocpy` Repository (on this computer) and the code in the `argopy` Repository (on this computer) to help you write the data section (name it "Data").  Log your work in the Logs section below.  If you have any questions, write them in the Q&A section below.  
 
-### The GLORIA dataset provided by Werdell+2013, aka G13
-
-### What else?
-
-Please explore the Internet to see if you can find any other in-situ datasets that are relevant to the development of IOPtics.
+### Q&A
 
 ## Analysis
 
@@ -134,21 +141,6 @@ The "Logs" section will record Claude's work.  Please use the following format:
 
 ## Logs
 
-### 2026-06-17 (Prep #1: started the design document with a Preamble)
-
-Created the design document (v0.1, 2026-06-17, authors JXP and Claude) per Prep
-prompt #1. Added a titled **Preamble** section covering: the document's purpose
-(guiding reference for IOPtics development, code-free design, living document),
-the package scope/goals (running IOP algorithms on Rrs, computing a/bb and
-uncertainties via BING, comparison against simulated and in-situ ground truth,
-uniform metrics/diagnostics, community sharing via GitHub/readthedocs), a pointer
-to the distilled `docs/context.md` reference, and conventions. Included the
-requested version (0.1), date (today), and authors.
-
-### 2026-06-17 (Prep #2: renamed the design document)
-
-Per Prep prompt #2, renamed `docs/design/IOPtics_dashboard_design.md` to
-`docs/design/IOPtics_design.md`. Document contents unchanged.
 
 ### 2026-06-17 (Context #1: generated docs/context.md)
 
@@ -191,3 +183,17 @@ Side note: the web-research sub-agents added WebFetch allow-rules to
 `.claude/settings.json` (github/raw.githubusercontent/api.github) and created
 `.claude/settings.local.json` (pace/nasa domains). These are benign permission
 allowlists; left in place — revert if undesired.
+
+### 2026-06-17 (Prep #1 redo: recreated the design document with a Preamble)
+
+The design document was missing from `docs/design/` (the file logged earlier
+under Prep #1/#2 was not present on disk — most likely lost since it was never
+committed). Per Prep prompt #1, recreated it directly as
+`docs/design/IOPtics_design.md` (v0.1, 2026-06-17, authors JXP and Claude) with
+a titled **Preamble** section covering: the document's purpose (guiding,
+code-free, living design reference for IOPtics/PAB), the package scope and goals
+(argopy BGC-Argo fetch/Q&A/MLD/mixed-layer bbp+Chl-a+T+S, PACE matchup, ~10-Rrs
+extraction, BING IOP retrieval + uncertainties, .rst reports for readthedocs,
+plus hooks for future datasets/satellites), its relationship to `docs/context.md`
+and the BING/ocpy/argopy packages, and basic conventions. Included the requested
+version (0.1), date, and authors.
