@@ -1,4 +1,4 @@
-# IOPtics Design Document
+# PACE and BGC-Argo Matchup Analysis Design Document
 
 **Version:** 0.1
 **Date:** 2026-06-17
@@ -8,13 +8,11 @@
 
 ## Preamble
 
-This document describes the design and requirements of **IOPtics** (developed in
-the **PAB** repository), a Python package for **matchup analyses between PACE
-satellite ocean-color observations and BGC-Argo autonomous-float data**.
+This document describes the design and requirements of **PAB** a Python package for **matchup analyses between PACE satellite ocean-color observations and BGC-Argo autonomous-float data**.
 
 ### Purpose
 
-This is the guiding reference for the development of the IOPtics package. It
+This is the guiding reference for the development of the PAB package. It
 captures *what* the package must do and *how* its pieces fit together, so that
 implementation can proceed against a shared, agreed design.
 
@@ -26,7 +24,7 @@ implementation can proceed against a shared, agreed design.
 
 ### Scope and goals
 
-IOPtics is intended to, at minimum:
+PAB is intended to, at minimum:
 
 - **Fetch and process BGC-Argo data** (via `argopy`): perform Q&A with plots,
   compute and record the mixed-layer depth (MLD) when not supplied, measure and
@@ -53,7 +51,8 @@ PACE/BGC-Argo pair.
   throughout.
 - Core scientific machinery is reused from existing packages: **BING**
   (Bayesian IOP retrieval), **ocpy** (ocean-color utilities, dataset loaders),
-  and **argopy** (BGC-Argo access).
+  **argopy** (BGC-Argo access), and **remote_sensing** (Earthdata Cloud granule
+  discovery/access and generic ocean-color L2 helpers).
 
 ### Conventions
 
@@ -64,5 +63,244 @@ PACE/BGC-Argo pair.
 
 ---
 
-*This document is under active development; sections beyond the Preamble will be
-added in subsequent revisions.*
+## Data
+
+PAB is organized around **two primary datasets**: BGC-Argo float profiles and
+PACE/OCI satellite ocean color. NASA's own PACE L2 IOP product is carried as a
+secondary baseline for comparison. The data layer is deliberately built behind
+thin, dataset-specific *loaders* so that additional in-situ archives and
+satellites can be added later without disturbing the matchup and analysis code
+(see *Extensibility hooks*).
+
+Wherever a loader already exists in the **ocpy**, **argopy**, or
+**remote_sensing** packages (all on this workstation), PAB reuses it rather than
+reimplementing I/O. The entry points named below are the intended seams between
+PAB and those packages.
+
+### Datasets at a glance
+
+| Dataset | Role | Type | Key variables | Access path | Loader / API |
+|---|---|---|---|---|---|
+| **BGC-Argo** | Primary (in-situ truth) | Float vertical profiles | `BBP700`, `CHLA`, `PSAL`, `TEMP`, `PRES` | argopy → Ifremer ERDDAP | `argopy.DataFetcher(ds='bgc', src='erddap')`; `argopy.ArgoIndex(index_file='bgc-s')` |
+| **PACE / OCI L2 AOP** | Primary (satellite) | Hyperspectral L2 granules | `Rrs(λ)`, `Rrs_unc(λ)`, `l2_flags`, `nflh` | NASA Earthdata Cloud (OB.DAAC) | `earthaccess` (search/open) → `ocpy.pace.io.load_oci_l2*` |
+| **PACE / OCI L2 IOP** | Secondary (NASA baseline) | Hyperspectral L2 granules | `a`, `bb`, `aph`, `bbp_442`, `adg_*` | NASA Earthdata Cloud (OB.DAAC) | `ocpy.pace.io.load_iop_l2` |
+| **Future** (other in-situ archives, MODIS/VIIRS/OLCI, other satellites) | Hooks | — | — | TBD | new loader modules |
+
+### Dataset descriptions
+
+**BGC-Argo (primary in-situ).** Autonomous biogeochemical floats reporting
+vertical profiles of particulate backscatter at 700 nm (`BBP700`),
+chlorophyll-a (`CHLA`), salinity (`PSAL`), temperature (`TEMP`) and pressure
+(`PRES`), among >120 BGC parameters. These provide the in-situ truth for the
+matchup: PAB derives a per-profile mixed-layer summary (averaged, de-spiked
+`bbp` and `CHLA`; mean `PSAL`/`TEMP`) following the Bisson et al. (2019)
+recipe documented in `docs/context.md`.
+
+**PACE / OCI L2 AOP (primary satellite).** Hyperspectral (~340–895 nm, ~172
+bands on the `wavelength_3d` axis) Level-2 remote-sensing reflectance granules
+at ~1 km resolution (`PACE_OCI_L2_AOP`, v3.1, OB.DAAC). Each pixel carries
+`Rrs(λ)`, its uncertainty `Rrs_unc(λ)`, normalized fluorescence line height
+(`nflh`/`FLH`), and a per-pixel `l2_flags` bitmask for quality screening. The
+~10 spectra nearest each float are the inputs to BING.
+
+**PACE / OCI L2 IOP (secondary).** NASA's own L2 IOP retrieval
+(`a`, `bb`, `aph`, `bbp_442`, `bbp_unc_442`, `adg_442`, `adg_s`, `bbp_s`). Used
+as an independent baseline to compare against BING-retrieved IOPs (mirrors the
+GIOP-vs-BING comparison in the BING `papers/biomass` analysis).
+
+### Loading
+
+PAB does not re-implement file parsing; it calls existing loaders:
+
+- **BGC-Argo** — `argopy.DataFetcher` configured with `ds='bgc'`,
+  `src='erddap'` (the only source supporting BGC), and a user `mode`
+  (`'standard'` for routine work, `'research'` for delayed-mode, QC=1 data when
+  high quality matters, e.g. MLD). Data are selected with `.region([...])`,
+  `.float(WMO)`, or `.profile(WMO, cyc)`, and narrowed with the BGC-only
+  `params=` (variables to return, e.g. `['CHLA','BBP700']`) and `measured=`
+  (variables required non-NaN) keywords. `.load().data` returns an
+  `xarray.Dataset`; `.index` returns a profile-listing `DataFrame`.
+- **PACE AOP** — **the primary intention is to read PACE data directly from the
+  NASA Earthdata Cloud, not from local granule files.** PAB runs on a workstation
+  in the **AWS `us-west-2`** region (where the OB.DAAC PACE archive lives) with
+  an Earthdata Login already configured, so in-region cloud access is the design
+  target. `ocpy` already provides granule readers that operate on a file on a
+  hard drive (`ocpy.pace.io.load_oci_l2(fn)` → an `xarray.Dataset` of `Rrs`,
+  `Rrs_unc`, `FLH` with `latitude`/`longitude`/`wavelength` coords plus raw
+  `l2_flags`; and, for single-spectrum extraction, `load_oci_l2_spectrum(fn,
+  target_lat, target_lon)` which finds the nearest pixel by squared lat/lon
+  distance and reads **only** that spectrum off disk, and
+  `load_oci_l2_spectrum_pixel(fn, ix, iy)`). In PAB these file-based readers are
+  used mainly for **debugging and development**; the operational path discovers
+  granules via `earthaccess` and reads the needed pixels straight from the cloud
+  (see *Cloud access* and *Storage and retrieval*). The nearest-pixel logic is
+  the same — only the data source (cloud vs. disk) differs — so the cloud reader
+  reuses/extends the existing `ocpy` extraction rather than duplicating it.
+- **PACE IOP** — `ocpy.pace.io.load_iop_l2(fn)` (same cloud-first treatment).
+
+### Processing
+
+The processing each dataset receives before matchup/analysis:
+
+- **BGC-Argo:** reshape points→profiles (`ds.argo.point2profile()`); apply QC
+  filtering (`ds.argo.filter_qc(QC_list=[1,2,...])` and data-mode filtering);
+  **compute the mixed-layer depth (MLD)** when not provided — the de Boyer
+  Montégut density-threshold criterion (depth where potential density `SIG0`
+  exceeds its 10 m value by 0.03 kg m⁻³), using `ds.argo.teos10([...,'SIG0'])`
+  for density and a per-profile reducer; **de-spike** `BBP700` within the MLD
+  with a 3-point moving median (removes bubble spikes); then **average**
+  `BBP700` and `CHLA` and record mean `PSAL`/`TEMP` within the MLD. This yields
+  one summary record per profile.
+- **PACE AOP:** apply `mask_and_scale` (the stored Rrs are scaled integers);
+  screen pixels with the standard ocean `l2_flags` mask (`ATMFAIL`, `LAND`,
+  `HIGLINT`, `HILT`, `STRAYLIGHT`, `CLDICE`, `COCCOLITH`, `HISATZEN`,
+  `HISOLZEN`, `LOWLW`, `CHLFAIL`, `NAVFAIL`, `MAXAERITER`); select the nearest
+  **unflagged** pixel(s); optionally assess box homogeneity (Bisson: skill
+  degrades where Rrs spatial variability is high). The PACE measurement-noise
+  vector for fitting is available via
+  `ocpy.satellites.pace.gen_noise_vector(wave)`. Generic OC L2 helpers in
+  `remote_sensing.netcdf.oc` (`create_quality_mask`, `quality_control`,
+  `extract_rrs_spectrum`, `find_rrs_variables`) provide an alternative,
+  sensor-agnostic path for the `l2_flags` masking and spectrum extraction.
+
+### Matchup, use, and analysis
+
+The two primary datasets are joined into **matchup records**: for each
+qualifying BGC-Argo profile, find PACE granules within a small spatial box
+(e.g. a 5×5-pixel window per Bisson et al.) and a tight time window of the
+profile, extract the ~10 nearest valid Rrs spectra, and pair them with the
+float's mixed-layer summary. Each matchup record then flows to the **Analysis**
+layer (later section): BING fits the spectra to retrieve `a_nw(λ)` and
+`b_b,p(λ)` with uncertainties, and the retrieved `bbp` is compared against the
+float `BBP700` (the robust matchup observable identified by the BING paper) and
+against the NASA L2 IOP baseline.
+
+### Cloud access (PACE)
+
+PAB targets **in-region access from AWS `us-west-2`**, where the OB.DAAC PACE
+archive resides and an Earthdata Login is already configured on the workstation.
+Granule *discovery* is uniform — a CMR query by short name, bounding box, time
+window, and cloud-cover range (`earthaccess.search_data(...)`); the
+`remote_sensing.download.earthaccess` module already wraps this pattern (e.g.
+`query_modis_oc`, and `build_granule_table`, which turns the returned granules
+into a `DataFrame` of id / footprint polygon / time / cloud-cover / data URL —
+directly useful for spatially matching granules to a float position).
+
+For *reading* the data without downloading whole granules, two mechanisms are
+under consideration (final choice deferred — see Q&A):
+
+- **(a) Lazy `xarray` open over S3.** In-region, the granule is opened as a
+  remote object and only the requested bytes are fetched, so a nearest-pixel
+  read transfers a single spectrum rather than the full cube. The mechanics are
+  the standard NASA Earthdata Cloud pattern: obtain temporary S3 credentials for
+  the DAAC and open the object through an `s3fs` filesystem
+  (`xr.open_dataset(s3sys.open(url), engine='h5netcdf')`), or equivalently
+  `earthaccess.open(results)` which returns ready file-like objects. The
+  `remote_sensing` package already implements exactly this for PO.DAAC/SWOT
+  (`remote_sensing.process.swot_ssh_utils.init_S3FileSystem` +
+  `xr.open_dataset(s3sys.open(fn, mode='rb'))`), and notes it requires running
+  in `us-west-2` — the same approach repoints cleanly at the OB.DAAC PACE bucket.
+  *Pros:* reuses the existing `ocpy`/`remote_sensing` readers unchanged (only the
+  file handle is a remote object); full control over pixel selection and QC;
+  fastest in-region. *Cons:* you still open the granule's coordinate/variable
+  metadata (and chunk-level reads), so efficiency depends on the file's internal
+  chunking; needs S3 credential handling.
+- **(b) OPeNDAP server-side subsetting.** OB.DAAC exposes granules via a Hyrax
+  OPeNDAP endpoint (an `OPENDAP DATA`-subtype URL in the granule's
+  `RelatedUrls`; `remote_sensing.download.podaac` already distinguishes this
+  subtype). The server returns only the requested variable and index slice, so
+  the client transfers just the pixels asked for. *Pros:* minimal transfer;
+  works the same in- or out-of-region; no S3 credential plumbing. *Cons:*
+  per-request server-side latency and endpoint reliability; index-based subsetting
+  still needs the lat/lon arrays first to locate the nearest pixel; behavior can
+  vary by product.
+
+A reasonable plan is to start with **(a)** (it maximizes reuse of the existing
+in-region readers) while keeping the granule-discovery and pixel-selection steps
+factored so **(b)** can be slotted in as an alternative backend.
+
+### Storage and retrieval
+
+A layered local layout (paths configurable; large raw data kept out of the
+repo) is proposed:
+
+- **Cloud-first raw access (no bulk download).** PACE granules are located and
+  read from the **NASA Earthdata Cloud** via **`earthaccess`**
+  (`earthaccess.login()` → `earthaccess.search_data(short_name="PACE_OCI_L2_AOP",
+  temporal=..., bounding_box=..., cloud_cover=...)` → cloud read of the matched
+  granules). **PAB deliberately avoids downloading full L2 granules except for
+  debugging and development**; the routine workflow reads only the pixels needed
+  for each matchup from the cloud (`earthaccess.download(...)` for whole granules
+  is reserved for offline development). On the Argo side, argopy fetches from
+  ERDDAP with its own cache (`argopy.set_options(cachedir=...)`), and the
+  `argopy.ArgoIndex(index_file='bgc-s')` BGC index enables a fast **index-first**
+  spatial/temporal pre-selection of floats before any data transfer.
+- **Database of extracted values (`SQLite`).** All *tabular, extracted* values
+  are stored in a **SQLite** database — the chosen backend. This includes the
+  per-profile mixed-layer summaries (de-spiked/averaged `bbp`, `CHLA`, mean
+  `PSAL`/`TEMP`, MLD), the profile↔granule↔pixel matchup index, and the scalar
+  IOP results extracted from the BING fits (e.g. posterior median and credible
+  intervals for `Bnw`/`β`/`bbp`, `a_ph`, etc.) keyed to each matchup. SQLite
+  gives a single-file, zero-server source of truth with a schema, indexed and
+  relational queries, and atomic updates, while remaining trivially shareable and
+  exportable to CSV/Parquet for inspection. Expected scale — up to ~10⁴ Argo
+  profiles and ~10× as many analyzed PACE spectra (~10⁵ rows) — is comfortably
+  within SQLite's single-user range.
+- **Fit outputs in files (keyed by ID).** The *bulky, non-tabular* BING outputs
+  — MCMC chains and the generated figures — are **not** stored in the database;
+  they live as separate files (e.g. NPZ/JSON for chains/posteriors, PNG/PDF for
+  figures) under a structured directory, each keyed by a matchup/fit ID that
+  references the corresponding database row. The database thus holds the
+  extracted numbers and provenance; the files hold the heavy artifacts.
+
+Retrieval is therefore two-tiered: heavyweight raw data are read on demand from
+the cloud/ERDDAP (and only minimally cached), while the extracted values are
+queried from the SQLite database and the fit artifacts are loaded from disk by
+ID for analysis, plotting, and reporting.
+
+#### Discussion: why a database (SQLite) over CSV look-up tables
+
+The `papers/biomass` precedent stores matchup look-up tables as **CSV** (e.g.
+`matched_argo_bgc_profiles_bbp.csv`). CSV is easy to read by eye and needs no
+dependencies, which is valuable during exploration, but is **not ideal for
+programmatic use**: there is no enforced schema or typing; relational links
+between profiles, granules, pixels, and fit outputs must be maintained by hand
+across multiple files; queries (e.g. "all matchups in a region/season with a
+valid `bbp` and an unflagged spectrum") require loading whole files into pandas;
+and incremental updates risk desynchronization.
+
+**Decision:** PAB adopts **SQLite** for the extracted-value tables. It supplies
+the schema, indexed/relational queries, and atomic updates CSV lacks, while
+staying embedded (a single `.db` file, no server) and shareable — a good fit for
+the single-user/collaborator scale above. CSV/Parquet remain available as
+*exports* for human inspection and sharing, not as the system of record.
+Alternatives considered and deferred: **DuckDB+Parquet** (stronger for large
+columnar analytics, worth revisiting if the spectrum-level tables grow much
+larger) and **PostgreSQL** (warranted only if PAB later becomes a shared,
+concurrently-updated community archive). To keep that door open, the storage
+layer should sit behind a thin interface so the backend can change without
+touching the matchup/analysis code.
+
+### Extensibility hooks
+
+To satisfy the goal of *future in-situ datasets and other satellites*:
+
+- **A common matchup record schema** (location, time, in-situ summary,
+  spectrum/IOPs, provenance) so any in-situ source that can produce a
+  location/time/`bbp`-or-`Rrs` record can be matched against any gridded
+  satellite product.
+- **Loader registry** — each dataset is wrapped by a small loader exposing a
+  uniform interface (discover → fetch/cache → load → standardize to the common
+  schema); adding another in-situ archive or satellite means adding a loader, not
+  editing the matchup/analysis code.
+- **Satellite abstraction** — the nearest-pixel extraction and `l2_flags`-style
+  QC are expressed generically (lat/lon arrays + spectral axis + quality mask),
+  building on the sensor-agnostic OC helpers in `remote_sensing.netcdf.oc` and
+  the granule-query/table tools in `remote_sensing.download.earthaccess`, so
+  MODIS/VIIRS/OLCI (already partly supported in `ocpy.satellites` and
+  `remote_sensing`) or future sensors can be substituted for PACE.
+
+---
+
+*This document is under active development; the Analysis, Validation, Metrics,
+and Reporting sections will be added in subsequent revisions.*

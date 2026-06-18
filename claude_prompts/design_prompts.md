@@ -68,6 +68,12 @@ Guidelines for the design document which will be named IOPtics_design.md and wil
 ### Data
 
 1. Read this doc.  Execute the 1st task in the Data section below
+2. Read this doc.  Execute the 2nd task in the Data section below
+3. Read this doc.  Execute the 3rd task in the Data section below
+
+### Analysis
+
+1. Read this doc.  Execute the 1st task in the Analysis section below
 
 ## Data
 
@@ -96,34 +102,94 @@ The BGC-Argo dataset is available from the BGC-Argo project.  See the context.md
 
 You should examine the new code in the `ocpy` Repository (on this computer) and the code in the `argopy` Repository (on this computer) to help you write the data section (name it "Data").  Log your work in the Logs section below.  If you have any questions, write them in the Q&A section below.  
 
+2. Please make several edits to the Data section of the design doc:
+
+   - Modify the PACE data section to recognize:
+     - While `ocpy` has methods for loading data from L2 granules on a hard drive, the primary intention is to load the data from the Earthdata Cloud.
+     - Similarly, we will tend to avoid downloading full L2 granules except for debugging and development purposes.
+   - We should rethink the CSV look-up tables.  While these are conveient for user inspection and easy I/O, they are not ideal for programmatic use.  We should consider using a database instead.  Make this a point of discussion
+ 
+Now, I insist you ask questions to me before you continue.  And Log your work
+
+3. Read my answers to the questions in the Q&A section below and make any necessary edits to the Data section of the design doc.  Log your work in the Logs section below.  If you have any additional questions, write them in the Q&A section below.  
+
 ### Q&A
+
+Open questions for JXP, raised by Claude while drafting the Data section
+(2026-06-18). Answers will be folded into `docs/design/PAB_design.md`.
+
+**On PACE cloud access:**
+
+1. **Compute environment.** Where will PAB's PACE processing primarily run —
+   in-region AWS (`us-west-2`, e.g. a PACE Hackweek / 2i2c JupyterHub, which
+   enables fast direct S3 streaming), local/out-of-region (HTTPS/OPeNDAP
+   fallback), or should the design be agnostic and run in both?
+
+   _A:_It will primarily run on my workstation in the AWS us-west-2 region.
+
+2. **Spectrum extraction mechanism.** To read only the pixels we need without
+   downloading whole granules, which approach do you prefer: (a) lazy `xarray`
+   open over S3/HTTPS with nearest-pixel indexing (mirrors `ocpy`'s existing
+   extraction, repointed at cloud URLs); (b) OPeNDAP server-side subsetting from
+   OB.DAAC; (c) the Harmony subsetting service; or (d) document all three and
+   decide later?
+
+   _A:_Please provide more information on the first two options.  We will decide later.  I should add that you should also explore the `remote_sensing` package that I have built and which is on this computer.
+
+3. **Earthdata authentication.** Is an Earthdata Login (`~/.netrc` /
+   `earthaccess.login()`) already set up for this work, and is there a target
+   compute account/region we should assume?
+
+   _A:_Yes, I have set up the Earthdata Login on my workstation.
+
+**On storage / lookup tables:**
+
+4. **CSV vs. database direction.** Do you want the design to recommend a
+   specific backend now — SQLite (embedded, single file), DuckDB+Parquet
+   (embedded, analytical), or PostgreSQL (client/server, multi-user) — or keep
+   it as an open discussion until the scale/sharing model is settled?
+
+   _A:_ Let's choose SQLite as the preferred backend for now.
+
+5. **Scale and sharing.** What scale should we design for (rough order of
+   matchups/profiles), and is the matchup store intended to be single-user/
+   collaborator-shared files, or a shared/community archive with concurrent
+   updates? This is the main driver of the backend choice.
+
+   _A:_The database may grow to 10,000 Argo profiles and 10x as many PACE spectra analyzed.
+
+6. **Relationship to BING outputs.** Should the BING fit outputs (chains,
+   posterior summaries, derived IOPs) live in the same store as the matchup
+   tables, or remain separate NPZ/JSON keyed by a matchup ID?
+
+   _A:_The extracted values should be stored in the database.  The fit outputs (chains, figures) should be stored in separate files.
+
+**On scope:**
+
+7. **Reference datasets in the data layer.** Should L23 / GLORIA / PANGAEA be
+   first-class citizens of the same loader/storage machinery now, or kept to the
+   later Analysis/Validation sections so the data layer focuses on the
+   PACE↔BGC-Argo matchup?
+
+   _A:_Sorry, ignore the L23, GLORIA and PANGAEA datasets for now. That was a mistake.
 
 ## Analysis
 
-We will develop a set of analysis methods that can be applied uniformly to all algorithms.  These will include:
-- Calculating the IOPs from the spectra
-- Calculating the uncertainties in the IOPs
-- Calculating the metrics and diagnostics
-- Generating figures and tables
-- Generating reports and publications
+Analysis will primarily proceed following the approach currently in the bing/papers/biomass/Analysis folder.  The primary differences are:
 
-For this, we will primarily use the BING package.
+1. We wish to semi-automate the process.  
+2. We wish to enhance and better record the provenance of the effort, ie. the input parameters and the output results.  We may want a versioning schema
+3. We may wish to expose the fit outputs for the community to inspect.  At the very least we want the BING figures to be viewable.  Each is ~1Mb.  Will this be a problem on GitHub?
 
 ### Tasks
 
-1. Please examine the BING package and generate a plan for the analysis methods.  Write the plan in the Planning document.  If you have any questions, write them in the Q&A section below. Log your work.
+1. Please examine the context files and especially the code in the bing/papers/biomass/Analysis folder.  Generate a plan for the analysis methods.  Write the plan in the Analysis section of the design document.  If you have any questions, write them in the Q&A section below. Log your work.
 
 ### Q&A
 
-## Validation
-
-We will develop a set of validation methods that can be applied uniformly to all algorithms.  These will include:
-
-## Metrics
-
 ## Reporting
 
-We will generate reports and publications on the main findings.  This will include figures, tables, and text.  These will be shared via readthedocs.io which will neccesitate .rst files.
+If you think there are additional items the community would like to see and/or access, please add them to the Reporting section of the design document.
 
 ## Logging
 
@@ -197,3 +263,111 @@ extraction, BING IOP retrieval + uncertainties, .rst reports for readthedocs,
 plus hooks for future datasets/satellites), its relationship to `docs/context.md`
 and the BING/ocpy/argopy packages, and basic conventions. Included the requested
 version (0.1), date, and authors.
+
+### 2026-06-17 (Data #1: wrote the Data section of the design document)
+
+Per the Data task #1, added a **Data** section to the design doc. First resolved
+a naming conflict — the Goals now name the doc `docs/design/PAB_design.md` while
+the Overview still says `IOPtics_design.md`; per the user's choice the doc is
+now `docs/design/PAB_design.md`.
+
+Examined the relevant local code to ground the section: in **ocpy** —
+`pace/io.py` (`load_oci_l2`, `load_oci_l2_spectrum` (nearest-pixel, reads a
+single spectrum off disk), `load_oci_l2_spectrum_pixel`, `load_iop_l2` exposing
+NASA's `a`/`bb`/`aph`/`bbp_442`/`adg_*`), `satellites/pace.py`
+(`wave`, `gen_noise_vector` from `PACE_error.csv`),
+`hydrolight/loisel23.py` (`load_ds(X,Y,profile)`, `calc_Chl`),
+`insitu/gloria.py` (`load_gloria`), `insitu/panagea.py` (`load`, `spectrum`,
+`to_long`); and in **argopy** the `DataFetcher(ds='bgc', src='erddap')` /
+`ArgoIndex(index_file='bgc-s')` access patterns plus the `argo` accessor
+(`point2profile`, `filter_qc`, `teos10`→`SIG0` for MLD).
+
+The Data section covers: a datasets-at-a-glance table (BGC-Argo + PACE AOP as
+primary; PACE IOP, L23, GLORIA, PANGAEA as secondary/reference; future hooks);
+per-dataset descriptions; loading (the existing ocpy/argopy entry points);
+processing (Argo MLD via the 0.03 kg m⁻³ density threshold, 3-pt de-spike,
+mixed-layer averaging; PACE scaling, `l2_flags` ocean mask, nearest-unflagged
+pixel, noise vector); matchup/use/analysis (5×5 box + tight time window → ~10
+Rrs → BING → compare bbp vs float + NASA L2 IOP); storage/retrieval (raw cache
+via earthaccess + argopy cache and the BGC index for index-first pre-selection,
+intermediate matchup tables as CSV/Parquet à la `papers/biomass`, NPZ/JSON fit
+outputs); and extensibility hooks (common matchup-record schema, loader
+registry, satellite abstraction). No open questions for the Q&A section.
+
+What I learned: ocpy already provides the exact PACE single-spectrum extraction
+PAB needs (`load_oci_l2_spectrum` does nearest-pixel-by-distance and reads only
+that spectrum), and a NASA L2 IOP loader for a ready baseline comparison — so
+the data layer is largely an orchestration/caching effort over existing loaders
+rather than new I/O.
+
+### 2026-06-18 (Data #2: edited the Data section; raised Q&A in the design doc)
+
+Per Data task #2, made two edits to the Data section of `docs/design/PAB_design.md`:
+
+- **PACE cloud-first.** Reworked the PACE-AOP loading bullet and the
+  Storage/retrieval subsection to state that the *primary* intention is to read
+  PACE data directly from the NASA Earthdata Cloud (via `earthaccess`), with the
+  `ocpy` hard-drive granule readers (`load_oci_l2`, `load_oci_l2_spectrum`,
+  `load_oci_l2_spectrum_pixel`) used mainly for **debugging/development**, and
+  that PAB **avoids downloading full L2 granules** except for dev/offline work
+  (reads only the needed pixels).
+- **CSV → database.** Reframed the "intermediate matchup tables" bullet to note
+  CSV's limits for programmatic use, and added a **"Discussion: lookup tables —
+  CSV vs. a database"** subsection laying out the trade-offs and candidate
+  backends (SQLite / DuckDB+Parquet / PostgreSQL), with a default of defining a
+  schema now behind a thin storage interface so CSV can migrate to a DB later.
+
+Then — per the explicit instruction to ask questions before continuing — I added
+a **Q&A** subsection to the design doc (the user redirected my interactive
+questions into the doc) with 7 open questions for JXP: PACE compute environment
+(in-region vs local), cloud spectrum-extraction mechanism (lazy xarray/S3 vs
+OPeNDAP vs Harmony), Earthdata auth, CSV-vs-DB backend direction, scale/sharing
+model, whether BING fit outputs share the matchup store, and whether the
+reference datasets (L23/GLORIA/PANGAEA) belong in the data layer now. Awaiting
+answers before finalizing these parts of the design.
+
+Note: the earlier (Data #1) log line "No open questions for the Q&A section" is
+now superseded — the Q&A above lists open questions.
+
+### 2026-06-18 (Data #3: folded JXP's Q&A answers into the Data section)
+
+Per Data task #3, read JXP's answers in the Q&A and revised the Data section of
+`docs/design/PAB_design.md` accordingly. Also explored the **remote_sensing**
+package on this workstation (per JXP's note in Q2). Key changes:
+
+- **Cloud-first + in-region (Q1, Q3).** Stated that PAB runs on a workstation in
+  AWS `us-west-2` with Earthdata Login configured, so in-region direct cloud
+  access is the design target.
+- **New "Cloud access (PACE)" subsection (Q2).** Detailed the two extraction
+  mechanisms with pros/cons, decision deferred: (a) lazy `xarray` open over S3
+  (nearest-pixel read transfers one spectrum; reuses `ocpy`/`remote_sensing`
+  readers with only the file handle becoming a remote object) and (b) OPeNDAP
+  server-side subsetting (minimal transfer, works out-of-region, per-request
+  latency). Grounded in the actual `remote_sensing` code I found:
+  `process.swot_ssh_utils` already implements the in-region `s3fs` +
+  `xr.open_dataset(s3sys.open(...))` pattern (notes us-west-2 requirement);
+  `download.earthaccess` wraps CMR search + a granule→DataFrame table
+  (`query_modis_oc`, `build_granule_table` with footprint polygons/time/CC/URL);
+  `download.podaac` already distinguishes the `OPENDAP DATA` URL subtype;
+  `netcdf/oc.py` has sensor-agnostic OC L2 helpers (`create_quality_mask`,
+  `quality_control`, `extract_rrs_spectrum`, `find_rrs_variables`). Recommended
+  starting with (a) while keeping discovery/pixel-selection factored so (b) can
+  slot in.
+- **SQLite chosen (Q4, Q5).** Replaced the open CSV-vs-DB discussion with a
+  decision: extracted/tabular values (mixed-layer summaries, matchup index,
+  scalar IOP results) go in a single-file **SQLite** DB; CSV/Parquet kept as
+  exports only. Noted the scale (~10⁴ Argo profiles, ~10⁵ PACE spectra) sits
+  well within SQLite's single-user range; DuckDB+Parquet and PostgreSQL recorded
+  as deferred alternatives behind a thin storage interface.
+- **Fit outputs split (Q6).** Bulky BING outputs (MCMC chains, figures) stored
+  as separate files (NPZ/JSON, PNG/PDF) keyed by matchup/fit ID, not in the DB.
+- **Dropped reference datasets (Q7).** Removed L23 / GLORIA / PANGAEA from the
+  datasets table, descriptions, loading, and processing; the data layer now
+  focuses on the PACE↔BGC-Argo matchup (PACE L2 IOP retained as the NASA
+  baseline). Generalized the extensibility hooks accordingly and added
+  `remote_sensing` to the reused-packages list (Preamble + intro).
+
+No additional open questions. What I learned: `remote_sensing` already supplies
+both halves of the cloud path PAB needs — Earthdata/CMR granule discovery with a
+footprint table for spatial matchup, and a proven in-region S3 lazy-open pattern
+— so PAB's PACE access can be assembled largely from existing code.
