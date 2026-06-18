@@ -302,5 +302,201 @@ To satisfy the goal of *future in-situ datasets and other satellites*:
 
 ---
 
-*This document is under active development; the Analysis, Validation, Metrics,
-and Reporting sections will be added in subsequent revisions.*
+## Analysis
+
+The analysis layer turns the matchup records (a float mixed-layer summary plus
+the ~10 nearest PACE `Rrs` spectra) into retrieved IOPs with uncertainties, and
+the diagnostics, figures, and tables that follow. It **follows the scientific
+approach of `bing/papers/biomass/Analysis`** but with three deliberate changes
+requested for PAB: (1) **semi-automation** of the end-to-end run; (2)
+**provenance and versioning** of every input and output; and (3) **community
+exposure** of the results (at least viewable BING figures).
+
+> **Code-reuse principle.** PAB will **not use any of the code in
+> `bing/papers/biomass/Analysis`.** Those scripts are a *reference* for the
+> scientific workflow only; PAB will take what it needs from them conceptually
+> and implement **entirely new modules** in the `pab` package. The distinction
+> matters: PAB *does* depend on the installable **BING package** API
+> (`bing.models`, `bing.fitting`, `bing.evaluate`, `bing.rt`, …) and on `ocpy`,
+> `argopy`, and `remote_sensing`; it does *not* import or adapt the one-off
+> `papers/biomass` analysis scripts.
+
+### Reference workflow (conceptual template — not reused code)
+
+The biomass paper drives its pipeline (in `end_to_end_workflow.py`) as numbered
+stages: slurp Argo profiles → build the PACE granule list → match PACE to Argo
+(`dtime='1 day'`) → locate the closest granule with good `Rrs` → fit with BING →
+slurp the fits back into a table → add the Argo mixed-layer `bbp`. PAB adopts
+this *staging* as a conceptual blueprint and reimplements each stage anew; the
+Data section already covers the early stages (discovery, matchup, cloud Rrs
+extraction). This section details the **fitting and post-fit** stages.
+
+### Rrs source: PACE L2 AOP or PAB-derived from L1B
+
+The fit consumes an `Rrs(λ)` spectrum and its per-band uncertainty. By default
+these come from the **PACE L2 AOP** product (`Rrs`, `Rrs_unc`; see Data). PAB,
+however, must also **allow deriving `Rrs` and its uncertainty from PACE Level-1B
+data with our own algorithms** — i.e. running an in-house
+atmospheric-correction / Rrs-estimation step on L1B radiances rather than
+accepting NASA's L2 retrieval. The design therefore treats the Rrs source as a
+**pluggable upstream stage**: whether `Rrs(λ)`/`σ_Rrs(λ)` arrives from the L2
+product or from a PAB L1B→Rrs algorithm, it feeds the *same* fitting pipeline,
+and its provenance (source = `L2_AOP` vs `PAB_L1B:<algorithm/version>`) is
+recorded with the fit. This keeps the door open to experimenting with custom
+atmospheric corrections and uncertainty models without changing the downstream
+analysis.
+
+### The BING fit (per spectrum)
+
+For each extracted `Rrs(λ)` spectrum (restricted to 400–700 nm for PACE), BING
+is driven through its standard two-stage pipeline:
+
+1. **Initialize models** — `bing.models.utils.init([anw_name, bbnw_name],
+   wave)` returns the `[a_nw, b_b,nw]` model pair. **PAB runs a single model pair
+   for now: `ExpBricaud` + `Pow`** (exponential CDOM+detritus, Bricaud
+   phytoplankton, power-law backscatter) — confirmed as the default. The code
+   base must nonetheless be **prepared for additional model pairs** (BING's
+   library is broad — `anw`: `Cst`, `Exp`, `ExpBricaud`, `GIOP`, `GSM`, `Chase`,
+   …; `bbnw`: `Cst`, `Pow`, `Lee`, `GSM`, …), so the pair is a configurable
+   choice rather than hard-coded.
+2. **Set priors** — per-model `bing.priors.Priors` (the standard/`default`
+   prior set), which also impose the parameter bounds.
+3. **Least-squares warm-start** — `bing.fitting.chisq_fit.fit(item, models)`
+   (Levenberg–Marquardt) for a fast initial guess. A failed LM fit is recorded
+   and the spectrum is skipped.
+4. **MCMC posterior** — `bing.fitting.inference.init_mcmc(models, nsteps,
+   nburn)` then `fit_one(item, models, pdict)` (emcee) to obtain the full
+   posterior chains. PAB keeps BING's standard MCMC settings (`nsteps≈10000`,
+   `nburn≈1000`, 16 walkers); batches of spectra run via `fit_batch` (parallel
+   across cores).
+5. **Reconstruct + summarize** — `bing.evaluate.calc_stats(chains)` for
+   posterior medians and 5th/95th (and 68%) percentiles, and
+   `bing.evaluate.reconstruct_from_chains(models, chains, rt_dict)` to propagate
+   the chains into `a_nw(λ)`, `b_b,p(λ)`, and reconstructed `Rrs(λ)` with
+   uncertainty envelopes. The forward model is Gordon's relation in
+   `bing.rt.rrs` (with optional Raman / chlorophyll-fluorescence terms).
+
+The retrieved quantity of primary interest is **`bbp`** (amplitude `Bnw` and
+slope `β` from the `Pow` model) — the robust matchup observable per the BING
+paper — alongside `a_ph`, `a_dg`, and their uncertainties.
+
+**Output naming schema.** Because PAB is built to support more than one model
+pair over time, every retrieved quantity is namespaced by the algorithm and
+model that produced it, e.g. `BING_ExpBPow_bbp`, `BING_ExpBPow_beta`,
+`BING_ExpBPow_aph`, … (and `BING_ExpBPow_bbp_unc` for uncertainties). A second
+model pair would write parallel columns (e.g. `BING_GIOP_bbp`) without
+colliding, and the NASA baseline stays under its own prefix (e.g.
+`NASA_L2IOP_bbp`).
+
+### Diagnostics
+
+PAB fits the **single fixed model pair** (`ExpBricaud`+`Pow`) for now;
+**automated model selection is not in scope** (N/A for now). The information
+criteria remain available as *diagnostics* but are not used to choose a model.
+
+- **Goodness of fit** — `bing.stats.calc_chisq` (reduced χ²) per spectrum.
+- **Information criteria (reported, not selected on)** — `bing.stats.calc_ICs`
+  (AIC/BIC) recorded per fit for reference. (A future capability could fit a
+  ladder of model pairs and auto-select via ΔBIC, as in the BING paper, but PAB
+  will not do this initially.)
+- **Convergence** — chain thinning/burn-in via `evaluate.thin_burn_chains`; PAB
+  should additionally record basic convergence indicators (acceptance fraction,
+  autocorrelation/effective sample size) as QC on each fit.
+
+### Comparison & metrics
+
+Each matchup yields three estimates of backscatter that PAB compares:
+**BING `bbp`** (this analysis), **NASA L2 IOP `bbp`** (the secondary baseline,
+`bbp_442`/`bbp_s`), and the **in-situ Argo `bbp`** (mixed-layer, de-spiked).
+Metrics (defined fully in the later *Metrics* section) include the
+satellite/in-situ ratio and rank correlation (à la Bisson et al. 2019),
+log-space bias and scatter, and per-fit reduced χ². These are computed across
+the matchup population and stratified by region, season, and `Rrs` spatial
+variability (Bisson's skill-vs-variability caveat).
+
+### Figures & tables
+
+- **Per-fit figure** — the spectral fit + residuals and a posterior corner plot.
+  PAB generates **one figure per matchup** (its own plotting module, informed by
+  BING's `bing.plotting.show_fits` and the biomass `plot_fit`/`mini_corner`
+  *concepts* — not their code). Target **~100 KB per figure** rather than the
+  ~1 MB the biomass scripts produce (e.g. lower DPI, rasterized panels, PNG
+  optimization / `optimize=True`, or trimmed panel count), which keeps the full
+  set tractable to expose.
+- **Population figures** — satellite-vs-float `bbp` scatter, BING-vs-NASA-L2-IOP
+  comparison, maps, and metric distributions (new PAB plotting code).
+- **Tables** — the extracted scalar results (posterior medians/intervals for the
+  namespaced quantities `BING_ExpBPow_bbp`, `…_beta`, `…_aph`, `…_adg`; χ²; IC
+  values; convergence flags) are written to the **SQLite** store defined in the
+  Data section, keyed by matchup ID, and exportable to CSV for inspection and to
+  `.rst` for reporting.
+
+### Semi-automation
+
+PAB provides its **own** single, resumable, semi-automated pipeline (new code,
+not the biomass scripts): a stage runner (discover → match → extract → fit →
+summarize → tabulate) where each stage is idempotent and skips already-completed
+work (a `clobber=False`-style guard), reads its inputs from and writes its
+outputs to the matchup store, and can be run for a single matchup (debugging) or
+the full population (batch, parallel). Heavy fits run via BING's `fit_batch`
+across cores.
+
+### Provenance & versioning
+
+To make every result reproducible and inspectable, each fit record should
+capture its full provenance:
+
+- **Inputs** — granule ID/URL and pixel indices, float WMO/cycle, matchup
+  distance and Δtime, wavelength range, the noise model used, and the **Rrs
+  source** (`L2_AOP` vs `PAB_L1B:<algorithm/version>`).
+- **Configuration** — the chosen `a_nw`/`b_b,nw` model names, the prior set,
+  MCMC settings (`nsteps`, `nburn`, walkers), and the forward-model options
+  (Raman/fluorescence on/off).
+- **Environment** — versions of BING, ocpy, argopy, remote_sensing (and the PAB
+  git commit), so a result can be tied to the exact code that produced it.
+
+**Versioning schema (decided): a `pab_version` string.** Every fit is stamped
+with a `pab_version` and a `created` timestamp, and outputs are stored under a
+path/ID that encodes the matchup and `pab_version`. Re-running under a new
+`pab_version` produces a new record rather than silently overwriting, enabling
+side-by-side comparison of algorithm/prior changes across versions.
+
+### Outputs & community exposure
+
+Per the Data section, the **extracted scalar values live in the SQLite
+database** and the **bulky artifacts (MCMC chains as NPZ/JSON, figures as
+PNG/PDF) live in files keyed by matchup/fit ID.**
+
+On exposing the BING figures: PAB plans to expose **one figure per matchup**, so
+the count is set by the number of matchups (design target ~10⁴), not by the
+~10⁵ analyzed spectra. At the **~100 KB target** size (above), the full set is on
+the order of ~1 GB — modest enough that figure size is **not a major concern for
+now**. A single such file is well within GitHub's limits (it warns above 50 MB,
+blocks above 100 MB). Guidance for the implementation:
+
+- **Keep the figures small** — the ~100 KB target (vs the biomass scripts'
+  ~1 MB) is an explicit design goal; achieve it via reduced DPI, rasterized
+  panels, and PNG optimization.
+- **Prefer readthedocs (and/or an external store) over bloating git history.**
+  Even at ~1 GB, committing the full set into the main repo's git history is
+  best avoided; render/serve figures through the readthedocs build or an
+  external object store (an `us-west-2` S3 bucket), since the database + retained
+  chains make any figure **regenerable**.
+
+The broader question of *what else* to expose to the community (extracted-value
+tables, raw chains, an interactive query interface, and whether to add a data
+release such as Zenodo alongside readthedocs) is **deferred to the Reporting
+section**, per JXP.
+
+### Q&A
+
+JXP's answers to the initial Analysis questions have been folded into this
+section. The remaining open item — the full set of community-facing products and
+channels — is **carried forward to the Reporting section**. Any further
+questions are recorded in the **Analysis → Q&A** section of
+`claude_prompts/design_prompts.md`.
+
+---
+
+*This document is under active development; the Validation, Metrics, and
+Reporting sections will be added in subsequent revisions.*

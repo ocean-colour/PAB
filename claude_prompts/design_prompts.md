@@ -74,6 +74,7 @@ Guidelines for the design document which will be named IOPtics_design.md and wil
 ### Analysis
 
 1. Read this doc.  Execute the 1st task in the Analysis section below
+2. Read this doc.  Execute the 2nd task in the Analysis section below
 
 ## Data
 
@@ -185,9 +186,62 @@ Analysis will primarily proceed following the approach currently in the bing/pap
 
 1. Please examine the context files and especially the code in the bing/papers/biomass/Analysis folder.  Generate a plan for the analysis methods.  Write the plan in the Analysis section of the design document.  If you have any questions, write them in the Q&A section below. Log your work.
 
+2. I have answered the questions in the Q&A section below.  I have the following additional items to include:
+
+    - We may choose to process PACE Level 1B data with our own algorithms to estiamte Rrs and its uncertainties.  The code will need to allow for this.
+    - The design doc should note that we will not use any of the code in the bing/papers/biomass/Analysis folder.  We will take what we need from those modules and generate entirely new ones in the PAB package.
+
+Please make any necessary edits to the Analysis section of the design document.  Log your work in the Logs section below.  If you have any additional questions, write them in the Q&A section below.  
+
 ### Q&A
 
+Open questions for JXP, raised by Claude while drafting the Analysis section
+(2026-06-18). Answers will be folded into `docs/design/PAB_design.md`.
+
+1. **Default model pair.** Is `ExpBricaud` + `Pow` (the biomass workhorse) the
+   right default for PAB, and do you want the GIOP and/or GSM baselines run
+   automatically alongside it for every matchup, or only on request?
+
+   _A: Yes, the ExpBricaud + Pow model is the right default for PAB.  We will only run that model for now, but the code base should be prepared for additional ones.  We will need a naming schema for their outputs, e.g. BING_ExpBPow_bbp, ...
+
+2. **Automated model selection.** Should PAB *automatically* choose the model
+   complexity per spectrum via AIC/BIC (fitting a ladder of models and picking
+   the favored one), or always fit a single fixed model pair and just *report*
+   the IC values?
+
+   _A: N/A for now
+
+3. **Versioning scheme.** For the provenance/versioning requirement, which do
+   you prefer to stamp on each fit: (a) a semantic `pab_version` string, (b) a
+   hash of the full pipeline configuration (models+priors+MCMC+RT options), or
+   (c) a monotonic run/batch ID — or some combination?
+
+   _A: I like a `pab_version` string.
+
+4. **MCMC settings.** Keep the biomass defaults (`nsteps≈10000`, `nburn≈1000`,
+   16 walkers) as PAB's standard, or expose them per-run and record per fit?
+   (They are recorded as provenance regardless.)
+
+   _A: Keep the biomass defaults.
+
+5. **Figure storage / exposure.** Given ~1 MB/figure and ~10⁵ spectra, do you
+   agree with: don't commit per-fit figures to git, store/regenerate them
+   externally, and publish only a curated subset + population figures via
+   readthedocs? If you want versioned figure storage, should we plan on Git LFS,
+   release assets, or an S3 bucket in your us-west-2 account?
+
+   _A: Well, we would likely only expose one fit per matchup, so the figure size is not a major problem for now.  And we should find a way to reduce the figure size from 1MB to 100KB
+
+6. **What to expose to the community.** Beyond viewable BING figures, should the
+   exposed products include the extracted-value tables (CSV/SQLite export), the
+   raw MCMC chains (NPZ), and/or an interactive way to query matchups — and is
+   readthedocs the only intended channel, or also a data release (e.g. Zenodo)?
+
+   _A: Good questions.  Ask again when we work on the Reporting section below.
+
 ## Reporting
+
+A big part of PBA will be to provide the community quick-look views of the matchup results.  These should be accessible via a web interface.  
 
 If you think there are additional items the community would like to see and/or access, please add them to the Reporting section of the design document.
 
@@ -371,3 +425,84 @@ No additional open questions. What I learned: `remote_sensing` already supplies
 both halves of the cloud path PAB needs — Earthdata/CMR granule discovery with a
 footprint table for spatial matchup, and a proven in-region S3 lazy-open pattern
 — so PAB's PACE access can be assembled largely from existing code.
+
+### 2026-06-18 (Analysis #1: wrote the Analysis section of the design document)
+
+Per Analysis task #1, examined the local **BING** package
+(`/home/xavier/Oceanography/python/bing`) and its `papers/biomass/Analysis`
+folder, then wrote an **Analysis** section into `docs/design/PAB_design.md`.
+
+Examined: `bing/papers/biomass/Analysis/py/end_to_end_workflow.py` (the staged
+slurp→match→find-closest→fit→slurp pipeline), `fitting.py`
+(`fit_em_all`/`fit_one`/`fit_me`, two-stage LM→MCMC with `ExpBricaud`+`Pow`),
+`bing/scripts/fit_Rrs.py` (the public fit recipe), and the core API:
+`models/utils.init`, `models/anw.py` + `bbnw.py` (model libraries),
+`fitting/inference.py` (`init_mcmc`, `fit_one`, `fit_batch`, `run_emcee`),
+`fitting/chisq_fit.py` (LM), `evaluate.py` (`calc_stats`,
+`reconstruct_from_chains`, `thin_burn_chains`), `stats.py` (`calc_chisq`,
+`calc_ICs` → AIC/BIC), `rt/rrs.py` (Gordon forward model), `plotting.py`.
+
+The Analysis section covers: the biomass reference workflow; the per-spectrum
+BING fit (init models → priors → LM warm-start → MCMC → reconstruct/summarize),
+defaulting to `ExpBricaud`+`Pow` with `bbp` as the key observable; model
+selection & diagnostics (χ², AIC/BIC, convergence QC); comparison of BING vs
+NASA-L2-IOP vs in-situ Argo `bbp` and the metrics that follow; per-fit and
+population figures + tables (extracted scalars → SQLite, exportable to
+CSV/.rst); semi-automation (idempotent, resumable stage runner); and provenance
+& versioning (record inputs, config, and package/git versions; proposed stamping
+a version/config-hash per fit).
+
+Addressed JXP's embedded question (Analysis intro #3) on ~1 MB BING figures on
+GitHub: a single 1 MB file is fine, but ~10⁵ figures (~100 GB) must NOT be
+committed — recommended generating on demand / external object store +
+publishing a curated subset and population figures via readthedocs, with Git
+LFS / release assets / S3 as options if versioned figure storage is wanted.
+
+Per JXP's standing preference (now saved to memory), I did NOT use interactive
+prompts; I recorded 6 open questions in the **Analysis → Q&A** section of
+`design_prompts.md` (default model pair + GIOP/GSM baselines; automated AIC/BIC
+model selection vs fixed model; versioning scheme; MCMC defaults; figure
+storage/exposure; what else to expose to the community + channel) and await
+JXP's answers before finalizing those parts.
+
+### 2026-06-18 (Analysis #2: folded answers + new items into the Analysis section)
+
+Per Analysis task #2, read JXP's Q&A answers and the two additional items, then
+revised the Analysis section of `docs/design/PAB_design.md`:
+
+From the answers:
+- **Single default model.** PAB runs only `ExpBricaud`+`Pow` for now, but the
+  code must be prepared for more pairs. Added an **output naming schema** —
+  results namespaced as `BING_ExpBPow_bbp`, `…_beta`, `…_aph`, `…_unc`, with the
+  NASA baseline as `NASA_L2IOP_bbp` — so additional pairs write parallel columns
+  without collision.
+- **No automated model selection** (N/A for now): renamed "Model selection &
+  diagnostics" → "Diagnostics"; χ² and AIC/BIC are *reported* per fit, not used
+  to select a model; ladder/ΔBIC selection noted as a future capability only.
+- **Versioning = `pab_version` string** (decided): removed the config-hash/run-ID
+  hedge; every fit stamped with `pab_version` + timestamp, new version instead of
+  overwrite.
+- **MCMC defaults kept** (`nsteps≈10000`, `nburn≈1000`, 16 walkers) as PAB's
+  standard, recorded as provenance.
+- **Figures**: one figure per matchup (~10⁴, not the ~10⁵ spectra), with an
+  explicit **~100 KB target** (down from ~1 MB; via lower DPI / rasterization /
+  PNG optimization). Revised the GitHub discussion accordingly (the full set is
+  ~1 GB, "not a major concern for now"; still prefer readthedocs/external store
+  over git history).
+- **Community products** deferred to the **Reporting** section per JXP.
+
+From the two new items:
+- **PACE L1B option.** Added an "Rrs source" subsection: PAB must allow deriving
+  `Rrs`/σ_Rrs from PACE **Level-1B** with our own algorithms; the Rrs source is a
+  pluggable upstream stage (L2_AOP vs PAB_L1B:<algo/version>) feeding the same
+  fit pipeline, with the source recorded as provenance.
+- **No biomass code reuse.** Added a prominent **Code-reuse principle**: PAB will
+  NOT use any code in `bing/papers/biomass/Analysis` — those scripts are a
+  scientific *reference* only; PAB reimplements all orchestration anew while
+  still depending on the installable **BING package** API (plus ocpy/argopy/
+  remote_sensing). Reframed every biomass-script reference (`fit_em_all`,
+  `plot_fit`, `figs_biomass`, etc.) as conceptual templates, and the
+  semi-automation pipeline as new PAB code.
+
+No new open questions (the one remaining topic — full community-facing product
+set — is carried to the Reporting section).
