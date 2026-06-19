@@ -88,6 +88,10 @@ Guidelines for the design document which will be named IOPtics_design.md and wil
 2. Read this doc.  Execute the 2nd task in the Cleaning up section below
 3. Read this doc.  Execute the 3rd task in the Cleaning up section below
 
+### Coding Plan
+
+1. Read this doc.  Execute the 1st task in the Coding Plan section below
+
 ## Data
 
 We will be using two primary datasets in this Repository: BGC-Argo and PACE (Ocean Color Imager) data.  Do also provide hooks to include other in-situ datasets and satellite data in the future.
@@ -427,6 +431,56 @@ Follow-up from Claude (Cleaning up #2, 2026-06-19):
   and I can generate the same diagram in Python (matplotlib) instead.
 
 I am only using Python.  Generate tihs with Python not MATLAB.
+
+## Coding Plan
+
+Let us now use the design document to generate a coding plan.  Please do this in a separate document called `docs/design/PAB_coding_plan.md`.  The coding plan will be a living document that will be updated as we develop the package.  It will be used to guide the development of the package.  Add version number and date to the file. The coding plan is a living document that will be updated as we develop the package.  It will be used to guide the development of the package.
+
+### Tasks
+
+1.  Proceed with a first draft of the coding plan.  Be sure:
+    - Have the development occur in well defined stages.
+    - Include tests and doc development in each stage.
+    - If you have any additional questions, write them in the Q&A section below.  
+    - Log your work in the Logs section below.  
+
+2. I have read the answers to the questions in the Q&A section below.  Make edits to the coding plan accordingly.  Log your work in the Logs section below.  If you have any additional questions, write them in the Q&A section below.  
+
+### Q&A
+
+Open questions for JXP on the coding plan (2026-06-19), from Claude:
+
+1. **Test fixtures vs. mocking.** For offline/CI tests I'd like to commit small
+   fixtures — a trimmed BGC-Argo profile, a tiny synthetic/cropped PACE granule,
+   and one stored example BING fit. Is committing a small (~MB) PACE granule
+   subset acceptable (size/licensing), or should PACE cloud access always be
+   mocked in tests?
+
+   _A:_ These are good suggestions.  A small PACE granule subset is acceptable.  We will mock the PACE cloud access in tests.
+
+2. **Database access layer.** For the SQLite layer, do you prefer raw `sqlite3`
+   (lightweight, no deps), `SQLAlchemy` (ORM/migrations, heavier), or pandas
+   `to_sql`/`read_sql` (simplest, less control)?
+
+   _A:_ We will use the SQLite database.
+
+3. **CI.** Should the plan assume **GitHub Actions** for running tests + a docs
+   build on each push, or do you use another CI / none for now?
+
+   _A:_ Yes, it should assume GitHub Actions.
+
+4. **Credentials & external services in scope.** When should the plan schedule
+   the **Nautilus/NSF S3** upload and **Zenodo** publishing (Stage 7) — are
+   credentials/endpoints available now, or should those be stubbed until later?
+
+   _A:_ They are available now, but let us stub them until later.
+
+5. **Python / packaging.** Confirm the target is **Python ≥ 3.12** (per
+   `setup.py`) and that `requirements.txt` stays the single dependency source
+   (I'll add `bing`, `ocpy`, `remote_sensing`, `gsw`, `bokeh`, HEALPix tooling as
+   stages need them). Any constraint on adding dependencies?
+
+   _A:_ Yes, the target is Python ≥ 3.12 and the requirements.txt file should stay the single dependency source.  We will add the dependencies as we need them.  You can add those for now.  I will be turning `bing` into a pip package.  `remote_sensing` will have to be accessed via GitHub.
 
 ## Logging
 
@@ -863,3 +917,31 @@ this with Python not MATLAB"):
 
 Both design-doc figures (Fig 2 example fit, Fig 3 architecture) are now real,
 Python-generated PNGs under `docs/figures/`, scripted under `docs/scripts/`.
+
+### 2026-06-19 (Coding Plan #1: first draft of PAB_coding_plan.md)
+
+Per Coding-Plan task #1, wrote a first draft of `docs/design/PAB_coding_plan.md`
+(v0.1, 2026-06-19, JXP and Claude) — a separate living document implementing
+`PAB_design.md` (v0.3.1). Contents:
+
+- **Guiding principles** (reuse BING/ocpy/argopy/remote_sensing; Python only; no
+  biomass-script reuse; cloud-first PACE; SQLite as the single source of truth
+  behind a swappable storage seam; provenance + `pab_version`; code+tests+docs
+  every stage; idempotent/resumable pipeline).
+- **Proposed `pab/` package layout** (config, db, argo, pace, matchup, fit,
+  metrics, plotting, report, pipeline, tests).
+- **Cross-cutting concerns** (testing with small offline fixtures + mocked cloud;
+  Sphinx docs; provenance; tooling; CI).
+- **Ten development stages (0–9)**, each with scope / deliverables / tests / docs:
+  0 scaffolding, 1 SQLite layer, 2 Argo ingest + MLD/summary, 3 PACE access +
+  extraction, 4 matchup engine, 5 BING fitting wrapper, 6 metrics + figures, 7
+  reporting (rst + Bokeh + HEALPix + S3/Zenodo), 8 end-to-end pipeline/CLI, 9
+  extensibility (loader registry, more models, L1B→Rrs, server interactivity).
+- **Suggested order/dependency graph** (DB first; Argo ∥ PACE; recommend a thin
+  end-to-end "walking skeleton" early) and **milestones M1–M4**.
+
+Per JXP's standing preferences, used Python throughout and posed **5 questions**
+in the Coding-Plan Q&A (test fixtures vs mocking + committing a small PACE
+granule; sqlite3 vs SQLAlchemy vs pandas; CI = GitHub Actions?; when to schedule
+Nautilus S3 / Zenodo; confirm Python ≥3.12 + dependency policy) with `_A:_`
+placeholders, awaiting answers before refining the plan.
