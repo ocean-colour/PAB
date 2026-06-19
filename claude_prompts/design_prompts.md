@@ -82,6 +82,11 @@ Guidelines for the design document which will be named IOPtics_design.md and wil
 2. Read this doc.  Execute the 2nd task in the Reporting section below
 3. Read this doc.  Execute the 3rd task in the Reporting section below
 
+### Cleaning up
+
+1. Read this doc.  Execute the 1st task in the Cleaning up section below
+2. Read this doc.  Execute the 2nd task in the Cleaning up section below
+
 ## Data
 
 We will be using two primary datasets in this Repository: BGC-Argo and PACE (Ocean Color Imager) data.  Do also provide hooks to include other in-situ datasets and satellite data in the future.
@@ -325,6 +330,98 @@ Follow-up questions from Claude (2026-06-19), after folding the above answers:
    gridded/HEALPix spatial cells, or a different granularity)?
 
    _A:_ Yes, let's try your idea for now, although I am tempted to try the HEALPix option too.  Add this to the report.
+
+## Cleaning up
+
+1.  Here are a few additional items:
+
+    - Bump the version of the design document to 0.2
+    - If you touch the document from here on, bump the version.  Small changes should add and additional decimal, e.g. 0.2.1
+    - Read it end to end.  If you have any additional questions or suggestions, write them in the Q&A section below.
+    - If you have a figure or two to suggest including, please do so.
+    - We will proceed to write a coding plan next
+    - Log your work
+
+2. Read my responses in the Q&A section below and make any necessary edits to the design document.  Log your work in the Logs section below.  If you have any additional questions, write them in the Q&A section below.  
+
+### Q&A
+
+Suggestions & questions from Claude after an end-to-end read (2026-06-19), having
+bumped the design doc to v0.2:
+
+**Suggestions / observations**
+
+- **Missing Validation & Metrics sections.** The `Prompts` list and the original
+  section skeleton include **Validation** and **Metrics**, but no tasks were run
+  for them and the design doc has no such sections. The Analysis section already
+  *forward-references* them ("Metrics (defined fully in the later *Metrics*
+  section)"). Recommend either writing brief Validation and Metrics sections or
+  removing/relaxing the forward references before the coding plan. **Q: do you
+  want these two sections written, or deferred (and the forward refs softened)?**
+
+I don't remember what I had in mind for the Validation section.  Please remove mention of it.  As for Metrics, please write that based on what exists in the papers/biomass/Analysis folder.
+
+- **Metrics content is currently split across Analysis.** The satellite/in-situ
+  ratio, rank correlation, log-space bias/scatter, χ², and the
+  region/season/`Rrs`-variability stratification live in the Analysis
+  "Comparison & metrics" subsection. If a Metrics section is added, consider
+  moving the definitions there and leaving Analysis to point at it.
+
+I think we can remove the notion of a separate Metrics section.  We can just include the metrics in the Analysis section.
+
+- **Minor copyedit (Preamble).** Line 11 reads "design and requirements of
+  **PAB** a Python package…"; suggest "**PAB**, a Python package…".
+
+Make that edit
+
+**Figures**
+
+- **Figure 1 (added in v0.2):** an end-to-end dataflow diagram (Mermaid) in the
+  Preamble's new *Architecture overview* — Argo + PACE → matchup → BING → SQLite
+  / artifacts → reporting.
+- **Suggested Figure 2 (not yet added):** a *single-matchup* science schematic —
+  the float `bbp(z)` profile with the MLD marked, the PACE pixel neighborhood
+  around the float, and the extracted `Rrs(λ)` spectrum with its BING fit +
+  uncertainty envelope — to illustrate the core science in one glance. **Q: want
+  me to add a placeholder for this (it needs a real example fit to render)?**
+
+Please generate this figure.  Use one of the fits from the papers/biomass/Analysis work.  Ask me if you need help.
+
+- **Possible Figure 3:** a storage/architecture diagram (SQLite DB ↔ object
+  store ↔ readthedocs/Zenodo) if the Reporting section warrants more detail.
+
+Yes, please generate this too.  Use Matlab and make a script in docs/scripts folder.
+
+**Question**
+
+- **Scope of the upcoming coding plan.** You noted a coding plan is next. **Q:
+  should it be a separate document (e.g. `docs/design/PAB_coding_plan.md`) per
+  the Overview's "separate doc" for code-level recommendations, and should it
+  cover the whole package or proceed section-by-section (Data → Analysis →
+  Reporting)?**
+
+Yes, a separate doc.  It will cover the whole package and will have a recommended staging for development.
+
+---
+
+Follow-up from Claude (Cleaning up #2, 2026-06-19):
+
+- **Figure 2 — done, but partial.** Generated a real, data-backed Figure 2 from
+  a `papers/biomass` fit (NPZ): the extracted PACE `Rrs(λ)` + BING fit +
+  uncertainty, and the retrieved `a_nw`/`b_b,nw` with 5–95% envelopes
+  (`docs/scripts/fig_example_fit.py` → `docs/figures/fig_example_fit.png`, 58 KB).
+  The two extra panels you'd described — the **float `bbp(z)` profile with MLD**
+  and the **PACE pixel neighborhood** — were *not* added because they need the
+  raw Argo profile NetCDF and the PACE granule, which I don't have offline. **Q:
+  add those panels (and point me to the raw Argo file + granule for this float),
+  or is the current Rrs+IOP figure sufficient?**
+
+- **Figure 3 — MATLAB not installed here.** Wrote the MATLAB script
+  `docs/scripts/fig_architecture.m` as requested, but **MATLAB/Octave is not
+  available in this environment**, so I could not run it — `fig_architecture.png`
+  is not yet rendered (the design doc references it and notes this). **Please run
+  the script in MATLAB on your workstation to produce the PNG**, or say the word
+  and I can generate the same diagram in Python (matplotlib) instead.
 
 ## Logging
 
@@ -680,3 +777,66 @@ also add the **HEALPix** option. Edits to the Reporting section of
 What I learned: JXP's own `remote_sensing` package already ships a HEALPix
 module, so the equal-area spatial aggregation he's tempted by is readily
 buildable from existing code rather than from scratch.
+
+### 2026-06-19 (Cleaning up #1: bumped to v0.2, added a figure, end-to-end review)
+
+Per Cleaning-up task #1:
+- **Version → 0.2.** Bumped the design doc from 0.1 to 0.2, updated the Date to
+  2026-06-19, and recorded the **versioning convention** in the header (minor
+  bump for substantive changes, e.g. 0.2→0.3; extra decimal for small edits,
+  e.g. 0.2.1; update Date on every bump).
+- **Figure added.** Added **Figure 1** — an end-to-end dataflow **Mermaid**
+  diagram — in a new *Architecture overview* subsection of the Preamble
+  (Argo + PACE → matchup → BING fit → SQLite/artifacts → reporting). Renders on
+  GitHub and on readthedocs via the mermaid extension.
+- **End-to-end read.** Read the whole doc. It is internally consistent except for
+  one dangling forward reference: the Analysis "Comparison & metrics" subsection
+  cites "the later *Metrics* section," but **no Validation or Metrics sections
+  exist** (no tasks were run for them). Recorded this, plus a minor Preamble
+  copyedit and two further figure suggestions (a single-matchup science
+  schematic; a storage/architecture diagram), in the **Cleaning up → Q&A**
+  section of `design_prompts.md`.
+- **Questions for JXP** (in Cleaning-up Q&A): whether to write the Validation &
+  Metrics sections or defer them (and soften the forward refs); whether to add
+  the suggested Figure 2 placeholder; and the scope/location of the upcoming
+  coding plan (separate `docs/design/PAB_coding_plan.md`? whole-package vs
+  section-by-section?).
+
+Noted for next step: JXP says a **coding plan** is next.
+
+### 2026-06-19 (Cleaning up #2: folded responses, wrote Metrics into Analysis, added Figures 2 & 3)
+
+Per Cleaning-up task #2, read JXP's Q&A responses and edited the design doc
+(bumped 0.2 → **0.3**, date 2026-06-19):
+
+- **Validation removed.** Per JXP, dropped the notion of a Validation section.
+  (There was in fact no Validation mention in the doc to remove — only the
+  prompts skeleton had it.)
+- **Metrics folded into Analysis (no separate section).** Per JXP, kept metrics
+  in the Analysis layer and rewrote the "Comparison & metrics" subsection to
+  *define* them inline — median satellite/float `bbp` ratio (Bisson's 0.77–1.66),
+  Spearman rank correlation, log-space bias & RMS/MAD scatter (with 1:1 and
+  median-ratio lines à la `figs_biomass.fig_giop_vs_bnw_colored`), per-fit
+  reduced χ², and BING-vs-NASA-L2-IOP stats; all stratified by region/season/
+  `Rrs`-variability. Removed the dangling "later *Metrics* section" forward ref.
+- **Preamble copyedit.** "PAB a Python package" → "PAB, a Python package".
+- **Figure 2 (real, data-backed).** Wrote `docs/scripts/fig_example_fit.py`,
+  which loads a real `papers/biomass` fit NPZ (float 6903823/profile 387) and
+  renders `docs/figures/fig_example_fit.png` (58 KB): PACE `Rrs`+BING fit+σ and
+  retrieved `a_nw`/`b_b,nw` with 5–95% envelopes. Ran it and verified the output.
+  Embedded as Figure 2 in the Analysis section. The float `bbp(z)`/MLD and PACE
+  pixel-neighborhood panels were not added (need raw Argo NetCDF + granule) —
+  flagged in Q&A.
+- **Figure 3 (MATLAB script).** Wrote `docs/scripts/fig_architecture.m` (storage
+  & reporting architecture) as requested. **MATLAB/Octave is not installed in
+  this environment**, so I could not render `fig_architecture.png`; the doc
+  references it (Figure 3) with a note, and I asked JXP to run the script (or
+  approve a Python version) in the Q&A.
+
+Coding-plan direction recorded for next step: a **separate document** covering
+the **whole package** with a **recommended development staging**.
+
+What I learned: the biomass fit NPZs are self-contained (wave, Rrs, varRrs,
+chains, reconstructed Rrs±σ, and a/bb with lo/hi envelopes), so a real example
+fit figure can be produced with no extra data; the depth profile and pixel
+neighborhood are the only parts that need the raw Argo/PACE sources.
