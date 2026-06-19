@@ -76,6 +76,12 @@ Guidelines for the design document which will be named IOPtics_design.md and wil
 1. Read this doc.  Execute the 1st task in the Analysis section below
 2. Read this doc.  Execute the 2nd task in the Analysis section below
 
+### Reporting
+
+1. Read this doc.  Execute the 1st task in the Reporting section below
+2. Read this doc.  Execute the 2nd task in the Reporting section below
+3. Read this doc.  Execute the 3rd task in the Reporting section below
+
 ## Data
 
 We will be using two primary datasets in this Repository: BGC-Argo and PACE (Ocean Color Imager) data.  Do also provide hooks to include other in-situ datasets and satellite data in the future.
@@ -241,9 +247,84 @@ Open questions for JXP, raised by Claude while drafting the Analysis section
 
 ## Reporting
 
-A big part of PBA will be to provide the community quick-look views of the matchup results.  These should be accessible via a web interface.  
+A major component -- possibly the most important --  of PBA will be to provide the community quick-look yet comprehensive views of the matchup results.  These should be accessible via a web interface.  We should also provide a way to download the data for further analysis.  Both the summary statistics and the fits.
+
+Here are a few items to scope out:
+
+- Exposing the results via readthedocs.io
+- Interactive figures using Bokeh
+- Tables of the summary statistics
+- Reports that describe the matchup results in detail
 
 If you think there are additional items the community would like to see and/or access, please add them to the Reporting section of the design document.
+
+### Tasks
+
+1. Please examine the context files.  Generate a plan for the Reporting methods.  Write the plan in the Reporting section of the design document.  If you have any questions, write them in the Q&A section below. Log your work.
+
+2. Read my answers to the questions in the Q&A section below and make any necessary edits to the Reporting section of the design document.  Log your work in the Logs section below.  If you have any additional questions, write them in the Q&A section below.  
+
+3. Read this doc.  Read my answers to the questions in the Q&A section below and make any necessary edits to the Reporting section of the design document.  Log your work in the Logs section below.  If you have any additional questions, write them in the Q&A section below.  
+
+### Q&A
+
+Open questions for JXP, raised by Claude while drafting the Reporting section
+(2026-06-19). Answers will be folded into `docs/design/PAB_design.md`.
+
+1. **Static vs. server-backed interactivity.** Is a fully **static** site
+   (standalone Bokeh embedded in readthedocs, no running server) sufficient, or
+   do you want richer server-driven interactivity (a Bokeh-server / Panel app,
+   live DB queries) — which would need a hosted service beyond readthedocs?
+
+   _A: Static is sufficient for now.  If it becomes very popular, we can consider a server-driven interactivity.
+
+2. **Downloadable products (carried over from Analysis Q6).** Which should PAB
+   expose for download: (a) summary-statistics tables (CSV/Parquet) — assumed
+   yes; (b) the SQLite database file itself; (c) the raw per-matchup MCMC chains
+   (NPZ); (d) the per-matchup figures? Any you'd exclude?
+
+   _A:_ We will provide (a), (c) and (d)
+
+3. **Citable data release.** Do you want periodic **Zenodo** snapshots (DOI,
+   pinned to a `pab_version`) in addition to the living readthedocs site, or is
+   readthedocs the only intended channel for now?
+
+   _A:_ Yes, we will provide a Zenodo snapshot.
+
+4. **Hosting for bulk fit artifacts.** For the downloadable chains/figures (too
+   large for git), is an **`us-west-2` S3 bucket** the intended store, or do you
+   prefer another host (Zenodo-only, institutional server, etc.)?
+
+   _A:_ Yes, but we will use the Nautilus `s3` storage maintained by NSF.  Add this to the report.
+
+5. **Build cadence / audience.** Should the readthedocs site rebuild
+   automatically on each pipeline run (always-current), or as curated, tagged
+   releases? And who is the primary audience — collaborators, or the broader
+   public ocean-color community (affects how much explanatory framing to include)?
+
+   _A:_ For now we will build it as a manual pipeline run.  We may then migrate to a more automated build.  The primary audience is the ocean color community, i.e. scientists.
+
+6. **Per-matchup pages at scale.** At ~10⁴ matchups, generating one `.rst` page
+   per matchup is a lot of pages. Do you want a page **per matchup**, or
+   per-float/per-region aggregate pages with the individual fits shown inline /
+   on demand?
+
+   _A:_ We do not want one `.rst` page per matchup.  And the per-float would be nearly as "expensive".  We will need to find a way to aggregate the results.
+
+---
+
+Follow-up questions from Claude (2026-06-19), after folding the above answers:
+
+7. **Aggregation approach (re: Q6).** My proposed scheme is: a *small fixed set*
+   of aggregate `.rst` pages (landing + binned-by-region/season/`bbp`/`Rrs`-
+   variability) plus **one interactive, searchable/filterable matchup table and
+   the interactive scatter/map**, where per-matchup detail (figure + values) is
+   fetched **on demand** by ID from the object store via hover/click — so no
+   per-matchup or per-float pages are rendered. Does this match what you have in
+   mind, or do you have a preferred aggregation scheme (e.g. specific bins,
+   gridded/HEALPix spatial cells, or a different granularity)?
+
+   _A:_ Yes, let's try your idea for now, although I am tempted to try the HEALPix option too.  Add this to the report.
 
 ## Logging
 
@@ -506,3 +587,96 @@ From the two new items:
 
 No new open questions (the one remaining topic — full community-facing product
 set — is carried to the Reporting section).
+
+### 2026-06-19 (Reporting #1: wrote the Reporting section of the design document)
+
+Per Reporting task #1, wrote a **Reporting** section into
+`docs/design/PAB_design.md`, drawing on the Reporting scope (web interface;
+downloadable summary stats + fits; readthedocs.io; Bokeh interactive figures;
+summary tables; detailed reports) and the materials produced by the Analysis
+layer (SQLite store + per-matchup fit artifacts, `pab_version`-stamped).
+
+The section defines four product tiers: (1) a **static readthedocs site** with
+`.rst` generated programmatically from the SQLite DB + fit artifacts (landing/
+summary page, per-matchup quick-look pages, sortable stat tables, methods pages);
+(2) **interactive Bokeh figures** embedded as *standalone* HTML/JSON so they work
+on static hosting (matchup map, satellite-vs-float and BING-vs-NASA `bbp`
+scatter, linked filtering; WebGL/Datashader for ~10⁴–10⁵ points; a server/Panel
+app flagged as an optional separate deployment); (3) **downloads** in two tiers —
+summary stats as CSV/Parquet + the SQLite file, and fits (NPZ chains + figures)
+from an external us-west-2 S3 store with a download manifest; (4) a **Zenodo**
+citable release pinned to `pab_version`. Also suggested extra community items: a
+searchable matchup index, per-float/per-region pages linking out to PACE/Argo
+dashboards, reproducibility hooks, a coverage/QC dashboard, and a STAC-like
+metadata/API. Added an architecture/build note (reporting module reads DB +
+artifact store, renders via Sphinx, incremental, driven off `pab_version`,
+static-first).
+
+Key design point captured: **readthedocs serves static content**, so Bokeh must
+be embedded standalone (server-driven interactivity = a separate hosted app).
+
+Per JXP's standing preference (memory), used no interactive prompts; recorded **6
+open questions** in the **Reporting → Q&A** of `design_prompts.md` — static vs
+server-backed interactivity; which products to expose for download (the
+carried-over Analysis Q6); Zenodo release y/n; hosting for bulk artifacts (S3?);
+build cadence + audience; and per-matchup vs aggregate pages at ~10⁴ scale —
+each with an `_A:_` placeholder, awaiting answers.
+
+### 2026-06-19 (Reporting #2: folded answers into the Reporting section)
+
+Per Reporting task #2, read JXP's six answers and revised the Reporting section
+of `docs/design/PAB_design.md`:
+
+- **Static-first (Q1).** Firmed the site as fully static (standalone Bokeh on
+  readthedocs); a server-backed Bokeh/Panel app is deferred unless usage grows.
+- **Downloads (Q2).** Exposed products are (a) summary-stat tables (CSV/Parquet),
+  (c) per-matchup MCMC chains (NPZ), and (d) per-matchup figures — **not** the
+  raw SQLite DB file. Updated the downloads tier accordingly.
+- **Zenodo (Q3).** Kept the citable-release tier; snapshot = summary-table export
+  + fit-artifact manifest, pinned to `pab_version`.
+- **Object store (Q4).** Bulk chains/figures hosted on **NSF/Nautilus
+  S3-compatible storage** (National Research Platform), not AWS; noted compute is
+  AWS us-west-2 while distribution artifacts go to Nautilus S3, with URLs in the
+  manifest.
+- **Cadence/audience (Q5).** Manual pipeline-run build for now (may automate
+  later); audience = ocean-color scientists, so framing emphasizes methods and
+  quantitative comparison.
+- **No page explosion (Q6).** Removed all per-matchup pages and per-float pages.
+  The site is now a small fixed set of **aggregate** pages (landing + binned
+  views + methods); **per-matchup detail is reached on demand** via the
+  interactive Bokeh map/scatter and a searchable matchup table (hover shows
+  values, click links to the figure/artifacts by ID in the object store). The
+  per-matchup metadata is exported once from the DB into a compact table the
+  figures load.
+
+Posed one follow-up question (Q7) in the **Reporting → Q&A** to confirm the
+aggregation scheme (small fixed aggregate pages + interactive table/figures +
+on-demand detail; possible region/season/HEALPix binning). Awaiting JXP's answer.
+
+What I learned: JXP's "no per-matchup/per-float pages" constraint reshapes the
+reporting design from a page-per-object site to an **aggregate + interactive +
+on-demand-artifact** model — the database feeds compact tables that drive
+client-side Bokeh, and the heavy artifacts live on Nautilus S3, keeping the
+static readthedocs build small regardless of matchup count.
+
+### 2026-06-19 (Reporting #3: confirmed aggregation scheme; added HEALPix option)
+
+Per Reporting task #3, read JXP's answer to the follow-up Q7. He confirmed the
+proposed aggregation scheme (small fixed set of aggregate pages + interactive
+searchable table/scatter/map + on-demand per-matchup detail by ID) and asked to
+also add the **HEALPix** option. Edits to the Reporting section of
+`docs/design/PAB_design.md`:
+
+- Added a **spatial aggregation via HEALPix (to try)** bullet under the aggregate
+  result pages: matchups binned into HEALPix equal-area cells, per-cell stats
+  (median `bbp`, float ratio, counts) driving a map + compact per-cell table;
+  resolution-tunable and scales independently of matchup count. Noted it can
+  reuse the existing **`remote_sensing.healpix`** tooling (`rs_healpix`,
+  `combine`, `utils`). Flat region/season binning stays the default; HEALPix is
+  an alternative to evaluate alongside it.
+- Updated the Reporting Q&A note to record that all Reporting questions
+  (including Q7) are answered and folded in; no open Reporting questions remain.
+
+What I learned: JXP's own `remote_sensing` package already ships a HEALPix
+module, so the equal-area spatial aggregation he's tempted by is readily
+buildable from existing code rather than from scratch.

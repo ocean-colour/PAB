@@ -498,5 +498,123 @@ questions are recorded in the **Analysis → Q&A** section of
 
 ---
 
-*This document is under active development; the Validation, Metrics, and
-Reporting sections will be added in subsequent revisions.*
+## Reporting
+
+Reporting is, by JXP's framing, **possibly the most important component of PAB**:
+giving the community **quick-look yet comprehensive** views of the matchup
+results through a **web interface**, plus the ability to **download both the
+summary statistics and the fits** for further analysis. The analysis layer has
+already produced the raw materials — the SQLite store of extracted values and
+the per-matchup fit artifacts (chains + ~100 KB figure), each stamped with a
+`pab_version`. Reporting turns those into navigable, citable products.
+
+### Products
+
+1. **Static site on readthedocs.io (`.rst` → Sphinx).** The primary channel, and
+   **fully static** (sufficient for now; a server-backed app is deferred unless
+   usage grows — see *Architecture & build*). PAB **generates `.rst`
+   programmatically** from the SQLite database and fit artifacts (a templated
+   reporting module). A key constraint (per JXP): **PAB does *not* render one
+   page per matchup** — at ~10⁴ matchups that page explosion is unwanted, and
+   even per-float pages would be nearly as costly. Instead the site is a small,
+   fixed set of **aggregate** pages, with individual-matchup detail reached
+   **on demand** via the interactive figures (see tier 2) rather than
+   pre-rendered. Content:
+   - a **landing / summary page** (what PAB is, dataset coverage, counts, the
+     headline satellite-vs-float `bbp` comparison and key metrics);
+   - **aggregate result pages** — population and binned views (by region, season,
+     `bbp` magnitude, `Rrs` variability) with summary plots and **sortable
+     statistics tables**, not per-object pages;
+   - **spatial aggregation via HEALPix (to try).** In addition to the
+     region/season bins, PAB will trial **HEALPix** equal-area spatial cells:
+     matchups are binned into HEALPix pixels and the per-cell statistics
+     (median `bbp`, ratio vs float, counts, …) drive a map and a compact
+     per-cell table. This gives a resolution-tunable, equal-area aggregation
+     that scales independently of matchup count, and can reuse the existing
+     **`remote_sensing.healpix`** tooling (`rs_healpix`, `combine`, `utils`).
+     The flat region/season binning (above) is the default for now; HEALPix is
+     an alternative aggregation to evaluate alongside it;
+   - **methods / algorithm pages** describing the pipeline and citing the BING
+     and Bisson references.
+2. **Interactive figures (Bokeh) — the route to per-matchup detail.** Embedded in
+   the site as **standalone Bokeh** HTML/JSON (`bokeh.embed`) so they work on
+   static readthedocs hosting without a live server. These carry the per-matchup
+   information that is deliberately *not* given its own page:
+   - a **map** of matchup locations and **satellite-vs-float `bbp`** /
+     **BING-vs-NASA-L2-IOP** scatter, colored by metric, with **hover** showing
+     each matchup's key values (IOPs + uncertainties, float context, distance/
+     Δtime, `pab_version`) and **click/tap** linking to that matchup's figure and
+     downloadable artifacts in the object store (by ID) — so detail is fetched
+     on demand instead of rendered into thousands of pages;
+   - 1:1 / median-ratio guides and linked filtering by region, season, float,
+     and `Rrs` spatial variability.
+   The per-matchup metadata for hover/lookup is exported once from the database
+   into a compact table (e.g. CSV/JSON/ColumnDataSource) the figures load. At
+   ~10⁴–10⁵ points, large scatter/maps use WebGL (`output_backend="webgl"`) or
+   server-side rasterization (Datashader) to stay responsive.
+3. **Downloads.** The three product types JXP wants exposed (the raw SQLite
+   database file is *not* a published download), all linked from the site:
+   - **(a) Summary-statistics tables** — the extracted-value tables exported
+     from SQLite to **CSV/Parquet**, for easy reuse in pandas.
+   - **(c) Per-matchup MCMC chains (NPZ)** — the full posteriors.
+   - **(d) Per-matchup figures** (~100 KB each).
+   The bulky (c)/(d) artifacts are served from an **object store** (below), not
+   git, keyed by `pab_version` and matchup ID. A **download manifest** (table of
+   IDs → URLs + checksums) ties downloads back to the database rows.
+4. **Citable data release (Zenodo).** Periodic versioned snapshots — the
+   summary-table export plus a manifest of the fit artifacts — published to
+   **Zenodo** for a DOI, pinned to a `pab_version`. readthedocs carries the
+   living view; Zenodo carries the frozen, citable record.
+
+**Object store for bulk artifacts: NSF/Nautilus S3.** The downloadable chains
+and figures (too large for git) are hosted on the **Nautilus S3-compatible
+object storage** maintained by NSF (the National Research Platform), not on AWS.
+Note this means compute runs in-region on AWS `us-west-2` (Data section) while
+*distribution* artifacts are pushed to Nautilus S3; the reporting build writes
+artifacts there and records their URLs in the manifest.
+
+### Additional items the community would likely want
+
+- **Searchable/filterable matchup index** — a single interactive, queryable
+  table (by float WMO, date, region, quality) whose rows link to the matchup's
+  figure/artifacts in the object store, **in lieu of** per-matchup pages.
+- **Region (and optionally season) aggregate pages** with links out to the
+  source **PACE granule** (OB.DAAC) and **BGC-Argo float dashboard** (e.g.
+  argopy's `.dashboard()` / Euro-Argo fleet-monitoring URL). Per-float *pages*
+  are avoided (too many); per-float *filtering* is provided in the interactive
+  table/figures instead.
+- **Reproducibility hooks** — record the inputs, `pab_version`, and package
+  versions, and note that any figure is regenerable from the stored chains;
+  ideally a one-line "how to reproduce this fit" snippet (keyed by matchup ID).
+- **Quality/coverage dashboard** — counts and maps of attempted vs. successful
+  fits, flagged spectra, and convergence QC, so users can judge completeness.
+- **Machine-readable metadata / API** — a STAC-like JSON index or a small query
+  endpoint so others can programmatically discover matchups (longer-term).
+
+### Architecture & build
+
+The reporting module reads the **SQLite DB** (numbers) and the **fit artifact
+store** (chains/figures on Nautilus S3), renders the fixed set of aggregate
+`.rst` pages + embedded standalone Bokeh via Sphinx, and publishes to
+readthedocs; tagged snapshots go to Zenodo. The build is **driven off
+`pab_version`** so a site always reflects a known analysis version.
+
+- **Cadence:** for now the site is produced by a **manual pipeline run**, with
+  possible migration to an automated (CI-triggered) build later.
+- **Audience:** the **ocean-color science community**, so framing is pitched at
+  domain scientists — emphasize methods, IOPs/uncertainties, and quantitative
+  comparison rather than introductory explanation.
+- **Hosting model:** **fully static** (no server to operate); a server-backed
+  interactive app (Bokeh-server/Panel with live DB queries) is deferred and
+  would only be considered if the site becomes heavily used.
+
+### Q&A
+
+JXP's answers to the Reporting questions have been folded into this section
+(static-first; downloads = summary tables + chains + figures, not the raw DB;
+Zenodo snapshots; Nautilus/NSF S3 for bulk artifacts; manual build for a
+science audience; no per-matchup or per-float pages — aggregate + on-demand
+instead; the proposed aggregation scheme confirmed, with **HEALPix** spatial
+binning to be trialled alongside the flat region/season bins). No open Reporting
+questions remain; any further questions would be recorded in the
+**Reporting → Q&A** section of `claude_prompts/design_prompts.md`.
