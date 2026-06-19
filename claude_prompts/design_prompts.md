@@ -86,6 +86,7 @@ Guidelines for the design document which will be named IOPtics_design.md and wil
 
 1. Read this doc.  Execute the 1st task in the Cleaning up section below
 2. Read this doc.  Execute the 2nd task in the Cleaning up section below
+3. Read this doc.  Execute the 3rd task in the Cleaning up section below
 
 ## Data
 
@@ -344,6 +345,8 @@ Follow-up questions from Claude (2026-06-19), after folding the above answers:
 
 2. Read my responses in the Q&A section below and make any necessary edits to the design document.  Log your work in the Logs section below.  If you have any additional questions, write them in the Q&A section below.  
 
+3. Read my comments on Figure 3.  Create it with Python and add it to the design document.  Log your work in the Logs section below.  If you have any additional questions, write them in the Q&A section below.  
+
 ### Q&A
 
 Suggestions & questions from Claude after an end-to-end read (2026-06-19), having
@@ -422,6 +425,8 @@ Follow-up from Claude (Cleaning up #2, 2026-06-19):
   is not yet rendered (the design doc references it and notes this). **Please run
   the script in MATLAB on your workstation to produce the PNG**, or say the word
   and I can generate the same diagram in Python (matplotlib) instead.
+
+I am only using Python.  Generate tihs with Python not MATLAB.
 
 ## Logging
 
@@ -840,3 +845,21 @@ What I learned: the biomass fit NPZs are self-contained (wave, Rrs, varRrs,
 chains, reconstructed Rrs±σ, and a/bb with lo/hi envelopes), so a real example
 fit figure can be produced with no extra data; the depth profile and pixel
 neighborhood are the only parts that need the raw Argo/PACE sources.
+
+### 2026-06-19 (Cleaning up #3: generated Figure 3 in Python)
+
+Per Cleaning-up task #3 and JXP's Q&A comment ("I am only using Python. Generate
+this with Python not MATLAB"):
+
+- Wrote `docs/scripts/fig_architecture.py` (matplotlib) and ran it to produce
+  `docs/figures/fig_architecture.png` (46 KB) — the storage & reporting
+  architecture diagram (BING fits → SQLite DB + Nautilus/NSF S3 → Zenodo
+  snapshot; reporting layer reads both). Verified the rendered output.
+- **Deleted** the earlier MATLAB script `docs/scripts/fig_architecture.m`.
+- Updated the Figure 3 caption in the design doc to point at the Python script
+  and removed the "MATLAB not available / not rendered" note.
+- Bumped the design doc **0.3 → 0.3.1** (small change).
+- Saved a memory: **JXP uses Python only — never MATLAB for PAB.**
+
+Both design-doc figures (Fig 2 example fit, Fig 3 architecture) are now real,
+Python-generated PNGs under `docs/figures/`, scripted under `docs/scripts/`.
