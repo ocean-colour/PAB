@@ -1,6 +1,6 @@
 # PAB Coding Plan
 
-**Version:** 0.1
+**Version:** 0.1.1
 **Date:** 2026-06-19
 **Authors:** JXP and Claude
 
@@ -84,22 +84,31 @@ pab/
 
 ## 3. Cross-cutting concerns (apply to every stage)
 
-- **Testing.** `pytest`. Prefer small, committed fixtures (a trimmed Argo
-  profile, a tiny synthetic PACE granule, a stored example BING fit) and mock
-  cloud/network calls so the suite runs offline and in CI. Unit tests for
-  scientific functions (MLD, de-spike, flag decode, metrics) check known values.
+- **Testing.** `pytest`. Commit small fixtures — a trimmed BGC-Argo profile, a
+  **small real PACE granule subset**, and a stored example BING fit — so the
+  suite runs offline and in CI. **The PACE cloud-access layer is mocked in
+  tests** (the granule fixture is read locally; no network/S3 in the suite). Unit
+  tests for scientific functions (MLD, de-spike, flag decode, metrics) check
+  known values.
 - **Docs.** Google-style docstrings on every public function; a Sphinx site
   under `docs/` (the same `docs/` that already holds `design/`, `scripts/`,
   `figures/`). Each stage adds/updates a docs page. The reporting site
   (community-facing, Stage 7) is a distinct Sphinx target.
 - **Provenance/versioning.** `pab.config` exposes `pab_version` and captures
   package versions; the DB stores them per fit.
+- **Database.** **SQLite** is the backend (per the design). The default access
+  layer is the Python standard-library **`sqlite3`** module (no extra
+  dependency); a heavier ORM (e.g. SQLAlchemy) is not adopted now but the thin
+  `pab.db.store` API keeps that option open.
 - **Standards/tooling.** Type hints where helpful; `ruff`/`black`-style
-  formatting; `requirements.txt` is the single source of dependencies (add
-  `bing`, `ocpy`, `remote_sensing`, `gsw`, `bokeh`, and HEALPix tooling as the
-  stages that need them land).
-- **CI.** Run the test suite (and a docs build) on each push (e.g. GitHub
-  Actions) — see Q&A.
+  formatting. `requirements.txt` is the **single source of dependencies**
+  (Python **≥ 3.12**). Install sources differ by package: most deps are on
+  **PyPI**; **`bing`** is being packaged for PyPI (use it once published);
+  **`remote_sensing`** is installed from **GitHub**; **`ocpy`** likewise from
+  GitHub/local checkout. Add `gsw`, `bokeh`, and HEALPix tooling as the stages
+  that need them land.
+- **CI.** **GitHub Actions** runs the `pytest` suite **and** a docs build on
+  every push.
 
 ## 4. Development stages
 
@@ -181,8 +190,13 @@ are ordered so each builds on the last; the database (Stage 1) is the backbone.
   (via `remote_sensing.healpix`) alongside region/season bins; exports
   (CSV/Parquet, NPZ); **Nautilus/NSF S3** upload + download manifest; **Zenodo**
   snapshot packaging.
-- **Deliverables:** `pab.report.{rst,interactive,aggregate,publish}`; the
-  readthedocs reporting target.
+- **External services (stubbed for now).** Credentials/endpoints for Nautilus/NSF
+  S3 and Zenodo are available, but this stage **implements the publish interfaces
+  against stubs/local mocks** and defers wiring real uploads until later — so the
+  reporting build runs end-to-end (writing artifacts/manifests locally) without
+  live external calls. Activation is a later, config-gated switch.
+- **Deliverables:** `pab.report.{rst,interactive,aggregate,publish}` (publish
+  backends stubbed); the readthedocs reporting target.
 - **Tests:** rst renders; Bokeh embed produced; aggregation bins correct
   (HEALPix cell assignment on known coords); manifest IDs↔URLs consistent.
 - **Docs:** reporting/build page; how to publish a release.

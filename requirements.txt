@@ -13,3 +13,12 @@ IPython
 pytest
 argopy
 earthaccess
+gsw
+bokeh
+healpy
+
+# Special-source packages (not added above to keep `pip install -r` from
+# failing). Install separately for now:
+#   bing            -- being packaged for PyPI; until then install from source
+#   remote_sensing  -- pip install git+https://github.com/<owner>/remote_sensing
+#   ocpy            -- pip install git+https://github.com/<owner>/ocpy  (or local checkout)

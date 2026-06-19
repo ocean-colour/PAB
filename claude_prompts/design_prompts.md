@@ -91,6 +91,7 @@ Guidelines for the design document which will be named IOPtics_design.md and wil
 ### Coding Plan
 
 1. Read this doc.  Execute the 1st task in the Coding Plan section below
+2. Read this doc.  Execute the 2nd task in the Coding Plan section below
 
 ## Data
 
@@ -945,3 +946,30 @@ in the Coding-Plan Q&A (test fixtures vs mocking + committing a small PACE
 granule; sqlite3 vs SQLAlchemy vs pandas; CI = GitHub Actions?; when to schedule
 Nautilus S3 / Zenodo; confirm Python ≥3.12 + dependency policy) with `_A:_`
 placeholders, awaiting answers before refining the plan.
+
+### 2026-06-19 (Coding Plan #2: folded Q&A answers into the coding plan)
+
+Per Coding-Plan task #2, read JXP's five answers and edited
+`docs/design/PAB_coding_plan.md` (bumped 0.1 → **0.1.1**):
+
+- **Testing.** Commit a **small real PACE granule subset** as a fixture and
+  **mock the PACE cloud-access layer** in tests (granule read locally; no
+  network/S3 in the suite).
+- **Database access.** Added a Database bullet: SQLite via the stdlib **`sqlite3`**
+  module as the default access layer (no extra dep); ORM deferred but the thin
+  `pab.db.store` API keeps it optional.
+- **CI.** Stated **GitHub Actions** runs pytest + a docs build on every push.
+- **Stage 7 external services.** Noted Nautilus/NSF S3 and Zenodo credentials are
+  available but the publish interfaces are **implemented against stubs/local
+  mocks** now, with real uploads deferred behind a config-gated switch.
+- **Dependencies.** Confirmed Python **≥ 3.12** and `requirements.txt` as the
+  single source; recorded install sources — most deps PyPI; **`bing`** being
+  packaged for PyPI; **`remote_sensing`** and **`ocpy`** from GitHub/local. Per
+  JXP's "you can add those for now," updated `requirements.txt`: added `gsw`,
+  `bokeh`, `healpy`, and a commented block documenting the three special-source
+  packages (so `pip install -r` doesn't fail on not-yet-published/GitHub-only
+  packages).
+
+No new open questions. What I learned: `bing` will be pip-installable soon while
+`remote_sensing`/`ocpy` remain GitHub installs, so PAB's dependency story is
+mixed-source — captured in both the plan and `requirements.txt`.
