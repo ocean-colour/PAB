@@ -28,13 +28,14 @@ Examine the following files that may help generating the design:
 
 ## Prompts
 
-### Stage 0
+### Stages
 
 1. Read this doc. Execute the 1st task in the Stage 0 section below.
+2. Read this doc. Execute the 1st task in the Stage 1 section below.
 
-### Stage 1
+3. Read this doc. Execute the 1st task in the Stage 2 section below.
+4. Read this doc. Execute the 2nd task in the Stage 2 section below.
 
-1. Read this doc. Execute the 1st task in the Stage 1 section below.
 
 ## Stage 0
 
@@ -47,6 +48,14 @@ Examine the following files that may help generating the design:
 ## Stage 1
 
 1.  Read the context files. Proceed with the coding.  Begin with Stage 1.  If you have any questions, write them in the Q&A section below.  Log your work in the Logs section below.
+
+## Stage 2
+
+1.  Read the context files, especially the design document and the coding plan. Proceed with Stage 2.  If you have any questions, write them in the Q&A section below.  Log your work in the Logs section below.
+
+2.  I should have requested from the start that you also create an Implemntation file to record your work.  Please do so now.  Call it `docs/design/PAB_implementation.md`.
+
+### Q&A
 
 ## Logging
 
@@ -154,3 +163,57 @@ same namespacing while keeping the table schema stable as model pairs are added
 (new pair → new rows, not `ALTER TABLE`). `Store.fit_results_wide()` reconstructs
 the wide, namespaced view for export/reporting — so the design's column naming is
 honoured at the export boundary. No questions for Q&A.
+
+### 2026-06-20 (Stage 2 — BGC-Argo ingestion & mixed-layer summary)
+
+Executed **Stage 2**: the BGC-Argo side of the pipeline — argopy fetch, QC
+filtering, MLD, de-spike, mixed-layer averages, DB persistence, and Q&A plots.
+The science functions operate on plain arrays so they unit-test offline (no
+network); the argopy fetch is a thin, lazily-imported seam.
+
+Delivered (`pab.argo`):
+
+- **`mld.py`** — de Boyer Montégut density-threshold MLD. `mixed_layer_depth()`
+  is pure NumPy (shallowest depth below a 10 m reference where `SIG0` exceeds
+  the reference value by 0.03 kg m⁻³; handles unsorted/NaN/too-shallow/
+  unresolved → `nan`). `density_sigma0()` derives `SIG0` from T/S via TEOS-10
+  (`gsw`, matching argopy's `teos10`), and `mixed_layer_depth_from_ts()` chains
+  them. Constants `MLD_METHOD="deBoyerMontegut_0.03"`, `REF_DEPTH`, `THRESHOLD`.
+- **`summary.py`** — `moving_median()`/`despike()` (3-pt moving median),
+  `iqr_inlier_mask()` (log-space 1.5×IQR outlier removal), `mixed_layer_mean()`
+  (mean/std/n within `pres <= mld`, optional de-spike + IQR), `summarize_profile()`
+  (assembles the `mld_summary` fields), and `persist_summary()` (idempotent
+  upsert of `floats`/`profiles`/`mld_summary`, stamps `created`+`pab_version`,
+  returns `profile_id`).
+- **`fetch.py`** — `build_fetcher()` (BGC `DataFetcher`, `ds='bgc'`,
+  `src='erddap'`), `fetch_region/float/profile()`, `filter_quality()` (QC +
+  research mode), and `iter_profiles()` (point2profile → per-profile metadata +
+  arrays, the bridge to `summarize_profile`). argopy imported lazily.
+- **`qa.py`** — `plot_profile()`/`save_profile_qa()`: `BBP700`/`CHLA` vs
+  pressure with the de-spiked overlay and MLD line.
+
+Tests (`pab/tests/test_argo.py`, 17 new — **43 pass overall**): MLD known-answer
++ custom-threshold + nan edge cases + unsorted/NaN handling + T/S-path
+agreement; de-spike removes an injected spike but preserves a real step;
+even-window rejected; mixed-layer mean correctness + nan-MLD; IQR drops an
+outlier; `summarize_profile` end-to-end (MLD=40, spike de-spiked, correct
+n_points/means); lon/lat-required guard; **summary row persisted** + idempotent
+re-persist; `build_fetcher` returns a BGC `DataFetcher` (no network); Q&A PNG
+produced.
+
+Docs: `docs/argo_ingestion.rst` (pipeline overview, MLD method note citing de
+Boyer Montégut 2004 + Bisson 2019, de-spike/average note, autodoc of all four
+modules), added to the index toctree.
+
+Verification: `pytest` → 43 passed; `ruff check`/`format` → clean;
+`sphinx-build -W` → build succeeded.
+
+Notes / learnings: argopy exposes no public MLD accessor — its internal
+`utils/optical_modeling.py::MLD_Func` confirms the same gsw `SA_from_SP →
+CT_from_t → sigma0` recipe and the 0.03 kg m⁻³ threshold I implemented. I kept
+the matplotlib backend unforced (qa.py imports `pyplot` without `use("Agg")`):
+Matplotlib auto-selects Agg when headless, so importing `pab.argo` no longer
+drags a forced backend onto interactive users. The fetch wrappers are
+network-bound and therefore not exercised in the offline suite (only construction
+is tested) — they'll get real coverage once Stage 4 wires a tiny fixture. No
+questions for Q&A.

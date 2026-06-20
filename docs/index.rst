@@ -21,6 +21,7 @@ site is a separate Sphinx target produced in Stage 7.
    :caption: Package
 
    db_schema
+   argo_ingestion
 
 .. toctree::
    :maxdepth: 1
