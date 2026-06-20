@@ -32,6 +32,10 @@ Examine the following files that may help generating the design:
 
 1. Read this doc. Execute the 1st task in the Stage 0 section below.
 
+### Stage 1
+
+1. Read this doc. Execute the 1st task in the Stage 1 section below.
+
 ## Stage 0
 
 ### Tasks
@@ -39,6 +43,10 @@ Examine the following files that may help generating the design:
 1.  Read the context files. Proceed with the coding.  Begin with Stage 0.  If you have any questions, write them in the Q&A section below.  Log your work in the Logs section below.
 
 ### Q&A
+
+## Stage 1
+
+1.  Read the context files. Proceed with the coding.  Begin with Stage 1.  If you have any questions, write them in the Q&A section below.  Log your work in the Logs section below.
 
 ## Logging
 
@@ -100,3 +108,49 @@ Stage 0 smoke test deliberately do **not** require them (CI installs only the
 package + pytest; the docs build mocks them). Python here is 3.14.5 (plan
 floor is 3.12). No questions for the Q&A section — Stage 0 scope was
 unambiguous.
+
+### 2026-06-19 (Stage 1 — database layer / the storage seam)
+
+Executed **Stage 1** of the coding plan: the SQLite schema, a thin access API,
+CSV/Parquet export, and a forward-migration mechanism — all on the standard
+library `sqlite3` (no ORM), per the plan.
+
+Delivered:
+
+- **`pab/db/schema.py`** — DDL for the four entity groups the design calls for:
+  `floats`/`profiles`, `mld_summary` (1:1 per-profile mixed-layer summary),
+  the matchup index (`granules`, `matchups`, `matchup_pixels`), and the
+  namespaced fit results (`fits` + `fit_results`). Plus `SCHEMA_VERSION`
+  (stored in `PRAGMA user_version`), an `UPSERT_KEYS` map (natural key per
+  table), `create_all()`, `get_version()`, and a `migrate()` that initialises a
+  fresh DB and steps an existing one forward through a `MIGRATIONS` registry
+  (empty for v1; mechanism in place).
+- **`pab/db/store.py`** — a `Store` class (context-manager, `Store.open(path)`
+  with `foreign_keys=ON` and `Row` factory) exposing `insert`, idempotent
+  `upsert`/`upsert_many` (INSERT … ON CONFLICT keyed by the table's natural
+  key), `query`/`query_df`/`table_df`/`count`, `export_csv` (stdlib `csv`, no
+  pandas dep) and `export_parquet` (pandas/pyarrow), and `fit_results_wide()`
+  which pivots the long `fit_results` rows into wide namespaced columns
+  (`BING_ExpBPow_bbp` + `_lo`/`_hi`). `pab/db/__init__.py` re-exports
+  `Store` and `schema`.
+- **Tests** (`pab/tests/test_db.py`, 13 new): schema version + table presence,
+  create idempotency, insert→query round trip, idempotent upsert keyed by
+  matchup ID (no duplicate; updates in place), non-key updates, missing-key /
+  unknown-table errors, FK enforcement, UNIQUE enforcement, CSV export equals
+  query, Parquet round trip, and the long→wide fit-results pivot. **26 tests
+  pass overall.**
+- **Docs** — `docs/db_schema.rst` (schema reference: every table with columns,
+  units, keys, FKs; the migrations approach; autodoc of `Store`/`schema`),
+  added to the index toctree. `requirements.txt` gains `pyarrow` for Parquet.
+
+Verification: `pytest` → 26 passed; `ruff check`/`format` → clean;
+`sphinx-build -W` → build succeeded.
+
+Design decision worth recording: I stored the fit IOP results in a **long**
+`fit_results` table (`fit_id, quantity, value, value_lo, value_hi, unit`) rather
+than wide per-model columns. The design describes namespaced columns
+(`BING_ExpBPow_bbp`, a parallel `BING_GIOP_bbp`, etc.); long format delivers the
+same namespacing while keeping the table schema stable as model pairs are added
+(new pair → new rows, not `ALTER TABLE`). `Store.fit_results_wide()` reconstructs
+the wide, namespaced view for export/reporting — so the design's column naming is
+honoured at the export boundary. No questions for Q&A.

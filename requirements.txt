@@ -1,6 +1,7 @@
 numpy
 scipy
 pandas
+pyarrow
 matplotlib
 seaborn
 xarray==2025.10.1

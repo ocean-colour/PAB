@@ -18,6 +18,12 @@ site is a separate Sphinx target produced in Stage 7.
 
 .. toctree::
    :maxdepth: 1
+   :caption: Package
+
+   db_schema
+
+.. toctree::
+   :maxdepth: 1
    :caption: Design
 
    design/PAB_design
