@@ -1,0 +1,35 @@
+numpy
+scipy
+pandas
+pyarrow
+matplotlib
+seaborn
+xarray
+h5netcdf
+netCDF4
+cftime
+scikit-learn
+tqdm
+IPython
+pytest
+argopy
+earthaccess
+gsw
+bokeh
+healpy
+
+# Docs (Sphinx site under docs/)
+sphinx
+sphinx-rtd-theme
+myst-parser
+myst-nb          # render the docs/nb/ notebooks into the site
+sphinxcontrib-mermaid
+
+# Lint / format
+ruff
+
+# Special-source packages (not added above to keep `pip install -r` from
+# failing). Install separately for now:
+#   bing            -- being packaged for PyPI; until then install from source
+#   remote_sensing  -- pip install git+https://github.com/<owner>/remote_sensing
+#   ocpy            -- pip install git+https://github.com/<owner>/ocpy  (or local checkout)
