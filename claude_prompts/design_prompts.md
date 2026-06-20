@@ -75,6 +75,7 @@ Guidelines for the design document which will be named IOPtics_design.md and wil
 
 1. Read this doc.  Execute the 1st task in the Analysis section below
 2. Read this doc.  Execute the 2nd task in the Analysis section below
+3. Read this doc.  Execute the 3rd task in the Analysis section below
 
 ### Reporting
 
@@ -209,6 +210,14 @@ Analysis will primarily proceed following the approach currently in the bing/pap
     - The design doc should note that we will not use any of the code in the bing/papers/biomass/Analysis folder.  We will take what we need from those modules and generate entirely new ones in the PAB package.
 
 Please make any necessary edits to the Analysis section of the design document.  Log your work in the Logs section below.  If you have any additional questions, write them in the Q&A section below.  
+
+3. I wish to add to the PACE assessment:
+
+   - Assess the quality of the granule, i.e. percentage of flagged pixels, dominant reason for flaggin etc.
+   - Provide a small PNG of the scene for visual inspection.  Mark the Argo location and the pixels actually extracted and analyzed
+   - Update the design docs to reflect these additions
+   - If you have any additional questions, write them in the Q&A section below. 
+   - Log your work in the Logs section below.
 
 ### Q&A
 
@@ -973,3 +982,26 @@ Per Coding-Plan task #2, read JXP's five answers and edited
 No new open questions. What I learned: `bing` will be pip-installable soon while
 `remote_sensing`/`ocpy` remain GitHub installs, so PAB's dependency story is
 mixed-source — captured in both the plan and `requirements.txt`.
+
+### 2026-06-19 (Analysis #3: added PACE granule-QC assessment + scene quick-look)
+
+Per Analysis task #3, added two PACE-assessment capabilities to the design docs:
+
+- **Granule quality assessment.** In `PAB_design.md` (Data → Processing → PACE
+  AOP) added a bullet: per matchup, compute and record the **percent of flagged
+  pixels** (granule + local box), a **per-flag breakdown with the dominant flag**
+  (e.g. CLDICE/HIGLINT/ATMFAIL), and the valid-pixel count near the float —
+  stored as granule-QC fields in the SQLite DB so the population can be
+  screened/stratified by scene quality (decoded from the `l2_flags`
+  `flag_meanings`/`flag_masks`).
+- **Scene quick-look PNG.** In `PAB_design.md` (Analysis → Figures & tables)
+  added a per-matchup **scene thumbnail** of the PACE granule neighborhood with
+  the **Argo location marked**, the **extracted/analyzed pixels highlighted**,
+  and the flag mask shown — making the granule-QC visually checkable (~100 KB).
+- **Coding plan kept in sync.** Updated `PAB_coding_plan.md`: Stage 3 now
+  includes the granule-quality assessment (`pab.pace.quality`, flag-tally tests);
+  Stage 6 now includes the scene quick-look figure (`pab.plotting.scene`, scene
+  tests).
+
+Version bumps: `PAB_design.md` 0.3.1 → **0.4** (new described capabilities);
+`PAB_coding_plan.md` 0.1.1 → **0.1.2** (small additions). No new open questions.

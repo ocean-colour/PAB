@@ -1,0 +1,12 @@
+# Ruff configuration for PAB. Black-compatible defaults; light rule set.
+target-version = "py312"
+line-length = 88
+
+[lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = [
+    "E501",  # line length is handled by the formatter
+]
+
+[lint.per-file-ignores]
+"pab/tests/*" = ["F401"]  # imports inside test bodies are intentional

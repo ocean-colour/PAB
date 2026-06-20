@@ -17,6 +17,15 @@ gsw
 bokeh
 healpy
 
+# Docs (Sphinx site under docs/)
+sphinx
+sphinx-rtd-theme
+myst-parser
+sphinxcontrib-mermaid
+
+# Lint / format
+ruff
+
 # Special-source packages (not added above to keep `pip install -r` from
 # failing). Install separately for now:
 #   bing            -- being packaged for PyPI; until then install from source

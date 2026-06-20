@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package and test deps
+        run: |
+          python -m pip install --upgrade pip
+          # Stage 0 only needs the package itself and pytest; the heavy
+          # scientific deps (bing/ocpy/remote_sensing) are not required for
+          # the import smoke test and are installed by later stages as needed.
+          python -m pip install -e .
+          python -m pip install pytest
+      - name: Run tests
+        run: pytest
+
+  docs:
+    name: docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install docs deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install sphinx sphinx-rtd-theme myst-parser sphinxcontrib-mermaid
+      - name: Build HTML docs
+        run: sphinx-build -b html -W --keep-going docs docs/_build/html

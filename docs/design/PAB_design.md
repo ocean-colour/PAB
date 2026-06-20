@@ -1,6 +1,6 @@
 # PACE and BGC-Argo Matchup Analysis Design Document
 
-**Version:** 0.3.1
+**Version:** 0.4
 **Date:** 2026-06-19
 **Authors:** JXP and Claude
 
@@ -191,6 +191,15 @@ The processing each dataset receives before matchup/analysis:
   `remote_sensing.netcdf.oc` (`create_quality_mask`, `quality_control`,
   `extract_rrs_spectrum`, `find_rrs_variables`) provide an alternative,
   sensor-agnostic path for the `l2_flags` masking and spectrum extraction.
+- **Granule quality assessment.** For each matchup, PAB computes and records a
+  quality summary of the relevant PACE scene: the **percentage of flagged
+  pixels** (over the granule and over the local matchup box), a **breakdown by
+  flag** with the **dominant flagging reason** (e.g. `CLDICE`, `HIGLINT`,
+  `ATMFAIL`), and the count of valid pixels available near the float. These
+  granule-QC fields are stored in the SQLite database alongside the matchup
+  record so the population can be screened/stratified by scene quality and so
+  poor scenes are flagged in reporting. (Decoding the `l2_flags` bitmask via its
+  `flag_meanings`/`flag_masks` attributes gives the per-flag tallies.)
 
 ### Matchup, use, and analysis
 
@@ -482,6 +491,13 @@ the reporting layer.
   ~1 MB the biomass scripts produce (e.g. lower DPI, rasterized panels, PNG
   optimization / `optimize=True`, or trimmed panel count), which keeps the full
   set tractable to expose.
+- **Scene quick-look (per matchup)** — a small PNG of the PACE scene around the
+  float for visual inspection: a true-color or single-band/`Rrs` thumbnail of the
+  granule neighborhood, with the **Argo float location marked** and the **pixels
+  actually extracted and analyzed** highlighted, plus the `l2_flags` mask shown
+  (e.g. flagged pixels greyed). This makes the granule-quality assessment (above)
+  visually checkable — one can see at a glance whether the float sat under cloud/
+  glint and which pixels fed the fit. Kept small (~100 KB) like the fit figure.
 - **Population figures** — satellite-vs-float `bbp` scatter, BING-vs-NASA-L2-IOP
   comparison, maps, and metric distributions (new PAB plotting code).
 - **Tables** — the extracted scalar results (posterior medians/intervals for the

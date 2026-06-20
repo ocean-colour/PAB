@@ -1,6 +1,6 @@
 # PAB Coding Plan
 
-**Version:** 0.1.1
+**Version:** 0.1.2
 **Date:** 2026-06-19
 **Authors:** JXP and Claude
 
@@ -147,12 +147,17 @@ are ordered so each builds on the last; the database (Stage 1) is the backbone.
 - **Scope:** granule discovery (`earthaccess` + `remote_sensing.download.
   earthaccess.build_granule_table`); cloud lazy-S3 open (in-region) behind an
   access abstraction; nearest-**unflagged**-pixel `Rrs(λ)`/`Rrs_unc` extraction;
-  `l2_flags` mask; PACE noise vector (`ocpy.satellites.pace.gen_noise_vector`).
-  L1B hook left as a documented stub.
-- **Deliverables:** `pab.pace.{discover,cloud,extract,flags}` (+ `l1b` stub).
+  `l2_flags` mask; PACE noise vector (`ocpy.satellites.pace.gen_noise_vector`);
+  **granule quality assessment** — percent flagged pixels (granule + local box),
+  per-flag breakdown with the dominant flag, valid-pixel count near the float —
+  written to the DB as granule-QC fields. L1B hook left as a documented stub.
+- **Deliverables:** `pab.pace.{discover,cloud,extract,flags,quality}`
+  (+ `l1b` stub).
 - **Tests:** nearest-pixel selection and flag decoding on a tiny granule fixture;
-  mask matches expected bits; cloud layer mocked.
-- **Docs:** PACE access page (cloud-first; (a) lazy-S3 vs (b) OPeNDAP trade-off).
+  mask matches expected bits; flag-tally / percent-flagged on a known fixture;
+  cloud layer mocked.
+- **Docs:** PACE access page (cloud-first; (a) lazy-S3 vs (b) OPeNDAP trade-off;
+  granule-QC fields).
 
 ### Stage 4 — Matchup engine
 - **Scope:** space+time matching (small pixel box, time window), select the ~10
@@ -177,11 +182,16 @@ are ordered so each builds on the last; the database (Stage 1) is the backbone.
 ### Stage 6 — Metrics & figures
 - **Scope:** comparison metrics (median sat/float ratio, Spearman ρ, log-space
   bias & RMS/MAD scatter, per-fit reduced χ²; BING vs NASA-L2-IOP); per-matchup
-  figure (~100 KB target) and population figures (scatter/map/distributions).
-- **Deliverables:** `pab.metrics.compare`, `pab.plotting.{fit_fig,population}`.
+  fit figure (~100 KB target); **per-matchup scene quick-look PNG** (granule
+  neighborhood thumbnail with the Argo location marked, the extracted/analyzed
+  pixels highlighted, and the `l2_flags` mask shown); population figures
+  (scatter/map/distributions).
+- **Deliverables:** `pab.metrics.compare`, `pab.plotting.{fit_fig,scene,population}`.
 - **Tests:** metric values on constructed arrays (known ratio/correlation/bias);
-  figure files produced and within size budget (smoke).
-- **Docs:** metrics definitions page (mirrors the design Analysis subsection).
+  fit + scene figure files produced and within size budget (smoke); scene marks
+  the correct float pixel on a fixture.
+- **Docs:** metrics definitions page (mirrors the design Analysis subsection);
+  scene quick-look description.
 
 ### Stage 7 — Reporting
 - **Scope:** programmatic `.rst` generation; small fixed set of **aggregate**
