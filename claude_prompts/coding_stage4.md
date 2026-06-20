@@ -124,8 +124,14 @@ PACE-era cycles (on/after 2024-03-05). Reproducible: NumPy `default_rng(20260620
 
 ## Stage 4
 
+### Tasks
+
 1. Read this doc and the context files. Implement Stage 4 (below). If you have
-   questions, write them in the Q&A section. Log your work in the Logs section.
+   questions, write them in the Q&A section.  If you have any requests, write them in the Requests section.  Log your work in the Logs section.
+
+### Q&A
+
+### Requests
 
 ## Stage 4 — Matchup engine
 
