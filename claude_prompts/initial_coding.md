@@ -45,6 +45,8 @@ Examine the following files that may help generating the design:
 10. Read this doc. Execute the 4th task in the Pull Request section.
 11. Read this doc. Execute the 5th task in the Pull Request section.
 
+12. Read this doc. Execute the 1st task in the Stage 4 section below.
+
 ## Stage 0
 
 ### Tasks
@@ -72,6 +74,14 @@ Examine the following files that may help generating the design:
 1.  Read the context files, especially the design document and the coding plan. Proceed with Stage 2.  If you have any questions, write them in the Q&A section below.  Log your work in the Logs section below.
 
 ### Q&A
+
+## Stage 4
+
+1. Based on this doc, generate a prompt doc for Stage 4.  Please:
+
+    - Call it `claude_prompts/coding_stage4.md`.
+    - Log your work
+
 
 ## Pull Request
 
@@ -574,3 +584,30 @@ it untouched).
 Final verification: `pytest` → **60 passed**; `ruff check`/`format` → clean;
 `sphinx-build -W` → succeeded (exit 0). Everything is in sync and ready for you
 to finish the PR.
+
+### 2026-06-20 (Generated the Stage 4 prompt doc)
+
+Per Stage 4 task #1, wrote `claude_prompts/coding_stage4.md` — a standalone
+prompt doc for the **matchup engine**, modeled on the structure of
+`initial_coding.md` (Goals / Claude / Context / Prompts / Stage section with
+Tasks + Q&A / Logging / Logs). It expanded the one-line stub already in the repo.
+
+The doc captures, for Stage 4:
+- **Scope** distilled from the coding plan §4 and the design's *Matchup* section
+  + Bisson recipe (5×5 unflagged pixel box, configurable `dtime` window, nearest
+  valid granule selection, deterministic `matchup_id`, idempotent/resumable
+  writes).
+- **The seams it builds on** — `pab.db` (`matchups`/`matchup_pixels` already in
+  the schema), `pab.pace.cloud.open_granule` (with the `opener=` test seam),
+  `pab.pace.extract.*`, `pab.pace.discover` (granule candidates), and `pab.argo`
+  (qualifying profiles).
+- **Deliverables / offline tests / docs page / notebook**, plus an explicit
+  **"definition of done"** encoding the Stage 0–3 standard (green
+  pytest/ruff/`sphinx-build -W`; Google docstrings; provenance stamps; update
+  `PAB_implementation.md` + bump its version; per-stage notebook rendered via
+  myst-nb; log the work).
+- Working agreements restated (git handled by the user; Python only; reuse not
+  reinvent).
+
+No code or package files changed; this task only authored the prompt doc.
+Logged here per the instruction. No questions for Q&A.
