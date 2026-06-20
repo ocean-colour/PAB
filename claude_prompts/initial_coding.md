@@ -39,6 +39,8 @@ Examine the following files that may help generating the design:
 
 6. Read this doc. Execute the 1st task in the Stage 3 section below.
 
+7. Read this doc. Execute the 1st task in the Pull Request section.
+
 ## Stage 0
 
 ### Tasks
@@ -66,6 +68,14 @@ Examine the following files that may help generating the design:
 1.  Read the context files, especially the design document and the coding plan. Proceed with Stage 2.  If you have any questions, write them in the Q&A section below.  Log your work in the Logs section below.
 
 ### Q&A
+
+## Pull Request
+
+1. I have decided to issue a PR at this point.  And I have.  It is this one:
+
+https://github.com/ocean-colour/PAB/pull/1
+
+Please review it and transmit your comments onto GitHub.
 
 ## Logging
 
@@ -326,3 +336,38 @@ cloud read trivially mockable, which is how the suite stays offline. I reused
 ocpy's L2 dataset shape (dims `x,y,wl`; lat/lon coords; separate `l2_flags`) and
 implemented `flags` self-contained (mirroring `remote_sensing` bit positions) so
 the QC is testable without importing remote_sensing. No questions for Q&A.
+
+### 2026-06-20 (Reviewed PR #1 and posted comments to GitHub)
+
+Per the Pull Request task, reviewed
+[PR #1](https://github.com/ocean-colour/PAB/pull/1) ("Design, planning and
+Stages 0–3"; design → main) and posted a single COMMENT review with a summary
+body + 5 inline comments
+([review](https://github.com/ocean-colour/PAB/pull/1#pullrequestreview-4537885027)).
+Confirmed the PR head (`origin/design` @ "stage 3") matches local HEAD, so the
+review covers all Stage 0–3 code as merged.
+
+Findings (verified before posting, not taken on faith):
+
+- **Correctness bug** — `pace.discover.persist_granules` drops `cloud_cover`.
+  Read the actual `remote_sensing.build_granule_table` source: it emits columns
+  `id` / `polygon` / `time` / **`CC`** / `url`, but the mapping looks for
+  `cloud_cover`, so it's always stored `NULL`. The unit test passed only because
+  it used a hand-built frame with the wrong column names — the test encodes the
+  same wrong assumption as the code. (This is the headline finding; I'll fix it
+  in Stage 4 when matchup wires real discovery, unless asked sooner.)
+- **Robustness** — `cloud._read_datatree` opens the same file object 3× (risky
+  on the untested lazy-S3 path) and omits `FLH` that `open_local` includes
+  (backend-dependent canonical ds).
+- **CI/packaging** — the `test` job `pip install -e .` pulls the whole heavy
+  stack (healpy/bokeh/argopy/…) though the offline suite needs far less
+  (suggest `extras_require[test]`); only `xarray` is pinned exactly while the
+  rest float; `setup.py` keeps deprecated `use_2to3`/`pytest-runner`/
+  `tests_require` (setuptools 81 here ignores them).
+- **Minor** — notebooks committed with embedded outputs; the `export_csv`
+  table-vs-SQL `' ' in arg` heuristic; `MIGRATIONS` typed with `"callable"`.
+
+Verified locally: `setuptools.__version__ == 81.0.0`; read `build_granule_table`
+to confirm its real column names. The review was framed as COMMENT (not
+REQUEST_CHANGES) since these are my own commits and the user is driving merge
+decisions. No questions for Q&A.
