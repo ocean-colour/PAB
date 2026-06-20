@@ -1,17 +1,31 @@
 # Read the Docs build configuration for the PAB documentation site.
+# https://docs.readthedocs.io/en/stable/config-file/v2.html
+#
+# The community-facing reporting site (Stage 7) will be a separate Sphinx
+# target; this config builds the developer/methods docs under docs/.
 version: 2
 
 build:
   os: ubuntu-24.04
   tools:
-    python: "3.12"
+    python: "3.12"          # matches the project floor (>= 3.12)
 
 sphinx:
   configuration: docs/conf.py
+  # CI already builds with -W (warnings-as-errors) on every push, so that is
+  # the strict gate; keep the RTD build lenient so a stray environment warning
+  # never blocks publication of the docs.
   fail_on_warning: false
 
 python:
   install:
+    # Install the package itself (so `from pab import pab_version` works in
+    # conf.py and autodoc can import the modules). This pulls requirements.txt
+    # via install_requires. The heavy scientific deps (bing/ocpy/argopy/…) are
+    # mocked in docs/conf.py (autodoc_mock_imports), so autodoc does not need
+    # them imported — but installing the full set keeps versions consistent.
     - method: pip
       path: .
+    # requirements.txt is the single source of dependencies and carries the
+    # Sphinx stack (sphinx, sphinx-rtd-theme, myst-parser, sphinxcontrib-mermaid).
     - requirements: requirements.txt

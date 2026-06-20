@@ -41,6 +41,9 @@ Examine the following files that may help generating the design:
 
 7. Read this doc. Execute the 1st task in the Pull Request section.
 8. Read this doc. Execute the 2nd task in the Pull Request section.
+9. Read this doc. Execute the 3rd task in the Pull Request section.
+
+11. 
 
 ## Stage 0
 
@@ -138,6 +141,18 @@ without the removed keys). Implementation record bumped to **v0.2.1**.
   `extras_require={'test': [...]}` to `setup.py` and have CI use
   `pip install -e .[test]`. Left as-is for now to avoid changing the packaging
   model mid-PR.
+- **Read the Docs slug (task #3):** I assumed the RTD project slug is `pab`, so
+  the README badge/link point at `https://pab.readthedocs.io`. If you register a
+  different slug on readthedocs.io, update the two URLs in `README.md`
+  accordingly. Also: RTD installs the *full* `requirements.txt`; since only
+  numpy/xarray/matplotlib are imported at module load (everything heavier is
+  mocked in `conf.py`), I can switch RTD to a lean `docs/requirements.txt` if
+  you'd prefer faster/sturdier builds — left on the single-source path for now
+  per your instruction to keep deps in `requirements.txt`.
+
+## Cleaning up
+
+1. Do a pass on all of the code, design documents and documentation to ensure that it is all in sync.  I will then finish the PR.
 
 ## Logging
 
@@ -464,3 +479,29 @@ line → 60 passed; discovery note updated). Verification: `pytest` → 60 passe
 
 Two items raised in Q&A for JXP (non-blocking): whether to strip notebook
 outputs, and whether to formalize the lean CI deps as an `extras_require[test]`.
+
+### 2026-06-20 (Read the Docs setup)
+
+Per Pull Request task #3 (expose on readthedocs.io), finalized the RTD build
+files. The core file — `.readthedocs.yaml` — already existed from Stage 0; I
+verified and hardened it, and made the docs discoverable:
+
+- **`.readthedocs.yaml`** — RTD v2 config: `build` ubuntu-24.04 / Python 3.12;
+  `sphinx.configuration: docs/conf.py`; installs the package (`path: .`) +
+  `requirements.txt`. Documented why `fail_on_warning: false` (CI's `-W` is the
+  strict gate; keep RTD lenient so a stray env warning doesn't block
+  publication) and that the heavy sci deps are mocked in `conf.py`.
+- **`README.md`** — added CI + Read the Docs badges and a **Documentation**
+  section linking to `https://pab.readthedocs.io` plus local build instructions.
+
+No new dependencies were required: the Sphinx stack (sphinx, sphinx-rtd-theme,
+myst-parser, sphinxcontrib-mermaid) has been in `requirements.txt` since Stage 0,
+so nothing was added.
+
+What I checked: across `pab/` the only **module-load** third-party imports are
+`numpy`, `xarray`, and `matplotlib`; every heavier package (gsw, argopy,
+earthaccess, ocpy, bing, remote_sensing, healpy, bokeh) is imported lazily or
+listed in `autodoc_mock_imports` — so the RTD autodoc build is light and robust.
+`sphinx-build -W` → build succeeded (exit 0). The user does the readthedocs.io
+plumbing. Q&A: flagged the assumed RTD slug (`pab`) and offered a lean
+`docs/requirements.txt` alternative if they want faster RTD builds.
