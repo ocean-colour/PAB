@@ -44,11 +44,13 @@ Building the docs
 
 ::
 
-    pip install sphinx sphinx-rtd-theme myst-parser sphinxcontrib-mermaid
+    pip install sphinx sphinx-rtd-theme myst-parser myst-nb sphinxcontrib-mermaid
     sphinx-build -b html docs docs/_build/html
 
 Open ``docs/_build/html/index.html``. The build mocks the heavy optional
-imports (``bing``, ``ocpy``, …) so it succeeds without them.
+imports (``bing``, ``ocpy``, …) so it succeeds without them. The notebooks in
+``docs/nb/`` are rendered via ``myst-nb`` using their committed outputs
+(``nb_execution_mode = "off"`` — they are not re-executed at build time).
 
 Code style
 ----------

@@ -22,6 +22,7 @@ healpy
 sphinx
 sphinx-rtd-theme
 myst-parser
+myst-nb          # render the docs/nb/ notebooks into the site
 sphinxcontrib-mermaid
 
 # Lint / format

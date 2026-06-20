@@ -42,8 +42,8 @@ Examine the following files that may help generating the design:
 7. Read this doc. Execute the 1st task in the Pull Request section.
 8. Read this doc. Execute the 2nd task in the Pull Request section.
 9. Read this doc. Execute the 3rd task in the Pull Request section.
-
-11. 
+10. Read this doc. Execute the 4th task in the Pull Request section.
+11. Read this doc. Execute the 5th task in the Pull Request section.
 
 ## Stage 0
 
@@ -92,6 +92,14 @@ Please review it and transmit your comments onto GitHub.
    - Create the files needed to build the documentation on readthedocs.io.
    - If you need to add new dependencies, please add them to the requirements.txt file.
    - I will do the plumbing on readthedocs.io.
+
+4. Nice docs.  You can see them here at https://pab.readthedocs.io/en/design/argo_ingestion.html. Please:
+
+   - Have links to the Argo notebooks from the Argo ingestion page (https://pab.readthedocs.io/en/design/argo_ingestion.html)
+
+
+5. Do a pass on all of the code, design documents and documentation to ensure that it is all in sync.  I will then finish the PR.
+
 
 ### Report
 
@@ -149,10 +157,6 @@ without the removed keys). Implementation record bumped to **v0.2.1**.
   mocked in `conf.py`), I can switch RTD to a lean `docs/requirements.txt` if
   you'd prefer faster/sturdier builds — left on the single-source path for now
   per your instruction to keep deps in `requirements.txt`.
-
-## Cleaning up
-
-1. Do a pass on all of the code, design documents and documentation to ensure that it is all in sync.  I will then finish the PR.
 
 ## Logging
 
@@ -505,3 +509,68 @@ listed in `autodoc_mock_imports` — so the RTD autodoc build is light and robus
 `sphinx-build -W` → build succeeded (exit 0). The user does the readthedocs.io
 plumbing. Q&A: flagged the assumed RTD slug (`pab`) and offered a lean
 `docs/requirements.txt` alternative if they want faster RTD builds.
+
+### 2026-06-20 (Render notebooks into the docs + link from the Argo page)
+
+Per Pull Request task #4 (link the Argo notebooks from the Argo ingestion page),
+I rendered the notebooks **into** the Sphinx/RTD site so the links resolve
+on-site rather than 404-ing (the notebooks were previously excluded from the
+build). Integrated `myst-nb`:
+
+- **`requirements.txt`** — added `myst-nb`.
+- **`docs/conf.py`** — load `myst_nb` instead of `myst_parser` (myst-nb bundles
+  it; loading both conflicts); register `.ipynb` (and `.md`) → `myst-nb`; set
+  `nb_execution_mode = "off"` so the build uses the **committed** outputs (no
+  re-execution, so the `RUN_LIVE` network cells stay dormant). Un-excluded
+  `docs/nb/` from the source, excluding only `nb/README.md` (a repo-facing
+  index, not a docs page).
+- **`docs/index.rst`** — added a *Notebooks* toctree listing all four notebooks
+  (so they get pages and no orphan warning under `-W`).
+- **`docs/argo_ingestion.rst`** — added a "Worked-example notebooks" admonition
+  near the top with `:doc:` links to ``nb/02_argo_mld_summary`` (the Argo MLD/
+  summary notebook) and ``nb/00_getting_started``.
+- **`.github/workflows/ci.yml`** — added `myst-nb` to the docs-job install line.
+- **`PAB_implementation.md`** → v0.2.2 (Notebooks note updated: now rendered via
+  myst-nb).
+
+Verified: `sphinx-build -W` → build succeeded (exit 0); the notebook HTML pages
+(`nb/00..03.html`) are generated and `argo_ingestion.html` links resolve to
+`nb/02_argo_mld_summary.html` and `nb/00_getting_started.html`; matplotlib
+outputs render from the stored cells. `pytest` → 60 passed (no code changed).
+The page the user cited (`/en/design/argo_ingestion.html`) will show the links
+on the next RTD build of the `design` branch. No questions for Q&A.
+
+### 2026-06-20 (Sync pass over code + design docs + documentation)
+
+Per Pull Request task #5, audited the whole tree for drift before the PR is
+finished. Found and fixed three real inconsistencies introduced by the recent
+PR-review and notebook-rendering edits:
+
+1. **`docs/dev_setup.rst`** — the docs-build install line omitted `myst-nb`
+   (added in task #4). Added it and a note that notebooks render from committed
+   outputs (`nb_execution_mode = "off"`).
+2. **`docs/design/PAB_implementation.md` (→ v0.2.3)** — the "Environment notes"
+   still said *"CI installs the package + pytest"*; updated to describe the
+   actual two-job CI (lean **test** job with `--no-deps` + a `-W` **docs** job).
+3. **Same doc, §5.3** — the `open_s3()` description said *"+ grouped netCDF"*;
+   updated to the current single `read_datatree()`/`xr.open_datatree` read that
+   also includes `FLH`.
+
+Checked and found **consistent** (no change needed): the coding-plan `pace`
+module list matches `pab/pace/` (`cloud/discover/extract/flags/l1b`); every
+`automodule`/`autoclass` target in the `.rst` pages resolves (the `-W` build is
+green); the implementation-doc module index and status table match the files on
+disk; no stray `TODO`/`FIXME`; the only `NotImplementedError`s are the
+intentional L1B hook and the reserved OPeNDAP backend; the Stage 4–8
+subpackages are still stubs, matching their "pending" status.
+
+**One observation (left for JXP, not edited):** `CLAUDE.md` still points to
+`claude_prompts/start_up.md` as *the* work log, but the Stage 0–3 logs live in
+`claude_prompts/initial_coding.md` (per this doc's own per-task instruction).
+Both prompt docs carry a Logs section; if you want CLAUDE.md to generalize the
+log location, say so and I'll update it (it's your instruction file, so I left
+it untouched).
+
+Final verification: `pytest` → **60 passed**; `ruff check`/`format` → clean;
+`sphinx-build -W` → succeeded (exit 0). Everything is in sync and ready for you
+to finish the PR.

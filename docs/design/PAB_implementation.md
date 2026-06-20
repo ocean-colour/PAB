@@ -1,6 +1,6 @@
 # PAB Implementation Record
 
-**Version:** 0.2.1
+**Version:** 0.2.3
 **Date:** 2026-06-20
 **Authors:** JXP and Claude
 
@@ -37,8 +37,11 @@ every bump.
 
 **Environment notes.** Workstation Python is 3.14.5 (plan floor 3.12);
 `bing`, `ocpy`, `remote_sensing`, `argopy`, `earthaccess`, `gsw`, `pandas`,
-`pyarrow` are all installed locally. CI installs the package + `pytest` and runs
-a `-W` docs build; the test suite is fully offline (no network/S3).
+`pyarrow` are all installed locally. CI runs two jobs: a **test** job that
+installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
++ pytest) and the package with `--no-deps`, and a **docs** job that builds with
+`-W`. The test suite is fully offline (no network/S3); tests touching the
+heavy/optional deps use `pytest.importorskip`.
 
 **Verification (current).** `pytest` → 60 passed; `ruff check pab` and
 `ruff format --check pab` → clean; `sphinx-build -W` → build succeeded.
@@ -237,7 +240,8 @@ The swappable backend producing a **canonical granule dataset** (dims
 `(x, y, wl)`: `Rrs`, `Rrs_unc`; 2-D `latitude`/`longitude`; `wavelength`;
 `l2_flags`). `to_granule_ds()` (attach ocpy's separate `l2_flags`), `open_local()`
 (ocpy reader, dev/debug), `open_s3()` (lazy in-region read via `earthaccess.open`
-+ grouped netCDF), and `open_granule(source, backend=, opener=)` dispatching
+→ a single `read_datatree()`/`xr.open_datatree`, including `FLH` when present),
+and `open_granule(source, backend=, opener=)` dispatching
 `auto`/`s3`/`local` (with `opendap` reserved → `NotImplementedError`). The
 `opener` parameter is the test seam that mocks the cloud.
 
@@ -298,7 +302,10 @@ path exercised in the notebook.
 - **Lint/format** — `ruff` (checks + format) clean; Google-style docstrings.
 - **Notebooks** — each stage ships an explanatory notebook in `docs/nb/`
   (per the coding plan); built and executed offline-safe so they carry outputs,
-  with any live-data section guarded behind a `RUN_LIVE` flag.
+  with any live-data section guarded behind a `RUN_LIVE` flag. They are
+  **rendered into the Sphinx/RTD site** via `myst-nb` (`nb_execution_mode =
+  "off"`, so the build uses the committed outputs) and reachable from a
+  *Notebooks* toctree and from the relevant stage pages.
 - **Units** — m / m⁻¹ / sr⁻¹ / mg m⁻³ / PSU / °C / nm / km / hours; ISO-8601
   timestamps. (Full table in `docs/db_schema.rst`.)
 

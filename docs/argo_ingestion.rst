@@ -6,6 +6,15 @@ record — the in-situ truth for the PACE matchup. The pipeline follows the
 Bisson et al. (2019) recipe (``docs/context.md`` §3) and is implemented in the
 :mod:`pab.argo` subpackage.
 
+.. admonition:: Worked-example notebooks
+   :class: tip
+
+   - :doc:`nb/02_argo_mld_summary` — MLD (de Boyer Montégut), ``BBP700``
+     de-spiking, the whole-profile summary, DB persistence, and a Q&A plot,
+     ending with an optional live ``argopy`` fetch.
+   - :doc:`nb/00_getting_started` — package basics (``pab_version``, config,
+     provenance) if you are new to PAB.
+
 Pipeline
 --------
 

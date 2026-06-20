@@ -21,26 +21,32 @@ extensions = [
     "sphinx.ext.napoleon",      # Google-style docstrings
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
-    "myst_parser",              # render Markdown (design docs)
+    # myst-nb bundles myst-parser (Markdown) and adds notebook (.ipynb) support;
+    # load it INSTEAD of myst_parser (loading both conflicts).
+    "myst_nb",
     "sphinxcontrib.mermaid",    # mermaid diagrams in the design doc
 ]
 
 templates_path = ["_templates"]
-# ``nb`` holds standalone explanatory notebooks (docs/nb/); they are runnable
-# deliverables, not yet rendered into the site (would need myst-nb/nbsphinx),
-# so exclude the directory from the Sphinx source for now.
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "PDFs", "nb"]
+# The notebooks in docs/nb/ are rendered into the site (see the Notebooks
+# toctree); only nb/README.md (a repo-facing index, not a docs page) is excluded.
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "PDFs", "nb/README.md"]
 
 # The Markdown design/reference docs are authored as standalone GitHub
 # documents with repo-relative links (e.g. ``../../pab/``); these are not
 # Sphinx cross-reference targets, so do not fail the build on them.
 suppress_warnings = ["myst.xref_missing"]
 
-# Treat both .rst and .md as sources.
+# Treat .rst, .md, and .ipynb as sources (.ipynb via myst-nb).
 source_suffix = {
     ".rst": "restructuredtext",
-    ".md": "markdown",
+    ".md": "myst-nb",
+    ".ipynb": "myst-nb",
 }
+
+# Do NOT execute notebooks at build time — use the outputs already committed
+# (some notebooks have optional live-data cells guarded by a RUN_LIVE flag).
+nb_execution_mode = "off"
 
 # Render ```mermaid fenced code blocks (in the Markdown design docs) as
 # mermaid directives via sphinxcontrib.mermaid.
