@@ -35,7 +35,7 @@ Examine the following files that may help generating the design:
 
 3. Read this doc. Execute the 1st task in the Stage 2 section below.
 4. Read this doc. Execute the 2nd task in the Stage 2 section below.
-
+5. Read this doc. Execute the 3rd task in the Stage 2 section below.
 
 ## Stage 0
 
@@ -54,6 +54,8 @@ Examine the following files that may help generating the design:
 1.  Read the context files, especially the design document and the coding plan. Proceed with Stage 2.  If you have any questions, write them in the Q&A section below.  Log your work in the Logs section below.
 
 2.  I should have requested from the start that you also create an Implemntation file to record your work.  Please do so now.  Call it `docs/design/PAB_implementation.md`.
+
+3. I have updated the coding plan to request Jupyter Notebooks to be created for each stage.  Please create them now.  Put them in `docs/nb`.
 
 ### Q&A
 
@@ -217,3 +219,49 @@ drags a forced backend onto interactive users. The fetch wrappers are
 network-bound and therefore not exercised in the offline suite (only construction
 is tested) — they'll get real coverage once Stage 4 wires a tiny fixture. No
 questions for Q&A.
+
+### 2026-06-20 (Implementation record document)
+
+Per the new Stage 2 task #2, created
+[`docs/design/PAB_implementation.md`](../docs/design/PAB_implementation.md) — a
+living **implementation record** that complements the design doc (*what/why*)
+and coding plan (*how/when*) by documenting *what was actually built*. v0.1.0
+covers Stages 0–2: a status-at-a-glance table, per-stage module/API breakdowns,
+the implementation decisions taken (e.g. the long `fit_results` table, the
+unforced matplotlib backend), test/doc coverage per stage, cross-cutting
+conventions as implemented, and a current module index. Distinct from this Logs
+section: the log is dated narrative, the implementation doc is the structured
+current-state reference, to be updated at the close of each stage. Added it to
+the docs `Design` toctree; `sphinx-build -W` stays green.
+
+### 2026-06-20 (Per-stage explanatory notebooks)
+
+Per the new Stage 2 task #3 (the coding plan now requests Jupyter notebooks per
+stage), created explanatory notebooks in `docs/nb/` for the three implemented
+stages:
+
+- **`00_getting_started.ipynb`** (Stage 0) — package import, `pab_version`,
+  config paths (`ROOT`/`DATA_DIR`), `package_versions()`, and the subpackage
+  map.
+- **`01_database_layer.ipynb`** (Stage 1) — `Store` create → upsert → query →
+  export (CSV/Parquet), idempotency, and the long→wide namespaced fit-results
+  pivot, on an in-memory DB.
+- **`02_argo_mld_summary.ipynb`** (Stage 2) — MLD (de Boyer Montégut, both the
+  pure-density and T/S paths), `BBP700` 3-pt de-spike (with plot), whole-profile
+  `summarize_profile`, DB persistence, and a `qa.plot_profile` figure; ends with
+  an **optional `RUN_LIVE`** section that pulls a real profile via argopy.
+
+Built them programmatically with `nbformat` (valid nbformat-4 JSON), then
+executed each with `jupyter nbconvert --execute --inplace` so they carry their
+outputs and are verified runnable — all three execute end-to-end **offline**
+(0 error outputs; the Stage 2 live-data cell is guarded by `RUN_LIVE = False`).
+Updated `docs/nb/README.md` (available vs planned list + re-run command) and
+recorded the notebooks in `PAB_implementation.md` (now v0.1.1).
+
+Build note: a stray `docs/nb/README.md` (a `.md` picked up by myst-parser) had
+started tripping the `-W` "not in any toctree" check, so I added `nb` to
+`exclude_patterns` in `docs/conf.py` — the notebooks are standalone runnable
+deliverables, not yet rendered into the Sphinx site (that would need
+`myst-nb`/`nbsphinx`, neither installed; rendering is an optional future step
+per the plan). `sphinx-build -W` is green again; `pytest` → 43 passed
+(no code changed). No questions for Q&A.

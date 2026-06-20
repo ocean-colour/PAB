@@ -29,6 +29,7 @@ site is a separate Sphinx target produced in Stage 7.
 
    design/PAB_design
    design/PAB_coding_plan
+   design/PAB_implementation
 
 .. toctree::
    :maxdepth: 1

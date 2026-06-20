@@ -1,7 +1,7 @@
 # PAB Coding Plan
 
-**Version:** 0.1.2
-**Date:** 2026-06-19
+**Version:** 0.1.3
+**Date:** 2026-06-20
 **Authors:** JXP and Claude
 
 **Status:** living document — updated as the package is developed.
@@ -94,6 +94,14 @@ pab/
   under `docs/` (the same `docs/` that already holds `design/`, `scripts/`,
   `figures/`). Each stage adds/updates a docs page. The reporting site
   (community-facing, Stage 7) is a distinct Sphinx target.
+- **Explanatory notebooks.** While working through the stages, create **Jupyter
+  notebooks in [`docs/nb/`](../nb/)** that describe and demonstrate any key
+  method or analysis (e.g. MLD computation, nearest-pixel extraction, a BING fit,
+  the metrics). These notebooks **may pull live data from the internet** (e.g.
+  via `argopy` / `earthaccess`) — unlike the offline test suite — so they double
+  as runnable worked examples. A notebook is a normal **per-stage deliverable**
+  whenever a stage introduces a method worth illustrating, and notebooks can be
+  rendered into the docs site (e.g. via `myst-nb`/`nbsphinx`).
 - **Provenance/versioning.** `pab.config` exposes `pab_version` and captures
   package versions; the DB stores them per fit.
 - **Database.** **SQLite** is the backend (per the design). The default access

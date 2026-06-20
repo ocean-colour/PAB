@@ -93,6 +93,7 @@ Guidelines for the design document which will be named IOPtics_design.md and wil
 
 1. Read this doc.  Execute the 1st task in the Coding Plan section below
 2. Read this doc.  Execute the 2nd task in the Coding Plan section below
+3. Read this doc.  Execute the 3rd task in the Coding Plan section below
 
 ## Data
 
@@ -455,6 +456,11 @@ Let us now use the design document to generate a coding plan.  Please do this in
     - Log your work in the Logs section below.  
 
 2. I have read the answers to the questions in the Q&A section below.  Make edits to the coding plan accordingly.  Log your work in the Logs section below.  If you have any additional questions, write them in the Q&A section below.  
+
+3. Add to the coding plan the following:
+
+    - When working through the stages, create Jupyter Notebooks to describe any key methods or analyses.  Put these in `docs/nb`.  It is ok to pull data from the internet (e.g. using `argopy`).
+    - Bump the version of the coding plan 
 
 ### Q&A
 
@@ -1005,3 +1011,15 @@ Per Analysis task #3, added two PACE-assessment capabilities to the design docs:
 
 Version bumps: `PAB_design.md` 0.3.1 → **0.4** (new described capabilities);
 `PAB_coding_plan.md` 0.1.1 → **0.1.2** (small additions). No new open questions.
+
+### 2026-06-20 (Coding Plan #3: added explanatory-notebook practice)
+
+Per Coding-Plan task #3, added an **explanatory notebooks** practice to
+`PAB_coding_plan.md` (cross-cutting Docs concern): while working through the
+stages, create Jupyter notebooks in **`docs/nb/`** that describe/demonstrate key
+methods (MLD, nearest-pixel extraction, a BING fit, metrics); these **may pull
+live data from the internet** (argopy/earthaccess), unlike the offline tests, so
+they double as runnable worked examples; a notebook is a per-stage deliverable
+whenever a stage introduces a method worth illustrating, renderable into the docs
+site (myst-nb/nbsphinx). Seeded `docs/nb/README.md` so the directory/link exists.
+Bumped the coding plan **0.1.2 → 0.1.3** (date 2026-06-20). No new open questions.

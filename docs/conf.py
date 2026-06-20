@@ -26,7 +26,10 @@ extensions = [
 ]
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "PDFs"]
+# ``nb`` holds standalone explanatory notebooks (docs/nb/); they are runnable
+# deliverables, not yet rendered into the site (would need myst-nb/nbsphinx),
+# so exclude the directory from the Sphinx source for now.
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "PDFs", "nb"]
 
 # The Markdown design/reference docs are authored as standalone GitHub
 # documents with repo-relative links (e.g. ``../../pab/``); these are not
