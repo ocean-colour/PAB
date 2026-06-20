@@ -40,6 +40,7 @@ Examine the following files that may help generating the design:
 6. Read this doc. Execute the 1st task in the Stage 3 section below.
 
 7. Read this doc. Execute the 1st task in the Pull Request section.
+8. Read this doc. Execute the 2nd task in the Pull Request section.
 
 ## Stage 0
 
@@ -76,6 +77,67 @@ Examine the following files that may help generating the design:
 https://github.com/ocean-colour/PAB/pull/1
 
 Please review it and transmit your comments onto GitHub.
+
+2. Check the comments on the PR and make any necessary edits.  And:
+
+   - If you have any additional questions, write them in the Q&A section below.
+   - Report the specific changes you made to the PR in the Report section below.
+   - Log your work in the Logs section below.
+
+3. I wish to expose this package on readthedocs.io.  Please:
+
+   - Create the files needed to build the documentation on readthedocs.io.
+   - If you need to add new dependencies, please add them to the requirements.txt file.
+   - I will do the plumbing on readthedocs.io.
+
+### Report
+
+Acted on the PR #1 review comments. Changes made (local; pending your push to
+`design`):
+
+1. **`pab/pace/discover.py` — fixed the `cloud_cover` bug.** `persist_granules`
+   now maps the *real* `remote_sensing.build_granule_table` columns
+   (`id`/`polygon`/`time`/`CC`/`url`) onto the schema, with the schema-native
+   names accepted as a fallback. Added a `_first()` helper that picks the first
+   non-`None` value (so a valid `CC == 0.0` is preserved, not dropped by an
+   `or`-chain).
+2. **`pab/tests/test_pace.py` — corrected the test.** It now uses the real
+   `build_granule_table` column names and asserts `cloud_cover` is captured
+   (including 0%), `time → time_start`, and `url → data_url`; added a second
+   test that the schema-native-column fallback path still works. (The old test
+   passed only because it shared the code's wrong column assumptions.)
+3. **`pab/pace/cloud.py` — hardened the S3 read.** Replaced the triple
+   `xr.open_dataset(fileobj, group=…)` with a single
+   `xr.open_datatree(source, engine="h5netcdf", mask_and_scale=True)` (renamed
+   `_read_datatree` → public `read_datatree`), and included `FLH`/`nflh` when
+   present so the S3 and local backends produce the same canonical dataset.
+4. **`.github/workflows/ci.yml` — lean test job.** The pytest job now installs
+   `numpy scipy pandas pyarrow xarray gsw matplotlib pytest` + `pip install -e .
+   --no-deps` instead of the full `requirements.txt`, so it no longer pulls
+   argopy/earthaccess/bokeh/healpy; optional-dep tests `importorskip` and skip.
+5. **`setup.py` — removed deprecated keys** (`use_2to3`,
+   `setup_requires=['pytest-runner']`, `tests_require`).
+6. **`pab/db/schema.py` — typing nit:** `MIGRATIONS` now typed
+   `dict[int, Callable[[sqlite3.Connection], None]]`.
+7. **xarray exact pin** — already resolved by you (unpinned in
+   `requirements.txt`); replied to the thread.
+
+Posted resolution replies on all five GitHub review threads. Verification after
+the edits: `pytest` → **60 passed**; `ruff check`/`format` → clean;
+`sphinx-build -W` → succeeded; `python setup.py --version` → `0.0.dev0` (parses
+without the removed keys). Implementation record bumped to **v0.2.1**.
+
+### Q&A
+
+- **Notebook outputs:** I left the committed notebooks with their executed
+  outputs (worked-example style). If you'd prefer them output-stripped to keep
+  diffs/repo smaller, say so and I'll strip them (or add an `nbstripout` hook).
+- **`requirements.txt` as single source vs. lean CI:** the CI test job now
+  installs an explicit lean subset rather than deriving it from
+  `requirements.txt`. If you'd rather formalize this, I can add an
+  `extras_require={'test': [...]}` to `setup.py` and have CI use
+  `pip install -e .[test]`. Left as-is for now to avoid changing the packaging
+  model mid-PR.
 
 ## Logging
 
@@ -371,3 +433,34 @@ Verified locally: `setuptools.__version__ == 81.0.0`; read `build_granule_table`
 to confirm its real column names. The review was framed as COMMENT (not
 REQUEST_CHANGES) since these are my own commits and the user is driving merge
 decisions. No questions for Q&A.
+
+### 2026-06-20 (Addressed PR #1 review comments)
+
+Per Pull Request task #2, re-read the PR #1 comment threads and made the edits.
+The user had already resolved the xarray-pin comment (unpinned `xarray` in
+`requirements.txt`, replied "modified"); I actioned the remaining five.
+
+Edits (local, pending the user's push to `design`):
+
+- **Correctness fix** — `pace.discover.persist_granules` now maps the real
+  `build_granule_table` columns (`id`/`polygon`/`time`/`CC`/`url`) → schema,
+  with schema-native fallbacks, via a `_first()` helper that preserves
+  falsy-but-valid `CC == 0.0`. Corrected `test_pace.py` to use the real column
+  names (it previously shared the bug's wrong assumption) and added a
+  fallback-path test → suite now **60 passed**.
+- **Robustness** — `pace.cloud` S3 read switched to a single
+  `xr.open_datatree(engine="h5netcdf")` (was three opens of one handle) and now
+  includes `FLH`; `_read_datatree` → public `read_datatree`.
+- **CI** — pytest job installs a lean dep set + `pip install -e . --no-deps`
+  (no more argopy/bokeh/healpy for unit tests).
+- **Packaging** — dropped deprecated `setup.py` keys (`use_2to3`,
+  `pytest-runner`, `tests_require`).
+- **Nit** — `schema.MIGRATIONS` typed with `collections.abc.Callable`.
+
+Posted resolution replies on all five GitHub review threads. Filled the doc's
+Report + Q&A sections; bumped the implementation record to v0.2.1 (verification
+line → 60 passed; discovery note updated). Verification: `pytest` → 60 passed;
+`ruff` → clean; `sphinx-build -W` → succeeded; `setup.py --version` parses.
+
+Two items raised in Q&A for JXP (non-blocking): whether to strip notebook
+outputs, and whether to formalize the lean CI deps as an `extras_require[test]`.

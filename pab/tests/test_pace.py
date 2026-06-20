@@ -152,21 +152,23 @@ def test_open_granule_unknown_backend():
 def test_persist_granules_from_table():
     import pandas as pd
 
+    # Column names match remote_sensing.build_granule_table: id / polygon /
+    # time / CC / url (NOT granule_id / cloud_cover / ...).
     table = pd.DataFrame(
         [
             {
-                "granule_id": "G1",
-                "time_start": "2024-05-01T00:00:00",
-                "footprint": "POLYGON((0 0,1 0,1 1,0 1,0 0))",
-                "cloud_cover": 5.0,
-                "data_url": "s3://b/G1.nc",
+                "id": "G1",
+                "time": "2024-05-01T00:00:00",
+                "polygon": "POLYGON((0 0,1 0,1 1,0 1,0 0))",
+                "CC": 5.0,
+                "url": "s3://b/G1.nc",
             },
             {
-                "granule_id": "G2",
-                "time_start": "2024-05-02T00:00:00",
-                "footprint": None,
-                "cloud_cover": 12.0,
-                "data_url": "s3://b/G2.nc",
+                "id": "G2",
+                "time": "2024-05-02T00:00:00",
+                "polygon": None,
+                "CC": 0.0,  # 0% cloud cover must be preserved, not dropped
+                "url": "s3://b/G2.nc",
             },
         ]
     )
@@ -176,10 +178,27 @@ def test_persist_granules_from_table():
         rows = store.query("SELECT * FROM granules ORDER BY granule_id")
         assert [r["granule_id"] for r in rows] == ["G1", "G2"]
         assert rows[0]["short_name"] == "PACE_OCI_L2_AOP"
-        assert rows[0]["cloud_cover"] == 5.0
+        assert rows[0]["cloud_cover"] == 5.0  # CC -> cloud_cover (the PR-#1 bug)
+        assert rows[1]["cloud_cover"] == 0.0  # falsy-but-valid preserved
+        assert rows[0]["time_start"] == "2024-05-01T00:00:00"  # time -> time_start
+        assert rows[0]["data_url"] == "s3://b/G1.nc"  # url -> data_url
         # idempotent re-persist
         discover.persist_granules(store, table)
         assert store.count("granules") == 2
+
+
+def test_persist_granules_accepts_schema_native_columns():
+    import pandas as pd
+
+    # A frame that already uses the schema names still works (fallback path).
+    table = pd.DataFrame(
+        [{"granule_id": "G9", "cloud_cover": 7.0, "data_url": "s3://b/G9.nc"}]
+    )
+    with Store.open(":memory:") as store:
+        discover.persist_granules(store, table)
+        row = store.query("SELECT * FROM granules")[0]
+        assert row["granule_id"] == "G9"
+        assert row["cloud_cover"] == 7.0
 
 
 # -- noise vector (ocpy) ----------------------------------------------------

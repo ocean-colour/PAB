@@ -1,6 +1,6 @@
 # PAB Implementation Record
 
-**Version:** 0.2.0
+**Version:** 0.2.1
 **Date:** 2026-06-20
 **Authors:** JXP and Claude
 
@@ -40,7 +40,7 @@ every bump.
 `pyarrow` are all installed locally. CI installs the package + `pytest` and runs
 a `-W` docs build; the test suite is fully offline (no network/S3).
 
-**Verification (current).** `pytest` → 59 passed; `ruff check pab` and
+**Verification (current).** `pytest` → 60 passed; `ruff check pab` and
 `ruff format --check pab` → clean; `sphinx-build -W` → build succeeded.
 
 ---
@@ -246,7 +246,9 @@ The swappable backend producing a **canonical granule dataset** (dims
 `search_granules()` (`earthaccess.search_data` by short name / bbox / temporal /
 cloud-cover), `granule_table()` (via
 `remote_sensing.download.earthaccess.build_granule_table`), and
-`persist_granules()` (idempotent upsert into the `granules` table).
+`persist_granules()` (idempotent upsert into the `granules` table; maps the
+real `build_granule_table` columns `id`/`polygon`/`time`/`CC`/`url` onto the
+schema, with schema-native names accepted as a fallback).
 
 ### 5.5 L1B hook (`pab/pace/l1b.py`)
 

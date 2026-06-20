@@ -28,10 +28,7 @@ if os.path.exists('requirements.txt'):
             line.strip() for line in reqs
             if line.strip() and not line.startswith('#')]
 setup_keywords['zip_safe'] = False
-setup_keywords['use_2to3'] = False
 setup_keywords['packages'] = find_packages()
-setup_keywords['setup_requires'] = ['pytest-runner']
-setup_keywords['tests_require'] = ['pytest']
 
 if os.path.isdir('bin'):
     setup_keywords['scripts'] = [fname for fname in glob.glob(os.path.join('bin', '*'))

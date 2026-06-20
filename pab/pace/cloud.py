@@ -51,35 +51,53 @@ def open_s3(url: str) -> xr.Dataset:
     """Open a PACE L2 AOP granule lazily from S3 (in-region ``us-west-2``).
 
     Uses ``earthaccess`` for temporary DAAC credentials + a file-like S3 object,
-    then reads the netCDF groups into the canonical layout. Only the requested
-    bytes transfer in-region, so a nearest-pixel read does not pull the full
-    cube. Requires running in ``us-west-2`` with an Earthdata Login configured.
+    then reads the netCDF group hierarchy into the canonical layout. Only the
+    requested bytes transfer in-region, so a nearest-pixel read does not pull the
+    full cube. Requires running in ``us-west-2`` with an Earthdata Login
+    configured.
     """
     import earthaccess
 
     fileset = earthaccess.open([url])
-    return _read_datatree(fileset[0])
+    return read_datatree(fileset[0])
 
 
-def _read_datatree(fileobj) -> xr.Dataset:
-    """Read PACE L2 netCDF groups (from any file-like) into the canonical ds."""
-    geo = xr.open_dataset(fileobj, group="geophysical_data", mask_and_scale=True)
-    nav = xr.open_dataset(fileobj, group="navigation_data")
-    sbp = xr.open_dataset(fileobj, group="sensor_band_parameters")
+def read_datatree(source) -> xr.Dataset:
+    """Read a PACE L2 granule's group hierarchy into the canonical dataset.
+
+    Reads the whole group tree in a **single open** (``xr.open_datatree``) — the
+    pattern in ``docs/context.md`` — rather than opening the source once per
+    group, which is fragile for an already-opened S3/fsspec file handle.
+
+    Args:
+        source: A path, URL, or file-like object accepted by
+            ``xr.open_datatree`` (``h5netcdf`` engine).
+
+    Returns:
+        The canonical granule dataset (includes ``FLH``/``nflh`` when present).
+    """
+    dt = xr.open_datatree(source, engine="h5netcdf", mask_and_scale=True)
+    geo = dt["geophysical_data"].ds
+    nav = dt["navigation_data"].ds
+    sbp = dt["sensor_band_parameters"].ds
     dims = ("x", "y", "wl")
-    out = xr.Dataset(
-        {
-            "Rrs": (dims, geo["Rrs"].values),
-            "Rrs_unc": (dims, geo["Rrs_unc"].values),
-            "l2_flags": (("x", "y"), geo["l2_flags"].values),
-        },
+    data_vars = {
+        "Rrs": (dims, geo["Rrs"].values),
+        "Rrs_unc": (dims, geo["Rrs_unc"].values),
+        "l2_flags": (("x", "y"), geo["l2_flags"].values),
+    }
+    # FLH is carried by the local (ocpy) reader too; include it when present so
+    # both backends yield the same canonical dataset.
+    if "nflh" in geo:
+        data_vars["FLH"] = (("x", "y"), geo["nflh"].values)
+    return xr.Dataset(
+        data_vars,
         coords={
             "latitude": (("x", "y"), nav["latitude"].values),
             "longitude": (("x", "y"), nav["longitude"].values),
             "wavelength": ("wl", sbp["wavelength_3d"].values),
         },
     )
-    return out
 
 
 def open_granule(

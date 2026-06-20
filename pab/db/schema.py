@@ -31,6 +31,7 @@ Units (recorded here for the schema-reference docs):
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 
 #: Bumped whenever the DDL changes; stored in ``PRAGMA user_version`` so a
 #: database file knows which schema it was created under (see ``migrate``).
@@ -221,7 +222,7 @@ def get_version(conn: sqlite3.Connection) -> int:
 # Forward migrations: map a *starting* version to a callable that upgrades the
 # database by one step. Stage 1 ships only the initial schema, so this is
 # empty; the mechanism is in place for later DDL changes.
-MIGRATIONS: dict[int, callable] = {}
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {}
 
 
 def migrate(conn: sqlite3.Connection) -> int:

@@ -71,9 +71,12 @@ def granule_table(results, *, fix_antimeridian: bool = False):
 def persist_granules(store, table, *, short_name: str = DEFAULT_SHORT_NAME) -> int:
     """Upsert a granule table into the ``granules`` DB table (idempotent).
 
-    Maps the discovery table's columns onto the schema (``granule_id``,
-    ``short_name``, ``time_start``/``time_end``, ``footprint``, ``cloud_cover``,
-    ``data_url``); missing columns are stored as ``None``.
+    Maps the discovery table's columns onto the schema. The column names follow
+    ``remote_sensing.download.earthaccess.build_granule_table``: ``id``,
+    ``polygon`` (a shapely geometry → stored as WKT), ``time`` (granule mid-time
+    → ``time_start``), ``CC`` (cloud cover), and ``url``. Each key also accepts
+    the schema-native name as a fallback so a frame that already uses
+    ``granule_id``/``cloud_cover``/… works too; absent columns store ``None``.
 
     Args:
         store: An open :class:`pab.db.store.Store`.
@@ -85,19 +88,28 @@ def persist_granules(store, table, *, short_name: str = DEFAULT_SHORT_NAME) -> i
     """
     rows: list[dict[str, Any]] = []
     for rec in table.to_dict(orient="records"):
-        gid = rec.get("granule_id") or rec.get("id") or rec.get("concept_id")
+        gid = _first(rec, "granule_id", "id", "concept_id")
         rows.append(
             {
                 "granule_id": str(gid),
                 "short_name": short_name,
-                "time_start": _maybe_str(rec.get("time_start") or rec.get("time")),
-                "time_end": _maybe_str(rec.get("time_end")),
-                "footprint": _maybe_str(rec.get("footprint") or rec.get("polygon")),
-                "cloud_cover": rec.get("cloud_cover"),
-                "data_url": rec.get("data_url") or rec.get("url"),
+                "time_start": _maybe_str(_first(rec, "time_start", "time")),
+                "time_end": _maybe_str(_first(rec, "time_end")),
+                "footprint": _maybe_str(_first(rec, "footprint", "polygon")),
+                "cloud_cover": _first(rec, "cloud_cover", "CC"),
+                "data_url": _first(rec, "data_url", "url"),
             }
         )
     return store.upsert_many("granules", rows)
+
+
+def _first(rec: dict, *keys: str):
+    """Return the first non-``None`` value among ``keys`` in ``rec`` (else None)."""
+    for key in keys:
+        val = rec.get(key)
+        if val is not None:
+            return val
+    return None
 
 
 def _maybe_str(value):
