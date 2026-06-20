@@ -25,12 +25,15 @@ jupyter nbconvert --to notebook --execute --inplace docs/nb/<name>.ipynb
 - [`02_argo_mld_summary.ipynb`](02_argo_mld_summary.ipynb) — MLD (de Boyer
   Montégut), `BBP700` de-spike, whole-profile summary, DB persistence, and a
   Q&A plot; ends with an **optional `RUN_LIVE`** argopy fetch (Stage 2).
+- [`03_pace_access.ipynb`](03_pace_access.ipynb) — `l2_flags` decoding, the
+  canonical granule dataset, and nearest-unflagged-pixel `Rrs` extraction on a
+  synthetic granule; ends with an **optional `RUN_LIVE`** earthaccess granule
+  discovery (Stage 3).
 
 The offline sections run without network; the Stage 2 live section is guarded by
 a `RUN_LIVE = False` flag (flip to `True` to pull a real profile from argopy).
 
 ## Planned (added as the relevant stage lands)
 
-- PACE granule discovery + nearest-pixel Rrs extraction (Stage 3)
 - A worked BING fit on an extracted spectrum (Stage 5)
 - Matchup metrics & figures (Stage 6)

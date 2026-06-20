@@ -1,6 +1,6 @@
 # PAB Implementation Record
 
-**Version:** 0.1.1
+**Version:** 0.2.0
 **Date:** 2026-06-20
 **Authors:** JXP and Claude
 
@@ -27,7 +27,7 @@ every bump.
 | 0 | Scaffolding & infrastructure | ✅ done | `pab`, `pab.config`, subpackage stubs, CI, docs skeleton |
 | 1 | Database layer | ✅ done | `pab.db.schema`, `pab.db.store` |
 | 2 | BGC-Argo ingestion & mixed-layer summary | ✅ done | `pab.argo.{mld,summary,fetch,qa}` |
-| 3 | PACE access & spectrum extraction | ⬜ pending | `pab.pace.*` (stub) |
+| 3 | PACE access & spectrum extraction | ✅ done | `pab.pace.{flags,extract,cloud,discover,l1b}` |
 | 4 | Matchup engine | ⬜ pending | `pab.matchup.*` (stub) |
 | 5 | BING fitting wrapper | ⬜ pending | `pab.fit.*` (stub) |
 | 6 | Metrics & figures | ⬜ pending | `pab.metrics.*`, `pab.plotting.*` (stubs) |
@@ -40,7 +40,7 @@ every bump.
 `pyarrow` are all installed locally. CI installs the package + `pytest` and runs
 a `-W` docs build; the test suite is fully offline (no network/S3).
 
-**Verification (current).** `pytest` → 43 passed; `ruff check pab` and
+**Verification (current).** `pytest` → 59 passed; `ruff check pab` and
 `ruff format --check pab` → clean; `sphinx-build -W` → build succeeded.
 
 ---
@@ -209,7 +209,81 @@ coverage once Stage 4 wires a tiny BGC fixture.
 
 ---
 
-## 5. Cross-cutting conventions (as implemented)
+## 5. Stage 3 — PACE access & spectrum extraction
+
+The satellite side: cloud-first granule access and nearest-unflagged-pixel
+`Rrs` extraction. The screening and extraction work on plain arrays / xarray
+(offline-testable against a synthetic granule); discovery and the S3 read are
+lazily-imported, network-bound seams (mocked / construction-only in tests).
+
+### 5.1 Flags (`pab/pace/flags.py`)
+
+Self-contained `l2_flags` decoding (NumPy only). `L2_FLAG_BITS` (canonical
+SeaDAS/OB.DAAC bit positions, matching `remote_sensing.netcdf.oc.L2_FLAGS`),
+`STANDARD_OCEAN_MASK` (the design's screen), `flag_value()`, `decode()`,
+`is_set()`, `flagged_mask()` (True = bad), `good_mask()` (True = unflagged).
+
+### 5.2 Extraction (`pab/pace/extract.py`)
+
+`haversine_km()` (vectorized great-circle distance), `nearest_valid_pixels()`
+(the ~10 nearest *unflagged* pixels with ix/iy/lat/lon/distance/rank/flag),
+`extract_spectrum()` → `(wave, Rrs, Rrs_unc)` at a pixel,
+`extract_matchup_spectra()` (nearest pixels with spectra attached — the Stage 4
+input), and `pace_noise_vector()` (wraps `ocpy.satellites.pace.gen_noise_vector`).
+
+### 5.3 Cloud access (`pab/pace/cloud.py`)
+
+The swappable backend producing a **canonical granule dataset** (dims
+`(x, y, wl)`: `Rrs`, `Rrs_unc`; 2-D `latitude`/`longitude`; `wavelength`;
+`l2_flags`). `to_granule_ds()` (attach ocpy's separate `l2_flags`), `open_local()`
+(ocpy reader, dev/debug), `open_s3()` (lazy in-region read via `earthaccess.open`
++ grouped netCDF), and `open_granule(source, backend=, opener=)` dispatching
+`auto`/`s3`/`local` (with `opendap` reserved → `NotImplementedError`). The
+`opener` parameter is the test seam that mocks the cloud.
+
+### 5.4 Discovery (`pab/pace/discover.py`)
+
+`search_granules()` (`earthaccess.search_data` by short name / bbox / temporal /
+cloud-cover), `granule_table()` (via
+`remote_sensing.download.earthaccess.build_granule_table`), and
+`persist_granules()` (idempotent upsert into the `granules` table).
+
+### 5.5 L1B hook (`pab/pace/l1b.py`)
+
+Documented future path: `rrs_from_l1b()` raises `NotImplementedError`; provenance
+tags `RRS_SOURCE_L2` (`"L2_AOP"`) vs `RRS_SOURCE_PREFIX` (`"PAB_L1B"`). Either Rrs
+source feeds the same downstream fit.
+
+### 5.6 Key decision — canonical granule dataset
+
+Both the cloud and local readers normalise to one in-memory layout, so the
+nearest-pixel extraction is *source-agnostic* — only the data source (lazy S3 vs
+local file vs, later, OPeNDAP) differs. `open_granule`'s `backend`/`opener`
+seam selects the source and makes the cloud read trivially mockable offline. PAB
+starts with lazy-S3 (reusing the ocpy/remote_sensing readers) and leaves OPeNDAP
+as a slot-in backend.
+
+**Tests** — `pab/tests/test_pace.py` (16): flag value/decode/`is_set` and
+flagged/good masks vs known bits; haversine ≈111 km/deg; nearest-pixel selection;
+nearest **skips a flagged** pixel; spectrum values; matchup-spectra attachment;
+all-flagged → empty; `to_granule_ds`; `open_granule` via injected opener +
+opendap/unknown-backend errors; idempotent `persist_granules`; noise vector
+length; L1B stub raises.
+
+**Docs page** — `pace_access.rst` (pipeline, canonical dataset, lazy-S3 vs
+OPeNDAP trade-off, the `l2_flags` screen, the L2-vs-L1B Rrs source).
+
+**Notebook** — `docs/nb/03_pace_access.ipynb` (flag decoding, synthetic granule,
+nearest-unflagged extraction; optional `RUN_LIVE` earthaccess discovery).
+
+**Open coverage gap.** `discover.search_granules`/`granule_table` and
+`cloud.open_s3` are network/S3-bound; the offline suite covers the extraction,
+flags, persistence, and the `open_granule` abstraction (mocked), with the live
+path exercised in the notebook.
+
+---
+
+## 6. Cross-cutting conventions (as implemented)
 
 - **Provenance** — every results-bearing row carries `pab_version` + `created`;
   `pab.config.package_versions()` supplies the environment snapshot for fit
@@ -228,7 +302,7 @@ coverage once Stage 4 wires a tiny BGC fixture.
 
 ---
 
-## 6. Module index (current)
+## 7. Module index (current)
 
 ```
 pab/
@@ -241,7 +315,12 @@ pab/
     summary.py         ✅ despike, IQR, mixed-layer mean, summarize, persist
     fetch.py           ✅ argopy seam (build_fetcher, fetch_*, iter_profiles)
     qa.py              ✅ profile Q&A plots
-  pace/                ⬜ Stage 3
+  pace/
+    flags.py           ✅ l2_flags decode + standard ocean mask
+    extract.py         ✅ nearest-unflagged pixel + Rrs spectra + noise vector
+    cloud.py           ✅ canonical granule ds; lazy-S3 / local backends
+    discover.py        ✅ earthaccess discovery + granule table + persist
+    l1b.py             ✅ documented L1B->Rrs hook (future)
   matchup/             ⬜ Stage 4
   fit/                 ⬜ Stage 5
   metrics/             ⬜ Stage 6

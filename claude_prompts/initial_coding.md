@@ -37,6 +37,8 @@ Examine the following files that may help generating the design:
 4. Read this doc. Execute the 2nd task in the Stage 2 section below.
 5. Read this doc. Execute the 3rd task in the Stage 2 section below.
 
+6. Read this doc. Execute the 1st task in the Stage 3 section below.
+
 ## Stage 0
 
 ### Tasks
@@ -56,6 +58,12 @@ Examine the following files that may help generating the design:
 2.  I should have requested from the start that you also create an Implemntation file to record your work.  Please do so now.  Call it `docs/design/PAB_implementation.md`.
 
 3. I have updated the coding plan to request Jupyter Notebooks to be created for each stage.  Please create them now.  Put them in `docs/nb`.
+
+### Q&A
+
+## Stage 3
+
+1.  Read the context files, especially the design document and the coding plan. Proceed with Stage 2.  If you have any questions, write them in the Q&A section below.  Log your work in the Logs section below.
 
 ### Q&A
 
@@ -265,3 +273,56 @@ deliverables, not yet rendered into the Sphinx site (that would need
 `myst-nb`/`nbsphinx`, neither installed; rendering is an optional future step
 per the plan). `sphinx-build -W` is green again; `pytest` → 43 passed
 (no code changed). No questions for Q&A.
+
+### 2026-06-20 (Stage 3 — PACE access & spectrum extraction)
+
+Executed **Stage 3**: the satellite side — cloud-first granule access and
+nearest-unflagged-pixel `Rrs` extraction. Screening/extraction are
+array/xarray-only (offline-testable against a synthetic granule); discovery and
+the S3 read are lazily-imported, network-bound seams.
+
+Delivered (`pab.pace`):
+
+- **`flags.py`** — self-contained `l2_flags` decoding: `L2_FLAG_BITS` (canonical
+  SeaDAS/OB.DAAC positions, matching `remote_sensing.netcdf.oc.L2_FLAGS`),
+  `STANDARD_OCEAN_MASK` (design screen), `flag_value`/`decode`/`is_set`/
+  `flagged_mask`/`good_mask`.
+- **`extract.py`** — `haversine_km`, `nearest_valid_pixels` (~10 nearest
+  *unflagged* pixels w/ ix/iy/lat/lon/distance/rank/flag), `extract_spectrum`,
+  `extract_matchup_spectra` (pixels + spectra; the Stage 4 input), and
+  `pace_noise_vector` (wraps `ocpy.satellites.pace.gen_noise_vector`).
+- **`cloud.py`** — the swappable backend producing a **canonical granule ds**
+  (dims `(x,y,wl)`: Rrs/Rrs_unc; 2-D lat/lon; wavelength; l2_flags):
+  `to_granule_ds`, `open_local` (ocpy), `open_s3` (lazy in-region via
+  `earthaccess.open` + grouped netCDF), and `open_granule(source, backend, opener)`
+  dispatching auto/s3/local (opendap reserved → NotImplementedError). The
+  `opener` arg is the test seam that mocks the cloud.
+- **`discover.py`** — `search_granules` (earthaccess CMR), `granule_table`
+  (remote_sensing `build_granule_table`), `persist_granules` (idempotent upsert
+  into `granules`).
+- **`l1b.py`** — documented future hook: `rrs_from_l1b` raises; provenance tags
+  `L2_AOP` vs `PAB_L1B`.
+
+Tests (`pab/tests/test_pace.py`, 16 — **59 pass overall**): flag value/decode/
+masks vs known bits; haversine ≈111 km/deg; nearest-pixel selection; nearest
+**skips a flagged** pixel; spectrum values; matchup-spectra attachment;
+all-flagged→empty; `to_granule_ds`; `open_granule` via injected opener +
+opendap/unknown-backend errors; idempotent `persist_granules`; noise-vector
+length; L1B stub raises.
+
+Docs: `docs/pace_access.rst` (pipeline, canonical dataset, **lazy-S3 (a) vs
+OPeNDAP (b)** trade-off, the `l2_flags` screen, L2-vs-L1B Rrs source), in the
+toctree. Notebook: `docs/nb/03_pace_access.ipynb` (offline flag/extraction demos
++ optional `RUN_LIVE` earthaccess discovery; executed, 0 errors). Implementation
+record bumped to **v0.2.0** (Stage 3 section + module index + status).
+
+Verification: `pytest` → 59 passed; `ruff check`/`format` → clean;
+`sphinx-build -W` → build succeeded.
+
+Key decision: both readers normalise to one **canonical granule dataset**, so
+nearest-pixel extraction is source-agnostic — only the data source differs
+(lazy-S3 / local / future OPeNDAP). `open_granule`'s `opener` seam makes the
+cloud read trivially mockable, which is how the suite stays offline. I reused
+ocpy's L2 dataset shape (dims `x,y,wl`; lat/lon coords; separate `l2_flags`) and
+implemented `flags` self-contained (mirroring `remote_sensing` bit positions) so
+the QC is testable without importing remote_sensing. No questions for Q&A.
