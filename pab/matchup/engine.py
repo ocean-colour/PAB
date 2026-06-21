@@ -160,8 +160,16 @@ def find_matchup(
     Returns:
         The best :class:`Matchup`, or ``None`` if no candidate qualifies in both
         time and space with at least one valid spectrum.
+
+    Raises:
+        ValueError: if the profile has no ``latitude``/``longitude``.
     """
     config = config or MatchupConfig()
+    if profile.get("latitude") is None or profile.get("longitude") is None:
+        raise ValueError(
+            f"profile {profile.get('wmo')}/{profile.get('cycle')} has no "
+            "latitude/longitude; cannot match it to a granule"
+        )
     lat = float(profile["latitude"])
     lon = float(profile["longitude"])
     p_time = profile["time"]
@@ -345,7 +353,8 @@ def build_matchups(
     Returns:
         ``{"written": [...], "skipped": [...], "unmatched": [...]}`` — matchup
         ids written, matchup ids skipped (already present), and
-        ``"{wmo}_{cycle}"`` for profiles with no qualifying granule.
+        ``"{wmo}_{cycle}"`` for profiles with no qualifying granule (or no
+        position to match against).
     """
     config = config or MatchupConfig()
     written: list[str] = []
@@ -353,6 +362,10 @@ def build_matchups(
     unmatched: list[str] = []
 
     for profile in qualifying_profiles(store):
+        if profile["latitude"] is None or profile["longitude"] is None:
+            # no position to match against — skip rather than raise mid-run
+            unmatched.append(f"{profile['wmo']}_{profile['cycle']}")
+            continue
         candidates = candidate_granules(
             store, profile["time"], dtime_max_hours=config.dtime_max_hours
         )

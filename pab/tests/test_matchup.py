@@ -197,6 +197,47 @@ def test_build_matchups_unmatched_when_out_of_window():
         assert store.count("matchups") == 0
 
 
+def test_find_matchup_requires_position():
+    # a profile with no lat/lon cannot be matched -> clear error, not a TypeError
+    prof = {
+        "wmo": 7902226,
+        "cycle": 5,
+        "latitude": None,
+        "longitude": None,
+        "time": "2025-05-01T12:00:00",
+    }
+    cands = [{"granule_id": "G", "time": "2025-05-01T12:00:00", "source": "s"}]
+    with pytest.raises(ValueError, match="no .*latitude"):
+        engine.find_matchup(prof, cands, opener=lambda s: make_granule())
+
+
+def test_build_matchups_skips_profile_without_position():
+    ds = make_granule(center=(20.0, -50.0))
+    with Store.open(":memory:") as store:
+        # qualifying profile (has a summary) but with a NULL position
+        persist_summary(
+            store,
+            wmo=7902226,
+            cycle=5,
+            summary={"mld": 30.0, "mld_method": "x", "n_points": 5},
+            latitude=None,
+            longitude=None,
+            time="2025-05-01T12:00:00",
+        )
+        store.upsert(
+            "granules",
+            {
+                "granule_id": "G1",
+                "time_start": "2025-05-01T11:30:00",
+                "data_url": "s3://b/G1.nc",
+            },
+        )
+        out = engine.build_matchups(store, opener=lambda s: ds)
+        assert out["written"] == []
+        assert out["unmatched"] == ["7902226_5"]
+        assert store.count("matchups") == 0
+
+
 def test_write_matchup_requires_profile_id():
     m = engine.Matchup(
         matchup_id="x",

@@ -43,7 +43,7 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 70 passed; `ruff check pab` and
+**Verification (current).** `pytest` → 72 passed; `ruff check pab` and
 `ruff format --check pab` → clean; `sphinx-build -W` → build succeeded.
 
 ---
@@ -180,7 +180,9 @@ de Boyer Montégut density-threshold criterion.
 
 ### 4.3 Fetch (`pab/argo/fetch.py`)
 
-`build_fetcher()` (BGC `DataFetcher`: `ds='bgc'`, `src='erddap'`, configurable
+`build_fetcher()` (BGC `DataFetcher`: `ds='bgc'`; default `src='gdac'` — the GDAC
+netCDF read, more reliable than the flaky BGC ERDDAP, with `erddap` still
+selectable; recent real-time profiles need `mode='expert'`; configurable
 `params`/`measured`/`mode`), `fetch_region/float/profile()`, `filter_quality()`
 (`filter_qc(QC_list=[1,2])` + optional research mode), and `iter_profiles()`
 (`point2profile()` → per-profile metadata + variable arrays — the bridge into
@@ -338,13 +340,15 @@ network).
   (ix/iy + geometry); the `Rrs(λ)` arrays are re-read from the granule at fit
   time (Stage 5).
 
-**Tests** — `pab/tests/test_matchup.py` (10): `matchup_id` format; time-offset
+**Tests** — `pab/tests/test_matchup.py` (12): `matchup_id` format; time-offset
 parsing (arg-order/`Z`); closest-granule selection; **time-window edge** (just
 inside vs. just outside); distance-gate rejection of a far footprint;
 **flagged-nearest-pixel exclusion**; all-flagged → `None`; persisted links with
 correct FKs/`n_spectra`/`distance_km`/`dtime_hours` + **idempotent re-run** (no
-dupes); unmatched when out of window; `write_matchup` requires `profile_id`. The
-cloud layer is mocked via injected `opener=` synthetic granules.
+dupes); unmatched when out of window; **missing-position guard** (`find_matchup`
+raises, `build_matchups` skips → unmatched); `write_matchup` requires
+`profile_id`. The cloud layer is mocked via injected `opener=` synthetic
+granules.
 
 **Docs page** — `matchup.rst` (criteria, selection/tie-break rule, `matchup_id`
 scheme, float↔granule↔pixels linkage, source-agnostic testing; autodoc of

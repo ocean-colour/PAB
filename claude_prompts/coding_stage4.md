@@ -61,6 +61,8 @@ Read these before coding:
 4. Read this doc.  Execute the 4th task in the "Stage 4" section below.
 
 5. Read this doc.  Execute the 1st task in the "Pull Request" section below.
+6. Read this doc.  Execute the 2nd task in the "Pull Request" section below.
+7. Read this doc.  Execute the 3rd task in the "Pull Request" section below.
 
 ## Pre Stage 4
 
@@ -373,6 +375,53 @@ prompts.)
 
 1. I have executed a Pull Request on GitHub for Stage 4.  Please review the Pull Request and post it to GitHub.
 
+2. Make edits to the Repo to address the review comments.  If you have any questions, write them in the Q&A section below.  If you have any requests, write them in the Requests section below.
+
+3. I have answered your question in the Q&A section.  Please make the necessary edits.
+
+### Requests
+
+**Addressed the PR #2 review (Claude, 2026-06-21).** Working-tree edits (not
+committed — git is yours to push):
+
+- **Fixed — missing-position guard.** `find_matchup` now raises a clear
+  `ValueError` if a profile lacks `latitude`/`longitude` (was an opaque
+  `TypeError` from `float(None)`), and `build_matchups` skips such profiles into
+  `unmatched` rather than crashing mid-run. Added two tests
+  (`test_find_matchup_requires_position`,
+  `test_build_matchups_skips_profile_without_position`). Suite now **72 passed**;
+  `ruff`/`sphinx -W` still clean.
+- **Deferred (with rationale), not changed:**
+  - *Open-every-candidate + O(profiles×granules) scan* — negligible at the
+    10-profile dev scale; the real optimization is the footprint bbox pre-filter
+    already documented as future work in `docs/matchup.rst`. Holding it for a
+    later stage to avoid premature complexity / a WKT-parse dependency.
+  - *`matchup_pixels.flagged` always 0* — correct by construction (only unflagged
+    pixels are selected); already documented. No change.
+- **Awaiting your call (Q&A):** switching PAB's default Argo source from
+  `erddap` to `gdac` in `pab/argo/fetch.py`. Not touched pending your decision
+  below.
+
+### Q&A
+
+**Q (Claude, 2026-06-21):** Re the recurring ERDDAP flakiness — shall I switch
+the PAB default Argo source to `gdac` (with `expert` mode for recent real-time
+profiles) in `pab/argo/fetch.py`, or keep `erddap` as the default and leave
+`gdac` opt-in? — *JXP:*
+
+yes, please switch to gdac.
+
+**Done (Claude, 2026-06-21):** `pab/argo/fetch.py` `build_fetcher` default is now
+`src="gdac"` (was `"erddap"`); updated the module + function docstrings (gdac
+default, erddap still selectable, and the `mode="expert"` note for recent
+real-time profiles). `mode` default left at `"standard"` (the science-correct
+choice when delayed-mode/adjusted data exist). Verified: offline construction
+test passes, and a live `fetch_profile(7902226, 5, mode="expert")` returns 509
+levels via gdac. Heads-up: argopy emits `UserWarning: BGC data support with the
+'gdac' data source is still in Work In Progress` — it works reliably in our
+tests, just noting the upstream caveat. Suite **72 passed**, `ruff` + `sphinx -W`
+clean.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -384,6 +433,45 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-21 (Stage 4 — switched default Argo source to GDAC)
+
+Per JXP's Q&A answer ("yes, please switch to gdac"), changed `build_fetcher`'s
+default `src` from `"erddap"` to `"gdac"` in `pab/argo/fetch.py`, with docstring
+updates (module + function): gdac is the reliable default (avoids the recurring
+ERDDAP 408/timeout/404), erddap stays selectable, and recent real-time profiles
+need `mode="expert"` (the module's data-mode note).
+
+- Kept `mode="standard"` as the default — the science-correct choice where
+  delayed-mode/adjusted data exist; expert is opt-in per the note. The dig-in
+  notebook (`05`) already sets `ARGO_MODE="expert"` explicitly, so it is
+  consistent.
+- Verified: `test_build_fetcher_is_bgc` still passes (gdac fetcher constructs
+  offline), and a live `fetch_profile(7902226, 5, mode="expert")` returns 509
+  levels. Full suite **72 passed**; `ruff` + `sphinx -W` clean.
+- Noted the upstream `UserWarning` that argopy still marks BGC-over-gdac as
+  "Work In Progress"; it nonetheless returns correct data quickly in our tests.
+
+### 2026-06-21 (Stage 4 — addressed PR #2 review comments)
+
+Made working-tree edits to address the review I posted on PR #2.
+
+- **Concrete fix:** missing-position guard. `find_matchup` raises a clear
+  `ValueError` for a profile without `latitude`/`longitude` (previously an opaque
+  `TypeError` from `float(None)` at `engine.py:165`), and `build_matchups` skips
+  such profiles into `unmatched` instead of crashing. Updated the docstrings
+  (`Raises:` + the `unmatched` description) and added two tests. **72 passed**,
+  `ruff` + `sphinx -W` clean. Bumped the implementation-record verification line
+  (70→72) and the Stage 4 test description (10→12).
+- **Deferred with rationale (no change):** the open-every-candidate /
+  O(profiles×granules) cost is negligible at dev scale — the footprint bbox
+  pre-filter is the real fix and is already logged as future work in
+  `matchup.rst`; and `matchup_pixels.flagged` is correctly always 0 by
+  construction.
+- **Left for JXP:** the ERDDAP→GDAC default-source switch — re-asked as a Q&A
+  question; `pab/argo/fetch.py` untouched.
+- Did **not** post to GitHub or commit (this task was repo edits; git/push is
+  JXP's). The review-response diff will be visible once he pushes.
 
 ### 2026-06-21 (Stage 4 — reviewed PR #2 and posted the review to GitHub)
 
