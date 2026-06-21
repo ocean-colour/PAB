@@ -40,6 +40,10 @@ jupyter nbconvert --to notebook --execute --inplace docs/nb/<name>.ipynb
   L1B-AC `Rrs` spectrum (imported via the biomass-paper `jr_utils`). Needs
   network + an Earthdata Login, so it is **not** part of the offline docs build
   (Stage 4).
+- [`06_fit.ipynb`](06_fit.ipynb) — a BING fit on a synthetic spectrum
+  (`pab.fit`): LM→MCMC, the posterior `b_bp` with uncertainties and a fit
+  figure, and the written `fits`/`fit_results` rows; ends with an optional
+  `RUN_LIVE` real-matchup fit (Stage 5).
 
 The offline sections run without network; the Stage 2 live section is guarded by
 a `RUN_LIVE = False` flag (flip to `True` to pull a real profile from argopy).
