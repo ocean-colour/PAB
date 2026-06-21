@@ -29,8 +29,18 @@ extensions = [
 
 templates_path = ["_templates"]
 # The notebooks in docs/nb/ are rendered into the site (see the Notebooks
-# toctree); only nb/README.md (a repo-facing index, not a docs page) is excluded.
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "PDFs", "nb/README.md"]
+# toctree). Excluded: nb/README.md (a repo-facing index, not a docs page) and
+# nb/05_matchup_7902226_4.ipynb (a live dig-in tool needing argopy + an
+# Earthdata Login — it cannot be executed offline-safe, so it is not a built
+# docs page).
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    "PDFs",
+    "nb/README.md",
+    "nb/05_matchup_7902226_4.ipynb",
+]
 
 # The Markdown design/reference docs are authored as standalone GitHub
 # documents with repo-relative links (e.g. ``../../pab/``); these are not

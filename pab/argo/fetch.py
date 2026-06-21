@@ -1,10 +1,18 @@
 """BGC-Argo access via argopy (the ingestion seam).
 
 Thin wrappers over ``argopy.DataFetcher`` configured for biogeochemical data
-(``ds='bgc'``, ``src='erddap'`` — the only source supporting BGC). The design
-selects data by region / float / profile, narrows with the BGC-only ``params``
-and ``measured`` keywords, applies QC and data-mode filtering, and reshapes
-points → profiles before the mixed-layer summary (:mod:`pab.argo.summary`).
+(``ds='bgc'``). The **default source is ``src='gdac'``** — it reads the GDAC
+netCDF directly and is markedly more reliable than the Ifremer BGC ERDDAP, which
+has repeatedly returned ``408``/timeout/``404`` errors; ``src='erddap'`` (and
+``'argovis'`` for core data) remain selectable. The design selects data by
+region / float / profile, narrows with the BGC-only ``params`` and ``measured``
+keywords, applies QC and data-mode filtering, and reshapes points → profiles
+before the mixed-layer summary (:mod:`pab.argo.summary`).
+
+Note on ``mode``: for a **recent real-time** profile the delayed-mode/adjusted
+fields ``standard``/``research`` prefer may not exist yet, so a ``gdac`` fetch in
+those modes can return zero points. Use ``mode='expert'`` to read the measured
+parameters in that case (PAB then applies its own QC and de-spiking downstream).
 
 argopy is imported lazily inside each function so ``import pab.argo.fetch``
 works in a minimal environment; network access happens only at ``.load()``.
@@ -29,7 +37,7 @@ def build_fetcher(
     params: Sequence[str] = DEFAULT_PARAMS,
     measured: Sequence[str] | None = ("BBP700",),
     mode: str = "standard",
-    src: str = "erddap",
+    src: str = "gdac",
 ):
     """Construct a BGC ``argopy.DataFetcher``.
 
@@ -38,8 +46,12 @@ def build_fetcher(
         measured: Variables required non-NaN (e.g. keep only profiles with a
             valid ``BBP700``); ``None`` to disable.
         mode: argopy user mode — ``'standard'`` (routine) or ``'research'``
-            (delayed-mode, QC=1; best for MLD).
-        src: Data source (``'erddap'`` is the only BGC source).
+            (delayed-mode, QC=1; best for MLD), or ``'expert'`` (measured
+            parameters as-is; needed for recent real-time profiles that have no
+            adjusted fields yet — see the module note).
+        src: Data source. Default ``'gdac'`` (reads the GDAC netCDF directly,
+            more reliable than the Ifremer BGC ERDDAP); ``'erddap'`` is also
+            supported for BGC.
 
     Returns:
         A configured (unfetched) ``argopy.DataFetcher``.
