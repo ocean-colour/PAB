@@ -60,6 +60,8 @@ Read these before coding:
 3. Read this doc.  Execute the 3rd task in the "Stage 4" section below.
 4. Read this doc.  Execute the 4th task in the "Stage 4" section below.
 
+5. Read this doc.  Execute the 1st task in the "Pull Request" section below.
+
 ## Pre Stage 4
 
 1. Read this doc.  For development for here on out, let us work with a set of 10 Argo profiles, a subset of which will have match-ups with PACE.  Here are 3 profiles I know that will match-up, named by Argo WMO number and profile number (my numbering, so there is room for error here):
@@ -367,6 +369,10 @@ that operate on arrays/values.
 (Write any questions for JXP here; he answers inline. Do not block on interactive
 prompts.)
 
+## Pull Request
+
+1. I have executed a Pull Request on GitHub for Stage 4.  Please review the Pull Request and post it to GitHub.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -378,6 +384,27 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-21 (Stage 4 — reviewed PR #2 and posted the review to GitHub)
+
+JXP opened PR **#2 "Stage 4"** (`stage4` → `main`). Reviewed it and posted the
+review to GitHub.
+
+- **Scope.** The PR diff is the 14 Stage-4 files (matchup engine + tests, the
+  `matchup.rst` page, the `04`/`05` notebooks, the dev manifest, `conf.py`,
+  implementation record, prompt docs). My local `main` is stale, so a local
+  `git diff main...stage4` over-reports (65 files); the real PR base on origin
+  already carries Stages 0–3.
+- **Due diligence.** Re-ran `pytest` (70 passed), `ruff check`/`format` (clean),
+  `sphinx-build -W` (succeeds) on the branch before reviewing.
+- **Verdict:** good to merge; no blockers. Flagged minor, non-blocking notes:
+  NULL-position guard at `engine.py:165-166`; the open-every-candidate network
+  cost and O(profiles×granules) candidate scan (both fine at dev scale, footprint
+  pre-filter already noted as future work); and that `matchup_pixels.flagged` is
+  always 0 by construction. Also reiterated the open ERDDAP→GDAC default question.
+- **Posted** as a COMMENT-type review via `gh pr review 2 --comment`
+  (https://github.com/ocean-colour/PAB/pull/2). Per the working agreement I did
+  not merge or change branch state — only posted the requested review.
 
 ### 2026-06-20 (Pre Stage 4 — established the 10-profile development set)
 
