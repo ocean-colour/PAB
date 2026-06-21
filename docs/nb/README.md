@@ -29,9 +29,21 @@ jupyter nbconvert --to notebook --execute --inplace docs/nb/<name>.ipynb
   canonical granule dataset, and nearest-unflagged-pixel `Rrs` extraction on a
   synthetic granule; ends with an **optional `RUN_LIVE`** earthaccess granule
   discovery (Stage 3).
+- [`04_matchup.ipynb`](04_matchup.ipynb) — the matchup engine on a synthetic
+  profile + granule: `build_matchups`, the selected pixels and written records,
+  idempotent re-run, and flagged-pixel exclusion; ends with an **optional
+  `RUN_LIVE`** real float↔PACE matchup (Stage 4).
+- [`05_matchup_7902226_4.ipynb`](05_matchup_7902226_4.ipynb) — a **fully live**
+  dig-in for float 7902226 / cycle 5: fetch the profile (argopy), discover and
+  match the PACE granule (earthaccess + engine), and plot the profile, the
+  granule, and the closest-pixel `Rrs`; a final cell over-plots the JR (Frouin)
+  L1B-AC `Rrs` spectrum (imported via the biomass-paper `jr_utils`). Needs
+  network + an Earthdata Login, so it is **not** part of the offline docs build
+  (Stage 4).
 
 The offline sections run without network; the Stage 2 live section is guarded by
 a `RUN_LIVE = False` flag (flip to `True` to pull a real profile from argopy).
+Notebook `05` is the exception — it is live end-to-end by design.
 
 ## Planned (added as the relevant stage lands)
 

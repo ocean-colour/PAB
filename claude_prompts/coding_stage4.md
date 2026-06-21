@@ -56,6 +56,10 @@ Read these before coding:
 
 1. Read this doc.  Execute the 1st task in the Pre Stage 4 section below.
 
+2. Read this doc.  Execute the 2nd task in the "Stage 4" section below.
+3. Read this doc.  Execute the 3rd task in the "Stage 4" section below.
+4. Read this doc.  Execute the 4th task in the "Stage 4" section below.
+
 ## Pre Stage 4
 
 1. Read this doc.  For development for here on out, let us work with a set of 10 Argo profiles, a subset of which will have match-ups with PACE.  Here are 3 profiles I know that will match-up, named by Argo WMO number and profile number (my numbering, so there is room for error here):
@@ -66,6 +70,7 @@ Read these before coding:
 If you have any questions, write them in the Q&A section below.  If you have any requests, write them in the Requests section below.
 
 2.  Great!  I have answered the questions and requests.  Please continue working on this step.  If you have any questions, write them in the Q&A section below.  If you have any requests, write them in the Requests section below.
+
 
 ### Q&A
 
@@ -129,9 +134,149 @@ PACE-era cycles (on/after 2024-03-05). Reproducible: NumPy `default_rng(20260620
 1. Read this doc and the context files. Implement Stage 4 (below). If you have
    questions, write them in the Q&A section.  If you have any requests, write them in the Requests section.  Log your work in the Logs section.
 
+2. I wish to dig in further on one of the profiles: (7902226, 4).  Please generate a Jupyter Notebook named `docs/nb/05_matchup_7902226_4.ipynb` that will allow me to dig in further.  It should:
+
+    - Fetch the profile from the GDAC index using argopy.
+    - Fetch the granule from the PACE index using earthaccess.
+    - Match the profile to the granule using the matchup engine.
+    - Plot the profile and the granule.
+    - Plot Rrs spectrum from the closest pixel.
+
+3. When running the Notebook, the 3rd cell fails with an error:
+
+```
+Error: 408, message='', url='https://erddap.ifremer.fr/erddap/tabledap/ArgoFloats-synthetic-BGC.nc?bbp700,bbp700_adjusted,bbp700_adjusted_error,bbp700_adjusted_qc,bbp700_qc,chla,chla_adjusted,chla_adjusted_error,chla_adjusted_qc,chla_qc,config_mission_number,cycle_number,direction,latitude,longitude,platform_number,position_qc,pres,pres_adjusted,pres_adjusted_error,pres_adjusted_qc,pres_qc,psal,psal_adjusted,psal_adjusted_error,psal_adjusted_qc,psal_qc,temp,temp_adjusted,temp_adjusted_error,temp_adjusted_qc,temp_qc,time,time_qc&platform_number=~%227902226%22&cycle_number=~%225%22&latitude!=NaN&longitude!=NaN&distinct()&orderBy(%22time,pres%22)'
+
+```
+
+Please advise in the Reporting section below.
+
+4. Ok, the Notebook works now and looks great.  I wish to add a cell that over-plots the Rrs spectrum kindly provided by Rorbert Frouin.  For that, you will need to use the `bing/papers/biomass/Analysis/py/jr_utils.py` module and the `load_jr_data` function to load the JR data.  Please generate the code for that cell and put in the Extra cell section below.  The figure should show the PACE Rrs spectrum and the JR Rrs spectrum on the same plot, both with error regions.  The JR Rrs spectrum should be in red.
+
+### Extra cell
+
+**Done (Claude, 2026-06-21).** Added as **section 9** of
+`docs/nb/05_matchup_7902226_4.ipynb` (appended after the closest-pixel spectrum).
+It *imports* (does not copy) `jr_utils.load_jr_data`/`extract_rrs` from
+`bing/papers/biomass/Analysis/py`, selects the JR row nearest the float (its
+row 6 — `PACE_OCI.20250219T155847…`, PACE pixel 0.4 km from the float, time
+2025-02-18T20:26:59, an exact match for this seed), and over-plots the PACE L2
+AOP closest-pixel spectrum (blue, ±`Rrs_unc`) against the JR/Frouin spectrum
+(red, ±`Rrs_std`):
+
+```python
+import os, sys
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Robert Frouin ("JR") provided Rrs spectra derived from PACE *L1B* with his
+# atmospheric correction. We *import* the biomass-paper helper (we do not copy
+# it); point BING_ANALYSIS_PY at it if it lives elsewhere.
+BING_ANALYSIS_PY = os.environ.get(
+    "BING_ANALYSIS_PY",
+    os.path.expanduser("~/Oceanography/python/bing/papers/biomass/Analysis/py"),
+)
+if BING_ANALYSIS_PY not in sys.path:
+    sys.path.insert(0, BING_ANALYSIS_PY)
+import jr_utils as jr
+
+# Pick the JR row nearest the float (the table's trailing rows are comments,
+# dropped by requiring finite PACE_lat/lon).
+jr_df = jr.load_jr_data()
+valid = jr_df.dropna(subset=["PACE_lat", "PACE_lon"])
+cos = np.cos(np.radians(lat))
+d_km = np.sqrt((valid["PACE_lat"] - lat) ** 2
+               + ((valid["PACE_lon"] - lon) * cos) ** 2) * 111.0
+jr_idx = int(d_km.idxmin())
+jr_rrs = jr.extract_rrs(jr_idx)
+wl_jr, m_jr, s_jr = jr_rrs["wavelengths"], jr_rrs["Rrs_mean"], jr_rrs["Rrs_std"]
+print(f"JR row {jr_idx}: {jr_df.loc[jr_idx, 'AOP_file']} "
+      f"({d_km.loc[jr_idx]:.2f} km from float)")
+
+# PACE L2 AOP closest pixel (from section 8)
+wl_p, rrs_p, unc_p = closest["wavelength"], closest["Rrs"], closest["Rrs_unc"]
+
+fig, ax = plt.subplots(figsize=(8, 4.5))
+# PACE L2 AOP (blue) with its Rrs_unc band
+ax.plot(wl_p, rrs_p, "-", color="C0", lw=1.5, label="PACE L2 AOP (closest pixel)")
+ax.fill_between(wl_p, rrs_p - unc_p, rrs_p + unc_p, color="C0", alpha=0.25)
+# JR / Frouin (red) with its Rrs_std band
+ax.plot(wl_jr, m_jr, "-", color="red", lw=1.5, label="JR / Frouin (L1B AC)")
+ax.fill_between(wl_jr, m_jr - s_jr, m_jr + s_jr, color="red", alpha=0.25)
+
+ax.set_xlabel("wavelength (nm)")
+ax.set_ylabel("Rrs (sr$^{-1}$)")
+ax.set_xlim(340, 720)
+ax.set_title(f"PACE L2 AOP vs JR/Frouin Rrs  —  WMO {WMO} / cycle {CYCLE}")
+ax.legend()
+ax.grid(alpha=0.3)
+plt.show()
+```
+
+Notes: it reuses `lat`/`lon`/`closest`/`WMO`/`CYCLE` from earlier cells, so run
+the notebook top-to-bottom first. I used JR `Rrs_std` (the 3×3-window spread) as
+the error band — the table also carries `Rrs_uncertainty_<λ>` columns if you
+prefer the formal AC uncertainty instead.
+
+### Reporting
+
+**Diagnosis & fix (Claude, 2026-06-21).** The `408` is a **server-side timeout
+from the Ifremer BGC ERDDAP** — the same flakiness flagged in the Pre-Stage-4
+log (we have seen `FSTimeoutError`, `404`, and now `408` from that host on
+different days). It is not a bug in our code: the request URL is well-formed and
+the float/cycle exist. ERDDAP is simply slow/overloaded and drops the request.
+
+I diagnosed it live and **switched the notebook to read the GDAC NetCDF
+directly** (`argopy` `src="gdac"`), which fetched this profile reliably in ~9 s
+in repeated tests. Along the way I found two further gotchas, now handled in the
+notebook:
+
+1. **Source.** `src="gdac"` avoids the flaky ERDDAP entirely (and matches your
+   "fetch from the GDAC index" phrasing). An `api_timeout=600` is still set for
+   safety.
+2. **Mode.** With `gdac`, `mode="standard"`/`"research"` return **0 points**
+   (`"No data left after QC filtering"`) for this profile: those modes prefer
+   delayed-mode/**adjusted** fields, which do not exist yet for a *recent*
+   (2025-02) real-time cycle. `mode="expert"` returns the 509 measured levels
+   (`PRES`/`BBP700`/`CHLA`/`PSAL`/`TEMP` all QC=1).
+3. **QC filtering.** I **dropped the blanket `fetch.filter_quality`** call in the
+   notebook. In `expert` mode the dataset carries *all* BGC parameters incl.
+   `NITRATE_QC` (0/3) and `PH_IN_SITU_TOTAL_QC` (3); `filter_qc(QC=[1,2])` drops
+   a level if **any** parameter fails, so it emptied the dataset. The core
+   variables we use are QC=1, and the summary already de-spikes / IQR-screens
+   `BBP700`. (A cleaner future option: restrict `filter_qc` to the fields we
+   actually use.)
+
+With this recipe the profile loads and summarizes sensibly: **MLD = 30 m,
+bbp700(ML) = 4.3×10⁻⁴ m⁻¹, chla(ML) = 0.091 mg m⁻³** (N. Atlantic gyre values).
+
+**Caveat:** `expert` mode returns *raw* (non-adjusted) `BBP700`/`CHLA`; for a
+recent real-time cycle that is the only data available, but CHLA in particular
+carries the usual real-time uncertainty (no delayed-mode factor-2 / NPQ
+correction yet).
+
+**Recommendation / question for JXP:** given the recurring ERDDAP outages, shall
+I switch PAB's default Argo source from `erddap` to `gdac` in
+`pab/argo/fetch.py` (with `expert` mode for recent profiles)? It would make the
+whole pipeline more robust, but changes the project default, so I left it as-is
+pending your call. — *JXP:*
+
 ### Q&A
 
+**Note (Claude, 2026-06-21):** You named the dig-in profile `(7902226, 4)`; per
+our Pre-Stage-4 convergence that is **GDAC cycle 5** (timestamp 2025-02-18T20:27,
+the seed recorded in `data/dev_profiles.csv`). I kept your requested filename
+(`05_matchup_7902226_4.ipynb`) but set `CYCLE = 5` inside, with a note at the
+top. Change `CYCLE` if you actually meant index cycle 4 (2025-02-08).
+
 ### Requests
+
+- The new notebook `docs/nb/05_matchup_7902226_4.ipynb` is **live end-to-end**
+  (argopy + earthaccess) and I could not execute it here — this workstation has
+  no `~/.netrc` / Earthdata Login, so `earthaccess.login()` and the granule read
+  fail. It is committed **without** cell outputs; please run it where Earthdata
+  credentials exist (ideally in-region `us-west-2` for the fast S3 read). It is
+  excluded from the Sphinx build for the same reason (cannot build offline-safe).
 
 ## Stage 4 — Matchup engine
 
@@ -282,3 +427,120 @@ Executed the second Pre Stage 4 task after JXP answered the Q&A:
   `7902226` → 21, 27, 42, 51; `7902136` → 30, 42, 46, 47.
 - Rebuilt `data/dev_profiles.csv` and updated `data/README.md` (selection method,
   seed cycles, RNG seed, PACE-era cutoff).
+
+### 2026-06-20 (Stage 4 — matchup engine)
+
+Implemented the matchup engine that joins the BGC-Argo and PACE halves.
+
+What I built:
+
+- **`pab/matchup/engine.py`** — the matching + record-writing logic. Pure
+  geometry/time helpers (`parse_time`, `time_offset_hours`, `make_matchup_id`)
+  plus `find_matchup` (temporal pre-filter → open each candidate via the
+  `open_granule` `opener=` seam → nearest-unflagged-pixel extraction → distance
+  gate → best-by-(distance, dtime, −n_spectra, granule_id)), `write_matchup`
+  (idempotent upsert + delete-then-insert of pixels), `qualifying_profiles`,
+  `candidate_granules`, and the `build_matchups` driver
+  (`{written, skipped, unmatched}`, resumable by `matchup_id`). `MatchupConfig`
+  holds the knobs: `dtime_max_hours=24`, `n_spectra=10`, `max_distance_km=5`,
+  `mask_flags`. Exported the public API from `pab/matchup/__init__.py`.
+- **Tests** — `pab/tests/test_matchup.py` (10, all offline): id format, time
+  parsing, closest-granule selection, time-window edge (in/out), distance-gate
+  rejection, flagged-nearest-pixel exclusion, all-flagged→None, persisted links
+  + idempotent re-run, unmatched-out-of-window, `write_matchup` profile_id
+  guard. Suite: **70 passed**.
+- **Docs** — `docs/matchup.rst` (criteria, selection/tie-break, `matchup_id`,
+  float↔granule↔pixels linkage, autodoc) wired into `index.rst` (Package +
+  Notebooks toctrees).
+- **Notebook** — `docs/nb/04_matchup.ipynb`, executed offline-safe, with an
+  optional `RUN_LIVE` section that reads a seed from `data/dev_profiles.csv`,
+  fetches the float (argopy), discovers a granule (earthaccess), and matches.
+- **Implementation record** — Stage 4 → ✅, new §5b, module index + verification
+  line updated, version 0.2.3 → 0.3.0.
+
+Key decisions / what I learned:
+
+- **Spatial test = nearest-pixel distance gate**, not polygon-in-footprint —
+  reuses Stage 3 extraction unchanged, no WKT/shapely; footprint bbox
+  pre-filtering is a documented future optimization. No schema change
+  (`SCHEMA_VERSION` stays 1). `matchup_pixels.flagged` is always 0 (only
+  unflagged pixels are selected). Spectra are *not* stored — re-read at fit time.
+- The synthetic test granule has ~26 km pixel spacing (5×5 over ~1°), so the
+  realistic 5 km default gate rejects post-flag neighbours; the flagged-pixel
+  test loosens the gate to exercise neighbour selection. Real PACE OCI pixels
+  are ~1 km, where the 5 km default is appropriate.
+
+### 2026-06-21 (Stage 4 — live dig-in notebook for 7902226)
+
+Built `docs/nb/05_matchup_7902226_4.ipynb`, the requested live exploration of the
+seed profile JXP calls "(7902226, 4)" (= GDAC cycle 5). End-to-end against real
+services, reusing the PAB seams:
+
+1. `earthaccess.login()`;
+2. fetch the profile via `pab.argo.fetch` (BGC ERDDAP, QC 1/2, `iter_profiles`);
+3. mixed-layer summary via `pab.argo.summary`;
+4. discover `PACE_OCI_L2_AOP` granules in a ±`DTIME_HOURS`, ±`BBOX_PAD`° box via
+   `pab.pace.discover`;
+5. match with `pab.matchup.engine.find_matchup`;
+6. plot the profile (`pab.argo.qa.plot_profile`), the granule (`Rrs`≈442 nm map
+   with the float + selected pixels overlaid), and the closest-pixel `Rrs`
+   spectrum with its `Rrs_unc` band.
+
+What I learned / decisions:
+
+- **Could not execute it here** — no `~/.netrc`/Earthdata Login on this
+  workstation, so `earthaccess.login()` and the S3 granule read fail. Committed
+  without outputs; JXP runs it where credentials exist (ideally `us-west-2`).
+  Validated the notebook JSON with `nbformat`.
+- **Excluded from the Sphinx build** (added to `conf.py` `exclude_patterns`,
+  alongside `nb/README.md`) because it is live-only and cannot build
+  offline-safe; `sphinx-build -W` still succeeds. Listed it in `docs/nb/README.md`
+  and added a Q&A note on the cycle-4↔5 naming.
+
+### 2026-06-21 (Stage 4 — diagnosed the notebook's ERDDAP 408, switched to GDAC)
+
+JXP reported the notebook's fetch cell failing with HTTP `408` from the Ifremer
+BGC ERDDAP. Diagnosed live and fixed `docs/nb/05_matchup_7902226_4.ipynb`.
+
+Findings (full write-up in the Reporting section):
+
+- The `408` is **server-side ERDDAP flakiness** (we've now seen FSTimeout / 404 /
+  408 from that host across days), not a code bug.
+- **Fixed by reading GDAC directly** (`argopy src="gdac"`, ~9 s, reliable).
+- Two follow-on gotchas, now handled: (a) `mode="expert"` is required — `standard`
+  /`research` return 0 points for a *recent real-time* cycle (they prefer
+  adjusted fields that don't exist yet); (b) the blanket `fetch.filter_quality`
+  empties the dataset in expert mode because unrelated params (`NITRATE`,
+  `PH_IN_SITU_TOTAL`) have QC 0/3 and `filter_qc` rejects a level if *any* param
+  fails — so I removed that call. Core params are QC=1; the summary de-spikes
+  `BBP700` itself.
+- Verified the recipe end-to-end through the PAB seams: MLD=30 m, bbp700=4.3e-4,
+  chla=0.091 — sensible N. Atlantic gyre values.
+- Raised a Q&A/Reporting question: whether to switch PAB's **default** Argo
+  source to `gdac` given the recurring ERDDAP outages (left `fetch.py` unchanged
+  pending JXP's call).
+
+No package code changed; `pytest` still 70 passed, `ruff` clean, `sphinx-build
+-W` succeeds (the notebook remains excluded from the build).
+
+### 2026-06-21 (Stage 4 — JR/Frouin Rrs overlay cell)
+
+Added section 9 to `docs/nb/05_matchup_7902226_4.ipynb`: over-plots Robert
+Frouin's ("JR") PACE-L1B atmospheric-correction `Rrs` spectrum on the standard
+PACE L2 AOP closest-pixel spectrum, both with error bands (PACE ±`Rrs_unc` blue;
+JR ±`Rrs_std` red). Code also mirrored into the prompt doc's *Extra cell*
+section.
+
+- **Reused, didn't reinvent.** *Imports* `jr_utils.load_jr_data`/`extract_rrs`
+  from `bing/papers/biomass/Analysis/py` (via a `BING_ANALYSIS_PY` env override),
+  honoring the "don't copy the one-off Analysis scripts" agreement — using the
+  helper is what JXP asked for.
+- **Row selection.** The JR CSV (`Frouin/jr_test_matchup_L1B.csv`, 9 data rows +
+  comment rows) is matched to the float by nearest `PACE_lat`/`PACE_lon`
+  (`dropna` drops the comment rows). For this seed it resolves to JR **row 6**
+  (`PACE_OCI.20250219T155847…`, 0.4 km, time 2025-02-18T20:26:59) — an exact hit.
+- **Sanity.** JR spectrum: 268 bands (339–895 nm), blue ~1.0×10⁻² → red
+  ~1.7×10⁻⁴ sr⁻¹ — a textbook oligotrophic-gyre shape. Used `Rrs_std` for the
+  band (noted `Rrs_uncertainty_<λ>` as an alternative).
+- Could not execute end-to-end here (the PACE half still needs Earthdata creds),
+  but verified the JR-loading path live; notebook validates with `nbformat`.

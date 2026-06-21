@@ -1,6 +1,6 @@
 # PAB Implementation Record
 
-**Version:** 0.2.3
+**Version:** 0.3.0
 **Date:** 2026-06-20
 **Authors:** JXP and Claude
 
@@ -28,7 +28,7 @@ every bump.
 | 1 | Database layer | ✅ done | `pab.db.schema`, `pab.db.store` |
 | 2 | BGC-Argo ingestion & mixed-layer summary | ✅ done | `pab.argo.{mld,summary,fetch,qa}` |
 | 3 | PACE access & spectrum extraction | ✅ done | `pab.pace.{flags,extract,cloud,discover,l1b}` |
-| 4 | Matchup engine | ⬜ pending | `pab.matchup.*` (stub) |
+| 4 | Matchup engine | ✅ done | `pab.matchup.engine` |
 | 5 | BING fitting wrapper | ⬜ pending | `pab.fit.*` (stub) |
 | 6 | Metrics & figures | ⬜ pending | `pab.metrics.*`, `pab.plotting.*` (stubs) |
 | 7 | Reporting | ⬜ pending | `pab.report.*` (stub) |
@@ -43,7 +43,7 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 60 passed; `ruff check pab` and
+**Verification (current).** `pytest` → 70 passed; `ruff check pab` and
 `ruff format --check pab` → clean; `sphinx-build -W` → build succeeded.
 
 ---
@@ -289,6 +289,80 @@ path exercised in the notebook.
 
 ---
 
+## 5b. Stage 4 — Matchup engine
+
+The first stage where the Argo and PACE halves meet: for each qualifying
+profile (one with a mixed-layer summary) it finds the best PACE granule in
+space + time, extracts the ~10 nearest **unflagged** `Rrs` spectra, and writes
+the record linking **float ↔ granule ↔ pixels**. Geometry/time logic is pure
+functions; granules arrive via the `open_granule` seam (synthetic in tests, no
+network).
+
+### 5b.1 Engine (`pab/matchup/engine.py`)
+
+- `MatchupConfig` (frozen) — the tunable criteria: `dtime_max_hours` (default
+  24 h → tighten to ~3 h), `n_spectra` (default 10), `max_distance_km` (default
+  5 km), `mask_flags` (the standard ocean screen).
+- `make_matchup_id(wmo, cycle, granule_id)` → `"{wmo}_{cycle}_{granule_id}"`
+  (deterministic; re-runs upsert).
+- `parse_time` / `time_offset_hours` — robust ISO-8601 parsing (trailing `Z`,
+  naive→UTC, `datetime`/`datetime64`) and the `|Δt|`-in-hours offset.
+- `find_matchup(profile, candidates, *, opener, config)` — temporal pre-filter,
+  then for each candidate open the granule and select nearest unflagged pixels;
+  reject if none valid or the nearest pixel is beyond `max_distance_km`. Picks
+  the best by **(distance, dtime, −n_spectra, granule_id)** and returns a
+  `Matchup` (or `None`).
+- `write_matchup(store, matchup, *, created)` — upserts the `matchups` row
+  (stamped `pab_version`/`created`) and **replaces** its `matchup_pixels`
+  (delete-then-insert) so re-runs leave no stale/duplicate rows.
+- `qualifying_profiles(store)` (profiles ⨝ mld_summary) and
+  `candidate_granules(store, profile_time, dtime_max_hours)` (temporal
+  pre-filter over the `granules` table).
+- `build_matchups(store, *, opener, config, replace, created)` — the driver;
+  returns `{"written", "skipped", "unmatched"}`, idempotent/resumable by
+  `matchup_id`.
+
+### 5b.2 Key decisions
+
+- **Spatial test = nearest-pixel distance gate**, not polygon-in-footprint. The
+  engine opens each temporally-near granule and accepts it only if the nearest
+  *unflagged* pixel lies within `max_distance_km`. This reuses the Stage 3
+  extraction unchanged and needs no WKT/shapely; a footprint bbox pre-filter is
+  a future optimization (noted in `docs/matchup.rst`). Tie-break leads with
+  distance because Bisson et al. find skill degrades where `Rrs` variability is
+  high.
+- **No schema change.** The Stage 1 `matchups`/`matchup_pixels` tables already
+  fit; `SCHEMA_VERSION` stays at 1. Only unflagged pixels are selected, so
+  `matchup_pixels.flagged` is always 0 (recorded for schema fidelity).
+- **Spectra not stored.** `matchup_pixels` records *which* pixels were chosen
+  (ix/iy + geometry); the `Rrs(λ)` arrays are re-read from the granule at fit
+  time (Stage 5).
+
+**Tests** — `pab/tests/test_matchup.py` (10): `matchup_id` format; time-offset
+parsing (arg-order/`Z`); closest-granule selection; **time-window edge** (just
+inside vs. just outside); distance-gate rejection of a far footprint;
+**flagged-nearest-pixel exclusion**; all-flagged → `None`; persisted links with
+correct FKs/`n_spectra`/`distance_km`/`dtime_hours` + **idempotent re-run** (no
+dupes); unmatched when out of window; `write_matchup` requires `profile_id`. The
+cloud layer is mocked via injected `opener=` synthetic granules.
+
+**Docs page** — `matchup.rst` (criteria, selection/tie-break rule, `matchup_id`
+scheme, float↔granule↔pixels linkage, source-agnostic testing; autodoc of
+`pab.matchup.engine`).
+
+**Notebook** — `docs/nb/04_matchup.ipynb` (synthetic granule → seed profile +
+granule → `build_matchups` → selected pixels & records → idempotent re-run →
+flagged-pixel exclusion; optional `RUN_LIVE` real float↔PACE matchup).
+
+**Dev data.** `data/dev_profiles.csv` — the fixed 10-profile development set (2
+JXP-confirmed PACE-matchup seeds + 8 random PACE-era cycles across two floats /
+biomes), with `data/README.md`. The argopy `fetch`/`iter_profiles` and
+`discover`/`open_s3` seams remain network-bound (exercised in the notebook's
+`RUN_LIVE` path), so the offline suite still covers them only via construction /
+mocks.
+
+---
+
 ## 6. Cross-cutting conventions (as implemented)
 
 - **Provenance** — every results-bearing row carries `pab_version` + `created`;
@@ -330,13 +404,14 @@ pab/
     cloud.py           ✅ canonical granule ds; lazy-S3 / local backends
     discover.py        ✅ earthaccess discovery + granule table + persist
     l1b.py             ✅ documented L1B->Rrs hook (future)
-  matchup/             ⬜ Stage 4
+  matchup/
+    engine.py          ✅ space+time match, pixel selection, record writing
   fit/                 ⬜ Stage 5
   metrics/             ⬜ Stage 6
   plotting/            ⬜ Stage 6
   report/              ⬜ Stage 7
   pipeline.py          ⬜ Stage 8
-  tests/               test_smoke, test_db, test_argo
+  tests/               test_smoke, test_db, test_argo, test_pace, test_matchup
 ```
 
 ---
