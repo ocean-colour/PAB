@@ -64,6 +64,8 @@ Read these before coding:
 6. Read this doc.  Execute the 2nd task in the "Pull Request" section below.
 7. Read this doc.  Execute the 3rd task in the "Pull Request" section below.
 
+8. Read this doc.  Execute the 1st task in the "Stage 5" section below.
+
 ## Pre Stage 4
 
 1. Read this doc.  For development for here on out, let us work with a set of 10 Argo profiles, a subset of which will have match-ups with PACE.  Here are 3 profiles I know that will match-up, named by Argo WMO number and profile number (my numbering, so there is room for error here):
@@ -422,6 +424,10 @@ levels via gdac. Heads-up: argopy emits `UserWarning: BGC data support with the
 tests, just noting the upstream caveat. Suite **72 passed**, `ruff` + `sphinx -W`
 clean.
 
+## Stage 5
+
+1. Generate a prompt doc for Stage 5.  Name it `claude_prompts/coding_stage5.md`.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -433,6 +439,29 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-21 (Stage 5 — generated the Stage 5 prompt doc)
+
+Created `claude_prompts/coding_stage5.md` (the BING fitting wrapper), mirroring
+the Stage 4 doc's structure (Goals / Claude[Skills, Working agreements] /
+Context / Prompts / Stage 5 [Scope, Deliverables, Tests, Docs, Notebook,
+Definition of done, Q&A] / Logging / Logs).
+
+- Grounded it in coding-plan §5 (model pair `ExpBricaud`+`Pow`, LM→MCMC,
+  `nsteps≈10000`/`nburn≈1000`/16 walkers, namespaced IOP columns, NPZ chains,
+  batch + idempotent) and `docs/context.md` §2 (the `bb/a` degeneracy, why
+  `b_bp` is the matchup observable).
+- Named the seams Stage 5 builds on: the existing `fits`/`fit_results` schema
+  (long → `fit_results_wide()`), the `matchups`/`matchup_pixels` inputs, re-read
+  of pixel `Rrs` via `pace.extract`/`cloud` (spectra aren't stored), and
+  `package_versions()` for provenance.
+- Pointed at the relevant installed skills (`run-bing-fit`, `satellite-band-prep`,
+  `debug-priors`, `diagnose-mcmc`, `plot-bing-fit`, `fit-l23-spectrum`,
+  `batch-fit-argo`) and reiterated "reuse `bing`, don't copy the biomass
+  Analysis scripts."
+- Proposed deliverables `pab.fit.{models,run,artifacts}`, a known-answer
+  recovery test (synthetic `Rrs` via `calc_Rrs`, short MCMC, `importorskip`),
+  `docs/fitting.rst`, and `docs/nb/06_fit.ipynb` — all to the Stage 0–4 DoD.
 
 ### 2026-06-21 (Stage 4 — switched default Argo source to GDAC)
 
