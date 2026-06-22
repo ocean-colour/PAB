@@ -104,8 +104,6 @@ Read these before coding:
 
 2. Make edits to the Repo to address the review comments.  If you have any questions, write them in the Q&A section below.  If you have any requests, write them in the Requests section below.
 
-3. I have answered your question in the Q&A section.  Please make the necessary edits.
-
 ### Requests
 
 **Addressed the PR #3 review (Claude, 2026-06-22).** Working-tree edits (not
