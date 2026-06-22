@@ -1,7 +1,7 @@
 # PACE and BGC-Argo Matchup Analysis Design Document
 
-**Version:** 0.4
-**Date:** 2026-06-19
+**Version:** 0.4.1
+**Date:** 2026-06-22
 **Authors:** JXP and Claude
 
 **Versioning convention:** bump the **minor** version for substantive changes
@@ -456,9 +456,14 @@ criteria remain available as *diagnostics* but are not used to choose a model.
 
 Each matchup yields three estimates of backscatter that PAB compares:
 **BING `bbp`** (this analysis), **NASA L2 IOP `bbp`** (the secondary baseline,
-`bbp_442`/`bbp_s`), and the **in-situ Argo `bbp`** (mixed-layer, de-spiked). The
-matchup metrics are defined here (PAB has no separate Metrics section; the
-metrics live with the Analysis layer). They follow the comparison used in the
+`bbp_442`/`bbp_s`), and the **in-situ Argo `bbp`** (mixed-layer, de-spiked).
+**Chlorophyll is compared the same way:** BING **retrieves** Chl from the fitted
+phytoplankton amplitude `Aph` (for the Bricaud family, `Chl = 10**Aph / 0.05582`)
+— the `Chl` passed in only *seeds* the `a_ph` shape, it is **not** a fixed input —
+so the BING Chl is compared against the in-situ Argo `chla` (with an OC4
+band-ratio Chl available as an independent cross-check). The matchup metrics are
+defined here (PAB has no separate Metrics section; the metrics live with the
+Analysis layer). They follow the comparison used in the
 BING `papers/biomass` analysis and in Bisson et al. (2019), which compare
 satellite vs. float `bbp` in log space:
 

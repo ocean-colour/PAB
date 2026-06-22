@@ -1,0 +1,286 @@
+# Coding up PAB — Stage 6 (Metrics & figures)
+
+## Goals
+
+Implement **Stage 6** of the coding plan: the **metrics & figures** layer that
+turns the per-matchup BING fits (Stage 5) into the comparison PAB exists to make
+— **satellite `b_bp` vs. BGC-Argo `b_bp`** and the same for **Chl-a** — and the figures that make each
+matchup and the population inspectable. This is the analysis payoff: the three
+backscatter estimates (BING, NASA L2 IOP baseline, in-situ Argo) are compared in
+log space, stratified, and visualized.
+
+We continue to be guided by the design document `docs/design/PAB_design.md` and
+the coding plan `docs/design/PAB_coding_plan.md`, and we record what we build in
+`docs/design/PAB_implementation.md`.
+
+## Claude
+
+### Skills
+
+Helpers for this stage (read their guidance; don't blindly copy):
+
+- `plot-bing-fit` — the standardized three-panel `Rrs`/`a_nw`/`b_bnw` fit figure
+  and corner plot built from a fit's chains; the **concept** for the per-matchup
+  fit figure (PAB writes its own ~100 KB version, not BING's ~1 MB one).
+- `diagnose-mcmc` — corner-plot inspection and convergence cues for the fit
+  figure / quality fields.
+- `batch-fit-argo` — the batch/idempotent pattern, mirrored for figure
+  generation over the matchup population.
+
+### Working agreements (unchanged from Stages 0–5)
+
+- **Git is handled by the user.** Do not run state-changing git commands
+  (`add`/`commit`/`push`/branch/merge). Read-only inspection is fine.
+- **Python only.** No MATLAB.
+- **Reuse, don't reinvent.** Build on the installed `bing`, `ocpy`, `argopy`,
+  `remote_sensing` packages and the PAB modules already written; do **not** copy
+  the one-off `bing/papers/biomass/Analysis` scripts (import/reuse their library
+  functions, or follow BING's `bing.plotting` *concepts*, instead).
+
+## Context
+
+Read these before coding:
+
+- **Design** — `docs/design/PAB_design.md`, especially *Comparison & metrics* and
+  *Figures & tables* (the three `b_bp` estimates; median ratio + IQR, Spearman ρ,
+  log-space bias & RMS/MAD scatter, per-fit reduced χ²; the ~100 KB per-matchup
+  fit figure and scene quick-look; population figures; stratify by region /
+  season / `Rrs` spatial variability).
+- **Coding plan** — `docs/design/PAB_coding_plan.md` §4 *Stage 6* (scope,
+  deliverables, tests, docs) and §3 *Cross-cutting concerns*.
+- **Implementation record** — `docs/design/PAB_implementation.md` (current state;
+  update it at the close of this stage).
+- **Distilled references** — `docs/context.md` §3 (Bisson: median sat/float `bbp`
+  ratio 0.77–1.66; skill degrades where `Rrs` is spatially variable — hence the
+  stratification) and §2 (why `b_bp` is the matchup observable).
+- **Existing PAB seams this stage builds on:**
+  - `pab.db` — read the per-matchup results: `fit_results` (the namespaced
+    `BING_ExpBPow_bbp700` etc., via `Store.fit_results_wide()`), `fits` (reduced
+    `chisq`/`aic`/`bic`/`accept_frac`, `chains_path`), `mld_summary` (the in-situ
+    `bbp700`/`chla`), `matchups`/`matchup_pixels` (geometry + the granule).
+  - `pab.fit.artifacts.load_chains` + `pab.fit.models.build_models` — reconstruct
+    a fit's posterior for the per-matchup fit figure.
+  - `pab.pace.cloud.open_granule` + `pab.pace.flags` + `pab.matchup` pixels — the
+    scene quick-look (granule neighborhood, float marker, analyzed pixels, the
+    `l2_flags` mask). Mockable via the `opener=` seam (no network in tests).
+  - `pab.config` (`pab_version`, `DATA_DIR`) — provenance + where figures are
+    written.
+  - **NASA L2 IOP baseline (secondary)** — `ocpy.pace.io.load_iop_l2` yields
+    `bbp_442`/`bbp_s`; carried under the `NASA_L2IOP_*` namespace. Treat its
+    extraction as a thin, lazily-imported seam (like the cloud read); the metric
+    functions themselves stay pure (operate on arrays the store provides).
+
+## Prompts
+
+1. Read this doc and the context files. Execute the 1st task in the "Stage 6" section below.
+1. Read this doc.  Execute the 2nd task in the "Stage 6" section below.
+
+## Stage 6
+
+### Tasks
+
+1. Read this doc and the context files. Implement Stage 6 (below). If you have
+   questions, write them in the Q&A section. If you have any requests, write them
+   in the Requests section. Log your work in the Logs section.
+
+2. We need to correct a misconception that you have about the `ExpBPow` model.  One of the free parameters is `Aph` and the model uses that to estimate `Chl`.  But `Chl` is **not** truly an input parameter.  We do input it to seed the model, and that is all.  If necessary modify the design docs to make this clear.  And modify your code for this Stage as well. Log your work.
+
+### Q&A
+
+**Q (Claude, 2026-06-22):** You added "and the same for Chl-a." Our `ExpBPow`
+model takes `Chl` as an **input** (the Argo mixed-layer `chla`), so a "BING Chl"
+would be circular. For the satellite Chl I defaulted to an **OC4 band ratio**
+(`ocpy.chl.band_ratios.oc4`) computed on the matchup pixel `Rrs` — independent of
+Argo. Is that the source you want, or would you prefer the **NASA L2 OC
+`chlor_a`** product (a new ingest), or a BING `a_ph(440)`-derived Chl? The metric
+layer is quantity-agnostic, so whichever you pick plugs straight in. — *JXP:*
+
+**Corrected (Claude, 2026-06-22):** Per Task 2 — I had this wrong. `Chl` only
+**seeds** the Bricaud `a_ph`; BING **retrieves** Chl from the fitted `Aph`
+(`Chl = 10**Aph / 0.05582`). So the primary Chl comparison is now **BING `chl`
+vs Argo `chla`** (parallel to `b_bp`): Stage 5 emits a `chl` quantity, and
+`gather_matchups` surfaces `chl_bing`. The OC4 band-ratio Chl is kept as an
+optional independent cross-check. Docs (design/fitting/metrics/impl) corrected.
+
+### Requests
+
+## Pull Request
+
+1. I have executed a Pull Request on GitHub for Stage 6. Please review the Pull
+   Request and post it to GitHub.
+
+2. Make edits to the Repo to address the review comments. If you have any
+   questions, write them in the Q&A section below. If you have any requests,
+   write them in the Requests section below.
+
+## Stage 6 — Metrics & figures
+
+Here is some additional context.
+
+### Scope
+
+Compute the matchup comparison metrics and render the figures:
+
+- **The three `b_bp` estimates per matchup** — **BING** (`BING_ExpBPow_bbp700`
+  from `fit_results`), **in-situ Argo** (`mld_summary.bbp700`), and the
+  **NASA L2 IOP** baseline (`bbp_442`/`bbp_s` → `NASA_L2IOP_bbp`, when
+  available). Mind the **wavelength offset** (Argo `bbp(700)` vs the satellite
+  band) noted by Bisson — document how it is handled (e.g. compare at 700 nm
+  using the retrieved slope, or note the band difference).
+- **Metrics** (pure functions on aligned arrays):
+  - **Ratio** — `bbp_sat / bbp_float`, summarized by **median** + IQR.
+  - **Rank correlation** — **Spearman** ρ.
+  - **Log-space bias & scatter** — bias = mean of `log10(bbp_sat/bbp_float)`;
+    scatter = RMS (and/or MAD) of that residual.
+  - **Per-fit goodness of fit** — carry the reduced χ² from `fits` as a
+    per-matchup quality field.
+  - **BING vs. NASA L2 IOP** — the same statistics between the two satellite
+    retrievals (separates algorithm differences from sat-vs-float differences).
+  - **Stratification** — by region, season, and `Rrs` spatial variability.
+- **Figures** (matplotlib, non-interactive/Agg; ~100 KB budget each):
+  - **Per-matchup fit figure** — spectral fit + residuals (+ a compact corner),
+    reconstructed from the fit's chains NPZ; PAB's own code informed by
+    `bing.plotting`/`plot-bing-fit` *concepts*, sized down (lower DPI, optimized
+    PNG, trimmed panels) vs the ~1 MB biomass figures.
+  - **Per-matchup scene quick-look** — a granule-neighborhood `Rrs` (single-band)
+    thumbnail with the **Argo location marked**, the **analyzed pixels
+    highlighted**, and the `l2_flags` mask shown (flagged pixels greyed).
+  - **Population figures** — satellite-vs-float `b_bp` log-log scatter (1:1 +
+    median-ratio offset lines), BING-vs-NASA-L2-IOP comparison, a map, and metric
+    distributions.
+
+Keep the heavy/optional reads (`ocpy` for the NASA baseline; granule opens) a
+**lazily-imported / mockable seam**, and keep the metric math in **pure functions
+on arrays** so it unit-tests offline with known values.
+
+### Deliverables
+
+- `pab.metrics.compare` — the pure metric functions (ratio/median/IQR, Spearman,
+  log bias & RMS/MAD), a per-matchup quality assembler, and a
+  store→matchup-`bbp`-triples gatherer; stratification helpers.
+- `pab.plotting.{fit_fig, scene, population}` — the three figure families.
+- Update `pab/metrics/__init__.py` and `pab/plotting/__init__.py` to export the
+  public API.
+- **Persistence (decide & document):** the design says metrics are "written to
+  the SQLite store for the reporting layer." If a small `metrics` table is
+  warranted, **bump `pab.db.schema.SCHEMA_VERSION` and add a migration**;
+  otherwise compute them on demand from `fit_results`/`mld_summary` at report
+  time (Stage 7) and justify the choice.
+
+### Tests (offline; `pytest`)
+
+- **Metric known-values** — ratio/median/IQR, Spearman ρ, log-space bias & RMS/
+  MAD on constructed arrays with hand-computed answers; NaN/empty handling.
+- **Figure smoke** — fit + scene + population figures render to files **within
+  the ~100 KB budget** (Agg backend; tmp paths); the **scene marks the correct
+  float pixel** on a synthetic granule fixture (reuse the `pab.pace`/`pab.matchup`
+  fixture pattern; inject the granule via `opener=`).
+- **Gatherer** — the store→`bbp`-triples join returns the right rows/alignment on
+  a seeded DB (matchup + fit_results + mld_summary).
+- Continue the project convention: pure functions checked with known values;
+  heavy/network seams mocked; matplotlib forced to Agg; no network/S3.
+
+### Docs
+
+- A **metrics & figures page** (`docs/metrics.rst`): the metric definitions
+  (mirroring the design *Comparison & metrics*), the wavelength-offset handling,
+  the figure families + size budget, and the stratification dimensions. Add it to
+  the `index.rst` *Package* toctree and autodoc `pab.metrics.*` / `pab.plotting.*`.
+
+### Notebook
+
+- `docs/nb/07_metrics.ipynb` — a worked example on **synthetic** matchup results
+  (offline): compute the metrics, render a fit figure, a scene quick-look, and a
+  population scatter, and show the metric values. Built executed (offline-safe),
+  rendered via `myst-nb`, added to the *Notebooks* toctree; optional `RUN_LIVE`
+  section over real Stage-5 fits.
+
+### Definition of done (the Stage 0–5 standard)
+
+- `pytest` green (new Stage 6 tests included); `ruff check pab` and
+  `ruff format --check pab` clean; `sphinx-build -W` succeeds.
+- Google-style docstrings on every public function; provenance stamped where
+  records are written.
+- `docs/design/PAB_implementation.md` updated: flip Stage 6 to ✅ in the status
+  table, add a Stage 6 section (modules/API, key decisions, tests, docs,
+  notebook), update the module index and the verification line; bump its
+  version/date.
+- Work logged (see below).
+
+### Q&A
+
+(Write any questions for JXP here; he answers inline. Do not block on interactive
+prompts.)
+
+## Logging
+
+Append an entry to the **Logs** section of this file using the format:
+
+```
+### <Date> (Short summary of the work)
+
+<Detailed description of the work and what you learned>
+```
+
+## Logs
+
+### 2026-06-22 (Stage 6 — corrected the Chl/Aph misconception)
+
+Task 2: JXP corrected me — in `ExpBPow`, `Aph` is a free parameter and the model
+**estimates Chl from it** (`Chl = 10**Aph / 0.05582`, `bing/models/anw.py`); the
+input `Chl` only *seeds* the `a_ph` shape, it is not a fixed input. So BING
+retrieves Chl, and the Chl comparison should be **BING Chl vs Argo chla**,
+parallel to `b_bp` — not the OC4 workaround I'd defaulted to.
+
+Changes (working tree):
+
+- **Stage 5 `pab/fit`** — added `chl_from_aph()` + `BRICAUD_APH440`, and
+  `extract_quantities` now emits a **`chl`** quantity (BING-retrieved) for the
+  Bricaud family; reworded the `fit_spectrum`/`fit_matchup` docstrings
+  (`Chl` *seeds*, not anchors/inputs). New pure test `test_chl_from_aph`.
+- **Stage 6 `pab/metrics`** — `gather_matchups` now surfaces `chl_bing`
+  (`BING_*_chl`); `compare(df, "chl_bing", "chla_argo")` is the Chl metric.
+  `add_oc_chl` reframed as an **optional independent** OC4 cross-check (not the
+  primary). Test asserts the `chl_bing` comparison.
+- **Docs** — corrected `PAB_design.md` (Comparison & metrics: Chl is retrieved
+  from `Aph`, seeded only; v0.4.1), `fitting.rst`, `metrics.rst`, and the impl
+  record §5c/§5d (v0.5.1). The notebook `07_metrics` now shows a Chl scatter
+  alongside `b_bp`.
+- Verified: **89 passed, 2 skipped**; `ruff` + `sphinx -W` clean.
+
+### 2026-06-22 (Stage 6 — implemented metrics & figures)
+
+Implemented Stage 6: `pab.metrics.compare` + `pab.plotting.{fit_fig,scene,population}`.
+
+What I built:
+
+- **`metrics/compare.py`** — quantity-agnostic `log_comparison` (median ratio +
+  IQR, Spearman ρ, log bias, RMS/MAD), `gather_matchups` (store → per-matchup
+  frame), `compare`, `add_strata` (season/region), and `add_oc_chl` (satellite
+  OC4 Chl via `ocpy.chl.band_ratios.oc4` on the matchup pixel Rrs).
+- **`plotting/scene.py`** — `scene_quicklook`/`scene_from_store` (float marker +
+  analyzed pixels + greyed `l2_flags`); pure, `locate_float_pixel` tested.
+- **`plotting/population.py`** — `comparison_scatter` (log-log + 1:1 +
+  median-ratio) and `matchup_map`.
+- **`plotting/fit_fig.py`** — `fit_figure` reconstructing a fit from its chains
+  NPZ + `build_models` (Rrs band + `b_bp(λ)` band).
+- **Tests** (`test_metrics.py`, 9): metric known-values, gatherer/strata, OC Chl
+  via injected granule, scene pixel-marking + figure budgets, population figures,
+  and a `bing`-guarded fit-figure smoke. Suite **88 passed, 2 skipped**; `ruff` +
+  `sphinx -W` clean.
+- **Docs** `metrics.rst` + **notebook** `07_metrics.ipynb` (executed offline).
+  Implementation record → Stage 6 ✅ (v0.5.0).
+
+Key decisions / what I learned:
+
+- **Chl source.** `ExpBPow` takes `Chl` as an *input* (the Argo value), so a
+  "BING Chl" would be circular. I default the satellite Chl to an **OC4 band
+  ratio** (`ocpy.chl.band_ratios.oc4`) on the matchup `Rrs` — independent of
+  Argo. Raised a Q&A asking JXP to confirm vs NASA `chlor_a`. The metric layer is
+  quantity-agnostic so the choice plugs in.
+- **No schema change** — metrics are computed on demand from
+  `fit_results`/`mld_summary` (cheap; aggregate presentation is Stage 7's job).
+- **Wavelength offset** handled by comparing at 700 nm (BING reports `b_bp(700)`
+  directly).
+- The two `bing`-dependent tests (Stage 5 recovery + this fit-figure) skip when
+  BING's external Loisel data file is absent (as in this env).

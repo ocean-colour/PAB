@@ -611,3 +611,31 @@ The doc captures, for Stage 4:
 
 No code or package files changed; this task only authored the prompt doc.
 Logged here per the instruction. No questions for Q&A.
+
+### 2026-06-22 (Stages 4–6 built; corrected the Chl/Aph misconception)
+
+Stages 4 (matchup engine), 5 (BING fitting wrapper), and 6 (metrics & figures)
+were implemented, reviewed (PRs #2/#3), and logged in detail in their per-stage
+docs (`claude_prompts/coding_stage{4,5,6}.md`); the implementation record is at
+v0.5.1 and the suite is **89 passed, 2 skipped** (the two tests needing BING's
+Loisel data file skip when it is absent), `ruff` + `sphinx-build -W` clean.
+
+This entry records the most recent step — JXP's Stage 6 Task 2 correction. I had
+wrongly treated `Chl` as a fixed **input** to the `ExpBPow` fit. In fact `Aph` is
+a free parameter and BING **retrieves** Chl from it (`Chl = 10**Aph / 0.05582`
+for the Bricaud family); the input `Chl` only *seeds* the `a_ph` shape. Fixes:
+
+- `pab/fit` — added `chl_from_aph()` + `BRICAUD_APH440`; `extract_quantities`
+  now emits a BING-retrieved **`chl`** quantity; reworded the `Chl`-as-input
+  docstrings to "seed".
+- `pab/metrics` — `gather_matchups` surfaces `chl_bing` (`BING_*_chl`) so the
+  **BING Chl vs Argo `chla`** comparison runs through the same quantity-agnostic
+  `log_comparison` as `b_bp`; `add_oc_chl` (OC4 band ratio) is reframed as an
+  optional independent cross-check.
+- Docs corrected: `PAB_design.md` (v0.4.1, *Comparison & metrics*),
+  `fitting.rst`, `metrics.rst`, the impl record (v0.5.1), and the
+  `07_metrics` notebook (now shows a Chl scatter beside `b_bp`).
+
+What I learned: the model takes `Chl` only to set the Bricaud `a*_ph(λ)` shape;
+the fitted amplitude `Aph` then determines the retrieved Chl — so a Chl matchup
+is a genuine retrieval-vs-in-situ test, parallel to backscatter.
