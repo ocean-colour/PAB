@@ -24,6 +24,7 @@ site is a separate Sphinx target produced in Stage 7.
    argo_ingestion
    pace_access
    matchup
+   fitting
 
 .. toctree::
    :maxdepth: 1
@@ -34,6 +35,7 @@ site is a separate Sphinx target produced in Stage 7.
    nb/02_argo_mld_summary
    nb/03_pace_access
    nb/04_matchup
+   nb/06_fit
 
 .. toctree::
    :maxdepth: 1

@@ -1,7 +1,7 @@
 # PAB Implementation Record
 
-**Version:** 0.3.0
-**Date:** 2026-06-20
+**Version:** 0.4.0
+**Date:** 2026-06-21
 **Authors:** JXP and Claude
 
 **Status:** living document — updated as each stage is implemented.
@@ -29,7 +29,7 @@ every bump.
 | 2 | BGC-Argo ingestion & mixed-layer summary | ✅ done | `pab.argo.{mld,summary,fetch,qa}` |
 | 3 | PACE access & spectrum extraction | ✅ done | `pab.pace.{flags,extract,cloud,discover,l1b}` |
 | 4 | Matchup engine | ✅ done | `pab.matchup.engine` |
-| 5 | BING fitting wrapper | ⬜ pending | `pab.fit.*` (stub) |
+| 5 | BING fitting wrapper | ✅ done | `pab.fit.{models,run,artifacts}` |
 | 6 | Metrics & figures | ⬜ pending | `pab.metrics.*`, `pab.plotting.*` (stubs) |
 | 7 | Reporting | ⬜ pending | `pab.report.*` (stub) |
 | 8 | End-to-end pipeline & CLI | ⬜ pending | `pab.pipeline` (stub) |
@@ -43,8 +43,10 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 72 passed; `ruff check pab` and
-`ruff format --check pab` → clean; `sphinx-build -W` → build succeeded.
+**Verification (current).** `pytest` → 80 passed, 1 skipped (the BING
+data-dependent `b_bp`-recovery test skips when the Loisel aph-basis file is
+absent); `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
+-W` → build succeeded.
 
 ---
 
@@ -367,6 +369,83 @@ mocks.
 
 ---
 
+## 5c. Stage 5 — BING fitting wrapper
+
+Fits the matchup `Rrs` spectra with `bing` and stores the retrieved IOPs (above
+all non-water backscatter `b_bp`, the BGC-Argo matchup observable) with full
+posterior uncertainties. `bing`/`emcee` are a lazily-imported seam; the
+array-level science is pure and offline-tested.
+
+### 5c.1 Models (`pab/fit/models.py`)
+
+- `FitConfig` (frozen) — `model_pair` (default `"ExpBPow"`), `satellite`,
+  `nsteps=10000`, `nburn=1000`, `wave_min/max=400/700`, `variable_Gordon=False`,
+  `include_Raman=False`, `analysis_burn=7000`, `perc=(5,95)`.
+- `build_models(config, wave)` → `(p, rt_dict, models)` via
+  `bing.parameters.standard.<combo>` + `rt.defs.rt_dict_from_p` +
+  `models.utils.init` + `priors.set_standard_priors`. `BING_COMBO` maps the PAB
+  label to the bing factory (`ExpBPow → expb_pow`).
+
+### 5c.2 Run (`pab/fit/run.py`)
+
+- Pure helpers: `make_fit_id` (`"{matchup_id}_{ix}_{iy}_{model_pair}"`),
+  `prepare_spectrum` (window + `varRrs` from `Rrs_unc**2`, 2% floor),
+  `extract_quantities` (posterior → median + credible band for each free
+  parameter, linearised out of log space, plus derived `bbp`/`anw`/`adg` at
+  440/700 nm).
+- `fit_spectrum(wave, Rrs, Rrs_unc, *, Chl, Y, config)` — LM warm-start
+  (`chisq_fit.fit`, falls back to the initial guess) → MCMC (`inference.fit_one`,
+  keeping the sampler for the acceptance fraction) → `FitSpectrumResult` (chains,
+  quantities, reduced `chisq`/`aic`/`bic`, `accept_frac`, `success`). Anchors
+  Bricaud `a_ph` with `Chl`.
+- `fit_matchup(store, matchup_id, …)` — re-reads the pixel `Rrs` from the granule
+  (via `pace.cloud`/`pace.extract`), passes the float's mixed-layer `chla` as
+  `Chl` (guarded by `finite_or_none`, since a NaN `chla` would poison
+  `set_aph`), fits, writes chains + rows. `build_fits(store, …)` runs the nearest
+  pixel of every matchup, idempotent/resumable by `fit_id`, and records a matchup
+  that fails to fit under `"failed"` rather than aborting the batch.
+
+### 5c.3 Artifacts (`pab/fit/artifacts.py`)
+
+- `save_chains`/`load_chains` — NPZ keyed by `fit_id` under
+  `PAB_DATA_DIR/fit_chains/` (chains stay out of the DB; `fits.chains_path`
+  points to them).
+- `persist_fit(...)` — upserts the `fits` row (config + diagnostics +
+  provenance: `pab_version`, `created`, `pkg_versions`) and the namespaced
+  `fit_results` rows (`BING_<model_pair>_<quantity>`); replaces a fit's prior
+  quantities (delete-then-insert) so re-runs leave no stale rows.
+
+### 5c.4 Key decisions
+
+- **`b_bp` via the bb_nw model**, not `reconstruct_from_chains` (which returns
+  *total* a/bb and burns 7000 steps): PAB evaluates `models[1].eval_bbnw` on the
+  posterior bb-params, so it gets the non-water backscatter directly and
+  controls the analysis burn (falling back to `nsteps // 2` for short chains —
+  this is what makes a toy-size MCMC testable).
+- **No schema change** — the Stage 1 `fits`/`fit_results` tables already fit;
+  `SCHEMA_VERSION` stays at 1. Quantities are namespaced so a second model pair
+  adds rows, not columns.
+- **Lighter MCMC than BING's research default** (`nsteps=10000`) — documented in
+  `fitting.rst`.
+
+**Tests** — `pab/tests/test_fit.py` (9): `make_fit_id`; `finite_or_none` (the
+NaN-`chla` guard); `prepare_spectrum` window/variance/empty-window; `persist_fit`
+links + namespaced quantities + idempotent re-run; `build_fits` records a failed
+matchup without aborting the batch; `save_chains`/`load_chains` round trip; and a
+**known-answer recovery** (synthetic noise-free `Rrs` via `calc_Rrs`, short MCMC,
+`importorskip("bing"/"emcee")`) checking `b_bp(700)` within tolerance — it
+`skip`s when BING's external Loisel aph-basis data file is unavailable.
+
+**Docs page** — `fitting.rst` (pipeline, the `BING_<model_pair>_<quantity>`
+schema, MCMC settings, provenance/artifacts, matchup linkage; autodoc of
+`pab.fit.*`).
+
+**Notebook** — `docs/nb/06_fit.ipynb` (synthetic spectrum → LM→MCMC → posterior
+`b_bp` + fit figure → persisted `fits`/`fit_results`; optional `RUN_LIVE`
+real-matchup fit). Executed offline-safe at toy MCMC size.
+
+---
+
 ## 6. Cross-cutting conventions (as implemented)
 
 - **Provenance** — every results-bearing row carries `pab_version` + `created`;
@@ -410,12 +489,15 @@ pab/
     l1b.py             ✅ documented L1B->Rrs hook (future)
   matchup/
     engine.py          ✅ space+time match, pixel selection, record writing
-  fit/                 ⬜ Stage 5
+  fit/
+    models.py          ✅ FitConfig + BING model-pair/prior build seam
+    run.py             ✅ LM→MCMC fit, quantity extraction, matchup drivers
+    artifacts.py       ✅ NPZ chains + fits/fit_results persistence
   metrics/             ⬜ Stage 6
   plotting/            ⬜ Stage 6
   report/              ⬜ Stage 7
   pipeline.py          ⬜ Stage 8
-  tests/               test_smoke, test_db, test_argo, test_pace, test_matchup
+  tests/               test_smoke, test_db, test_argo, test_pace, test_matchup, test_fit
 ```
 
 ---
