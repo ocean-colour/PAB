@@ -32,6 +32,18 @@ def make_fit_id(matchup_id: str, ix: int, iy: int, model_pair: str) -> str:
     return f"{matchup_id}_{int(ix)}_{int(iy)}_{model_pair}"
 
 
+def finite_or_none(value):
+    """Return ``float(value)`` if it is a finite number, else ``None``.
+
+    Guards the ``Chl`` path: ``summarize_profile`` yields **NaN** (not ``None``)
+    when a profile has no ``CHLA``, and a NaN ``Chl`` would poison BING's
+    ``set_aph`` into a NaN fit.
+    """
+    if value is None or not np.isfinite(value):
+        return None
+    return float(value)
+
+
 def prepare_spectrum(wave, Rrs, Rrs_unc=None, *, config: FitConfig | None = None):
     """Restrict a spectrum to the fit window and build the noise variance.
 
@@ -118,7 +130,7 @@ class FitSpectrumResult:
     aic: float
     bic: float
     accept_frac: float
-    success: bool
+    success: bool  # whether the LM warm-start converged (MCMC always runs)
     Chl: float = field(default=float("nan"))
 
 
@@ -344,7 +356,8 @@ def fit_matchup(
     chla = store.query(
         "SELECT chla FROM mld_summary WHERE profile_id = ?", (m["profile_id"],)
     )
-    chl = chla[0]["chla"] if chla and chla[0]["chla"] is not None else None
+    # require a *finite* chla (NaN would poison set_aph -> a NaN fit)
+    chl = finite_or_none(chla[0]["chla"]) if chla else None
 
     ds = cloud.open_granule(source, opener=opener)
     wave, rrs, unc = _extract.extract_spectrum(ds, int(px["ix"]), int(px["iy"]))
@@ -378,14 +391,18 @@ def build_fits(
 ) -> dict[str, list[str]]:
     """Fit the nearest pixel of every matchup and persist (idempotent).
 
-    Skips a fit already present (by ``fit_id``) unless ``replace=True``.
+    Skips a fit already present (by ``fit_id``) unless ``replace=True``. A
+    single matchup that fails to fit (e.g. its granule cannot be opened, or the
+    fit diverges) is recorded under ``"failed"`` and does **not** abort the
+    batch — so a re-run resumes the rest.
 
     Returns:
-        ``{"written": [...], "skipped": [...]}`` of fit ids.
+        ``{"written": [...], "skipped": [...], "failed": [...]}`` of fit ids.
     """
     config = config or FitConfig()
     written: list[str] = []
     skipped: list[str] = []
+    failed: list[str] = []
     for m in store.query("SELECT matchup_id FROM matchups ORDER BY matchup_id"):
         mid = m["matchup_id"]
         px = store.query(
@@ -401,6 +418,9 @@ def build_fits(
         ):
             skipped.append(fit_id)
             continue
-        fit_matchup(store, mid, config=config, opener=opener, created=created)
-        written.append(fit_id)
-    return {"written": written, "skipped": skipped}
+        try:
+            fit_matchup(store, mid, config=config, opener=opener, created=created)
+            written.append(fit_id)
+        except Exception:  # noqa: BLE001 — one bad matchup must not abort the batch
+            failed.append(fit_id)
+    return {"written": written, "skipped": skipped, "failed": failed}

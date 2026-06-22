@@ -43,8 +43,10 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 79 passed; `ruff check pab` and
-`ruff format --check pab` → clean; `sphinx-build -W` → build succeeded.
+**Verification (current).** `pytest` → 80 passed, 1 skipped (the BING
+data-dependent `b_bp`-recovery test skips when the Loisel aph-basis file is
+absent); `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
+-W` → build succeeded.
 
 ---
 
@@ -398,8 +400,10 @@ array-level science is pure and offline-tested.
   Bricaud `a_ph` with `Chl`.
 - `fit_matchup(store, matchup_id, …)` — re-reads the pixel `Rrs` from the granule
   (via `pace.cloud`/`pace.extract`), passes the float's mixed-layer `chla` as
-  `Chl`, fits, writes chains + rows. `build_fits(store, …)` runs the nearest
-  pixel of every matchup, idempotent/resumable by `fit_id`.
+  `Chl` (guarded by `finite_or_none`, since a NaN `chla` would poison
+  `set_aph`), fits, writes chains + rows. `build_fits(store, …)` runs the nearest
+  pixel of every matchup, idempotent/resumable by `fit_id`, and records a matchup
+  that fails to fit under `"failed"` rather than aborting the batch.
 
 ### 5c.3 Artifacts (`pab/fit/artifacts.py`)
 
@@ -424,11 +428,13 @@ array-level science is pure and offline-tested.
 - **Lighter MCMC than BING's research default** (`nsteps=10000`) — documented in
   `fitting.rst`.
 
-**Tests** — `pab/tests/test_fit.py` (7): `make_fit_id`; `prepare_spectrum`
-window/variance/empty-window; `persist_fit` links + namespaced quantities +
-idempotent re-run; `save_chains`/`load_chains` round trip; and a **known-answer
-recovery** (synthetic noise-free `Rrs` via `calc_Rrs`, short MCMC,
-`importorskip("bing"/"emcee")`) checking `b_bp(700)` within tolerance.
+**Tests** — `pab/tests/test_fit.py` (9): `make_fit_id`; `finite_or_none` (the
+NaN-`chla` guard); `prepare_spectrum` window/variance/empty-window; `persist_fit`
+links + namespaced quantities + idempotent re-run; `build_fits` records a failed
+matchup without aborting the batch; `save_chains`/`load_chains` round trip; and a
+**known-answer recovery** (synthetic noise-free `Rrs` via `calc_Rrs`, short MCMC,
+`importorskip("bing"/"emcee")`) checking `b_bp(700)` within tolerance — it
+`skip`s when BING's external Loisel aph-basis data file is unavailable.
 
 **Docs page** — `fitting.rst` (pipeline, the `BING_<model_pair>_<quantity>`
 schema, MCMC settings, provenance/artifacts, matchup linkage; autodoc of

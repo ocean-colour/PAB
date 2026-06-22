@@ -82,8 +82,10 @@ Read these before coding:
 
 ## Prompts
 
-1. Read this doc and the context files. Execute the 1st task in the "Stage 5"
-   section below.
+1. Read this doc and the context files. Execute the 1st task in the "Stage 5" section below.
+
+2. Read this doc.  Execute the 1st task in the "Pull Request" section below.
+3. Read this doc.  Execute the 2nd task in the "Pull Request" section below.
 
 ## Stage 5
 
@@ -95,10 +97,40 @@ Read these before coding:
 
 ### Q&A
 
-(Write any questions for JXP here; he answers inline. Do not block on interactive
-prompts.)
+
+## Pull Request
+
+1. I have executed a Pull Request on GitHub for Stage 5.  Please review the Pull Request and post it to GitHub.
+
+2. Make edits to the Repo to address the review comments.  If you have any questions, write them in the Q&A section below.  If you have any requests, write them in the Requests section below.
+
+3. I have answered your question in the Q&A section.  Please make the necessary edits.
 
 ### Requests
+
+**Addressed the PR #3 review (Claude, 2026-06-22).** Working-tree edits (not
+committed — git is yours to push):
+
+- **Fixed — NaN `chla` guard.** Extracted `run.finite_or_none()` and used it in
+  `fit_matchup` so a non-finite mixed-layer `chla` falls back to `None` (→ the
+  `fit_spectrum` default) instead of NaN-poisoning `set_aph`. New unit test.
+- **Fixed — self-contained recovery test.** `test_fit_spectrum_recovers_bbp` now
+  `pytest.skip`s on `FileNotFoundError` when BING's external Loisel aph-basis
+  file is absent (as in this session), so the suite is green wherever
+  bing-without-data is installed.
+- **Fixed — batch resilience.** `build_fits` wraps each matchup in try/except,
+  recording failures under a new `"failed"` bucket instead of aborting; new
+  unit test (opener raises → `failed`, nothing written).
+- **Clarified** that `fits.success` reflects the LM warm-start only (inline
+  comment).
+- **No change (documented):** `prepare_spectrum`'s `(2% of Rrs)**2` fallback
+  (vs `pace_noise_vector`) — deliberate to avoid an `ocpy` import in the core;
+  `fitting.rst` already states the 2% floor, and matchup pixels always carry
+  `Rrs_unc`.
+
+Suite: **80 passed, 1 skipped** (the data-dependent recovery test); `ruff` +
+`sphinx -W` clean. Implementation record updated (test count 7→9, verification
+line).
 
 ## Stage 5 — BING fitting wrapper
 
@@ -218,6 +250,43 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-22 (Stage 5 — addressed PR #3 review comments)
+
+Made working-tree edits addressing my PR #3 review (details in the Requests
+section above):
+
+- NaN-`chla` guard via a new `run.finite_or_none` helper used in `fit_matchup`.
+- `test_fit_spectrum_recovers_bbp` now skips on `FileNotFoundError` when BING's
+  Loisel aph-basis data file is missing (the env failure seen during the
+  review).
+- `build_fits` now records per-matchup failures under `"failed"` instead of
+  aborting the batch.
+- Clarified `success` = LM-warm-start-only; left the 2%-floor noise fallback as
+  documented.
+- Added two unit tests (`finite_or_none`, `build_fits` failed path). Suite **80
+  passed, 1 skipped**; `ruff` + `sphinx -W` clean. Updated the implementation
+  record (test count 7→9, verification line, run/fit notes).
+- No commit/push (git is JXP's); the response diff lands on the PR once pushed.
+
+### 2026-06-22 (Stage 5 — reviewed PR #3 and posted the review to GitHub)
+
+Reviewed PR **#3 "Stage 5"** (`stage5` → `develop`, 11 files) and posted a
+COMMENT review (https://github.com/ocean-colour/PAB/pull/3).
+
+- **Due diligence:** `ruff` + `sphinx -W` clean; `pytest` → 78 passed, **1
+  failure that is an environment data dependency, not a code defect** — BING's
+  `ExpBricaud.set_aph` loads an external Loisel `Hydrolight400.nc` absent at its
+  path this session (the same test passed last turn when the data was present).
+- **Verdict:** solid; two should-fix items. (1) NaN `chla` poisons the fit —
+  `summarize_profile` yields NaN (not None) when CHLA is missing, so it flows
+  into `Chl` → `set_aph(NaN)`; guard for finite `chla` in `fit_matchup`.
+  (2) Make `test_fit_spectrum_recovers_bbp` self-contained — skip on
+  `FileNotFoundError` when the BING Loisel data file is unavailable. Plus minor
+  notes (batch abort on one failure; `success` = LM-only; the 2%-floor vs
+  `pace_noise_vector` doc mismatch).
+- Posted via `gh pr review 3 --comment` as `profxj`; did not merge/commit (git
+  is JXP's). These findings are the input to the next PR task (address review).
 
 ### 2026-06-21 (Stage 5 — implemented the BING fitting wrapper)
 

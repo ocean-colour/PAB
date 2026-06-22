@@ -39,6 +39,13 @@ def test_prepare_spectrum_empty_window_raises():
         run.prepare_spectrum(np.array([300.0, 800.0]), np.array([0.01, 0.01]), None)
 
 
+def test_finite_or_none_guards_nan_chla():
+    assert run.finite_or_none(0.1) == 0.1
+    assert run.finite_or_none(None) is None
+    assert run.finite_or_none(np.nan) is None  # the NaN-chla guard
+    assert run.finite_or_none(np.inf) is None
+
+
 # -- persistence (no bing) --------------------------------------------------
 def _seed_matchup(store):
     """floats→profiles→mld_summary→granule→matchup→pixel; return (matchup_id, pixel_id)."""
@@ -145,6 +152,19 @@ def test_persist_fit_writes_links_quantities_and_is_idempotent():
         assert store.count("fit_results") == 2
 
 
+def test_build_fits_records_failed_without_aborting():
+    def _boom(_src):
+        raise RuntimeError("granule unavailable")
+
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store)
+        out = run.build_fits(store, opener=_boom)
+        fit_id = run.make_fit_id(matchup_id, 2, 2, "ExpBPow")
+        assert out["written"] == [] and out["skipped"] == []
+        assert out["failed"] == [fit_id]
+        assert store.count("fits") == 0  # the failed fit wrote nothing
+
+
 def test_save_load_chains_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
     res = _fake_result()
@@ -188,9 +208,13 @@ def test_fit_spectrum_recovers_bbp():
     Chl = 0.1
     # truth: Adg, Sdg, Aph, Bnw, beta
     truth = [0.02, 0.017, 0.03, 0.004, 1.0]
-    rrs = _synth_rrs(config, wave, truth, Chl)
-
-    result = run.fit_spectrum(wave, rrs, 0.02 * rrs, Chl=Chl, config=config)
+    # ExpBricaud.set_aph loads an external Loisel aph-basis file; skip cleanly
+    # where bing is installed but that data is not present (e.g. lean CI).
+    try:
+        rrs = _synth_rrs(config, wave, truth, Chl)
+        result = run.fit_spectrum(wave, rrs, 0.02 * rrs, Chl=Chl, config=config)
+    except FileNotFoundError as exc:
+        pytest.skip(f"BING aph-basis data unavailable: {exc}")
     bbp700 = next(q for q in result.quantities if q["quantity"] == "bbp700")
     # Pow: bb_nw(700) = Bnw*(600/700)^beta = 0.004*(6/7) ≈ 3.43e-3
     assert bbp700["value"] == pytest.approx(0.004 * (600.0 / 700.0), rel=0.3)
