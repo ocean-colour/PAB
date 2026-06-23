@@ -639,3 +639,25 @@ for the Bricaud family); the input `Chl` only *seeds* the `a_ph` shape. Fixes:
 What I learned: the model takes `Chl` only to set the Bricaud `a*_ph(λ)` shape;
 the fitted amplitude `Aph` then determines the retrieved Chl — so a Chl matchup
 is a genuine retrieval-vs-in-situ test, parallel to backscatter.
+
+### 2026-06-23 (Reviewed Stage 6 PR #4 and posted the review to GitHub)
+
+Reviewed PR #4 "Stage 6" (`stage-6` → `develop`, 20 files) and posted a COMMENT
+review (https://github.com/ocean-colour/PAB/pull/4) as `profxj`. Due diligence:
+`pytest` 89 passed / 2 skipped, `ruff` + `sphinx -W` clean. Verdict: solid, two
+scope notes — (1) the NASA L2 IOP baseline (BING-vs-NASA) isn't implemented and
+should be marked deferred; (2) `gather_matchups` should filter `fits` by
+`model_pair` before a second pair is added (else duplicate/NULL matchup rows).
+No merge/commit (git is JXP's). Full detail in `coding_stage6.md`.
+
+### 2026-06-23 (Stage 6 — false-color RGB scene quick-look)
+
+Per JXP's Stage 6 Task 3, upgraded the scene QA view from a single channel to a
+**false-color RGB composite**: `pab/plotting/scene.py` gains `false_color_rgba`
+(Rrs at ~645/555/470 nm → R/G/B, percentile-stretched, flagged pixels greyed) and
+`scene_quicklook` now defaults to `mode="rgb"` (with `mode="band"` retained). The
+RGB is drawn via `pcolormesh(...).set_facecolor(rgba)` so the float/pixel overlay
+stays exact on the swath mesh. Tests +1 (`false_color_rgba`) and the scene smoke
+now covers both modes → **90 passed, 2 skipped**; `ruff` + `sphinx -W` clean.
+Docs updated: `PAB_design.md` (v0.4.2), `metrics.rst`, impl record (v0.5.2), and
+the `07_metrics` notebook. Detail in `coding_stage6.md`.

@@ -1,7 +1,7 @@
 # PACE and BGC-Argo Matchup Analysis Design Document
 
-**Version:** 0.4.1
-**Date:** 2026-06-22
+**Version:** 0.4.2
+**Date:** 2026-06-23
 **Authors:** JXP and Claude
 
 **Versioning convention:** bump the **minor** version for substantive changes
@@ -497,11 +497,15 @@ the reporting layer.
   optimization / `optimize=True`, or trimmed panel count), which keeps the full
   set tractable to expose.
 - **Scene quick-look (per matchup)** — a small PNG of the PACE scene around the
-  float for visual inspection: a true-color or single-band/`Rrs` thumbnail of the
-  granule neighborhood, with the **Argo float location marked** and the **pixels
-  actually extracted and analyzed** highlighted, plus the `l2_flags` mask shown
-  (e.g. flagged pixels greyed). This makes the granule-quality assessment (above)
-  visually checkable — one can see at a glance whether the float sat under cloud/
+  float for visual inspection. The default is a **false-color RGB composite** of
+  the granule neighborhood: `Rrs` at three wavelengths (default R/G/B ≈
+  645/555/470 nm, configurable) mapped to the colour channels and independently
+  percentile-stretched, so atmospheric/cloud/glint artefacts and water-colour
+  gradients are obvious at a glance; a single-band/`Rrs` view (with a colorbar)
+  remains available. Either carries the **Argo float location marked** and the
+  **pixels actually extracted and analyzed** highlighted, plus the `l2_flags`
+  mask shown (flagged pixels greyed). This makes the granule-quality assessment
+  (above) visually checkable — one can see whether the float sat under cloud/
   glint and which pixels fed the fit. Kept small (~100 KB) like the fit figure.
 - **Population figures** — satellite-vs-float `bbp` scatter, BING-vs-NASA-L2-IOP
   comparison, maps, and metric distributions (new PAB plotting code).

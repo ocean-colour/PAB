@@ -223,14 +223,30 @@ def test_locate_float_pixel():
     assert scene.locate_float_pixel(ds, lat, lon) == (2, 2)
 
 
-def test_scene_quicklook_file_and_budget(tmp_path):
+def test_false_color_rgba():
+    ds = make_granule(center=(20.0, -50.0), flagged=[(0, 0, "LAND")])
+    rgba, used = scene.false_color_rgba(ds)
+    assert rgba.shape == (5, 5, 4)  # (x, y, RGBA)
+    assert np.all((rgba >= 0) & (rgba <= 1))  # normalised channels
+    assert len(used) == 3  # three band wavelengths chosen (R, G, B)
+    # flagged pixel rendered as the grey flag colour
+    assert tuple(rgba[0, 0]) == scene._FLAG_RGBA
+
+
+def test_scene_quicklook_rgb_and_band_budget(tmp_path):
     ds = make_granule(center=(20.0, -50.0), flagged=[(0, 0, "LAND")])
     lat = float(ds["latitude"].values[2, 2])
     lon = float(ds["longitude"].values[2, 2])
-    out = scene.scene_quicklook(
-        ds, lat, lon, pixels=[{"ix": 2, "iy": 2}], outfile=tmp_path / "scene.png"
+    # default is the false-color RGB composite
+    rgb = scene.scene_quicklook(
+        ds, lat, lon, pixels=[{"ix": 2, "iy": 2}], outfile=tmp_path / "rgb.png"
     )
-    assert out.exists() and out.stat().st_size < scene.SIZE_BUDGET
+    assert rgb.exists() and rgb.stat().st_size < scene.SIZE_BUDGET
+    # single-band mode still works
+    band = scene.scene_quicklook(
+        ds, lat, lon, mode="band", outfile=tmp_path / "band.png"
+    )
+    assert band.exists() and band.stat().st_size < scene.SIZE_BUDGET
 
 
 # -- population figures -----------------------------------------------------

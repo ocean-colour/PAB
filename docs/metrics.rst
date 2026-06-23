@@ -75,9 +75,10 @@ Figures (~100 KB budget)
   informed by ``bing.plotting`` / the ``plot-bing-fit`` skill *concept*, sized
   down (two panels, low DPI) from the ~1 MB biomass figures.
 * **Per-matchup scene quick-look** (:func:`pab.plotting.scene.scene_quicklook`) —
-  a single-band ``Rrs`` thumbnail of the granule neighbourhood with the Argo
-  location marked, the analyzed pixels highlighted, and the ``l2_flags`` mask
-  greyed.
+  by default a **false-color RGB composite** (``Rrs`` at three wavelengths, R/G/B
+  ≈ 645/555/470 nm, each percentile-stretched; :func:`~pab.plotting.scene.false_color_rgba`),
+  with a single-band view available (``mode="band"``). Either marks the Argo
+  location, highlights the analyzed pixels, and greys the ``l2_flags`` mask.
 * **Population figures** (:mod:`pab.plotting.population`) — the satellite-vs-float
   ``b_bp`` log-log scatter (1:1 + median-ratio lines) and a matchup map.
 

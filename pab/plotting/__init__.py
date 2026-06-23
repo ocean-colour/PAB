@@ -13,7 +13,7 @@ Implemented in Stage 6.
 from pab.plotting import fit_fig, population, scene
 from pab.plotting.fit_fig import fit_figure
 from pab.plotting.population import comparison_scatter, matchup_map
-from pab.plotting.scene import scene_from_store, scene_quicklook
+from pab.plotting.scene import false_color_rgba, scene_from_store, scene_quicklook
 
 __all__ = [
     "fit_fig",
@@ -22,6 +22,7 @@ __all__ = [
     "fit_figure",
     "comparison_scatter",
     "matchup_map",
+    "false_color_rgba",
     "scene_from_store",
     "scene_quicklook",
 ]

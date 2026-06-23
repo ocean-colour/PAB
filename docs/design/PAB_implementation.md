@@ -1,7 +1,7 @@
 # PAB Implementation Record
 
-**Version:** 0.5.1
-**Date:** 2026-06-22
+**Version:** 0.5.2
+**Date:** 2026-06-23
 **Authors:** JXP and Claude
 
 **Status:** living document — updated as each stage is implemented.
@@ -43,7 +43,7 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 89 passed, 2 skipped (the two BING
+**Verification (current).** `pytest` → 90 passed, 2 skipped (the two BING
 data-dependent tests — the `b_bp`-recovery and the fit-figure smoke — skip when
 the Loisel aph-basis file is absent); `ruff check pab` and `ruff format --check
 pab` → clean; `sphinx-build -W` → build succeeded.
@@ -473,9 +473,11 @@ reconstruction are mockable/lazy seams.
 
 ### 5d.2 Figures (`pab/plotting/`)
 
-- `scene.py` — `scene_quicklook(ds, lat, lon, …)` / `scene_from_store(...)`: a
-  single-band `Rrs` thumbnail with the float marked, analyzed pixels circled, and
-  the `l2_flags` mask greyed. Pure NumPy/Matplotlib + `pab.pace.flags`;
+- `scene.py` — `scene_quicklook(ds, lat, lon, …)` / `scene_from_store(...)`:
+  default **false-color RGB composite** (`false_color_rgba`: `Rrs` at three
+  wavelengths → R/G/B, percentile-stretched), with a single-band `mode="band"`
+  view; the float is marked, analyzed pixels circled, and the `l2_flags` mask
+  greyed. Pure NumPy/Matplotlib + `pab.pace.flags`;
   `locate_float_pixel` is a tested pure helper.
 - `population.py` — `comparison_scatter(df, sat, insitu)` (log-log + 1:1 +
   median-ratio lines, annotated with the metrics) and `matchup_map(df)`.
@@ -497,10 +499,11 @@ reconstruction are mockable/lazy seams.
 - **Wavelength offset** handled by comparing at 700 nm (BING reports `b_bp(700)`
   directly); the NASA-baseline 442 nm comparison is flagged as approximate.
 
-**Tests** — `pab/tests/test_metrics.py` (9): `log_comparison` known-values +
+**Tests** — `pab/tests/test_metrics.py` (10): `log_comparison` known-values +
 NaN/nonpositive handling; `season_of`/`region_of`; `gather_matchups` + `compare`
-+ `add_strata` on a seeded DB; `add_oc_chl` via an injected granule;
-`locate_float_pixel`; scene + population figures render within the ~100 KB
+(bbp + chl) + `add_strata` on a seeded DB; `add_oc_chl` via an injected granule;
+`locate_float_pixel`; `false_color_rgba` (normalised RGBA + greyed flags); the
+scene (RGB + single-band) and population figures render within the ~100 KB
 budget; and a `bing`-guarded fit-figure smoke (skips when the Loisel data is
 absent).
 

@@ -73,7 +73,10 @@ Read these before coding:
 ## Prompts
 
 1. Read this doc and the context files. Execute the 1st task in the "Stage 6" section below.
-1. Read this doc.  Execute the 2nd task in the "Stage 6" section below.
+2. Read this doc.  Execute the 2nd task in the "Stage 6" section below.
+
+3. Read this doc.  Execute the 1st task in the "Pull Request" section below.
+4. Read this doc.  Execute the 3rd task in the "Stage 6" section below.
 
 ## Stage 6
 
@@ -84,6 +87,8 @@ Read these before coding:
    in the Requests section. Log your work in the Logs section.
 
 2. We need to correct a misconception that you have about the `ExpBPow` model.  One of the free parameters is `Aph` and the model uses that to estimate `Chl`.  But `Chl` is **not** truly an input parameter.  We do input it to seed the model, and that is all.  If necessary modify the design docs to make this clear.  And modify your code for this Stage as well. Log your work.
+
+3. I wish for the QA views of the PACE scenes to be more than a single channel.  I nice false-color image made from a few channels would be great.  Please modify the code to make this possible.  Also update the design docs as necessary. Log your work.
 
 ### Q&A
 
@@ -223,6 +228,45 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-23 (Stage 6 — false-color RGB scene quick-look)
+
+Task 3: made the scene QA view a **false-color RGB composite** instead of a
+single channel.
+
+- `pab/plotting/scene.py` — added `false_color_rgba(ds, rgb_waves, mask_flags)`
+  (Rrs at three wavelengths → R/G/B, each percentile-stretched + gamma; flagged
+  pixels set to grey) and `RGB_WAVES = (645, 555, 470)`. `scene_quicklook` now
+  defaults to `mode="rgb"` (drawn as a QuadMesh with per-cell `set_facecolor`, so
+  the float/pixel overlay stays exact on the lat/lon mesh) and keeps a
+  `mode="band"` single-band view with a colorbar.
+- Tests: `test_false_color_rgba` (RGBA shape/normalisation + greyed flag) and an
+  RGB+band figure-budget smoke. Suite **90 passed, 2 skipped**; `ruff` +
+  `sphinx -W` clean.
+- Docs: `PAB_design.md` *Figures & tables* (v0.4.2), `metrics.rst`, impl record
+  §5d (v0.5.2), and the `07_metrics` notebook (scene cell now renders RGB).
+
+What I learned: for an RGB image on the (curvilinear) swath lat/lon grid,
+`pcolormesh(...).set_array(None)` + `set_facecolor(rgba)` keeps the exact mesh
+geometry (so the float marker / pixel circles land correctly), where `imshow`
+would have needed an approximate rectangular extent.
+
+### 2026-06-23 (Stage 6 — reviewed PR #4 and posted the review to GitHub)
+
+Reviewed PR **#4 "Stage 6"** (`stage-6` → `develop`, 20 files) and posted a
+COMMENT review (https://github.com/ocean-colour/PAB/pull/4).
+
+- **Due diligence:** `pytest` → 89 passed, 2 skipped (BING-data-dependent);
+  `ruff` + `sphinx -W` clean.
+- **Verdict:** solid; two scope notes. (1) **NASA L2 IOP baseline isn't
+  implemented** — scope/schema mention BING-vs-NASA but nothing ingests
+  `bbp_442`/`bbp_s`; the PR should mark it deferred (the metric layer is
+  quantity-agnostic so it slots in later). (2) `gather_matchups` doesn't filter
+  `fits` by `model_pair`, so a 2nd model pair / >1 fitted pixel would yield
+  duplicate/NULL matchup rows — add `AND f.model_pair = ?` before the model
+  library grows. Plus minor notes (deferred `Rrs`-variability strata; the
+  hard-coded `0.05582` Bricaud constant).
+- Posted via `gh pr review 4 --comment` as `profxj`; no merge/commit.
 
 ### 2026-06-22 (Stage 6 — corrected the Chl/Aph misconception)
 
