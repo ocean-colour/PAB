@@ -46,6 +46,15 @@ def test_finite_or_none_guards_nan_chla():
     assert run.finite_or_none(np.inf) is None
 
 
+def test_chl_from_aph():
+    # BING retrieves Chl from the fitted Aph: Chl = 10**Aph / 0.05582
+    aph_log = np.log10(0.05582)  # -> Chl == 1.0 mg m^-3
+    assert run.chl_from_aph(aph_log) == pytest.approx(1.0)
+    assert run.chl_from_aph(np.array([aph_log, aph_log + 1])) == pytest.approx(
+        [1.0, 10.0]
+    )
+
+
 # -- persistence (no bing) --------------------------------------------------
 def _seed_matchup(store):
     """floats→profiles→mld_summary→granule→matchup→pixel; return (matchup_id, pixel_id)."""

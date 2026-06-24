@@ -44,6 +44,11 @@ jupyter nbconvert --to notebook --execute --inplace docs/nb/<name>.ipynb
   (`pab.fit`): LM→MCMC, the posterior `b_bp` with uncertainties and a fit
   figure, and the written `fits`/`fit_results` rows; ends with an optional
   `RUN_LIVE` real-matchup fit (Stage 5).
+- [`07_metrics.ipynb`](07_metrics.ipynb) — log-space comparison metrics
+  (`pab.metrics`) and population/scene figures (`pab.plotting`) on a synthetic
+  matchup population: `log_comparison`, stratified median ratios, the
+  satellite-vs-float scatter, and a scene quick-look; optional `RUN_LIVE` over a
+  populated store (Stage 6).
 
 The offline sections run without network; the Stage 2 live section is guarded by
 a `RUN_LIVE = False` flag (flip to `True` to pull a real profile from argopy).

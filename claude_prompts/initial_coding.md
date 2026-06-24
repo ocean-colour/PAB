@@ -611,3 +611,113 @@ The doc captures, for Stage 4:
 
 No code or package files changed; this task only authored the prompt doc.
 Logged here per the instruction. No questions for Q&A.
+
+### 2026-06-22 (Stages 4–6 built; corrected the Chl/Aph misconception)
+
+Stages 4 (matchup engine), 5 (BING fitting wrapper), and 6 (metrics & figures)
+were implemented, reviewed (PRs #2/#3), and logged in detail in their per-stage
+docs (`claude_prompts/coding_stage{4,5,6}.md`); the implementation record is at
+v0.5.1 and the suite is **89 passed, 2 skipped** (the two tests needing BING's
+Loisel data file skip when it is absent), `ruff` + `sphinx-build -W` clean.
+
+This entry records the most recent step — JXP's Stage 6 Task 2 correction. I had
+wrongly treated `Chl` as a fixed **input** to the `ExpBPow` fit. In fact `Aph` is
+a free parameter and BING **retrieves** Chl from it (`Chl = 10**Aph / 0.05582`
+for the Bricaud family); the input `Chl` only *seeds* the `a_ph` shape. Fixes:
+
+- `pab/fit` — added `chl_from_aph()` + `BRICAUD_APH440`; `extract_quantities`
+  now emits a BING-retrieved **`chl`** quantity; reworded the `Chl`-as-input
+  docstrings to "seed".
+- `pab/metrics` — `gather_matchups` surfaces `chl_bing` (`BING_*_chl`) so the
+  **BING Chl vs Argo `chla`** comparison runs through the same quantity-agnostic
+  `log_comparison` as `b_bp`; `add_oc_chl` (OC4 band ratio) is reframed as an
+  optional independent cross-check.
+- Docs corrected: `PAB_design.md` (v0.4.1, *Comparison & metrics*),
+  `fitting.rst`, `metrics.rst`, the impl record (v0.5.1), and the
+  `07_metrics` notebook (now shows a Chl scatter beside `b_bp`).
+
+What I learned: the model takes `Chl` only to set the Bricaud `a*_ph(λ)` shape;
+the fitted amplitude `Aph` then determines the retrieved Chl — so a Chl matchup
+is a genuine retrieval-vs-in-situ test, parallel to backscatter.
+
+### 2026-06-23 (Reviewed Stage 6 PR #4 and posted the review to GitHub)
+
+Reviewed PR #4 "Stage 6" (`stage-6` → `develop`, 20 files) and posted a COMMENT
+review (https://github.com/ocean-colour/PAB/pull/4) as `profxj`. Due diligence:
+`pytest` 89 passed / 2 skipped, `ruff` + `sphinx -W` clean. Verdict: solid, two
+scope notes — (1) the NASA L2 IOP baseline (BING-vs-NASA) isn't implemented and
+should be marked deferred; (2) `gather_matchups` should filter `fits` by
+`model_pair` before a second pair is added (else duplicate/NULL matchup rows).
+No merge/commit (git is JXP's). Full detail in `coding_stage6.md`.
+
+### 2026-06-23 (Stage 6 — false-color RGB scene quick-look)
+
+Per JXP's Stage 6 Task 3, upgraded the scene QA view from a single channel to a
+**false-color RGB composite**: `pab/plotting/scene.py` gains `false_color_rgba`
+(Rrs at ~645/555/470 nm → R/G/B, percentile-stretched, flagged pixels greyed) and
+`scene_quicklook` now defaults to `mode="rgb"` (with `mode="band"` retained). The
+RGB is drawn via `pcolormesh(...).set_facecolor(rgba)` so the float/pixel overlay
+stays exact on the swath mesh. Tests +1 (`false_color_rgba`) and the scene smoke
+now covers both modes → **90 passed, 2 skipped**; `ruff` + `sphinx -W` clean.
+Docs updated: `PAB_design.md` (v0.4.2), `metrics.rst`, impl record (v0.5.2), and
+the `07_metrics` notebook. Detail in `coding_stage6.md`.
+
+### 2026-06-23 (Stage 6 — fixed the blank RGB scene in the notebook)
+
+JXP saw nothing for the scene in `07_metrics.ipynb`. Root cause: the demo
+granule was spatially **uniform** (`np.tile`), so the false-color composite —
+with the old `Rrs/max` stretch — saturated every channel to 1.0 (pure white). My
+earlier "renders RGB" log was true (a PNG was present) but the image was
+effectively blank. Fixed by (1) switching `_stretch` to a **2–98% percentile
+window** per channel (restores contrast; flat → neutral grey, not white) and
+(2) rebuilding the notebook's scene with a **spatially varying** granule (gradient
++ greening + a flagged cloud edge). Scene cell now emits a ~20 KB colour PNG.
+**90 passed, 2 skipped**; `ruff` + `sphinx -W` clean. Detail in `coding_stage6.md`.
+
+### 2026-06-23 (Stage 6 — false-color composite on real PACE data, notebook 05)
+
+Added a false-color RGB composite of the **real matched PACE granule** to the
+live dig-in notebook `docs/nb/05_matchup_7902226_4.ipynb` (float 7902226 / cycle
+5) — the first use of the composite on real PACE data (it had only run on
+synthetic granules; a repo grep found no other real-PACE RGB). The cell reuses
+the already-open `gds`, crops to a ~25×25-pixel window around the float (full OCI
+granules are too large to composite whole), remaps the matchup-pixel indices into
+the crop, and calls `scene.scene_quicklook`. Committed without outputs (no
+Earthdata Login here to execute it); notebook stays excluded from the Sphinx
+build, so nothing else is affected. Detail in `coding_stage6.md`.
+
+### 2026-06-23 (Stage 6 — validated the composite on real PACE data; shared-scale fix)
+
+A `~/.netrc` does exist (earthaccess authenticates), so I ran the composite on
+**real PACE OCI data** for 7902226/5. Two fixes resulted: (1) `false_color_rgba`
+now scales the three channels by a **shared brightness reference** (+gamma)
+instead of per-channel percentile stretch — the latter turned a near-uniform
+gyre crop into rainbow speckle; the shared scale gives a natural deep-blue ocean
+scene (verified by viewing the rendered PNG on granule `…20250219T155847`, where
+the float's nearest unflagged pixel is 0.41 km). (2) Fixed an `IndexError` in the
+notebook-05 crop (center on the matchup-pixel centroid + clip, not
+`locate_float_pixel`). Also learned the closest-*in-time* granule (51% cloud)
+doesn't cover the float — the Stage-4 spatial gate correctly prefers the covering
+one. Suite **92 passed** (the BING-data tests run now that the Loisel file is
+present). Docs bumped: design v0.4.3, impl v0.5.3. Detail in `coding_stage6.md`.
+
+### 2026-06-24 (Stage 6 — addressed PR #4 review comments)
+
+Two findings from my PR #4 review: (1) `gather_matchups` now filters `fits` by
+`model_pair` (`AND f.model_pair = ?`) so a second model pair on a matchup can't
+duplicate the row (new test); (2) the **NASA L2 IOP baseline** is now explicitly
+documented as **deferred** (metrics.rst note + impl §5d) rather than
+implied-done — BING-vs-Argo (`b_bp`, Chl) is implemented, BING-vs-NASA awaits an
+`ocpy.pace.io.load_iop_l2` ingest. Suite 93 tests (91 + 2 BING-data skips today);
+`ruff` + `sphinx -W` clean. impl v0.5.4. No commit (git is JXP's).
+
+### 2026-06-24 (Generated the Stage 7 prompt doc)
+
+Wrote `claude_prompts/coding_stage7.md` (Reporting), modeled on the earlier
+stage prompt docs and grounded in coding-plan §7 + the design's Reporting
+section: aggregate `.rst` pages (no per-matchup pages) + sortable tables,
+standalone Bokeh map/scatter (hover→values, click→artifact-by-id), HEALPix
+aggregation via `remote_sensing.healpix`, downloads + manifest, Zenodo snapshot,
+and **publish backends stubbed** (local mocks, config-gated). Deliverables
+`pab.report.{rst,aggregate,interactive,publish}`, offline tests, `reporting.rst`,
+and `08_reporting.ipynb`. Doc only — no code changed.

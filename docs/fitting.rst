@@ -22,11 +22,13 @@ Pipeline
    absent).
 #. **Fit** (:func:`pab.fit.run.fit_spectrum`) — a **Levenberg–Marquardt
    warm-start** (``chisq_fit``) followed by **emcee MCMC** (``inference``);
-   the absorption model's ``a_ph`` is anchored with the float's mixed-layer
-   ``chla`` as ``Chl``.
+   the Bricaud ``a_ph`` shape is **seeded** with the float's mixed-layer ``chla``
+   (the fit then *retrieves* Chl from the ``Aph`` parameter — see below).
 #. **Extract** (:func:`pab.fit.run.extract_quantities`) — posterior median + a
    credible interval (5th/95th by default) for each free parameter and the
-   derived IOP scalars (``bbp``/``anw``/``adg`` at 440 & 700 nm).
+   derived IOP scalars (``bbp``/``anw``/``adg`` at 440 & 700 nm) and the
+   BING-retrieved chlorophyll ``chl`` (``= 10**Aph / 0.05582`` for the Bricaud
+   family — the input ``Chl`` only *seeds* the a*_ph shape).
 #. **Persist** (:mod:`pab.fit.artifacts`) — write the chains to an NPZ keyed by
    ``fit_id`` and upsert the ``fits`` + ``fit_results`` rows.
 
@@ -39,7 +41,8 @@ a power-law non-water backscatter ``b_b,nw = B_nw·(λ/600)^{-β}``.
 
 Retrieved scalars are stored **namespaced** as ``BING_<model_pair>_<quantity>``
 in the long ``fit_results`` table — e.g. ``BING_ExpBPow_bbp700``,
-``BING_ExpBPow_beta``, ``BING_ExpBPow_Bnw``, ``BING_ExpBPow_adg440``. A second
+``BING_ExpBPow_beta``, ``BING_ExpBPow_Bnw``, ``BING_ExpBPow_adg440``,
+``BING_ExpBPow_chl``. A second
 model pair (e.g. a GIOP-style ``k=5`` variant) adds **rows under a new prefix**
 rather than columns, so the schema is stable; ``Store.fit_results_wide()`` pivots
 to the wide, namespaced view at the export/report boundary. Free parameters are

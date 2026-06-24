@@ -17,6 +17,7 @@ from pab.fit.models import FitConfig, build_models
 from pab.fit.run import (
     FitSpectrumResult,
     build_fits,
+    chl_from_aph,
     extract_quantities,
     finite_or_none,
     fit_matchup,
@@ -33,6 +34,7 @@ __all__ = [
     "FitSpectrumResult",
     "build_models",
     "build_fits",
+    "chl_from_aph",
     "extract_quantities",
     "finite_or_none",
     "fit_matchup",

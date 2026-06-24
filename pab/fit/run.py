@@ -26,10 +26,28 @@ from pab.fit.models import FitConfig, build_models, model_param_names
 #: is the BGC-Argo ``BBP700`` band — the primary matchup observable.
 REF_WAVES: tuple[float, ...] = (440.0, 700.0)
 
+#: Bricaud a*_ph(440) for Chl = 1 mg m^-3. For the Bricaud-family absorption
+#: models, BING **retrieves** chlorophyll from the fitted ``Aph`` parameter as
+#: ``Chl = 10**Aph / BRICAUD_APH440`` (see ``bing/models/anw.py``); the ``Chl``
+#: passed in only **seeds** the a*_ph shape.
+BRICAUD_APH440 = 0.05582
+
+#: Absorption-model names whose fitted ``Aph`` maps to Chl via :data:`BRICAUD_APH440`.
+_BRICAUD_ANW = ("ExpBricaud", "ExpBricaudFix")
+
 
 def make_fit_id(matchup_id: str, ix: int, iy: int, model_pair: str) -> str:
     """Deterministic fit id: ``"{matchup_id}_{ix}_{iy}_{model_pair}"``."""
     return f"{matchup_id}_{int(ix)}_{int(iy)}_{model_pair}"
+
+
+def chl_from_aph(aph_log10):
+    """BING's chlorophyll estimate from the fitted (log10) ``Aph`` parameter.
+
+    ``Chl = 10**Aph / BRICAUD_APH440`` for the Bricaud-family absorption models
+    (``bing/models/anw.py``). Returns an array matching ``aph_log10``.
+    """
+    return 10.0 ** np.asarray(aph_log10, dtype=float) / BRICAUD_APH440
 
 
 def finite_or_none(value):
@@ -191,6 +209,11 @@ def extract_quantities(models, chains, rt_dict, *, config: FitConfig):
         _add(f"anw{int(round(w))}", anw[:, j], "m^-1")
         if adg is not None:
             _add(f"adg{int(round(w))}", adg[:, j], "m^-1")
+
+    # BING's retrieved chlorophyll from the fitted Aph (Bricaud-family anw).
+    # Chl is *seeded* into the fit but recovered here from the posterior Aph.
+    if models[0].name in _BRICAUD_ANW and "Aph" in names:
+        _add("chl", chl_from_aph(flat[:, names.index("Aph")]), "mg m^-3")
     return out
 
 
@@ -209,8 +232,11 @@ def fit_spectrum(
         wave: Wavelengths (nm).
         Rrs: Remote-sensing reflectance (sr⁻¹).
         Rrs_unc: Per-band uncertainty (sr⁻¹); a 2% floor is used when absent.
-        Chl: Chlorophyll (mg m⁻³) for the Bricaud ``a_ph`` (defaults to 0.1 when
-            the absorption model needs it and none is supplied).
+        Chl: Chlorophyll (mg m⁻³) that **seeds** the Bricaud ``a_ph`` shape
+            (defaults to 0.1 when the absorption model needs a seed and none is
+            supplied). It is not a fixed input — the fit retrieves Chl from the
+            posterior ``Aph`` (reported as the ``chl`` quantity; see
+            :func:`chl_from_aph`).
         Y: Backscattering slope for models that need it (unused by ``Pow``).
         config: Fit configuration; defaults to :class:`FitConfig`.
 
@@ -315,7 +341,8 @@ def fit_matchup(
     """Fit one matchup's pixel (default the nearest) and persist the fit.
 
     Re-reads the pixel ``Rrs`` from the granule (spectra are not stored in
-    ``matchup_pixels``), passes the float's mixed-layer ``chla`` as ``Chl``, runs
+    ``matchup_pixels``), **seeds** the Bricaud ``a_ph`` with the float's
+    mixed-layer ``chla`` (the fit then retrieves Chl from ``Aph``), runs
     :func:`fit_spectrum`, writes the chains NPZ, and upserts the ``fits`` +
     ``fit_results`` rows.
 

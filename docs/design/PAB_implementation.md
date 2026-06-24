@@ -1,7 +1,7 @@
 # PAB Implementation Record
 
-**Version:** 0.4.0
-**Date:** 2026-06-21
+**Version:** 0.5.4
+**Date:** 2026-06-24
 **Authors:** JXP and Claude
 
 **Status:** living document — updated as each stage is implemented.
@@ -30,7 +30,7 @@ every bump.
 | 3 | PACE access & spectrum extraction | ✅ done | `pab.pace.{flags,extract,cloud,discover,l1b}` |
 | 4 | Matchup engine | ✅ done | `pab.matchup.engine` |
 | 5 | BING fitting wrapper | ✅ done | `pab.fit.{models,run,artifacts}` |
-| 6 | Metrics & figures | ⬜ pending | `pab.metrics.*`, `pab.plotting.*` (stubs) |
+| 6 | Metrics & figures | ✅ done | `pab.metrics.compare`, `pab.plotting.{fit_fig,scene,population}` |
 | 7 | Reporting | ⬜ pending | `pab.report.*` (stub) |
 | 8 | End-to-end pipeline & CLI | ⬜ pending | `pab.pipeline` (stub) |
 | 9 | Extensibility & options | ⬜ future | — |
@@ -43,9 +43,10 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 80 passed, 1 skipped (the BING
-data-dependent `b_bp`-recovery test skips when the Loisel aph-basis file is
-absent); `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
+**Verification (current).** `pytest` → 93 tests: 91 passed + 2 skipped when the
+BING Loisel aph-basis data file is absent (the `b_bp`-recovery and fit-figure
+smoke skip, e.g. on lean CI / when the data mount is down), 93 passed when it is
+present; `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
 -W` → build succeeded.
 
 ---
@@ -396,8 +397,10 @@ array-level science is pure and offline-tested.
 - `fit_spectrum(wave, Rrs, Rrs_unc, *, Chl, Y, config)` — LM warm-start
   (`chisq_fit.fit`, falls back to the initial guess) → MCMC (`inference.fit_one`,
   keeping the sampler for the acceptance fraction) → `FitSpectrumResult` (chains,
-  quantities, reduced `chisq`/`aic`/`bic`, `accept_frac`, `success`). Anchors
-  Bricaud `a_ph` with `Chl`.
+  quantities, reduced `chisq`/`aic`/`bic`, `accept_frac`, `success`). The `Chl`
+  only **seeds** the Bricaud `a_ph` shape — the fit *retrieves* Chl from the
+  posterior `Aph` (`chl_from_aph`: `Chl = 10**Aph / 0.05582`), emitted as the
+  `chl` quantity.
 - `fit_matchup(store, matchup_id, …)` — re-reads the pixel `Rrs` from the granule
   (via `pace.cloud`/`pace.extract`), passes the float's mixed-layer `chla` as
   `Chl` (guarded by `finite_or_none`, since a NaN `chla` would poison
@@ -428,8 +431,8 @@ array-level science is pure and offline-tested.
 - **Lighter MCMC than BING's research default** (`nsteps=10000`) — documented in
   `fitting.rst`.
 
-**Tests** — `pab/tests/test_fit.py` (9): `make_fit_id`; `finite_or_none` (the
-NaN-`chla` guard); `prepare_spectrum` window/variance/empty-window; `persist_fit`
+**Tests** — `pab/tests/test_fit.py` (10): `make_fit_id`; `finite_or_none` (the
+NaN-`chla` guard); `chl_from_aph` (Chl = 10**Aph / 0.05582); `prepare_spectrum` window/variance/empty-window; `persist_fit`
 links + namespaced quantities + idempotent re-run; `build_fits` records a failed
 matchup without aborting the batch; `save_chains`/`load_chains` round trip; and a
 **known-answer recovery** (synthetic noise-free `Rrs` via `calc_Rrs`, short MCMC,
@@ -443,6 +446,85 @@ schema, MCMC settings, provenance/artifacts, matchup linkage; autodoc of
 **Notebook** — `docs/nb/06_fit.ipynb` (synthetic spectrum → LM→MCMC → posterior
 `b_bp` + fit figure → persisted `fits`/`fit_results`; optional `RUN_LIVE`
 real-matchup fit). Executed offline-safe at toy MCMC size.
+
+---
+
+## 5d. Stage 6 — Metrics & figures
+
+Turns the per-matchup BING fits into the satellite-vs-Argo `b_bp` comparison (and
+a Chl comparison via a satellite OC4 source) and the figures that make matchups
+and the population inspectable. Metric math is pure; granule reads and the `bing`
+reconstruction are mockable/lazy seams.
+
+### 5d.1 Metrics (`pab/metrics/compare.py`)
+
+- `log_comparison(sat, insitu)` — **quantity-agnostic, pure**: finite/positive
+  pairs only; returns `n`, median ratio + IQR, Spearman ρ, log-space bias, and
+  RMS/MAD of `log10(sat/insitu)`. Serves `b_bp`, Chl, and BING-vs-NASA alike.
+- `gather_matchups(store, model_pair="ExpBPow")` — one row per matched fit:
+  satellite `BING_*_bbp700` and `BING_*_chl` (both BING-retrieved, + bounds),
+  Argo `bbp700`/`chla`, `chisq`, position, time. `compare(df, sat_col,
+  insitu_col)` runs the metric on two columns (so `bbp_bing`-vs-`bbp_argo` and
+  `chl_bing`-vs-`chla_argo` use the same code).
+- `add_strata(df)` — `season` (month) + `region` (latitude band); the `Rrs`
+  spatial-variability axis is deferred (the box `Rrs` spread isn't persisted).
+- `add_oc_chl(df, store, opener=)` — an **OC4** band-ratio Chl
+  (`ocpy.chl.band_ratios.oc4` on the matchup pixel `Rrs`), an optional independent
+  cross-check on the BING-retrieved `chl_bing`.
+
+### 5d.2 Figures (`pab/plotting/`)
+
+- `scene.py` — `scene_quicklook(ds, lat, lon, …)` / `scene_from_store(...)`:
+  default **false-color RGB composite** (`false_color_rgba`: `Rrs` at three
+  wavelengths → R/G/B, **shared-scale** brightness + gamma so natural ocean
+  colour is preserved, not per-channel stretched), with a single-band `mode="band"`
+  view; the float is marked, analyzed pixels circled, and the `l2_flags` mask
+  greyed. Pure NumPy/Matplotlib + `pab.pace.flags`;
+  `locate_float_pixel` is a tested pure helper.
+- `population.py` — `comparison_scatter(df, sat, insitu)` (log-log + 1:1 +
+  median-ratio lines, annotated with the metrics) and `matchup_map(df)`.
+- `fit_fig.py` — `fit_figure(store, fit_id)`: reconstructs the fit from its
+  chains NPZ (`artifacts.load_chains` + `build_models`) and shows observed-vs-
+  model `Rrs` and the retrieved `b_bp(λ)` band; PAB's own ~100 KB two-panel
+  figure (the `bing.plotting`/`plot-bing-fit` *concept*, not its code).
+
+### 5d.3 Key decisions
+
+- **Metrics computed on demand**, not persisted: cheap to recompute from
+  `fit_results`/`mld_summary`, so no `metrics` table and **no schema change**
+  (`SCHEMA_VERSION` stays 1); aggregate presentation belongs to Stage 7.
+- **Chl is retrieved, not input.** The `ExpBPow` fit *seeds* `a_ph` with the Argo
+  `Chl` but recovers Chl from the posterior `Aph` (`Chl = 10**Aph / 0.05582`),
+  emitted as `BING_*_chl` — so the Chl comparison (`chl_bing` vs Argo `chla`) is
+  a genuine retrieval-vs-in-situ test, parallel to `b_bp`. An OC4 band-ratio Chl
+  is an optional independent cross-check.
+- **Wavelength offset** handled by comparing at 700 nm (BING reports `b_bp(700)`
+  directly); the NASA-baseline 442 nm comparison is flagged as approximate.
+- **`gather_matchups` filters `fits` by `model_pair`** (`AND f.model_pair = ?`),
+  so a second model pair (or other fits) on the same matchup yields one row, not
+  duplicates.
+- **NASA L2 IOP baseline is deferred** (not ingested). BING-vs-Argo (`b_bp`,
+  Chl) is implemented; BING-vs-NASA awaits an `ocpy.pace.io.load_iop_l2` ingest
+  that populates `NASA_L2IOP_*` — a thin lazy seam the quantity-agnostic metric
+  slots into. Documented in `metrics.rst`.
+
+**Tests** — `pab/tests/test_metrics.py` (11): `log_comparison` known-values +
+NaN/nonpositive handling; `season_of`/`region_of`; `gather_matchups` + `compare`
+(bbp + chl) + `add_strata` on a seeded DB; **`gather_matchups` filters by
+`model_pair`** (a 2nd-pair fit doesn't duplicate the row); `add_oc_chl` via an
+injected granule;
+`locate_float_pixel`; `false_color_rgba` (normalised RGBA + greyed flags); the
+scene (RGB + single-band) and population figures render within the ~100 KB
+budget; and a `bing`-guarded fit-figure smoke (skips when the Loisel data is
+absent).
+
+**Docs page** — `metrics.rst` (the three estimates, metric definitions,
+wavelength offset, figures + budget, stratification; autodoc of `pab.metrics.*` /
+`pab.plotting.*`).
+
+**Notebook** — `docs/nb/07_metrics.ipynb` (log-space metrics, stratified median
+ratios, the satellite-vs-float scatter, and a scene quick-look on a synthetic
+population; optional `RUN_LIVE`). Executed offline-safe.
 
 ---
 
@@ -493,11 +575,15 @@ pab/
     models.py          ✅ FitConfig + BING model-pair/prior build seam
     run.py             ✅ LM→MCMC fit, quantity extraction, matchup drivers
     artifacts.py       ✅ NPZ chains + fits/fit_results persistence
-  metrics/             ⬜ Stage 6
-  plotting/            ⬜ Stage 6
+  metrics/
+    compare.py         ✅ log-space metrics, gatherers, strata, OC4 Chl
+  plotting/
+    fit_fig.py         ✅ per-matchup fit figure (reconstructed from chains)
+    scene.py           ✅ per-matchup scene quick-look (float + pixels + flags)
+    population.py      ✅ sat-vs-float scatter, matchup map
   report/              ⬜ Stage 7
   pipeline.py          ⬜ Stage 8
-  tests/               test_smoke, test_db, test_argo, test_pace, test_matchup, test_fit
+  tests/               test_smoke, test_db, test_argo, test_pace, test_matchup, test_fit, test_metrics
 ```
 
 ---

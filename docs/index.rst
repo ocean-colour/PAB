@@ -25,6 +25,7 @@ site is a separate Sphinx target produced in Stage 7.
    pace_access
    matchup
    fitting
+   metrics
 
 .. toctree::
    :maxdepth: 1
@@ -36,6 +37,7 @@ site is a separate Sphinx target produced in Stage 7.
    nb/03_pace_access
    nb/04_matchup
    nb/06_fit
+   nb/07_metrics
 
 .. toctree::
    :maxdepth: 1

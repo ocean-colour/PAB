@@ -86,6 +86,7 @@ Read these before coding:
 
 2. Read this doc.  Execute the 1st task in the "Pull Request" section below.
 3. Read this doc.  Execute the 2nd task in the "Pull Request" section below.
+4. Read this doc.  Execute the 1st task in the "Stage 6" section below.
 
 ## Stage 5
 
@@ -103,6 +104,10 @@ Read these before coding:
 1. I have executed a Pull Request on GitHub for Stage 5.  Please review the Pull Request and post it to GitHub.
 
 2. Make edits to the Repo to address the review comments.  If you have any questions, write them in the Q&A section below.  If you have any requests, write them in the Requests section below.
+
+## Stage 6
+
+1. Read this doc.  Please build a prompt doc for Stage 6.  Name it `claude_prompts/coding_stage6.md`.  Model it after this one and the previous ones.
 
 ### Requests
 
@@ -248,6 +253,29 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-22 (Stage 6 — generated the Stage 6 prompt doc)
+
+Created `claude_prompts/coding_stage6.md` (metrics & figures), modeled on this
+Stage 5 doc (Goals / Claude[Skills, Working agreements] / Context / Prompts /
+Stage 6[Tasks, Q&A, Requests] / Pull Request / Stage 6 — Metrics & figures
+[Scope, Deliverables, Tests, Docs, Notebook, Definition of done, Q&A] / Logging).
+
+- Grounded it in coding-plan §6 and the design's *Comparison & metrics* +
+  *Figures & tables*: the three `b_bp` estimates (BING / NASA L2 IOP / in-situ
+  Argo), median ratio + IQR, Spearman ρ, log-space bias & RMS/MAD, per-fit
+  reduced χ², BING-vs-NASA, stratified by region/season/`Rrs` variability; the
+  ~100 KB per-matchup fit figure + scene quick-look + population figures.
+- Named the seams it builds on: `fit_results`/`fits`/`mld_summary`/`matchups`
+  reads, `artifacts.load_chains` + `build_models` for the fit figure, the
+  `cloud.open_granule`/`flags` scene, and the `ocpy.pace.io.load_iop_l2` NASA
+  baseline as a lazy seam (metrics stay pure).
+- Flagged an open decision for the implementer: whether aggregate metrics need a
+  new `metrics` table (→ `SCHEMA_VERSION` bump + migration) or are computed on
+  demand at report time.
+- Deliverables `pab.metrics.compare` + `pab.plotting.{fit_fig,scene,population}`,
+  offline tests (metric known-values, figure smoke + size budget, scene pixel
+  marking), `docs/metrics.rst`, `docs/nb/07_metrics.ipynb` — to the Stage 0–5 DoD.
 
 ### 2026-06-22 (Stage 5 — addressed PR #3 review comments)
 
