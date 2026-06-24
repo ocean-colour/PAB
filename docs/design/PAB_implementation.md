@@ -1,6 +1,6 @@
 # PAB Implementation Record
 
-**Version:** 0.5.4
+**Version:** 0.6.0
 **Date:** 2026-06-24
 **Authors:** JXP and Claude
 
@@ -31,7 +31,7 @@ every bump.
 | 4 | Matchup engine | ✅ done | `pab.matchup.engine` |
 | 5 | BING fitting wrapper | ✅ done | `pab.fit.{models,run,artifacts}` |
 | 6 | Metrics & figures | ✅ done | `pab.metrics.compare`, `pab.plotting.{fit_fig,scene,population}` |
-| 7 | Reporting | ⬜ pending | `pab.report.*` (stub) |
+| 7 | Reporting | ✅ done | `pab.report.{aggregate,rst,interactive,publish}` |
 | 8 | End-to-end pipeline & CLI | ⬜ pending | `pab.pipeline` (stub) |
 | 9 | Extensibility & options | ⬜ future | — |
 
@@ -43,9 +43,9 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 93 tests: 91 passed + 2 skipped when the
+**Verification (current).** `pytest` → 103 tests: 101 passed + 2 skipped when the
 BING Loisel aph-basis data file is absent (the `b_bp`-recovery and fit-figure
-smoke skip, e.g. on lean CI / when the data mount is down), 93 passed when it is
+smoke skip, e.g. on lean CI / when the data mount is down), 103 passed when it is
 present; `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
 -W` → build succeeded.
 
@@ -528,6 +528,77 @@ population; optional `RUN_LIVE`). Executed offline-safe.
 
 ---
 
+## 5e. Stage 7 — Reporting
+
+Turns the SQLite store + per-matchup artifacts into community products: a static
+site of **aggregate** pages, standalone **Bokeh** interactive figures, downloads
++ a manifest, and a citable snapshot. The build runs **end-to-end offline** —
+the object-store / Zenodo uploads are stubbed and config-gated. `healpy`/`bokeh`
+are lazily-imported seams; the aggregation math and manifest are pure.
+
+### 5e.1 Aggregation (`pab/report/aggregate.py`)
+
+- `aggregate_by(df, by, …)` — per-bin `log_comparison` over region/season (and
+  `magnitude_bins`). Pure pandas.
+- `nside_for_cell_size` (wraps `remote_sensing.healpix.utils`), `assign_healpix`
+  (`healpy.ang2pix` lonlat), and `aggregate_healpix(df, …)` — per-HEALPix-cell
+  stats with cell-centre `lon`/`lat` (lon wrapped to [-180, 180]). Equal-area,
+  resolution-tunable, scales independently of matchup count.
+
+### 5e.2 `.rst` generation (`pab/report/rst.py`)
+
+- `rst_table` (DataFrame → `list-table`), `summary_page`/`aggregates_page`/
+  `methods_page`/`index_page`, and `build_site(store, outdir)` — writes the
+  **fixed** `PAGE_STEMS` set to a dir *outside* the dev docs. **No per-matchup
+  page** is ever emitted (the design's hard constraint); per-matchup detail is
+  reached via the interactive figures.
+
+### 5e.3 Interactive (`pab/report/interactive.py`)
+
+- `comparison_scatter` (log-log sat-vs-float + 1:1 line, hover, optional
+  tap→artifact URL, `output_backend="webgl"`), `matchup_map`, and `embed`/
+  `raw_html` (`bokeh.embed.components` → standalone script+div for a `.. raw::
+  html` block; no Bokeh server).
+
+### 5e.4 Publish (`pab/report/publish.py`)
+
+- `export_tables` (summary CSV/Parquet; the raw SQLite file is **not** a
+  published download), `file_checksum` (SHA-256), `build_manifest` (one row per
+  per-matchup artifact: `matchup_id`→URL+checksum, stamped `pab_version`), and
+  `publish_release` (exports + manifest + stub "uploads", writes `manifest.json`
+  with `pkg_versions`). `LocalStubBackend` copies to the filesystem (no network);
+  `NautilusS3Backend`/`ZenodoBackend` are explicit `NotImplementedError` stubs
+  (deferred, config-gated).
+
+### 5e.5 Key decisions
+
+- **Aggregate pages only** — `build_site` returns the fixed `PAGE_STEMS`
+  regardless of matchup count; a test asserts no per-matchup explosion.
+- **Publish stubbed** — interfaces implemented against the filesystem so the
+  build is fully offline; real Nautilus S3 / Zenodo uploads are deferred behind a
+  later config gate.
+- **No schema change** — reporting reads the existing store + `fits.chains_path`/
+  `figure_path`; metrics stay computed on demand.
+
+**Tests** — `pab/tests/test_report.py` (10): `aggregate_by` region bins;
+`magnitude_bins`; `aggregate_healpix` (cell assignment + centres,
+`importorskip("healpy")`); `build_site` emits exactly `PAGE_STEMS` (no
+per-matchup page) + summary content; `rst_table` rendering; Bokeh
+`comparison_scatter`/`embed` (`importorskip("bokeh")`); `export_tables`
+round-trip; `build_manifest` id↔URL+checksum+`pab_version` and `LocalStubBackend`
+copies-not-network; `publish_release` writes the manifest; the real S3/Zenodo
+backends raise `NotImplementedError`.
+
+**Docs page** — `reporting.rst` (aggregate-not-per-matchup rationale, HEALPix,
+interactive embed, downloads/manifest, stubbed publish + config gate, how to
+publish a release; autodoc of `pab.report.*`).
+
+**Notebook** — `docs/nb/08_reporting.ipynb` (region/season + HEALPix aggregates,
+an aggregate `.rst` page, a standalone Bokeh embed, and a download manifest with
+stubbed local publishing on a synthetic store). Executed offline-safe.
+
+---
+
 ## 6. Cross-cutting conventions (as implemented)
 
 - **Provenance** — every results-bearing row carries `pab_version` + `created`;
@@ -581,9 +652,13 @@ pab/
     fit_fig.py         ✅ per-matchup fit figure (reconstructed from chains)
     scene.py           ✅ per-matchup scene quick-look (float + pixels + flags)
     population.py      ✅ sat-vs-float scatter, matchup map
-  report/              ⬜ Stage 7
+  report/
+    aggregate.py       ✅ region/season + HEALPix aggregation
+    rst.py             ✅ aggregate .rst pages (no per-matchup pages)
+    interactive.py     ✅ standalone Bokeh scatter/map (embed)
+    publish.py         ✅ exports + download manifest + stubbed backends
   pipeline.py          ⬜ Stage 8
-  tests/               test_smoke, test_db, test_argo, test_pace, test_matchup, test_fit, test_metrics
+  tests/               test_smoke, test_db, test_argo, test_pace, test_matchup, test_fit, test_metrics, test_report
 ```
 
 ---

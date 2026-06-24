@@ -721,3 +721,16 @@ aggregation via `remote_sensing.healpix`, downloads + manifest, Zenodo snapshot,
 and **publish backends stubbed** (local mocks, config-gated). Deliverables
 `pab.report.{rst,aggregate,interactive,publish}`, offline tests, `reporting.rst`,
 and `08_reporting.ipynb`. Doc only — no code changed.
+
+### 2026-06-24 (Stage 7 — implemented the reporting layer)
+
+Built `pab.report.{aggregate,rst,interactive,publish}`: region/season + HEALPix
+aggregation (reusing `remote_sensing.healpix` + `healpy.ang2pix`), programmatic
+aggregate `.rst` pages (a **fixed** page set — no per-matchup pages), standalone
+Bokeh scatter/map (`bokeh.embed`), and exports + a download manifest
+(id→URL+checksum, `pab_version`) with **stubbed** Nautilus-S3/Zenodo backends
+(filesystem `LocalStubBackend`; real ones `NotImplementedError`, config-gated).
+Tests `test_report.py` (10); `docs/reporting.rst` + `08_reporting.ipynb`. Suite
+**103** (101 + 2 BING-data skips when the mount is down); `ruff` + `sphinx -W`
+clean. Stage 7 ✅, impl v0.6.0. Notebook bokeh cell uses `embed()` (not
+`show()`) so myst-nb has no unknown-mime warnings. No commit (git is JXP's).

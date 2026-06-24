@@ -49,6 +49,11 @@ jupyter nbconvert --to notebook --execute --inplace docs/nb/<name>.ipynb
   matchup population: `log_comparison`, stratified median ratios, the
   satellite-vs-float scatter, and a scene quick-look; optional `RUN_LIVE` over a
   populated store (Stage 6).
+- [`08_reporting.ipynb`](08_reporting.ipynb) — the reporting layer
+  (`pab.report`) on a synthetic populated store: region/season + HEALPix
+  aggregates, an aggregate `.rst` page (no per-matchup pages), a standalone
+  Bokeh scatter, and a download manifest with stubbed (local) publishing
+  (Stage 7).
 
 The offline sections run without network; the Stage 2 live section is guarded by
 a `RUN_LIVE = False` flag (flip to `True` to pull a real profile from argopy).
