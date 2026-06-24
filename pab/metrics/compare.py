@@ -88,15 +88,17 @@ def log_comparison(sat, insitu) -> dict[str, Any]:
 def gather_matchups(store, *, model_pair: str = "ExpBPow"):
     """Assemble the per-matchup comparison table from the DB.
 
-    One row per matchup that has a BING fit: the satellite ``b_bp(700)`` and
-    ``chl`` (BING-retrieved, with credible bounds), the in-situ Argo ``b_bp(700)``
-    and ``chla``, the fit's reduced ``chisq``, and the float position/time (for
-    stratification).
+    One row per matchup that has a BING fit **for ``model_pair``**: the satellite
+    ``b_bp(700)`` and ``chl`` (BING-retrieved, with credible bounds), the in-situ
+    Argo ``b_bp(700)`` and ``chla``, the fit's reduced ``chisq``, and the float
+    position/time (for stratification). The ``fits`` join is filtered by
+    ``model_pair`` so a second model pair (or other fits on the same matchup) does
+    not produce duplicate rows.
 
     Args:
         store: An open :class:`pab.db.store.Store`.
-        model_pair: Namespace of the BING quantities to pull (default
-            ``"ExpBPow"`` → ``BING_ExpBPow_bbp700`` / ``BING_ExpBPow_chl``).
+        model_pair: Which BING fit to pull (default ``"ExpBPow"`` →
+            ``BING_ExpBPow_bbp700`` / ``BING_ExpBPow_chl``).
 
     Returns:
         A :class:`pandas.DataFrame` (empty when no matched fits exist).
@@ -114,14 +116,14 @@ def gather_matchups(store, *, model_pair: str = "ExpBPow"):
         FROM matchups m
         JOIN profiles p ON p.profile_id = m.profile_id
         JOIN mld_summary ms ON ms.profile_id = m.profile_id
-        JOIN fits f ON f.matchup_id = m.matchup_id
+        JOIN fits f ON f.matchup_id = m.matchup_id AND f.model_pair = ?
         LEFT JOIN fit_results fb
                ON fb.fit_id = f.fit_id AND fb.quantity = ?
         LEFT JOIN fit_results fc
                ON fc.fit_id = f.fit_id AND fc.quantity = ?
         ORDER BY m.matchup_id
     """
-    return store.query_df(sql, (bbp_q, chl_q))
+    return store.query_df(sql, (model_pair, bbp_q, chl_q))
 
 
 def add_oc_chl(df, store, *, opener=None, rank: int = 1):

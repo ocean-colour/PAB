@@ -15,7 +15,18 @@ Each matchup carries up to three ``b_bp`` estimates, compared in **log space**
 * **BING** — ``BING_ExpBPow_bbp700`` from ``fit_results`` (this analysis).
 * **in-situ Argo** — ``mld_summary.bbp700`` (mixed-layer, de-spiked; Stage 2).
 * **NASA L2 IOP** — the secondary baseline ``bbp_442``/``bbp_s`` under the
-  ``NASA_L2IOP_*`` namespace (when ingested).
+  ``NASA_L2IOP_*`` namespace.
+
+.. note::
+
+   **The NASA L2 IOP baseline is not yet ingested — it is deferred.** Stage 6
+   implements the BING-vs-Argo comparison (``b_bp`` and Chl); the
+   BING-vs-NASA-L2-IOP comparison is scaffolded but not wired: nothing yet reads
+   ``ocpy.pace.io.load_iop_l2`` to populate ``NASA_L2IOP_*`` rows, so
+   :func:`~pab.metrics.compare.gather_matchups` has no NASA column and there is no
+   BING-vs-NASA population plot. Because the metric layer is quantity-agnostic, it
+   slots in trivially once that ingest exists (a thin lazily-imported seam, like
+   the cloud read). Tracked as a Stage 6 follow-up.
 
 **Wavelength offset.** The Argo observable is ``b_bp(700)`` and BING reports
 ``b_bp`` at 700 nm directly (from the retrieved power-law slope), so the two are
@@ -44,8 +55,9 @@ satellite & in-situ arrays (finite, positive) it returns:
   MAD of that residual.
 
 The per-fit reduced ``chisq`` (from ``fits``) rides along as a quality field. The
-same function serves **BING-vs-NASA-L2-IOP** (two satellite columns) and the
-**Chl** comparison.
+same function serves the **Chl** comparison today, and will serve
+**BING-vs-NASA-L2-IOP** (two satellite columns) once the NASA baseline is
+ingested (deferred — see the note above).
 
 Gathering & stratification
 --------------------------

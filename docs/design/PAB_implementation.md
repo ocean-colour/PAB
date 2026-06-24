@@ -1,7 +1,7 @@
 # PAB Implementation Record
 
-**Version:** 0.5.3
-**Date:** 2026-06-23
+**Version:** 0.5.4
+**Date:** 2026-06-24
 **Authors:** JXP and Claude
 
 **Status:** living document — updated as each stage is implemented.
@@ -43,11 +43,11 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 92 passed (the two BING data-dependent
-tests — the `b_bp`-recovery and the fit-figure smoke — pass when the Loisel
-aph-basis file is present, and `skip` when it is absent, e.g. on lean CI);
-`ruff check pab` and `ruff format --check pab` → clean; `sphinx-build -W` →
-build succeeded.
+**Verification (current).** `pytest` → 93 tests: 91 passed + 2 skipped when the
+BING Loisel aph-basis data file is absent (the `b_bp`-recovery and fit-figure
+smoke skip, e.g. on lean CI / when the data mount is down), 93 passed when it is
+present; `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
+-W` → build succeeded.
 
 ---
 
@@ -500,10 +500,19 @@ reconstruction are mockable/lazy seams.
   is an optional independent cross-check.
 - **Wavelength offset** handled by comparing at 700 nm (BING reports `b_bp(700)`
   directly); the NASA-baseline 442 nm comparison is flagged as approximate.
+- **`gather_matchups` filters `fits` by `model_pair`** (`AND f.model_pair = ?`),
+  so a second model pair (or other fits) on the same matchup yields one row, not
+  duplicates.
+- **NASA L2 IOP baseline is deferred** (not ingested). BING-vs-Argo (`b_bp`,
+  Chl) is implemented; BING-vs-NASA awaits an `ocpy.pace.io.load_iop_l2` ingest
+  that populates `NASA_L2IOP_*` — a thin lazy seam the quantity-agnostic metric
+  slots into. Documented in `metrics.rst`.
 
-**Tests** — `pab/tests/test_metrics.py` (10): `log_comparison` known-values +
+**Tests** — `pab/tests/test_metrics.py` (11): `log_comparison` known-values +
 NaN/nonpositive handling; `season_of`/`region_of`; `gather_matchups` + `compare`
-(bbp + chl) + `add_strata` on a seeded DB; `add_oc_chl` via an injected granule;
+(bbp + chl) + `add_strata` on a seeded DB; **`gather_matchups` filters by
+`model_pair`** (a 2nd-pair fit doesn't duplicate the row); `add_oc_chl` via an
+injected granule;
 `locate_float_pixel`; `false_color_rgba` (normalised RGBA + greyed flags); the
 scene (RGB + single-band) and population figures render within the ~100 KB
 budget; and a `bing`-guarded fit-figure smoke (skips when the Loisel data is

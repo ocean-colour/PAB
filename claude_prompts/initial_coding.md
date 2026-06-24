@@ -700,3 +700,13 @@ notebook-05 crop (center on the matchup-pixel centroid + clip, not
 doesn't cover the float — the Stage-4 spatial gate correctly prefers the covering
 one. Suite **92 passed** (the BING-data tests run now that the Loisel file is
 present). Docs bumped: design v0.4.3, impl v0.5.3. Detail in `coding_stage6.md`.
+
+### 2026-06-24 (Stage 6 — addressed PR #4 review comments)
+
+Two findings from my PR #4 review: (1) `gather_matchups` now filters `fits` by
+`model_pair` (`AND f.model_pair = ?`) so a second model pair on a matchup can't
+duplicate the row (new test); (2) the **NASA L2 IOP baseline** is now explicitly
+documented as **deferred** (metrics.rst note + impl §5d) rather than
+implied-done — BING-vs-Argo (`b_bp`, Chl) is implemented, BING-vs-NASA awaits an
+`ocpy.pace.io.load_iop_l2` ingest. Suite 93 tests (91 + 2 BING-data skips today);
+`ruff` + `sphinx -W` clean. impl v0.5.4. No commit (git is JXP's).

@@ -79,6 +79,7 @@ Read these before coding:
 4. Read this doc.  Execute the 3rd task in the "Stage 6" section below.
 5. Read this doc.  Execute the 4th task in the "Stage 6" section below.
 6. Read this doc.  Execute the 5th task in the "Stage 6" section below.
+7. Read this doc.  Execute the 2nd task in the "Pull Request" section below.
 
 ## Stage 6
 
@@ -114,6 +115,26 @@ vs Argo `chla`** (parallel to `b_bp`): Stage 5 emits a `chl` quantity, and
 optional independent cross-check. Docs (design/fitting/metrics/impl) corrected.
 
 ### Requests
+
+**Addressed the PR #4 review (Claude, 2026-06-24).** Working-tree edits (not
+committed — git is yours):
+
+- **Fixed — `gather_matchups` filters by `model_pair`.** Added
+  `AND f.model_pair = ?` to the `fits` join, so a second model pair (or other
+  fits) on the same matchup yields **one** row, not duplicate/NULL rows. New
+  test `test_gather_matchups_filters_by_model_pair` (a `Cst` fit on the same
+  matchup is excluded; the `ExpBPow` value is returned).
+- **Documented — NASA L2 IOP baseline is deferred.** Made it explicit (not
+  implied-done) in `metrics.rst` (a `.. note::`), the impl record §5d, and the
+  BING-vs-NASA wording: BING-vs-Argo (`b_bp`, Chl) is implemented; BING-vs-NASA
+  awaits an `ocpy.pace.io.load_iop_l2` ingest populating `NASA_L2IOP_*`, a thin
+  lazy seam the quantity-agnostic metric slots into.
+- **Minor (no change):** the deferred `Rrs`-variability stratum and the
+  hard-coded Bricaud `0.05582` (named `BRICAUD_APH440`, sourced to bing) were
+  already documented; left as-is.
+
+Suite **93 tests** (91 passed + 2 skipped today, BING-data absent); `ruff` +
+`sphinx -W` clean. impl record → v0.5.4.
 
 ## Pull Request
 
@@ -234,6 +255,22 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-24 (Stage 6 — addressed PR #4 review comments)
+
+Working-tree edits for the two PR #4 findings (detail in the Requests section):
+
+- **`gather_matchups` now filters `fits` by `model_pair`** (`AND f.model_pair =
+  ?`) — a 2nd model pair on a matchup no longer duplicates the row. New test.
+- **NASA L2 IOP baseline marked explicitly deferred** in `metrics.rst` (note),
+  impl §5d, and the BING-vs-NASA wording (the quantity-agnostic metric slots it
+  in once `ocpy.pace.io.load_iop_l2` is ingested).
+- Minor notes (deferred Rrs-variability stratum; the `0.05582` constant) already
+  documented; left as-is.
+
+Suite **93 tests** (91 passed + 2 skipped today since the BING Loisel data mount
+is absent; 93 passed when present); `ruff` + `sphinx -W` clean. impl v0.5.4.
+No commit/push (git is JXP's).
 
 ### 2026-06-23 (Stage 6 — validated the composite on real PACE data; shared-scale fix)
 

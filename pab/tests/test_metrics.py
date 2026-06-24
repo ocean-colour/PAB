@@ -194,6 +194,48 @@ def test_gather_matchups_and_compare():
         assert seasons == {"M1": "DJF", "M2": "JJA"}
 
 
+def test_gather_matchups_filters_by_model_pair():
+    with Store.open(":memory:") as store:
+        _seed(
+            store,
+            "M1",
+            7902226,
+            5,
+            lat=27.0,
+            lon=-46.0,
+            time="2025-02-18T20:00:00",
+            bbp_argo=1e-3,
+            chla=0.1,
+            bbp_bing=2e-3,
+        )
+        # a SECOND model-pair fit on the same matchup must not duplicate the row
+        store.upsert(
+            "fits",
+            {
+                "fit_id": "M1_2_2_Cst",
+                "matchup_id": "M1",
+                "algorithm": "BING",
+                "model_pair": "Cst",
+                "chisq": 2.0,
+                "pab_version": "0",
+            },
+        )
+        store.upsert(
+            "fit_results",
+            {
+                "fit_id": "M1_2_2_Cst",
+                "quantity": "BING_Cst_bbp700",
+                "value": 9e-3,
+                "value_lo": 8e-3,
+                "value_hi": 1e-2,
+                "unit": "m^-1",
+            },
+        )
+        df = compare.gather_matchups(store)  # default ExpBPow
+        assert len(df) == 1  # not 2 — the Cst fit is filtered out
+        assert df["bbp_bing"].iloc[0] == pytest.approx(2e-3)  # ExpBPow, not Cst's 9e-3
+
+
 def test_add_oc_chl_from_granule():
     pytest.importorskip("ocpy")
     gran = make_granule()
