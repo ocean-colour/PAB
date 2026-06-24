@@ -42,22 +42,22 @@ def locate_float_pixel(ds, lat: float, lon: float) -> tuple[int, int]:
     return int(ix), int(iy)
 
 
-def _stretch(channel, good, *, p_hi: float = 99.0, gamma: float = 0.8):
-    """Scale a channel to [0, 1] by a high-percentile stretch + gamma."""
-    channel = np.asarray(channel, dtype=float)
-    finite = good & np.isfinite(channel)
-    hi = np.percentile(channel[finite], p_hi) if finite.any() else np.nan
-    if not np.isfinite(hi) or hi <= 0:
-        hi = np.nanmax(channel) if np.isfinite(channel).any() else 1.0
-    hi = hi if (np.isfinite(hi) and hi > 0) else 1.0
-    return np.clip(np.nan_to_num(channel) / hi, 0.0, 1.0) ** gamma
-
-
-def false_color_rgba(ds, *, rgb_waves=RGB_WAVES, mask_flags=_flags.STANDARD_OCEAN_MASK):
+def false_color_rgba(
+    ds,
+    *,
+    rgb_waves=RGB_WAVES,
+    mask_flags=_flags.STANDARD_OCEAN_MASK,
+    gamma: float = 0.7,
+    p_ref: float = 99.0,
+):
     """Build an ``(x, y, 4)`` RGBA composite from ``Rrs`` at three wavelengths.
 
-    Each of ``rgb_waves`` (R, G, B) selects the nearest ``Rrs`` band; each channel
-    is independently percentile-stretched to [0, 1]. Flagged / non-finite pixels
+    Each of ``rgb_waves`` (R, G, B) selects the nearest ``Rrs`` band. The three
+    channels share a **single** brightness scale — the ``p_ref`` percentile of
+    all unflagged R/G/B values — then a ``gamma`` lift. Sharing the scale (rather
+    than stretching each channel independently) preserves the natural
+    blue-dominant ocean colour and avoids amplifying per-pixel retrieval noise
+    into speckle on near-uniform open-ocean scenes. Flagged / non-finite pixels
     are set to :data:`_FLAG_RGBA` (grey).
 
     Returns:
@@ -68,12 +68,20 @@ def false_color_rgba(ds, *, rgb_waves=RGB_WAVES, mask_flags=_flags.STANDARD_OCEA
     bad = _flags.flagged_mask(np.asarray(ds["l2_flags"].values), mask_flags)
     good = ~bad
     nx, ny = rrs.shape[0], rrs.shape[1]
+
+    used = [float(wave[int(np.argmin(np.abs(wave - w)))]) for w in rgb_waves]
+    bands = [int(np.argmin(np.abs(wave - w))) for w in rgb_waves]
+    stack = np.stack([rrs[..., b] for b in bands], axis=-1)  # (x, y, 3)
+
+    vals = stack[good]
+    vals = vals[np.isfinite(vals) & (vals > 0)]
+    ref = np.percentile(vals, p_ref) if vals.size else np.nan
+    if not np.isfinite(ref) or ref <= 0:
+        ref = 1.0
+
+    rgb = np.clip(np.nan_to_num(stack, nan=0.0) / ref, 0.0, 1.0) ** gamma
     rgba = np.ones((nx, ny, 4), dtype=float)
-    used = []
-    for c, w in enumerate(rgb_waves):
-        b = int(np.argmin(np.abs(wave - w)))
-        used.append(float(wave[b]))
-        rgba[..., c] = _stretch(rrs[..., b], good)
+    rgba[..., :3] = rgb
     rgba[bad] = _FLAG_RGBA
     return rgba, tuple(used)
 

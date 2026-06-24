@@ -77,6 +77,8 @@ Read these before coding:
 
 3. Read this doc.  Execute the 1st task in the "Pull Request" section below.
 4. Read this doc.  Execute the 3rd task in the "Stage 6" section below.
+5. Read this doc.  Execute the 4th task in the "Stage 6" section below.
+6. Read this doc.  Execute the 5th task in the "Stage 6" section below.
 
 ## Stage 6
 
@@ -89,6 +91,10 @@ Read these before coding:
 2. We need to correct a misconception that you have about the `ExpBPow` model.  One of the free parameters is `Aph` and the model uses that to estimate `Chl`.  But `Chl` is **not** truly an input parameter.  We do input it to seed the model, and that is all.  If necessary modify the design docs to make this clear.  And modify your code for this Stage as well. Log your work.
 
 3. I wish for the QA views of the PACE scenes to be more than a single channel.  I nice false-color image made from a few channels would be great.  Please modify the code to make this possible.  Also update the design docs as necessary. Log your work.
+
+4. Your Logs state that you modified the 07_metrics notebook to render the RGB composite.  I just ran the Notebook and I don't see anything.  Please double check and update accordingly. Log your work.
+
+5. Please add a false-color composites with real PACE data.  Add it to the 05_matchup_7902226_4.ipynb Notebook. Log your work.
 
 ### Q&A
 
@@ -228,6 +234,94 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-23 (Stage 6 — validated the composite on real PACE data; shared-scale fix)
+
+JXP pointed out a `~/.netrc` exists (my earlier "no Earthdata creds" was stale —
+`earthaccess.login(strategy="netrc")` authenticates). So I actually ran the
+composite on **real PACE data** for seed 7902226/5 and learned two things:
+
+1. **Granule choice matters.** The closest-*in-time* granule (15:25 UTC, 51%
+   cloud) doesn't cover the float — nearest *unflagged* pixel 81 km away → blank
+   composite. The granule that covers the float is `…20250219T155847` (the one
+   JR used): nearest unflagged pixel **0.41 km**, 10 valid pixels. The Stage 4
+   matchup engine's spatial gate is what (correctly) rejects the bad one.
+2. **Per-channel stretch made speckle.** On a near-uniform gyre crop the
+   independent 2–98% per-channel stretch amplified retrieval noise into
+   rainbow speckle and broke colour balance. Fixed `false_color_rgba` to scale
+   all three channels by a **single shared brightness reference** (99th pct) +
+   gamma — preserving the natural blue-dominant ocean colour. Re-rendered on the
+   real granule: a clean deep-blue gyre scene with the float + 10 analyzed pixels
+   correctly placed (verified by viewing the PNG).
+
+Also fixed a **crop bug** in the notebook-05 cell: centering the crop on
+`locate_float_pixel` (distance-nearest, can be a far/edge pixel) while remapping
+the *unflagged* pixels produced negative indices → `IndexError`. The cell now
+centers on the matchup-pixels' **centroid** and **clips** remapped indices to the
+window (validated on real data).
+
+- `pab/plotting/scene.py` — shared-scale `false_color_rgba` (removed the
+  per-channel `_stretch`). `docs/nb/05_*` cell uses the robust crop.
+- Docs updated (design v0.4.3, metrics.rst, impl v0.5.3, both notebook md cells)
+  to say "shared brightness reference", not "per-channel percentile-stretched".
+- Suite now **92 passed** (the two BING-data tests run + pass now that the Loisel
+  aph-basis file is present this session; they `skip` when it's absent). `ruff` +
+  `sphinx -W` clean.
+
+Note: the real granule open took ~140–160 s (out-of-region HTTPS stream, not
+in-region S3). The composite cell in notebook 05 is still committed without
+outputs (it's part of the live RUN_LIVE-style flow); I validated it via a
+standalone script rather than executing the whole notebook (its JR/PCA-NN cells
+need their own data).
+
+### 2026-06-23 (Stage 6 — false-color composite on real PACE data in notebook 05)
+
+Task 5: added a **false-color RGB composite of the real matched PACE granule** to
+`docs/nb/05_matchup_7902226_4.ipynb` (the live dig-in for float 7902226 / cycle
+5). Inserted right after the existing granule-plot cell, reusing the already-open
+`gds = cloud.open_granule(url)` and the matchup geometry:
+
+- Crops the full OCI granule to a ~25×25-pixel window around the float's nearest
+  pixel (`scene.locate_float_pixel`) — a full granule is far too large to
+  composite whole — and **remaps the matchup-pixel indices into the crop**
+  (`ix - x0`, `iy - y0`).
+- Calls `pab.plotting.scene.scene_quicklook(sub, lat, lon, pixels=sub_pixels)`
+  (default false-color, R/G/B ≈ 645/555/470 nm), float as a red star, analyzed
+  pixels circled, flagged pixels greyed.
+
+This is the **first use of the false-color composite on real PACE data** — until
+now it had only been exercised on synthetic granules (a repo-wide grep found no
+other real-PACE RGB example). I could **not execute it here** (no `~/.netrc` /
+Earthdata Login), so the cell is committed without outputs, consistent with the
+rest of notebook 05 (which is live end-to-end and excluded from the Sphinx
+build). All code cells parse; `nbformat` validates; the notebook stays excluded
+so `sphinx -W` is unaffected.
+
+### 2026-06-23 (Stage 6 — fixed the blank RGB scene in the 07_metrics notebook)
+
+Task 4: JXP ran `07_metrics.ipynb` and saw nothing for the scene. Root cause —
+the notebook's synthetic granule was built with `np.tile`, i.e. **spatially
+uniform**; my earlier RGB code *did* render (the committed cell had a PNG), but
+a uniform scene + the old `Rrs/max` stretch makes every channel saturate to
+**1.0 → pure white** (a blank-looking square). So my prior "renders RGB" log was
+technically true but the image was effectively blank — my miss.
+
+Two fixes:
+
+- **`pab/plotting/scene.py`** — `_stretch` now uses a **low–high percentile
+  window** (2–98%) per channel instead of `/max`. Ocean `Rrs` channels are all
+  positive and similar in magnitude, so `/max` washes scenes out; the window
+  restores contrast, and a genuinely flat channel maps to a neutral 0.5 (not
+  white). (Verified: uniform → std 0; varying → std ≈ 0.29.)
+- **`docs/nb/07_metrics.ipynb`** — rebuilt the scene cell with a **spatially
+  varying** granule (N–S brightness gradient + E-ward greening + a flagged cloud
+  edge), 7×7, so the composite shows real colour structure. The scene cell now
+  emits a ~20 KB colour PNG (a blank white one is ~3–5 KB).
+
+Verified **90 passed, 2 skipped**; `ruff` + `sphinx -W` clean. Lesson: a
+figure-size/`has_png` check isn't enough — a uniform input can still "render"
+blank; the demo data must have spatial contrast (and the stretch must use a
+percentile window).
 
 ### 2026-06-23 (Stage 6 — false-color RGB scene quick-look)
 

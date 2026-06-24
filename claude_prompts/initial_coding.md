@@ -661,3 +661,42 @@ stays exact on the swath mesh. Tests +1 (`false_color_rgba`) and the scene smoke
 now covers both modes → **90 passed, 2 skipped**; `ruff` + `sphinx -W` clean.
 Docs updated: `PAB_design.md` (v0.4.2), `metrics.rst`, impl record (v0.5.2), and
 the `07_metrics` notebook. Detail in `coding_stage6.md`.
+
+### 2026-06-23 (Stage 6 — fixed the blank RGB scene in the notebook)
+
+JXP saw nothing for the scene in `07_metrics.ipynb`. Root cause: the demo
+granule was spatially **uniform** (`np.tile`), so the false-color composite —
+with the old `Rrs/max` stretch — saturated every channel to 1.0 (pure white). My
+earlier "renders RGB" log was true (a PNG was present) but the image was
+effectively blank. Fixed by (1) switching `_stretch` to a **2–98% percentile
+window** per channel (restores contrast; flat → neutral grey, not white) and
+(2) rebuilding the notebook's scene with a **spatially varying** granule (gradient
++ greening + a flagged cloud edge). Scene cell now emits a ~20 KB colour PNG.
+**90 passed, 2 skipped**; `ruff` + `sphinx -W` clean. Detail in `coding_stage6.md`.
+
+### 2026-06-23 (Stage 6 — false-color composite on real PACE data, notebook 05)
+
+Added a false-color RGB composite of the **real matched PACE granule** to the
+live dig-in notebook `docs/nb/05_matchup_7902226_4.ipynb` (float 7902226 / cycle
+5) — the first use of the composite on real PACE data (it had only run on
+synthetic granules; a repo grep found no other real-PACE RGB). The cell reuses
+the already-open `gds`, crops to a ~25×25-pixel window around the float (full OCI
+granules are too large to composite whole), remaps the matchup-pixel indices into
+the crop, and calls `scene.scene_quicklook`. Committed without outputs (no
+Earthdata Login here to execute it); notebook stays excluded from the Sphinx
+build, so nothing else is affected. Detail in `coding_stage6.md`.
+
+### 2026-06-23 (Stage 6 — validated the composite on real PACE data; shared-scale fix)
+
+A `~/.netrc` does exist (earthaccess authenticates), so I ran the composite on
+**real PACE OCI data** for 7902226/5. Two fixes resulted: (1) `false_color_rgba`
+now scales the three channels by a **shared brightness reference** (+gamma)
+instead of per-channel percentile stretch — the latter turned a near-uniform
+gyre crop into rainbow speckle; the shared scale gives a natural deep-blue ocean
+scene (verified by viewing the rendered PNG on granule `…20250219T155847`, where
+the float's nearest unflagged pixel is 0.41 km). (2) Fixed an `IndexError` in the
+notebook-05 crop (center on the matchup-pixel centroid + clip, not
+`locate_float_pixel`). Also learned the closest-*in-time* granule (51% cloud)
+doesn't cover the float — the Stage-4 spatial gate correctly prefers the covering
+one. Suite **92 passed** (the BING-data tests run now that the Loisel file is
+present). Docs bumped: design v0.4.3, impl v0.5.3. Detail in `coding_stage6.md`.

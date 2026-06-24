@@ -1,6 +1,6 @@
 # PACE and BGC-Argo Matchup Analysis Design Document
 
-**Version:** 0.4.2
+**Version:** 0.4.3
 **Date:** 2026-06-23
 **Authors:** JXP and Claude
 
@@ -499,9 +499,12 @@ the reporting layer.
 - **Scene quick-look (per matchup)** — a small PNG of the PACE scene around the
   float for visual inspection. The default is a **false-color RGB composite** of
   the granule neighborhood: `Rrs` at three wavelengths (default R/G/B ≈
-  645/555/470 nm, configurable) mapped to the colour channels and independently
-  percentile-stretched, so atmospheric/cloud/glint artefacts and water-colour
-  gradients are obvious at a glance; a single-band/`Rrs` view (with a colorbar)
+  645/555/470 nm, configurable) mapped to the colour channels and scaled by a
+  **shared brightness reference** (+ gamma) so the natural blue-dominant ocean
+  colour is preserved (rather than per-channel stretching, which amplifies
+  retrieval noise into speckle on near-uniform open-ocean scenes); cloud/glint
+  artefacts and water-colour gradients are then obvious at a glance, with a
+  single-band/`Rrs` view (with a colorbar)
   remains available. Either carries the **Argo float location marked** and the
   **pixels actually extracted and analyzed** highlighted, plus the `l2_flags`
   mask shown (flagged pixels greyed). This makes the granule-quality assessment

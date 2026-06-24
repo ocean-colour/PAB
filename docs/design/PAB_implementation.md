@@ -1,6 +1,6 @@
 # PAB Implementation Record
 
-**Version:** 0.5.2
+**Version:** 0.5.3
 **Date:** 2026-06-23
 **Authors:** JXP and Claude
 
@@ -43,10 +43,11 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 90 passed, 2 skipped (the two BING
-data-dependent tests — the `b_bp`-recovery and the fit-figure smoke — skip when
-the Loisel aph-basis file is absent); `ruff check pab` and `ruff format --check
-pab` → clean; `sphinx-build -W` → build succeeded.
+**Verification (current).** `pytest` → 92 passed (the two BING data-dependent
+tests — the `b_bp`-recovery and the fit-figure smoke — pass when the Loisel
+aph-basis file is present, and `skip` when it is absent, e.g. on lean CI);
+`ruff check pab` and `ruff format --check pab` → clean; `sphinx-build -W` →
+build succeeded.
 
 ---
 
@@ -475,7 +476,8 @@ reconstruction are mockable/lazy seams.
 
 - `scene.py` — `scene_quicklook(ds, lat, lon, …)` / `scene_from_store(...)`:
   default **false-color RGB composite** (`false_color_rgba`: `Rrs` at three
-  wavelengths → R/G/B, percentile-stretched), with a single-band `mode="band"`
+  wavelengths → R/G/B, **shared-scale** brightness + gamma so natural ocean
+  colour is preserved, not per-channel stretched), with a single-band `mode="band"`
   view; the float is marked, analyzed pixels circled, and the `l2_flags` mask
   greyed. Pure NumPy/Matplotlib + `pab.pace.flags`;
   `locate_float_pixel` is a tested pure helper.
