@@ -710,3 +710,14 @@ documented as **deferred** (metrics.rst note + impl §5d) rather than
 implied-done — BING-vs-Argo (`b_bp`, Chl) is implemented, BING-vs-NASA awaits an
 `ocpy.pace.io.load_iop_l2` ingest. Suite 93 tests (91 + 2 BING-data skips today);
 `ruff` + `sphinx -W` clean. impl v0.5.4. No commit (git is JXP's).
+
+### 2026-06-24 (Generated the Stage 7 prompt doc)
+
+Wrote `claude_prompts/coding_stage7.md` (Reporting), modeled on the earlier
+stage prompt docs and grounded in coding-plan §7 + the design's Reporting
+section: aggregate `.rst` pages (no per-matchup pages) + sortable tables,
+standalone Bokeh map/scatter (hover→values, click→artifact-by-id), HEALPix
+aggregation via `remote_sensing.healpix`, downloads + manifest, Zenodo snapshot,
+and **publish backends stubbed** (local mocks, config-gated). Deliverables
+`pab.report.{rst,aggregate,interactive,publish}`, offline tests, `reporting.rst`,
+and `08_reporting.ipynb`. Doc only — no code changed.

@@ -80,6 +80,7 @@ Read these before coding:
 5. Read this doc.  Execute the 4th task in the "Stage 6" section below.
 6. Read this doc.  Execute the 5th task in the "Stage 6" section below.
 7. Read this doc.  Execute the 2nd task in the "Pull Request" section below.
+8. Read this doc.  Execute the 1st task in the "Stage 7" section below.
 
 ## Stage 6
 
@@ -144,6 +145,12 @@ Suite **93 tests** (91 passed + 2 skipped today, BING-data absent); `ruff` +
 2. Make edits to the Repo to address the review comments. If you have any
    questions, write them in the Q&A section below. If you have any requests,
    write them in the Requests section below.
+
+## Stage 7
+
+1. Read this doc.  Please build a prompt doc for Stage 7.  Name it `claude_prompts/coding_stage7.md`.  Model it after this one and the previous ones.
+
+### Requests
 
 ## Stage 6 — Metrics & figures
 
@@ -255,6 +262,22 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-24 (Stage 7 — generated the Stage 7 prompt doc)
+
+Created `claude_prompts/coding_stage7.md` (Reporting), modeled on the prior
+stage docs. Grounded in coding-plan §7 and the design's **Reporting** section:
+the four products (static readthedocs `.rst` aggregate pages + sortable tables;
+standalone Bokeh map/scatter with hover→values / click→artifact-by-id; downloads
++ manifest; Zenodo snapshot), the **aggregate-not-per-matchup** constraint, the
+HEALPix aggregation (`remote_sensing.healpix`) alongside region/season bins, the
+Nautilus/NSF S3 object store, and **publish backends stubbed** (local mocks,
+config-gated, no live uploads). Named the seams it builds on (`Store` exports,
+`metrics.compare`, `fit.artifacts` + `chains_path`/`figure_path`, `pab.config`
+`pab_version`), and laid out deliverables `pab.report.{rst,aggregate,interactive,
+publish}`, offline tests (rst renders / no per-matchup page; HEALPix cell
+assignment; Bokeh embed; manifest id↔URL consistency; export round-trip),
+`docs/reporting.rst`, and `docs/nb/08_reporting.ipynb` — to the Stage 0–6 DoD.
 
 ### 2026-06-24 (Stage 6 — addressed PR #4 review comments)
 
