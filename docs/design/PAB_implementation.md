@@ -1,6 +1,6 @@
 # PAB Implementation Record
 
-**Version:** 0.6.1
+**Version:** 0.6.2
 **Date:** 2026-06-25
 **Authors:** JXP and Claude
 
@@ -43,9 +43,9 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 106 tests: 104 passed + 2 skipped when the
+**Verification (current).** `pytest` → 107 tests: 105 passed + 2 skipped when the
 BING Loisel aph-basis data file is absent (the `b_bp`-recovery and fit-figure
-smoke skip, e.g. on lean CI / when the data mount is down), 106 passed when it is
+smoke skip, e.g. on lean CI / when the data mount is down), 107 passed when it is
 present; `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
 -W` → build succeeded.
 
@@ -585,12 +585,14 @@ are lazily-imported seams; the aggregation math and manifest are pure.
 - **No schema change** — reporting reads the existing store + `fits.chains_path`/
   `figure_path`; metrics stay computed on demand.
 
-**Tests** — `pab/tests/test_report.py` (13): `aggregate_by` region bins;
+**Tests** — `pab/tests/test_report.py` (14): `aggregate_by` region bins;
 `magnitude_bins`; `aggregate_healpix` (cell assignment + centres,
 `importorskip("healpy")`); `build_site` emits exactly `PAGE_STEMS` (+ `conf.py`,
 no per-matchup page) + summary content + the static `list-table` fallback;
-**sortable `DataTable` embed** when bokeh present; the **generated site builds**
-under `sphinx-build`; `stats_table` columns are sortable; `rst_table` rendering;
+**sortable `DataTable` embed** when bokeh present; **`build_site` degrades
+gracefully without `healpy`/`bokeh`** (HEALPix table omitted with a note — the
+lean-CI regression); the **generated site builds** under `sphinx-build`;
+`stats_table` columns are sortable; `rst_table` rendering;
 Bokeh `comparison_scatter`/`embed`; `export_tables` round-trip; `build_manifest`
 id↔URL+checksum+`pab_version` and `LocalStubBackend` copies-not-network;
 `publish_release` writes the manifest; the real S3/Zenodo backends raise

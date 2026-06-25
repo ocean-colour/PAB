@@ -75,6 +75,7 @@ Read these before coding:
    section below.
 2. Read this doc.  Execute the 1st task in the "Pull Request" section below.
 3. Read this doc.  Execute the 2nd task in the "Pull Request" section below.
+4. Read this doc.  Execute the 3rd task in the "Pull Request" section below.
 
 ## Stage 7
 
@@ -119,6 +120,8 @@ Suite **106** (104 + 2 BING-data skips when the mount is down); `ruff` +
 2. Make edits to the Repo to address the review comments. If you have any
    questions, write them in the Q&A section below. If you have any requests,
    write them in the Requests section below.
+
+3. There are 2 failing tests on GitHub.  Please fix them.  Log your work.
 
 ## Stage 7 — Reporting
 
@@ -237,6 +240,25 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-25 (Stage 7 — fixed the 2 failing CI tests)
+
+The 2 GitHub failures were the **same** test failing in both pytest check-runs
+(push + PR events): `test_build_site_fixed_pages_no_per_matchup` →
+`ModuleNotFoundError: No module named 'healpy'`. Root cause — CI's **lean** env
+has no `healpy`/`remote_sensing`, but my `aggregates_page` always called
+`aggregate_healpix`, whose `import healpy` is uncaught.
+
+Fix: made the HEALPix table in `aggregates_page` **best-effort** — wrap
+`aggregate_healpix` in `try/except ImportError` and emit a "(HEALPix aggregation
+requires healpy / remote_sensing)" note instead of crashing. The flat
+region/season bins are the default and still render. (`ModuleNotFoundError`
+subclasses `ImportError`, so the existing bokeh-fallback pattern is matched.)
+
+Verified by actually blocking `healpy`/`remote_sensing` imports and running
+`build_site` (degrades, no crash) and with a monkeypatched regression test
+`test_build_site_without_healpy`. Suite **107** (105 + 2 BING-data skips); `ruff`
++ `sphinx -W` clean; impl v0.6.2. No commit (git is JXP's).
 
 ### 2026-06-25 (Stage 7 — addressed PR #5 review comments)
 

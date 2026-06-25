@@ -754,3 +754,14 @@ fallback), and (2) `build_site` writes a Sphinx `conf.py` so the generated dir i
 a **buildable** reporting site (a test runs `sphinx-build` on it). Tests +3 (13
 in `test_report.py`); suite **106** (104 + 2 BING-data skips); `ruff` +
 `sphinx -W` clean; impl v0.6.1. No commit (git is JXP's).
+
+### 2026-06-25 (Stage 7 — fixed the failing CI tests)
+
+The 2 GitHub failures were the same test (`test_build_site_fixed_pages_no_per_matchup`)
+failing in both pytest check-runs: in CI's **lean** env (no `healpy`/
+`remote_sensing`), `aggregates_page` always called `aggregate_healpix` →
+uncaught `ModuleNotFoundError`. Fixed by making the HEALPix table best-effort
+(`try/except ImportError` → a graceful note; flat region/season bins remain the
+default). Verified by blocking the `healpy`/`remote_sensing` imports and running
+`build_site`, plus a regression test. Suite **107** (105 + 2 BING-data skips);
+`ruff` + `sphinx -W` clean; impl v0.6.2. No commit.

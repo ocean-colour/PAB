@@ -133,12 +133,19 @@ def aggregates_page(store, *, sortable: bool = True) -> str:
     out.append(_heading("By season", "-"))
     out.append(_table_block(agg.aggregate_by(df, "season"), sortable=sortable))
     out.append(_heading("HEALPix cells", "-"))
-    hp = agg.aggregate_healpix(df)
-    out.append(
-        _table_block(
-            hp, columns=["hpix", "lon", "lat", "n", "median_ratio"], sortable=sortable
+    try:
+        hp = agg.aggregate_healpix(df)
+        out.append(
+            _table_block(
+                hp,
+                columns=["hpix", "lon", "lat", "n", "median_ratio"],
+                sortable=sortable,
+            )
         )
-    )
+    except ImportError:
+        # HEALPix aggregation needs healpy / remote_sensing.healpix; the flat
+        # region/season bins above are the default, so degrade gracefully.
+        out.append("(HEALPix aggregation requires ``healpy`` / ``remote_sensing``)\n")
     return "\n".join(out)
 
 

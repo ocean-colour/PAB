@@ -156,6 +156,22 @@ def test_build_site_fixed_pages_no_per_matchup(tmp_path):
         assert "list-table" in rst.aggregates_page(store, sortable=False)
 
 
+def test_build_site_without_healpy(tmp_path, monkeypatch):
+    # lean env (no healpy/remote_sensing): the HEALPix table degrades gracefully,
+    # the rest of the site still builds. (Regression for the CI failure.)
+    def _raise(*a, **k):
+        raise ModuleNotFoundError("No module named 'healpy'")
+
+    monkeypatch.setattr(aggregate, "aggregate_healpix", _raise)
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        written = rst.build_site(store, tmp_path, sortable=False)
+        assert set(written) == set(rst.PAGE_STEMS) | {"conf"}
+        agg_text = written["aggregates"].read_text()
+        assert "HEALPix aggregation requires" in agg_text  # degraded, not crashed
+        assert "By region" in agg_text  # the flat bins still rendered
+
+
 def test_build_site_sortable_tables_when_bokeh(tmp_path):
     pytest.importorskip("bokeh")
     with Store.open(":memory:") as store:
