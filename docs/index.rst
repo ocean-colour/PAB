@@ -26,6 +26,7 @@ site is a separate Sphinx target produced in Stage 7.
    matchup
    fitting
    metrics
+   reporting
 
 .. toctree::
    :maxdepth: 1
@@ -38,6 +39,7 @@ site is a separate Sphinx target produced in Stage 7.
    nb/04_matchup
    nb/06_fit
    nb/07_metrics
+   nb/08_reporting
 
 .. toctree::
    :maxdepth: 1

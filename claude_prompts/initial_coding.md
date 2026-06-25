@@ -721,3 +721,47 @@ aggregation via `remote_sensing.healpix`, downloads + manifest, Zenodo snapshot,
 and **publish backends stubbed** (local mocks, config-gated). Deliverables
 `pab.report.{rst,aggregate,interactive,publish}`, offline tests, `reporting.rst`,
 and `08_reporting.ipynb`. Doc only — no code changed.
+
+### 2026-06-24 (Stage 7 — implemented the reporting layer)
+
+Built `pab.report.{aggregate,rst,interactive,publish}`: region/season + HEALPix
+aggregation (reusing `remote_sensing.healpix` + `healpy.ang2pix`), programmatic
+aggregate `.rst` pages (a **fixed** page set — no per-matchup pages), standalone
+Bokeh scatter/map (`bokeh.embed`), and exports + a download manifest
+(id→URL+checksum, `pab_version`) with **stubbed** Nautilus-S3/Zenodo backends
+(filesystem `LocalStubBackend`; real ones `NotImplementedError`, config-gated).
+Tests `test_report.py` (10); `docs/reporting.rst` + `08_reporting.ipynb`. Suite
+**103** (101 + 2 BING-data skips when the mount is down); `ruff` + `sphinx -W`
+clean. Stage 7 ✅, impl v0.6.0. Notebook bokeh cell uses `embed()` (not
+`show()`) so myst-nb has no unknown-mime warnings. No commit (git is JXP's).
+
+### 2026-06-25 (Reviewed Stage 7 PR #5 and posted the review to GitHub)
+
+Reviewed PR #5 "stage 7" (`stage-7` → `develop`, 13 files) and posted a COMMENT
+review as `profxj`. Due diligence: `pytest` 103 passed, `ruff` + `sphinx -W`
+clean. Verdict: solid; two scope items to flag as partial — (1) the "sortable"
+stats tables are static `list-table`s (need a Bokeh `DataTable` or a deferred
+note); (2) no separate Sphinx reporting target yet (`build_site` writes `.rst`
+sources only). Plus minor notes (inline interactive data vs a once-exported
+lookup table; BING-vs-NASA still pending). No merge/commit. Detail in
+`coding_stage7.md`.
+
+### 2026-06-25 (Stage 7 — addressed PR #5 review comments)
+
+Both should-fix findings fixed: (1) the binned stats tables are now **sortable**
+Bokeh `DataTable` embeds (`interactive.stats_table`; static `list-table`
+fallback), and (2) `build_site` writes a Sphinx `conf.py` so the generated dir is
+a **buildable** reporting site (a test runs `sphinx-build` on it). Tests +3 (13
+in `test_report.py`); suite **106** (104 + 2 BING-data skips); `ruff` +
+`sphinx -W` clean; impl v0.6.1. No commit (git is JXP's).
+
+### 2026-06-25 (Stage 7 — fixed the failing CI tests)
+
+The 2 GitHub failures were the same test (`test_build_site_fixed_pages_no_per_matchup`)
+failing in both pytest check-runs: in CI's **lean** env (no `healpy`/
+`remote_sensing`), `aggregates_page` always called `aggregate_healpix` →
+uncaught `ModuleNotFoundError`. Fixed by making the HEALPix table best-effort
+(`try/except ImportError` → a graceful note; flat region/season bins remain the
+default). Verified by blocking the `healpy`/`remote_sensing` imports and running
+`build_site`, plus a regression test. Suite **107** (105 + 2 BING-data skips);
+`ruff` + `sphinx -W` clean; impl v0.6.2. No commit.
