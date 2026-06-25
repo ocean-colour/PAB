@@ -97,8 +97,25 @@ def matchup_map(df, *, color_col: str = "median_ratio", title: str = "matchups")
     return fig
 
 
+def stats_table(df, *, columns=None, width: int = 760, height: int = 280):
+    """A **sortable** Bokeh ``DataTable`` for a statistics frame.
+
+    Columns sort on header click (Bokeh ``DataTable`` is sortable by default), so
+    the static site gets sortable tables without a server. Embed it with
+    :func:`embed` / :func:`raw_html`.
+    """
+    from bokeh.models import ColumnDataSource, DataTable, TableColumn
+
+    cols = list(columns) if columns is not None else list(df.columns)
+    src = ColumnDataSource({c: df[c].tolist() for c in cols})
+    table_cols = [TableColumn(field=c, title=str(c), sortable=True) for c in cols]
+    return DataTable(
+        source=src, columns=table_cols, sortable=True, width=width, height=height
+    )
+
+
 def embed(fig) -> tuple[str, str]:
-    """Return the standalone ``(script, div)`` for a Bokeh figure (for ``.rst``)."""
+    """Return the standalone ``(script, div)`` for a Bokeh model (for ``.rst``)."""
     from bokeh.embed import components
 
     return components(fig)

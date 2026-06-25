@@ -734,3 +734,23 @@ Tests `test_report.py` (10); `docs/reporting.rst` + `08_reporting.ipynb`. Suite
 **103** (101 + 2 BING-data skips when the mount is down); `ruff` + `sphinx -W`
 clean. Stage 7 ✅, impl v0.6.0. Notebook bokeh cell uses `embed()` (not
 `show()`) so myst-nb has no unknown-mime warnings. No commit (git is JXP's).
+
+### 2026-06-25 (Reviewed Stage 7 PR #5 and posted the review to GitHub)
+
+Reviewed PR #5 "stage 7" (`stage-7` → `develop`, 13 files) and posted a COMMENT
+review as `profxj`. Due diligence: `pytest` 103 passed, `ruff` + `sphinx -W`
+clean. Verdict: solid; two scope items to flag as partial — (1) the "sortable"
+stats tables are static `list-table`s (need a Bokeh `DataTable` or a deferred
+note); (2) no separate Sphinx reporting target yet (`build_site` writes `.rst`
+sources only). Plus minor notes (inline interactive data vs a once-exported
+lookup table; BING-vs-NASA still pending). No merge/commit. Detail in
+`coding_stage7.md`.
+
+### 2026-06-25 (Stage 7 — addressed PR #5 review comments)
+
+Both should-fix findings fixed: (1) the binned stats tables are now **sortable**
+Bokeh `DataTable` embeds (`interactive.stats_table`; static `list-table`
+fallback), and (2) `build_site` writes a Sphinx `conf.py` so the generated dir is
+a **buildable** reporting site (a test runs `sphinx-build` on it). Tests +3 (13
+in `test_report.py`); suite **106** (104 + 2 BING-data skips); `ruff` +
+`sphinx -W` clean; impl v0.6.1. No commit (git is JXP's).

@@ -1,7 +1,7 @@
 # PAB Implementation Record
 
-**Version:** 0.6.0
-**Date:** 2026-06-24
+**Version:** 0.6.1
+**Date:** 2026-06-25
 **Authors:** JXP and Claude
 
 **Status:** living document — updated as each stage is implemented.
@@ -43,9 +43,9 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 103 tests: 101 passed + 2 skipped when the
+**Verification (current).** `pytest` → 106 tests: 104 passed + 2 skipped when the
 BING Loisel aph-basis data file is absent (the `b_bp`-recovery and fit-figure
-smoke skip, e.g. on lean CI / when the data mount is down), 103 passed when it is
+smoke skip, e.g. on lean CI / when the data mount is down), 106 passed when it is
 present; `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
 -W` → build succeeded.
 
@@ -547,18 +547,20 @@ are lazily-imported seams; the aggregation math and manifest are pure.
 
 ### 5e.2 `.rst` generation (`pab/report/rst.py`)
 
-- `rst_table` (DataFrame → `list-table`), `summary_page`/`aggregates_page`/
+- `rst_table` (static `list-table`), `summary_page`/`aggregates_page`/
   `methods_page`/`index_page`, and `build_site(store, outdir)` — writes the
-  **fixed** `PAGE_STEMS` set to a dir *outside* the dev docs. **No per-matchup
-  page** is ever emitted (the design's hard constraint); per-matchup detail is
-  reached via the interactive figures.
+  **fixed** `PAGE_STEMS` set **plus a Sphinx `conf.py`** (a self-contained,
+  buildable reporting site, separate from the dev docs:
+  `sphinx-build <outdir> <outdir>/_build`). The binned tables are **sortable**
+  Bokeh `DataTable` embeds when `bokeh` is present (`aggregates_page(sortable=)`),
+  falling back to a static `list-table`. **No per-matchup page** is ever emitted.
 
 ### 5e.3 Interactive (`pab/report/interactive.py`)
 
 - `comparison_scatter` (log-log sat-vs-float + 1:1 line, hover, optional
-  tap→artifact URL, `output_backend="webgl"`), `matchup_map`, and `embed`/
-  `raw_html` (`bokeh.embed.components` → standalone script+div for a `.. raw::
-  html` block; no Bokeh server).
+  tap→artifact URL, `output_backend="webgl"`), `matchup_map`, `stats_table` (a
+  **sortable** `DataTable`), and `embed`/`raw_html` (`bokeh.embed.components` →
+  standalone script+div for a `.. raw:: html` block; no Bokeh server).
 
 ### 5e.4 Publish (`pab/report/publish.py`)
 
@@ -572,22 +574,27 @@ are lazily-imported seams; the aggregation math and manifest are pure.
 
 ### 5e.5 Key decisions
 
-- **Aggregate pages only** — `build_site` returns the fixed `PAGE_STEMS`
-  regardless of matchup count; a test asserts no per-matchup explosion.
+- **Aggregate pages only** — `build_site` returns the fixed `PAGE_STEMS` (+ a
+  `conf.py`) regardless of matchup count; a test asserts no per-matchup
+  explosion, and another **builds the generated site** with `sphinx-build`.
+- **Sortable tables** — the binned tables are Bokeh `DataTable` embeds (sortable
+  on a static page); a static `list-table` is the no-`bokeh` fallback.
 - **Publish stubbed** — interfaces implemented against the filesystem so the
   build is fully offline; real Nautilus S3 / Zenodo uploads are deferred behind a
   later config gate.
 - **No schema change** — reporting reads the existing store + `fits.chains_path`/
   `figure_path`; metrics stay computed on demand.
 
-**Tests** — `pab/tests/test_report.py` (10): `aggregate_by` region bins;
+**Tests** — `pab/tests/test_report.py` (13): `aggregate_by` region bins;
 `magnitude_bins`; `aggregate_healpix` (cell assignment + centres,
-`importorskip("healpy")`); `build_site` emits exactly `PAGE_STEMS` (no
-per-matchup page) + summary content; `rst_table` rendering; Bokeh
-`comparison_scatter`/`embed` (`importorskip("bokeh")`); `export_tables`
-round-trip; `build_manifest` id↔URL+checksum+`pab_version` and `LocalStubBackend`
-copies-not-network; `publish_release` writes the manifest; the real S3/Zenodo
-backends raise `NotImplementedError`.
+`importorskip("healpy")`); `build_site` emits exactly `PAGE_STEMS` (+ `conf.py`,
+no per-matchup page) + summary content + the static `list-table` fallback;
+**sortable `DataTable` embed** when bokeh present; the **generated site builds**
+under `sphinx-build`; `stats_table` columns are sortable; `rst_table` rendering;
+Bokeh `comparison_scatter`/`embed`; `export_tables` round-trip; `build_manifest`
+id↔URL+checksum+`pab_version` and `LocalStubBackend` copies-not-network;
+`publish_release` writes the manifest; the real S3/Zenodo backends raise
+`NotImplementedError`.
 
 **Docs page** — `reporting.rst` (aggregate-not-per-matchup rationale, HEALPix,
 interactive embed, downloads/manifest, stubbed publish + config gate, how to

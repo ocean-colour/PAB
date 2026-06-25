@@ -73,6 +73,8 @@ Read these before coding:
 
 1. Read this doc and the context files. Execute the 1st task in the "Stage 7"
    section below.
+2. Read this doc.  Execute the 1st task in the "Pull Request" section below.
+3. Read this doc.  Execute the 2nd task in the "Pull Request" section below.
 
 ## Stage 7
 
@@ -88,6 +90,26 @@ Read these before coding:
 prompts.)
 
 ### Requests
+
+**Addressed the PR #5 review (Claude, 2026-06-25).** Working-tree edits (not
+committed — git is yours):
+
+- **Fixed — sortable tables.** Added `interactive.stats_table` (a sortable Bokeh
+  `DataTable`); `rst.aggregates_page(sortable=True)` now embeds sortable
+  `DataTable`s (via `raw_html`), falling back to a static `list-table` when
+  `bokeh` is unavailable. Tests: the `DataTable` is sortable; the embed is in the
+  page; the static fallback still emits a `list-table`.
+- **Fixed — separate Sphinx reporting target.** `build_site` now also writes a
+  minimal `conf.py` (with the BokehJS CDN in `html_js_files` when bokeh is
+  present), so the output dir is a **self-contained, buildable** reporting site
+  (`sphinx-build <outdir> <outdir>/_build`). New test actually **builds the
+  generated site** and checks `summary.html` is produced.
+- **Minor (noted, not changed):** the interactive scatter still embeds the frame
+  inline (fine at dev scale; the once-exported lookup table is a scale follow-up)
+  and BING-vs-NASA remains deferred with Stage 6.
+
+Suite **106** (104 + 2 BING-data skips when the mount is down); `ruff` +
+`sphinx -W` clean. Docs (reporting.rst, impl §5e v0.6.1) updated.
 
 ## Pull Request
 
@@ -215,6 +237,35 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-25 (Stage 7 — addressed PR #5 review comments)
+
+Implemented both should-fix findings (detail in Requests):
+
+- **Sortable tables**: `interactive.stats_table` (sortable Bokeh `DataTable`) +
+  `aggregates_page(sortable=True)` embedding them, with a static `list-table`
+  fallback when bokeh is absent.
+- **Separate Sphinx target**: `build_site` writes a `conf.py` (BokehJS CDN in
+  `html_js_files`) so the output dir builds standalone; a new test runs
+  `sphinx-build` on the generated site.
+- Tests +3 (`test_report.py` → 13): sortable-when-bokeh, site-builds,
+  stats_table-sortable. Suite **106** (104 + 2 BING-data skips when the mount is
+  down); `ruff` + `sphinx -W` clean. Docs + impl (v0.6.1) updated. No commit.
+
+### 2026-06-25 (Stage 7 — reviewed PR #5 and posted the review to GitHub)
+
+Reviewed PR **#5 "stage 7"** (`stage-7` → `develop`, 13 files) and posted a
+COMMENT review (https://github.com/ocean-colour/PAB/pull/5) as `profxj`.
+
+- **Due diligence:** `pytest` 103 passed; `ruff` + `sphinx -W` clean.
+- **Verdict:** solid core; two scope items partially delivered, flag explicitly.
+  (1) **"Sortable" tables aren't sortable** — `rst_table` emits a static
+  `list-table`; either a Bokeh `DataTable` or mark deferred. (2) **No separate
+  Sphinx reporting target** — `build_site` writes `.rst` *sources*, but there's
+  no `conf.py`/build for the community site; say sources-only / follow-up. Minor:
+  interactive embeds the full df inline (vs the speced once-exported lookup
+  table); BING-vs-NASA still pending; a `LocalStubBackend` key/url nit.
+- Posted via `gh pr review 5 --comment`; no merge/commit (git is JXP's).
 
 ### 2026-06-24 (Stage 7 — implemented the reporting layer)
 

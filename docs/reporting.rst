@@ -14,11 +14,13 @@ Aggregate pages, not per-matchup pages
 A hard design constraint: at ~10⁴ matchups PAB does **not** render one page per
 matchup (nor per float). :func:`pab.report.rst.build_site` emits a **fixed set**
 of pages — a landing/summary page (coverage counts + the headline sat-vs-float
-``b_bp`` and Chl metrics), a binned-results page, and a methods page — written to
-an output directory **separate from the developer docs**. Per-matchup detail is
-reached on demand through the interactive figures, not pre-rendered. The pages
-carry statistics tables (:func:`pab.report.rst.rst_table` → reStructuredText
-``list-table``).
+``b_bp`` and Chl metrics), a binned-results page, and a methods page — plus a
+**Sphinx ``conf.py``**, so the output directory is a **self-contained, buildable
+reporting site, separate from the developer docs** (build with ``sphinx-build
+<outdir> <outdir>/_build``). Per-matchup detail is reached on demand through the
+interactive figures, not pre-rendered. The binned-results tables are **sortable**
+Bokeh ``DataTable`` embeds when ``bokeh`` is available, falling back to static
+reStructuredText ``list-table`` (:func:`pab.report.rst.rst_table`) otherwise.
 
 Aggregation
 -----------

@@ -146,12 +146,60 @@ def test_build_site_fixed_pages_no_per_matchup(tmp_path):
     with Store.open(":memory:") as store:
         _two_matchups(store)
         written = rst.build_site(store, tmp_path)
-        # exactly the fixed aggregate set — never one page per matchup
-        assert set(written) == set(rst.PAGE_STEMS)
+        # the fixed page set + the reporting conf.py — never one page per matchup
+        assert set(written) == set(rst.PAGE_STEMS) | {"conf"}
         assert len(list(tmp_path.glob("*.rst"))) == len(rst.PAGE_STEMS)
+        assert (tmp_path / "conf.py").exists()  # separate, buildable Sphinx target
         summary = written["summary"].read_text()
         assert "Matchups:" in summary and "median sat/float ratio" in summary
-        assert "list-table" in written["aggregates"].read_text()
+        # static fallback (no bokeh) -> a list-table is still emitted
+        assert "list-table" in rst.aggregates_page(store, sortable=False)
+
+
+def test_build_site_sortable_tables_when_bokeh(tmp_path):
+    pytest.importorskip("bokeh")
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        written = rst.build_site(store, tmp_path)  # sortable=True (default)
+        agg_text = written["aggregates"].read_text()
+        assert (
+            ".. raw:: html" in agg_text
+        )  # embedded sortable DataTable, not list-table
+
+
+def test_reporting_site_builds(tmp_path):
+    pytest.importorskip("sphinx")
+    import subprocess
+    import sys
+
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        rst.build_site(store, tmp_path, sortable=False)  # static tables -> fast build
+    res = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "sphinx",
+            "-b",
+            "html",
+            str(tmp_path),
+            str(tmp_path / "_build"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stderr[-2000:]
+    assert (tmp_path / "_build" / "summary.html").exists()
+
+
+def test_stats_table_is_sortable():
+    pytest.importorskip("bokeh")
+    import pandas as pd
+
+    from pab.report import interactive
+
+    table = interactive.stats_table(pd.DataFrame({"a": [1, 2], "b": [3.0, 4.0]}))
+    assert table.sortable and all(col.sortable for col in table.columns)
 
 
 def test_rst_table_renders():

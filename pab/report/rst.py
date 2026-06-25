@@ -97,8 +97,25 @@ def summary_page(store, *, pab_version: str | None = None) -> str:
     return "\n".join(out)
 
 
-def aggregates_page(store) -> str:
-    """The binned-results page: region/season tables + a HEALPix per-cell table."""
+def _table_block(df, *, columns=None, sortable: bool = True) -> str:
+    """A **sortable** Bokeh ``DataTable`` (embedded) when available, else a static
+    ``list-table`` — so pages render with or without ``bokeh``."""
+    if sortable:
+        try:
+            from pab.report import interactive
+
+            return interactive.raw_html(interactive.stats_table(df, columns=columns))
+        except ImportError:
+            pass
+    return rst_table(df, columns=columns)
+
+
+def aggregates_page(store, *, sortable: bool = True) -> str:
+    """The binned-results page: region/season tables + a HEALPix per-cell table.
+
+    Tables are **sortable** Bokeh ``DataTable`` embeds when ``bokeh`` is available
+    (``sortable=True``), falling back to static reStructuredText ``list-table``.
+    """
     from pab.report import aggregate as agg
 
     df = compare.add_strata(compare.gather_matchups(store))
@@ -112,12 +129,16 @@ def aggregates_page(store) -> str:
         out.append("(no matchups yet)\n")
         return "\n".join(out)
     out.append(_heading("By region", "-"))
-    out.append(rst_table(agg.aggregate_by(df, "region")))
+    out.append(_table_block(agg.aggregate_by(df, "region"), sortable=sortable))
     out.append(_heading("By season", "-"))
-    out.append(rst_table(agg.aggregate_by(df, "season")))
+    out.append(_table_block(agg.aggregate_by(df, "season"), sortable=sortable))
     out.append(_heading("HEALPix cells", "-"))
     hp = agg.aggregate_healpix(df)
-    out.append(rst_table(hp, columns=["hpix", "lon", "lat", "n", "median_ratio"]))
+    out.append(
+        _table_block(
+            hp, columns=["hpix", "lon", "lat", "n", "median_ratio"], sortable=sortable
+        )
+    )
     return "\n".join(out)
 
 
@@ -143,25 +164,63 @@ def index_page() -> str:
     return "\n".join(out)
 
 
-def build_site(store, outdir, *, pab_version: str | None = None) -> dict[str, Path]:
-    """Write the fixed set of aggregate ``.rst`` pages to ``outdir``.
+def reporting_conf(*, pab_version: str | None = None) -> str:
+    """A minimal Sphinx ``conf.py`` for the **separate** reporting site.
+
+    Distinct from the developer docs: a content-only static site. When ``bokeh``
+    is installed, the BokehJS CDN is added to ``html_js_files`` so the embedded
+    standalone figures and tables actually render.
+    """
+    pab_version = pab_version or _pab_version
+    js_files: list[str] = []
+    try:
+        from bokeh.resources import CDN
+
+        js_files = list(CDN.js_files)
+    except ImportError:
+        pass
+    return (
+        '"""Sphinx config for the PAB reporting site (generated; separate from '
+        'the developer docs)."""\n'
+        f'project = "PAB matchup results"\n'
+        f'release = version = "{pab_version}"\n'
+        "extensions = []\n"
+        'exclude_patterns = ["_build"]\n'
+        "try:\n"
+        "    import sphinx_rtd_theme  # noqa: F401\n\n"
+        '    html_theme = "sphinx_rtd_theme"\n'
+        "except ImportError:\n"
+        '    html_theme = "alabaster"\n'
+        f"html_js_files = {js_files!r}\n"
+    )
+
+
+def build_site(
+    store, outdir, *, pab_version: str | None = None, sortable: bool = True
+) -> dict[str, Path]:
+    """Write the fixed aggregate ``.rst`` pages **and a Sphinx ``conf.py``** to
+    ``outdir`` — a self-contained, buildable reporting-site source tree.
+
+    The output is a **separate** Sphinx target from the developer docs: build it
+    with ``sphinx-build <outdir> <outdir>/_build``.
 
     Args:
         store: An open :class:`pab.db.store.Store`.
-        outdir: Output directory for the generated community-site sources
-            (kept separate from the developer docs).
+        outdir: Output directory for the generated community-site sources.
         pab_version: Provenance stamp (defaults to :data:`pab.config.pab_version`).
+        sortable: Render the stats tables as sortable Bokeh ``DataTable`` embeds
+            when ``bokeh`` is available (else static ``list-table``).
 
     Returns:
-        ``{stem: path}`` for each written page — always the fixed
-        :data:`PAGE_STEMS` set, regardless of matchup count (no per-matchup pages).
+        ``{name: path}`` for each written file — the fixed :data:`PAGE_STEMS`
+        pages plus ``conf`` (regardless of matchup count; no per-matchup pages).
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     pages = {
         "index": index_page(),
         "summary": summary_page(store, pab_version=pab_version),
-        "aggregates": aggregates_page(store),
+        "aggregates": aggregates_page(store, sortable=sortable),
         "methods": methods_page(),
     }
     written = {}
@@ -169,4 +228,7 @@ def build_site(store, outdir, *, pab_version: str | None = None) -> dict[str, Pa
         path = outdir / f"{stem}.rst"
         path.write_text(text)
         written[stem] = path
+    conf = outdir / "conf.py"
+    conf.write_text(reporting_conf(pab_version=pab_version))
+    written["conf"] = conf
     return written
