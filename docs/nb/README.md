@@ -54,6 +54,10 @@ jupyter nbconvert --to notebook --execute --inplace docs/nb/<name>.ipynb
   aggregates, an aggregate `.rst` page (no per-matchup pages), a standalone
   Bokeh scatter, and a download manifest with stubbed (local) publishing
   (Stage 7).
+- [`09_pipeline.ipynb`](09_pipeline.ipynb) — the end-to-end runner
+  (`pab.pipeline`) on a tiny offline fixture: ingest → discover → match → fit →
+  report via injected seams, the resulting store counts + generated site, and an
+  idempotent re-run; optional `RUN_LIVE` / CLI (Stage 8).
 
 The offline sections run without network; the Stage 2 live section is guarded by
 a `RUN_LIVE = False` flag (flip to `True` to pull a real profile from argopy).

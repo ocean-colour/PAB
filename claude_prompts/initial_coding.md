@@ -765,3 +765,52 @@ uncaught `ModuleNotFoundError`. Fixed by making the HEALPix table best-effort
 default). Verified by blocking the `healpy`/`remote_sensing` imports and running
 `build_site`, plus a regression test. Suite **107** (105 + 2 BING-data skips);
 `ruff` + `sphinx -W` clean; impl v0.6.2. No commit.
+
+### 2026-06-25 (Generated the Stage 8 prompt doc)
+
+Wrote `claude_prompts/coding_stage8.md` (End-to-end pipeline & CLI), modeled on
+the earlier stage prompt docs and grounded in coding-plan §8 + the design's
+Semi-automation/Provenance sections: a resumable, config-driven stage runner over
+Stages 2–7 (discover→match→fit→figure→report; no new science), idempotent stages
+skipping completed work, single-matchup debug vs full batch (BING `fit_batch`), a
+`console_scripts` CLI with `--dry-run`/stage subsets, and `pab_version`
+re-run-makes-a-new-record. Deliverables `pab.pipeline` + CLI; offline tests
+(tiny-fixture end-to-end via injected seams, idempotency/resume, CLI smoke);
+`pipeline.rst`; `09_pipeline.ipynb`. Doc only — no code changed.
+
+### 2026-06-26 (Stage 8 — implemented the end-to-end pipeline & CLI)
+
+Built `pab.pipeline`: a resumable, config-driven stage runner over Stages 2–7
+(`ingest`/`discover`/`match`/`fit`/`figure`/`report`) plus the ``pab`` CLI
+(`console_scripts` entry point). No new science — thin wrappers over the existing
+modules sharing the `Store`, idempotent off the per-stage natural keys; the
+network/heavy ops are injectable seams (`opener`/`fetcher`/`searcher`) so the
+whole chain runs offline (a `bing`-guarded end-to-end test drives ingest→…→report
+on a synthetic fixture). Tests `test_pipeline.py` (9); `pipeline.rst`;
+`09_pipeline.ipynb`. Suite **116** (114 + 2 BING-data skips); `ruff` +
+`sphinx -W` clean. Stage 8 ✅, impl v0.7.0 — Stages 0–8 complete. No commit.
+
+### 2026-06-26 (Reviewed Stage 8 PR #6 and posted the review to GitHub)
+
+Reviewed PR #6 "Stage 8" (`stage-8` → `main`, cumulative: Stages 5–8; 5–7 already
+reviewed vs `develop`). Focused on the new `pab.pipeline` + CLI. Due diligence:
+`pytest` 116 passed, `ruff` + `sphinx -W` clean, `pab --dry-run` works. Verdict:
+solid; minor notes only (seam forwarding via `co_varnames` → prefer
+`inspect.signature`; `discover` re-queries earthaccess each run; `--db` parent
+mkdir). Noted single-matchup/parallel/config-file/HOWTO are agreed follow-ups not
+in this PR. Posted as `profxj`; no merge/commit.
+
+### 2026-06-26 (Wrote HOWTO.md for running the Stage 8 pipeline)
+
+Created `HOWTO.md` in the repo root — the operator's guide for running the
+end-to-end pipeline on the workstation. Documents the **current** `pab` CLI only
+(`--db/--stage/--outdir/--profiles-csv/--replace/--no-figures/--dry-run`);
+prerequisites (`pip install -e .`; the three non-PyPI packages bing/ocpy/
+remote_sensing; `~/.netrc` for earthaccess; gdac/expert argo; BING+Loisel data
+for fits); the six stages with idempotency/resume + `pab_version` provenance;
+output locations (`outdir/{site,release/manifest.json,figures}`); gotchas
+(~140–160 s out-of-region granule opens, closest granule may not cover/may be
+cloudy, fits best-effort). Per JXP: added a **publishing reminder** that
+Nautilus S3 / Zenodo backends are stubbed and must be wired up **later, not
+now**, plus a "Planned enhancements" note (single-matchup targeting, parallel
+fitting, config file — agreed, not yet built). No commit (git is the user's).
