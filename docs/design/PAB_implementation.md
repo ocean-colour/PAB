@@ -1,7 +1,7 @@
 # PAB Implementation Record
 
-**Version:** 0.3.0
-**Date:** 2026-06-20
+**Version:** 0.7.1
+**Date:** 2026-06-26
 **Authors:** JXP and Claude
 
 **Status:** living document — updated as each stage is implemented.
@@ -29,10 +29,10 @@ every bump.
 | 2 | BGC-Argo ingestion & mixed-layer summary | ✅ done | `pab.argo.{mld,summary,fetch,qa}` |
 | 3 | PACE access & spectrum extraction | ✅ done | `pab.pace.{flags,extract,cloud,discover,l1b}` |
 | 4 | Matchup engine | ✅ done | `pab.matchup.engine` |
-| 5 | BING fitting wrapper | ⬜ pending | `pab.fit.*` (stub) |
-| 6 | Metrics & figures | ⬜ pending | `pab.metrics.*`, `pab.plotting.*` (stubs) |
-| 7 | Reporting | ⬜ pending | `pab.report.*` (stub) |
-| 8 | End-to-end pipeline & CLI | ⬜ pending | `pab.pipeline` (stub) |
+| 5 | BING fitting wrapper | ✅ done | `pab.fit.{models,run,artifacts}` |
+| 6 | Metrics & figures | ✅ done | `pab.metrics.compare`, `pab.plotting.{fit_fig,scene,population}` |
+| 7 | Reporting | ✅ done | `pab.report.{aggregate,rst,interactive,publish}` |
+| 8 | End-to-end pipeline & CLI | ✅ done | `pab.pipeline` + ``pab`` CLI |
 | 9 | Extensibility & options | ⬜ future | — |
 
 **Environment notes.** Workstation Python is 3.14.5 (plan floor 3.12);
@@ -43,8 +43,11 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 72 passed; `ruff check pab` and
-`ruff format --check pab` → clean; `sphinx-build -W` → build succeeded.
+**Verification (current).** `pytest` → 117 tests: 115 passed + 2 skipped when the
+BING Loisel aph-basis data file is absent (the `b_bp`-recovery and fit-figure
+smoke skip, e.g. on lean CI / when the data mount is down), 117 passed when it is
+present; `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
+-W` → build succeeded.
 
 ---
 
@@ -367,6 +370,298 @@ mocks.
 
 ---
 
+## 5c. Stage 5 — BING fitting wrapper
+
+Fits the matchup `Rrs` spectra with `bing` and stores the retrieved IOPs (above
+all non-water backscatter `b_bp`, the BGC-Argo matchup observable) with full
+posterior uncertainties. `bing`/`emcee` are a lazily-imported seam; the
+array-level science is pure and offline-tested.
+
+### 5c.1 Models (`pab/fit/models.py`)
+
+- `FitConfig` (frozen) — `model_pair` (default `"ExpBPow"`), `satellite`,
+  `nsteps=10000`, `nburn=1000`, `wave_min/max=400/700`, `variable_Gordon=False`,
+  `include_Raman=False`, `analysis_burn=7000`, `perc=(5,95)`.
+- `build_models(config, wave)` → `(p, rt_dict, models)` via
+  `bing.parameters.standard.<combo>` + `rt.defs.rt_dict_from_p` +
+  `models.utils.init` + `priors.set_standard_priors`. `BING_COMBO` maps the PAB
+  label to the bing factory (`ExpBPow → expb_pow`).
+
+### 5c.2 Run (`pab/fit/run.py`)
+
+- Pure helpers: `make_fit_id` (`"{matchup_id}_{ix}_{iy}_{model_pair}"`),
+  `prepare_spectrum` (window + `varRrs` from `Rrs_unc**2`, 2% floor),
+  `extract_quantities` (posterior → median + credible band for each free
+  parameter, linearised out of log space, plus derived `bbp`/`anw`/`adg` at
+  440/700 nm).
+- `fit_spectrum(wave, Rrs, Rrs_unc, *, Chl, Y, config)` — LM warm-start
+  (`chisq_fit.fit`, falls back to the initial guess) → MCMC (`inference.fit_one`,
+  keeping the sampler for the acceptance fraction) → `FitSpectrumResult` (chains,
+  quantities, reduced `chisq`/`aic`/`bic`, `accept_frac`, `success`). The `Chl`
+  only **seeds** the Bricaud `a_ph` shape — the fit *retrieves* Chl from the
+  posterior `Aph` (`chl_from_aph`: `Chl = 10**Aph / 0.05582`), emitted as the
+  `chl` quantity.
+- `fit_matchup(store, matchup_id, …)` — re-reads the pixel `Rrs` from the granule
+  (via `pace.cloud`/`pace.extract`), passes the float's mixed-layer `chla` as
+  `Chl` (guarded by `finite_or_none`, since a NaN `chla` would poison
+  `set_aph`), fits, writes chains + rows. `build_fits(store, …)` runs the nearest
+  pixel of every matchup, idempotent/resumable by `fit_id`, and records a matchup
+  that fails to fit under `"failed"` rather than aborting the batch.
+
+### 5c.3 Artifacts (`pab/fit/artifacts.py`)
+
+- `save_chains`/`load_chains` — NPZ keyed by `fit_id` under
+  `PAB_DATA_DIR/fit_chains/` (chains stay out of the DB; `fits.chains_path`
+  points to them).
+- `persist_fit(...)` — upserts the `fits` row (config + diagnostics +
+  provenance: `pab_version`, `created`, `pkg_versions`) and the namespaced
+  `fit_results` rows (`BING_<model_pair>_<quantity>`); replaces a fit's prior
+  quantities (delete-then-insert) so re-runs leave no stale rows.
+
+### 5c.4 Key decisions
+
+- **`b_bp` via the bb_nw model**, not `reconstruct_from_chains` (which returns
+  *total* a/bb and burns 7000 steps): PAB evaluates `models[1].eval_bbnw` on the
+  posterior bb-params, so it gets the non-water backscatter directly and
+  controls the analysis burn (falling back to `nsteps // 2` for short chains —
+  this is what makes a toy-size MCMC testable).
+- **No schema change** — the Stage 1 `fits`/`fit_results` tables already fit;
+  `SCHEMA_VERSION` stays at 1. Quantities are namespaced so a second model pair
+  adds rows, not columns.
+- **Lighter MCMC than BING's research default** (`nsteps=10000`) — documented in
+  `fitting.rst`.
+
+**Tests** — `pab/tests/test_fit.py` (10): `make_fit_id`; `finite_or_none` (the
+NaN-`chla` guard); `chl_from_aph` (Chl = 10**Aph / 0.05582); `prepare_spectrum` window/variance/empty-window; `persist_fit`
+links + namespaced quantities + idempotent re-run; `build_fits` records a failed
+matchup without aborting the batch; `save_chains`/`load_chains` round trip; and a
+**known-answer recovery** (synthetic noise-free `Rrs` via `calc_Rrs`, short MCMC,
+`importorskip("bing"/"emcee")`) checking `b_bp(700)` within tolerance — it
+`skip`s when BING's external Loisel aph-basis data file is unavailable.
+
+**Docs page** — `fitting.rst` (pipeline, the `BING_<model_pair>_<quantity>`
+schema, MCMC settings, provenance/artifacts, matchup linkage; autodoc of
+`pab.fit.*`).
+
+**Notebook** — `docs/nb/06_fit.ipynb` (synthetic spectrum → LM→MCMC → posterior
+`b_bp` + fit figure → persisted `fits`/`fit_results`; optional `RUN_LIVE`
+real-matchup fit). Executed offline-safe at toy MCMC size.
+
+---
+
+## 5d. Stage 6 — Metrics & figures
+
+Turns the per-matchup BING fits into the satellite-vs-Argo `b_bp` comparison (and
+a Chl comparison via a satellite OC4 source) and the figures that make matchups
+and the population inspectable. Metric math is pure; granule reads and the `bing`
+reconstruction are mockable/lazy seams.
+
+### 5d.1 Metrics (`pab/metrics/compare.py`)
+
+- `log_comparison(sat, insitu)` — **quantity-agnostic, pure**: finite/positive
+  pairs only; returns `n`, median ratio + IQR, Spearman ρ, log-space bias, and
+  RMS/MAD of `log10(sat/insitu)`. Serves `b_bp`, Chl, and BING-vs-NASA alike.
+- `gather_matchups(store, model_pair="ExpBPow")` — one row per matched fit:
+  satellite `BING_*_bbp700` and `BING_*_chl` (both BING-retrieved, + bounds),
+  Argo `bbp700`/`chla`, `chisq`, position, time. `compare(df, sat_col,
+  insitu_col)` runs the metric on two columns (so `bbp_bing`-vs-`bbp_argo` and
+  `chl_bing`-vs-`chla_argo` use the same code).
+- `add_strata(df)` — `season` (month) + `region` (latitude band); the `Rrs`
+  spatial-variability axis is deferred (the box `Rrs` spread isn't persisted).
+- `add_oc_chl(df, store, opener=)` — an **OC4** band-ratio Chl
+  (`ocpy.chl.band_ratios.oc4` on the matchup pixel `Rrs`), an optional independent
+  cross-check on the BING-retrieved `chl_bing`.
+
+### 5d.2 Figures (`pab/plotting/`)
+
+- `scene.py` — `scene_quicklook(ds, lat, lon, …)` / `scene_from_store(...)`:
+  default **false-color RGB composite** (`false_color_rgba`: `Rrs` at three
+  wavelengths → R/G/B, **shared-scale** brightness + gamma so natural ocean
+  colour is preserved, not per-channel stretched), with a single-band `mode="band"`
+  view; the float is marked, analyzed pixels circled, and the `l2_flags` mask
+  greyed. Pure NumPy/Matplotlib + `pab.pace.flags`;
+  `locate_float_pixel` is a tested pure helper.
+- `population.py` — `comparison_scatter(df, sat, insitu)` (log-log + 1:1 +
+  median-ratio lines, annotated with the metrics) and `matchup_map(df)`.
+- `fit_fig.py` — `fit_figure(store, fit_id)`: reconstructs the fit from its
+  chains NPZ (`artifacts.load_chains` + `build_models`) and shows observed-vs-
+  model `Rrs` and the retrieved `b_bp(λ)` band; PAB's own ~100 KB two-panel
+  figure (the `bing.plotting`/`plot-bing-fit` *concept*, not its code).
+
+### 5d.3 Key decisions
+
+- **Metrics computed on demand**, not persisted: cheap to recompute from
+  `fit_results`/`mld_summary`, so no `metrics` table and **no schema change**
+  (`SCHEMA_VERSION` stays 1); aggregate presentation belongs to Stage 7.
+- **Chl is retrieved, not input.** The `ExpBPow` fit *seeds* `a_ph` with the Argo
+  `Chl` but recovers Chl from the posterior `Aph` (`Chl = 10**Aph / 0.05582`),
+  emitted as `BING_*_chl` — so the Chl comparison (`chl_bing` vs Argo `chla`) is
+  a genuine retrieval-vs-in-situ test, parallel to `b_bp`. An OC4 band-ratio Chl
+  is an optional independent cross-check.
+- **Wavelength offset** handled by comparing at 700 nm (BING reports `b_bp(700)`
+  directly); the NASA-baseline 442 nm comparison is flagged as approximate.
+- **`gather_matchups` filters `fits` by `model_pair`** (`AND f.model_pair = ?`),
+  so a second model pair (or other fits) on the same matchup yields one row, not
+  duplicates.
+- **NASA L2 IOP baseline is deferred** (not ingested). BING-vs-Argo (`b_bp`,
+  Chl) is implemented; BING-vs-NASA awaits an `ocpy.pace.io.load_iop_l2` ingest
+  that populates `NASA_L2IOP_*` — a thin lazy seam the quantity-agnostic metric
+  slots into. Documented in `metrics.rst`.
+
+**Tests** — `pab/tests/test_metrics.py` (11): `log_comparison` known-values +
+NaN/nonpositive handling; `season_of`/`region_of`; `gather_matchups` + `compare`
+(bbp + chl) + `add_strata` on a seeded DB; **`gather_matchups` filters by
+`model_pair`** (a 2nd-pair fit doesn't duplicate the row); `add_oc_chl` via an
+injected granule;
+`locate_float_pixel`; `false_color_rgba` (normalised RGBA + greyed flags); the
+scene (RGB + single-band) and population figures render within the ~100 KB
+budget; and a `bing`-guarded fit-figure smoke (skips when the Loisel data is
+absent).
+
+**Docs page** — `metrics.rst` (the three estimates, metric definitions,
+wavelength offset, figures + budget, stratification; autodoc of `pab.metrics.*` /
+`pab.plotting.*`).
+
+**Notebook** — `docs/nb/07_metrics.ipynb` (log-space metrics, stratified median
+ratios, the satellite-vs-float scatter, and a scene quick-look on a synthetic
+population; optional `RUN_LIVE`). Executed offline-safe.
+
+---
+
+## 5e. Stage 7 — Reporting
+
+Turns the SQLite store + per-matchup artifacts into community products: a static
+site of **aggregate** pages, standalone **Bokeh** interactive figures, downloads
++ a manifest, and a citable snapshot. The build runs **end-to-end offline** —
+the object-store / Zenodo uploads are stubbed and config-gated. `healpy`/`bokeh`
+are lazily-imported seams; the aggregation math and manifest are pure.
+
+### 5e.1 Aggregation (`pab/report/aggregate.py`)
+
+- `aggregate_by(df, by, …)` — per-bin `log_comparison` over region/season (and
+  `magnitude_bins`). Pure pandas.
+- `nside_for_cell_size` (wraps `remote_sensing.healpix.utils`), `assign_healpix`
+  (`healpy.ang2pix` lonlat), and `aggregate_healpix(df, …)` — per-HEALPix-cell
+  stats with cell-centre `lon`/`lat` (lon wrapped to [-180, 180]). Equal-area,
+  resolution-tunable, scales independently of matchup count.
+
+### 5e.2 `.rst` generation (`pab/report/rst.py`)
+
+- `rst_table` (static `list-table`), `summary_page`/`aggregates_page`/
+  `methods_page`/`index_page`, and `build_site(store, outdir)` — writes the
+  **fixed** `PAGE_STEMS` set **plus a Sphinx `conf.py`** (a self-contained,
+  buildable reporting site, separate from the dev docs:
+  `sphinx-build <outdir> <outdir>/_build`). The binned tables are **sortable**
+  Bokeh `DataTable` embeds when `bokeh` is present (`aggregates_page(sortable=)`),
+  falling back to a static `list-table`. **No per-matchup page** is ever emitted.
+
+### 5e.3 Interactive (`pab/report/interactive.py`)
+
+- `comparison_scatter` (log-log sat-vs-float + 1:1 line, hover, optional
+  tap→artifact URL, `output_backend="webgl"`), `matchup_map`, `stats_table` (a
+  **sortable** `DataTable`), and `embed`/`raw_html` (`bokeh.embed.components` →
+  standalone script+div for a `.. raw:: html` block; no Bokeh server).
+
+### 5e.4 Publish (`pab/report/publish.py`)
+
+- `export_tables` (summary CSV/Parquet; the raw SQLite file is **not** a
+  published download), `file_checksum` (SHA-256), `build_manifest` (one row per
+  per-matchup artifact: `matchup_id`→URL+checksum, stamped `pab_version`), and
+  `publish_release` (exports + manifest + stub "uploads", writes `manifest.json`
+  with `pkg_versions`). `LocalStubBackend` copies to the filesystem (no network);
+  `NautilusS3Backend`/`ZenodoBackend` are explicit `NotImplementedError` stubs
+  (deferred, config-gated).
+
+### 5e.5 Key decisions
+
+- **Aggregate pages only** — `build_site` returns the fixed `PAGE_STEMS` (+ a
+  `conf.py`) regardless of matchup count; a test asserts no per-matchup
+  explosion, and another **builds the generated site** with `sphinx-build`.
+- **Sortable tables** — the binned tables are Bokeh `DataTable` embeds (sortable
+  on a static page); a static `list-table` is the no-`bokeh` fallback.
+- **Publish stubbed** — interfaces implemented against the filesystem so the
+  build is fully offline; real Nautilus S3 / Zenodo uploads are deferred behind a
+  later config gate.
+- **No schema change** — reporting reads the existing store + `fits.chains_path`/
+  `figure_path`; metrics stay computed on demand.
+
+**Tests** — `pab/tests/test_report.py` (14): `aggregate_by` region bins;
+`magnitude_bins`; `aggregate_healpix` (cell assignment + centres,
+`importorskip("healpy")`); `build_site` emits exactly `PAGE_STEMS` (+ `conf.py`,
+no per-matchup page) + summary content + the static `list-table` fallback;
+**sortable `DataTable` embed** when bokeh present; **`build_site` degrades
+gracefully without `healpy`/`bokeh`** (HEALPix table omitted with a note — the
+lean-CI regression); the **generated site builds** under `sphinx-build`;
+`stats_table` columns are sortable; `rst_table` rendering;
+Bokeh `comparison_scatter`/`embed`; `export_tables` round-trip; `build_manifest`
+id↔URL+checksum+`pab_version` and `LocalStubBackend` copies-not-network;
+`publish_release` writes the manifest; the real S3/Zenodo backends raise
+`NotImplementedError`.
+
+**Docs page** — `reporting.rst` (aggregate-not-per-matchup rationale, HEALPix,
+interactive embed, downloads/manifest, stubbed publish + config gate, how to
+publish a release; autodoc of `pab.report.*`).
+
+**Notebook** — `docs/nb/08_reporting.ipynb` (region/season + HEALPix aggregates,
+an aggregate `.rst` page, a standalone Bokeh embed, and a download manifest with
+stubbed local publishing on a synthetic store). Executed offline-safe.
+
+---
+
+## 5f. Stage 8 — End-to-end pipeline & CLI
+
+The integration stage: one resumable, config-driven runner over Stages 2–7 plus
+a ``pab`` CLI. **No new science** — each stage wraps the module already built for
+it and shares the :class:`pab.db.store.Store`.
+
+### 5f.1 Pipeline (`pab/pipeline.py`)
+
+- `PipelineConfig` — the profile selection (inline dicts or
+  ``data/dev_profiles.csv``), argo source/mode, discovery window, the Stage-4/5
+  `MatchupConfig`/`FitConfig`, output dir, `make_figures`, `replace`.
+- Stage functions `ingest` / `discover` / `match` / `fit` / `figure` / `report`
+  (the `STAGES` order) — thin wrappers over `pab.argo`/`pab.pace`/`build_matchups`/
+  `build_fits`/`pab.plotting`/`pab.report`, each returning a summary and **skipping
+  completed work** (the existing per-stage idempotency; `figure` is best-effort
+  per fit).
+- `run(store, config, *, stages=, opener=, fetcher=, searcher=, dry_run=)` — runs
+  the requested stages in order, forwarding only the seams a stage declares (by
+  `inspect.signature`); returns `{stage: summary}` (or the plan on `dry_run`). The
+  network/heavy operations are **injectable seams** (`opener`/`fetcher`/
+  `searcher`), so the whole pipeline runs offline in tests. `discover` skips a
+  profile that already has in-window granules (no network re-query on resume).
+- `main` / `build_parser` — the ``pab`` CLI (``--db``, ``--stage`` subset,
+  ``--outdir``, ``--profiles-csv``, ``--replace``, ``--no-figures``,
+  ``--dry-run``); wired as a `console_scripts` entry point (`pab = pab.pipeline:main`)
+  in `setup.py`, also `python -m pab.pipeline`.
+
+### 5f.2 Key decisions
+
+- **Resumable off the store** — no separate run-state; idempotency comes from the
+  natural keys (`mld_summary` per profile, `matchup_id`, `fit_id`). Re-running
+  under a new `pab_version` adds records (per *Provenance & versioning*).
+- **Injectable seams over mocking internals** — `run` forwards `opener`/`fetcher`/
+  `searcher`; the end-to-end test drives the full chain offline (synthetic
+  granule + inline summaries + a discovery seam), with the BING fit guarded by
+  `importorskip`.
+- **No schema change.**
+
+**Tests** — `pab/tests/test_pipeline.py` (11): `dry_run` plan; stage-subset;
+idempotent `ingest`; `discover` via a searcher seam **+ resume-skips** (a second
+run re-queries nothing); `match` through the pipeline + resume (all-skip);
+`report` on an empty store; CLI `--dry-run`, parser stage-subset, **and `--db`
+parent-dir creation**; and a **`bing`-guarded end-to-end** (ingest→…→report on a
+synthetic fixture → matchups + a generated site).
+
+**Docs page** — `pipeline.rst` (stage order, the idempotent/resumable +
+`pab_version` model, the injectable seams, and the CLI; autodoc of `pab.pipeline`).
+
+**Notebook** — `docs/nb/09_pipeline.ipynb` (the full runner on a tiny offline
+fixture: stage summaries, store counts, the generated site, and an idempotent
+re-run; optional `RUN_LIVE`/CLI). Executed offline-safe.
+
+---
+
 ## 6. Cross-cutting conventions (as implemented)
 
 - **Provenance** — every results-bearing row carries `pab_version` + `created`;
@@ -410,12 +705,23 @@ pab/
     l1b.py             ✅ documented L1B->Rrs hook (future)
   matchup/
     engine.py          ✅ space+time match, pixel selection, record writing
-  fit/                 ⬜ Stage 5
-  metrics/             ⬜ Stage 6
-  plotting/            ⬜ Stage 6
-  report/              ⬜ Stage 7
-  pipeline.py          ⬜ Stage 8
-  tests/               test_smoke, test_db, test_argo, test_pace, test_matchup
+  fit/
+    models.py          ✅ FitConfig + BING model-pair/prior build seam
+    run.py             ✅ LM→MCMC fit, quantity extraction, matchup drivers
+    artifacts.py       ✅ NPZ chains + fits/fit_results persistence
+  metrics/
+    compare.py         ✅ log-space metrics, gatherers, strata, OC4 Chl
+  plotting/
+    fit_fig.py         ✅ per-matchup fit figure (reconstructed from chains)
+    scene.py           ✅ per-matchup scene quick-look (float + pixels + flags)
+    population.py      ✅ sat-vs-float scatter, matchup map
+  report/
+    aggregate.py       ✅ region/season + HEALPix aggregation
+    rst.py             ✅ aggregate .rst pages (no per-matchup pages)
+    interactive.py     ✅ standalone Bokeh scatter/map (embed)
+    publish.py         ✅ exports + download manifest + stubbed backends
+  pipeline.py          ✅ stage runner (ingest→…→report) + ``pab`` CLI
+  tests/               test_smoke, test_db, test_argo, test_pace, test_matchup, test_fit, test_metrics, test_report, test_pipeline
 ```
 
 ---

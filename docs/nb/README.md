@@ -40,6 +40,24 @@ jupyter nbconvert --to notebook --execute --inplace docs/nb/<name>.ipynb
   L1B-AC `Rrs` spectrum (imported via the biomass-paper `jr_utils`). Needs
   network + an Earthdata Login, so it is **not** part of the offline docs build
   (Stage 4).
+- [`06_fit.ipynb`](06_fit.ipynb) — a BING fit on a synthetic spectrum
+  (`pab.fit`): LM→MCMC, the posterior `b_bp` with uncertainties and a fit
+  figure, and the written `fits`/`fit_results` rows; ends with an optional
+  `RUN_LIVE` real-matchup fit (Stage 5).
+- [`07_metrics.ipynb`](07_metrics.ipynb) — log-space comparison metrics
+  (`pab.metrics`) and population/scene figures (`pab.plotting`) on a synthetic
+  matchup population: `log_comparison`, stratified median ratios, the
+  satellite-vs-float scatter, and a scene quick-look; optional `RUN_LIVE` over a
+  populated store (Stage 6).
+- [`08_reporting.ipynb`](08_reporting.ipynb) — the reporting layer
+  (`pab.report`) on a synthetic populated store: region/season + HEALPix
+  aggregates, an aggregate `.rst` page (no per-matchup pages), a standalone
+  Bokeh scatter, and a download manifest with stubbed (local) publishing
+  (Stage 7).
+- [`09_pipeline.ipynb`](09_pipeline.ipynb) — the end-to-end runner
+  (`pab.pipeline`) on a tiny offline fixture: ingest → discover → match → fit →
+  report via injected seams, the resulting store counts + generated site, and an
+  idempotent re-run; optional `RUN_LIVE` / CLI (Stage 8).
 
 The offline sections run without network; the Stage 2 live section is guarded by
 a `RUN_LIVE = False` flag (flip to `True` to pull a real profile from argopy).

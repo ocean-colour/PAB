@@ -1,7 +1,28 @@
 """Figures.
 
-Per-matchup fit figures (~100 KB target) and population figures
-(scatter / map / metric distributions).
+Per-matchup fit figures and scene quick-looks (~100 KB target) and population
+figures (scatter / map / metric distributions).
+
+Public API::
+
+    from pab.plotting import fit_fig, scene, population
 
 Implemented in Stage 6.
 """
+
+from pab.plotting import fit_fig, population, scene
+from pab.plotting.fit_fig import fit_figure
+from pab.plotting.population import comparison_scatter, matchup_map
+from pab.plotting.scene import false_color_rgba, scene_from_store, scene_quicklook
+
+__all__ = [
+    "fit_fig",
+    "population",
+    "scene",
+    "fit_figure",
+    "comparison_scatter",
+    "matchup_map",
+    "false_color_rgba",
+    "scene_from_store",
+    "scene_quicklook",
+]

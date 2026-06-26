@@ -29,6 +29,10 @@ if os.path.exists('requirements.txt'):
             if line.strip() and not line.startswith('#')]
 setup_keywords['zip_safe'] = False
 setup_keywords['packages'] = find_packages()
+# CLI entry point for the end-to-end pipeline (Stage 8).
+setup_keywords['entry_points'] = {
+    'console_scripts': ['pab = pab.pipeline:main'],
+}
 
 if os.path.isdir('bin'):
     setup_keywords['scripts'] = [fname for fname in glob.glob(os.path.join('bin', '*'))

@@ -1,7 +1,7 @@
 # PACE and BGC-Argo Matchup Analysis Design Document
 
-**Version:** 0.4
-**Date:** 2026-06-19
+**Version:** 0.4.3
+**Date:** 2026-06-23
 **Authors:** JXP and Claude
 
 **Versioning convention:** bump the **minor** version for substantive changes
@@ -456,9 +456,14 @@ criteria remain available as *diagnostics* but are not used to choose a model.
 
 Each matchup yields three estimates of backscatter that PAB compares:
 **BING `bbp`** (this analysis), **NASA L2 IOP `bbp`** (the secondary baseline,
-`bbp_442`/`bbp_s`), and the **in-situ Argo `bbp`** (mixed-layer, de-spiked). The
-matchup metrics are defined here (PAB has no separate Metrics section; the
-metrics live with the Analysis layer). They follow the comparison used in the
+`bbp_442`/`bbp_s`), and the **in-situ Argo `bbp`** (mixed-layer, de-spiked).
+**Chlorophyll is compared the same way:** BING **retrieves** Chl from the fitted
+phytoplankton amplitude `Aph` (for the Bricaud family, `Chl = 10**Aph / 0.05582`)
+— the `Chl` passed in only *seeds* the `a_ph` shape, it is **not** a fixed input —
+so the BING Chl is compared against the in-situ Argo `chla` (with an OC4
+band-ratio Chl available as an independent cross-check). The matchup metrics are
+defined here (PAB has no separate Metrics section; the metrics live with the
+Analysis layer). They follow the comparison used in the
 BING `papers/biomass` analysis and in Bisson et al. (2019), which compare
 satellite vs. float `bbp` in log space:
 
@@ -492,11 +497,18 @@ the reporting layer.
   optimization / `optimize=True`, or trimmed panel count), which keeps the full
   set tractable to expose.
 - **Scene quick-look (per matchup)** — a small PNG of the PACE scene around the
-  float for visual inspection: a true-color or single-band/`Rrs` thumbnail of the
-  granule neighborhood, with the **Argo float location marked** and the **pixels
-  actually extracted and analyzed** highlighted, plus the `l2_flags` mask shown
-  (e.g. flagged pixels greyed). This makes the granule-quality assessment (above)
-  visually checkable — one can see at a glance whether the float sat under cloud/
+  float for visual inspection. The default is a **false-color RGB composite** of
+  the granule neighborhood: `Rrs` at three wavelengths (default R/G/B ≈
+  645/555/470 nm, configurable) mapped to the colour channels and scaled by a
+  **shared brightness reference** (+ gamma) so the natural blue-dominant ocean
+  colour is preserved (rather than per-channel stretching, which amplifies
+  retrieval noise into speckle on near-uniform open-ocean scenes); cloud/glint
+  artefacts and water-colour gradients are then obvious at a glance, with a
+  single-band/`Rrs` view (with a colorbar)
+  remains available. Either carries the **Argo float location marked** and the
+  **pixels actually extracted and analyzed** highlighted, plus the `l2_flags`
+  mask shown (flagged pixels greyed). This makes the granule-quality assessment
+  (above) visually checkable — one can see whether the float sat under cloud/
   glint and which pixels fed the fit. Kept small (~100 KB) like the fit figure.
 - **Population figures** — satellite-vs-float `bbp` scatter, BING-vs-NASA-L2-IOP
   comparison, maps, and metric distributions (new PAB plotting code).

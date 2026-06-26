@@ -611,3 +611,206 @@ The doc captures, for Stage 4:
 
 No code or package files changed; this task only authored the prompt doc.
 Logged here per the instruction. No questions for Q&A.
+
+### 2026-06-22 (Stages 4–6 built; corrected the Chl/Aph misconception)
+
+Stages 4 (matchup engine), 5 (BING fitting wrapper), and 6 (metrics & figures)
+were implemented, reviewed (PRs #2/#3), and logged in detail in their per-stage
+docs (`claude_prompts/coding_stage{4,5,6}.md`); the implementation record is at
+v0.5.1 and the suite is **89 passed, 2 skipped** (the two tests needing BING's
+Loisel data file skip when it is absent), `ruff` + `sphinx-build -W` clean.
+
+This entry records the most recent step — JXP's Stage 6 Task 2 correction. I had
+wrongly treated `Chl` as a fixed **input** to the `ExpBPow` fit. In fact `Aph` is
+a free parameter and BING **retrieves** Chl from it (`Chl = 10**Aph / 0.05582`
+for the Bricaud family); the input `Chl` only *seeds* the `a_ph` shape. Fixes:
+
+- `pab/fit` — added `chl_from_aph()` + `BRICAUD_APH440`; `extract_quantities`
+  now emits a BING-retrieved **`chl`** quantity; reworded the `Chl`-as-input
+  docstrings to "seed".
+- `pab/metrics` — `gather_matchups` surfaces `chl_bing` (`BING_*_chl`) so the
+  **BING Chl vs Argo `chla`** comparison runs through the same quantity-agnostic
+  `log_comparison` as `b_bp`; `add_oc_chl` (OC4 band ratio) is reframed as an
+  optional independent cross-check.
+- Docs corrected: `PAB_design.md` (v0.4.1, *Comparison & metrics*),
+  `fitting.rst`, `metrics.rst`, the impl record (v0.5.1), and the
+  `07_metrics` notebook (now shows a Chl scatter beside `b_bp`).
+
+What I learned: the model takes `Chl` only to set the Bricaud `a*_ph(λ)` shape;
+the fitted amplitude `Aph` then determines the retrieved Chl — so a Chl matchup
+is a genuine retrieval-vs-in-situ test, parallel to backscatter.
+
+### 2026-06-23 (Reviewed Stage 6 PR #4 and posted the review to GitHub)
+
+Reviewed PR #4 "Stage 6" (`stage-6` → `develop`, 20 files) and posted a COMMENT
+review (https://github.com/ocean-colour/PAB/pull/4) as `profxj`. Due diligence:
+`pytest` 89 passed / 2 skipped, `ruff` + `sphinx -W` clean. Verdict: solid, two
+scope notes — (1) the NASA L2 IOP baseline (BING-vs-NASA) isn't implemented and
+should be marked deferred; (2) `gather_matchups` should filter `fits` by
+`model_pair` before a second pair is added (else duplicate/NULL matchup rows).
+No merge/commit (git is JXP's). Full detail in `coding_stage6.md`.
+
+### 2026-06-23 (Stage 6 — false-color RGB scene quick-look)
+
+Per JXP's Stage 6 Task 3, upgraded the scene QA view from a single channel to a
+**false-color RGB composite**: `pab/plotting/scene.py` gains `false_color_rgba`
+(Rrs at ~645/555/470 nm → R/G/B, percentile-stretched, flagged pixels greyed) and
+`scene_quicklook` now defaults to `mode="rgb"` (with `mode="band"` retained). The
+RGB is drawn via `pcolormesh(...).set_facecolor(rgba)` so the float/pixel overlay
+stays exact on the swath mesh. Tests +1 (`false_color_rgba`) and the scene smoke
+now covers both modes → **90 passed, 2 skipped**; `ruff` + `sphinx -W` clean.
+Docs updated: `PAB_design.md` (v0.4.2), `metrics.rst`, impl record (v0.5.2), and
+the `07_metrics` notebook. Detail in `coding_stage6.md`.
+
+### 2026-06-23 (Stage 6 — fixed the blank RGB scene in the notebook)
+
+JXP saw nothing for the scene in `07_metrics.ipynb`. Root cause: the demo
+granule was spatially **uniform** (`np.tile`), so the false-color composite —
+with the old `Rrs/max` stretch — saturated every channel to 1.0 (pure white). My
+earlier "renders RGB" log was true (a PNG was present) but the image was
+effectively blank. Fixed by (1) switching `_stretch` to a **2–98% percentile
+window** per channel (restores contrast; flat → neutral grey, not white) and
+(2) rebuilding the notebook's scene with a **spatially varying** granule (gradient
++ greening + a flagged cloud edge). Scene cell now emits a ~20 KB colour PNG.
+**90 passed, 2 skipped**; `ruff` + `sphinx -W` clean. Detail in `coding_stage6.md`.
+
+### 2026-06-23 (Stage 6 — false-color composite on real PACE data, notebook 05)
+
+Added a false-color RGB composite of the **real matched PACE granule** to the
+live dig-in notebook `docs/nb/05_matchup_7902226_4.ipynb` (float 7902226 / cycle
+5) — the first use of the composite on real PACE data (it had only run on
+synthetic granules; a repo grep found no other real-PACE RGB). The cell reuses
+the already-open `gds`, crops to a ~25×25-pixel window around the float (full OCI
+granules are too large to composite whole), remaps the matchup-pixel indices into
+the crop, and calls `scene.scene_quicklook`. Committed without outputs (no
+Earthdata Login here to execute it); notebook stays excluded from the Sphinx
+build, so nothing else is affected. Detail in `coding_stage6.md`.
+
+### 2026-06-23 (Stage 6 — validated the composite on real PACE data; shared-scale fix)
+
+A `~/.netrc` does exist (earthaccess authenticates), so I ran the composite on
+**real PACE OCI data** for 7902226/5. Two fixes resulted: (1) `false_color_rgba`
+now scales the three channels by a **shared brightness reference** (+gamma)
+instead of per-channel percentile stretch — the latter turned a near-uniform
+gyre crop into rainbow speckle; the shared scale gives a natural deep-blue ocean
+scene (verified by viewing the rendered PNG on granule `…20250219T155847`, where
+the float's nearest unflagged pixel is 0.41 km). (2) Fixed an `IndexError` in the
+notebook-05 crop (center on the matchup-pixel centroid + clip, not
+`locate_float_pixel`). Also learned the closest-*in-time* granule (51% cloud)
+doesn't cover the float — the Stage-4 spatial gate correctly prefers the covering
+one. Suite **92 passed** (the BING-data tests run now that the Loisel file is
+present). Docs bumped: design v0.4.3, impl v0.5.3. Detail in `coding_stage6.md`.
+
+### 2026-06-24 (Stage 6 — addressed PR #4 review comments)
+
+Two findings from my PR #4 review: (1) `gather_matchups` now filters `fits` by
+`model_pair` (`AND f.model_pair = ?`) so a second model pair on a matchup can't
+duplicate the row (new test); (2) the **NASA L2 IOP baseline** is now explicitly
+documented as **deferred** (metrics.rst note + impl §5d) rather than
+implied-done — BING-vs-Argo (`b_bp`, Chl) is implemented, BING-vs-NASA awaits an
+`ocpy.pace.io.load_iop_l2` ingest. Suite 93 tests (91 + 2 BING-data skips today);
+`ruff` + `sphinx -W` clean. impl v0.5.4. No commit (git is JXP's).
+
+### 2026-06-24 (Generated the Stage 7 prompt doc)
+
+Wrote `claude_prompts/coding_stage7.md` (Reporting), modeled on the earlier
+stage prompt docs and grounded in coding-plan §7 + the design's Reporting
+section: aggregate `.rst` pages (no per-matchup pages) + sortable tables,
+standalone Bokeh map/scatter (hover→values, click→artifact-by-id), HEALPix
+aggregation via `remote_sensing.healpix`, downloads + manifest, Zenodo snapshot,
+and **publish backends stubbed** (local mocks, config-gated). Deliverables
+`pab.report.{rst,aggregate,interactive,publish}`, offline tests, `reporting.rst`,
+and `08_reporting.ipynb`. Doc only — no code changed.
+
+### 2026-06-24 (Stage 7 — implemented the reporting layer)
+
+Built `pab.report.{aggregate,rst,interactive,publish}`: region/season + HEALPix
+aggregation (reusing `remote_sensing.healpix` + `healpy.ang2pix`), programmatic
+aggregate `.rst` pages (a **fixed** page set — no per-matchup pages), standalone
+Bokeh scatter/map (`bokeh.embed`), and exports + a download manifest
+(id→URL+checksum, `pab_version`) with **stubbed** Nautilus-S3/Zenodo backends
+(filesystem `LocalStubBackend`; real ones `NotImplementedError`, config-gated).
+Tests `test_report.py` (10); `docs/reporting.rst` + `08_reporting.ipynb`. Suite
+**103** (101 + 2 BING-data skips when the mount is down); `ruff` + `sphinx -W`
+clean. Stage 7 ✅, impl v0.6.0. Notebook bokeh cell uses `embed()` (not
+`show()`) so myst-nb has no unknown-mime warnings. No commit (git is JXP's).
+
+### 2026-06-25 (Reviewed Stage 7 PR #5 and posted the review to GitHub)
+
+Reviewed PR #5 "stage 7" (`stage-7` → `develop`, 13 files) and posted a COMMENT
+review as `profxj`. Due diligence: `pytest` 103 passed, `ruff` + `sphinx -W`
+clean. Verdict: solid; two scope items to flag as partial — (1) the "sortable"
+stats tables are static `list-table`s (need a Bokeh `DataTable` or a deferred
+note); (2) no separate Sphinx reporting target yet (`build_site` writes `.rst`
+sources only). Plus minor notes (inline interactive data vs a once-exported
+lookup table; BING-vs-NASA still pending). No merge/commit. Detail in
+`coding_stage7.md`.
+
+### 2026-06-25 (Stage 7 — addressed PR #5 review comments)
+
+Both should-fix findings fixed: (1) the binned stats tables are now **sortable**
+Bokeh `DataTable` embeds (`interactive.stats_table`; static `list-table`
+fallback), and (2) `build_site` writes a Sphinx `conf.py` so the generated dir is
+a **buildable** reporting site (a test runs `sphinx-build` on it). Tests +3 (13
+in `test_report.py`); suite **106** (104 + 2 BING-data skips); `ruff` +
+`sphinx -W` clean; impl v0.6.1. No commit (git is JXP's).
+
+### 2026-06-25 (Stage 7 — fixed the failing CI tests)
+
+The 2 GitHub failures were the same test (`test_build_site_fixed_pages_no_per_matchup`)
+failing in both pytest check-runs: in CI's **lean** env (no `healpy`/
+`remote_sensing`), `aggregates_page` always called `aggregate_healpix` →
+uncaught `ModuleNotFoundError`. Fixed by making the HEALPix table best-effort
+(`try/except ImportError` → a graceful note; flat region/season bins remain the
+default). Verified by blocking the `healpy`/`remote_sensing` imports and running
+`build_site`, plus a regression test. Suite **107** (105 + 2 BING-data skips);
+`ruff` + `sphinx -W` clean; impl v0.6.2. No commit.
+
+### 2026-06-25 (Generated the Stage 8 prompt doc)
+
+Wrote `claude_prompts/coding_stage8.md` (End-to-end pipeline & CLI), modeled on
+the earlier stage prompt docs and grounded in coding-plan §8 + the design's
+Semi-automation/Provenance sections: a resumable, config-driven stage runner over
+Stages 2–7 (discover→match→fit→figure→report; no new science), idempotent stages
+skipping completed work, single-matchup debug vs full batch (BING `fit_batch`), a
+`console_scripts` CLI with `--dry-run`/stage subsets, and `pab_version`
+re-run-makes-a-new-record. Deliverables `pab.pipeline` + CLI; offline tests
+(tiny-fixture end-to-end via injected seams, idempotency/resume, CLI smoke);
+`pipeline.rst`; `09_pipeline.ipynb`. Doc only — no code changed.
+
+### 2026-06-26 (Stage 8 — implemented the end-to-end pipeline & CLI)
+
+Built `pab.pipeline`: a resumable, config-driven stage runner over Stages 2–7
+(`ingest`/`discover`/`match`/`fit`/`figure`/`report`) plus the ``pab`` CLI
+(`console_scripts` entry point). No new science — thin wrappers over the existing
+modules sharing the `Store`, idempotent off the per-stage natural keys; the
+network/heavy ops are injectable seams (`opener`/`fetcher`/`searcher`) so the
+whole chain runs offline (a `bing`-guarded end-to-end test drives ingest→…→report
+on a synthetic fixture). Tests `test_pipeline.py` (9); `pipeline.rst`;
+`09_pipeline.ipynb`. Suite **116** (114 + 2 BING-data skips); `ruff` +
+`sphinx -W` clean. Stage 8 ✅, impl v0.7.0 — Stages 0–8 complete. No commit.
+
+### 2026-06-26 (Reviewed Stage 8 PR #6 and posted the review to GitHub)
+
+Reviewed PR #6 "Stage 8" (`stage-8` → `main`, cumulative: Stages 5–8; 5–7 already
+reviewed vs `develop`). Focused on the new `pab.pipeline` + CLI. Due diligence:
+`pytest` 116 passed, `ruff` + `sphinx -W` clean, `pab --dry-run` works. Verdict:
+solid; minor notes only (seam forwarding via `co_varnames` → prefer
+`inspect.signature`; `discover` re-queries earthaccess each run; `--db` parent
+mkdir). Noted single-matchup/parallel/config-file/HOWTO are agreed follow-ups not
+in this PR. Posted as `profxj`; no merge/commit.
+
+### 2026-06-26 (Wrote HOWTO.md for running the Stage 8 pipeline)
+
+Created `HOWTO.md` in the repo root — the operator's guide for running the
+end-to-end pipeline on the workstation. Documents the **current** `pab` CLI only
+(`--db/--stage/--outdir/--profiles-csv/--replace/--no-figures/--dry-run`);
+prerequisites (`pip install -e .`; the three non-PyPI packages bing/ocpy/
+remote_sensing; `~/.netrc` for earthaccess; gdac/expert argo; BING+Loisel data
+for fits); the six stages with idempotency/resume + `pab_version` provenance;
+output locations (`outdir/{site,release/manifest.json,figures}`); gotchas
+(~140–160 s out-of-region granule opens, closest granule may not cover/may be
+cloudy, fits best-effort). Per JXP: added a **publishing reminder** that
+Nautilus S3 / Zenodo backends are stubbed and must be wired up **later, not
+now**, plus a "Planned enhancements" note (single-matchup targeting, parallel
+fitting, config file — agreed, not yet built). No commit (git is the user's).
