@@ -76,6 +76,7 @@ Read these before coding:
 2. Read this doc.  Execute the 1st task in the "Pull Request" section below.
 3. Read this doc.  Execute the 2nd task in the "Pull Request" section below.
 4. Read this doc.  Execute the 3rd task in the "Pull Request" section below.
+5. Read this doc.  Now generate a Stage 8 prompt doc.  Name it `claude_prompts/coding_stage8.md`.  Model it after this one and the previous ones.
 
 ## Stage 7
 
@@ -122,6 +123,7 @@ Suite **106** (104 + 2 BING-data skips when the mount is down); `ruff` +
    write them in the Requests section below.
 
 3. There are 2 failing tests on GitHub.  Please fix them.  Log your work.
+
 
 ## Stage 7 — Reporting
 
@@ -240,6 +242,20 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-25 (Stage 8 — generated the Stage 8 prompt doc)
+
+Created `claude_prompts/coding_stage8.md` (End-to-end pipeline & CLI), modeled on
+the prior stage docs. Grounded in coding-plan §8 and the design's *Semi-automation*
++ *Provenance & versioning*: a resumable, config-driven stage runner over Stages
+2–7 (discover → match → fit → figure → report), **no new science**; idempotent
+stages skipping completed work off the store; single-matchup debug vs full batch
+(BING `fit_batch`); a `console_scripts` CLI (`--config`/stage-subset/`--matchup`/
+`--dry-run`); `pab_version` re-run-makes-a-new-record behavior. Named the existing
+seams it chains (`argo`/`pace`/`matchup`/`fit`/`plotting`/`report`/`Store`),
+deliverables (`pab.pipeline` + CLI), offline tests (tiny-fixture end-to-end via
+injected `opener=`/fit hook, idempotency/resume, CLI smoke), `docs/pipeline.rst`,
+and `docs/nb/09_pipeline.ipynb` — to the Stage 0–7 DoD. Doc only; no code changed.
 
 ### 2026-06-25 (Stage 7 — fixed the 2 failing CI tests)
 

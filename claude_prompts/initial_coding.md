@@ -765,3 +765,27 @@ uncaught `ModuleNotFoundError`. Fixed by making the HEALPix table best-effort
 default). Verified by blocking the `healpy`/`remote_sensing` imports and running
 `build_site`, plus a regression test. Suite **107** (105 + 2 BING-data skips);
 `ruff` + `sphinx -W` clean; impl v0.6.2. No commit.
+
+### 2026-06-25 (Generated the Stage 8 prompt doc)
+
+Wrote `claude_prompts/coding_stage8.md` (End-to-end pipeline & CLI), modeled on
+the earlier stage prompt docs and grounded in coding-plan §8 + the design's
+Semi-automation/Provenance sections: a resumable, config-driven stage runner over
+Stages 2–7 (discover→match→fit→figure→report; no new science), idempotent stages
+skipping completed work, single-matchup debug vs full batch (BING `fit_batch`), a
+`console_scripts` CLI with `--dry-run`/stage subsets, and `pab_version`
+re-run-makes-a-new-record. Deliverables `pab.pipeline` + CLI; offline tests
+(tiny-fixture end-to-end via injected seams, idempotency/resume, CLI smoke);
+`pipeline.rst`; `09_pipeline.ipynb`. Doc only — no code changed.
+
+### 2026-06-26 (Stage 8 — implemented the end-to-end pipeline & CLI)
+
+Built `pab.pipeline`: a resumable, config-driven stage runner over Stages 2–7
+(`ingest`/`discover`/`match`/`fit`/`figure`/`report`) plus the ``pab`` CLI
+(`console_scripts` entry point). No new science — thin wrappers over the existing
+modules sharing the `Store`, idempotent off the per-stage natural keys; the
+network/heavy ops are injectable seams (`opener`/`fetcher`/`searcher`) so the
+whole chain runs offline (a `bing`-guarded end-to-end test drives ingest→…→report
+on a synthetic fixture). Tests `test_pipeline.py` (9); `pipeline.rst`;
+`09_pipeline.ipynb`. Suite **116** (114 + 2 BING-data skips); `ruff` +
+`sphinx -W` clean. Stage 8 ✅, impl v0.7.0 — Stages 0–8 complete. No commit.

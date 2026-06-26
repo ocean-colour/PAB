@@ -1,7 +1,7 @@
 # PAB Implementation Record
 
-**Version:** 0.6.2
-**Date:** 2026-06-25
+**Version:** 0.7.0
+**Date:** 2026-06-26
 **Authors:** JXP and Claude
 
 **Status:** living document — updated as each stage is implemented.
@@ -32,7 +32,7 @@ every bump.
 | 5 | BING fitting wrapper | ✅ done | `pab.fit.{models,run,artifacts}` |
 | 6 | Metrics & figures | ✅ done | `pab.metrics.compare`, `pab.plotting.{fit_fig,scene,population}` |
 | 7 | Reporting | ✅ done | `pab.report.{aggregate,rst,interactive,publish}` |
-| 8 | End-to-end pipeline & CLI | ⬜ pending | `pab.pipeline` (stub) |
+| 8 | End-to-end pipeline & CLI | ✅ done | `pab.pipeline` + ``pab`` CLI |
 | 9 | Extensibility & options | ⬜ future | — |
 
 **Environment notes.** Workstation Python is 3.14.5 (plan floor 3.12);
@@ -43,9 +43,9 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 107 tests: 105 passed + 2 skipped when the
+**Verification (current).** `pytest` → 116 tests: 114 passed + 2 skipped when the
 BING Loisel aph-basis data file is absent (the `b_bp`-recovery and fit-figure
-smoke skip, e.g. on lean CI / when the data mount is down), 107 passed when it is
+smoke skip, e.g. on lean CI / when the data mount is down), 116 passed when it is
 present; `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
 -W` → build succeeded.
 
@@ -608,6 +608,58 @@ stubbed local publishing on a synthetic store). Executed offline-safe.
 
 ---
 
+## 5f. Stage 8 — End-to-end pipeline & CLI
+
+The integration stage: one resumable, config-driven runner over Stages 2–7 plus
+a ``pab`` CLI. **No new science** — each stage wraps the module already built for
+it and shares the :class:`pab.db.store.Store`.
+
+### 5f.1 Pipeline (`pab/pipeline.py`)
+
+- `PipelineConfig` — the profile selection (inline dicts or
+  ``data/dev_profiles.csv``), argo source/mode, discovery window, the Stage-4/5
+  `MatchupConfig`/`FitConfig`, output dir, `make_figures`, `replace`.
+- Stage functions `ingest` / `discover` / `match` / `fit` / `figure` / `report`
+  (the `STAGES` order) — thin wrappers over `pab.argo`/`pab.pace`/`build_matchups`/
+  `build_fits`/`pab.plotting`/`pab.report`, each returning a summary and **skipping
+  completed work** (the existing per-stage idempotency; `figure` is best-effort
+  per fit).
+- `run(store, config, *, stages=, opener=, fetcher=, searcher=, dry_run=)` — runs
+  the requested stages in order, forwarding only the seams a stage accepts;
+  returns `{stage: summary}` (or the plan on `dry_run`). The network/heavy
+  operations are **injectable seams** (`opener`/`fetcher`/`searcher`), so the
+  whole pipeline runs offline in tests.
+- `main` / `build_parser` — the ``pab`` CLI (``--db``, ``--stage`` subset,
+  ``--outdir``, ``--profiles-csv``, ``--replace``, ``--no-figures``,
+  ``--dry-run``); wired as a `console_scripts` entry point (`pab = pab.pipeline:main`)
+  in `setup.py`, also `python -m pab.pipeline`.
+
+### 5f.2 Key decisions
+
+- **Resumable off the store** — no separate run-state; idempotency comes from the
+  natural keys (`mld_summary` per profile, `matchup_id`, `fit_id`). Re-running
+  under a new `pab_version` adds records (per *Provenance & versioning*).
+- **Injectable seams over mocking internals** — `run` forwards `opener`/`fetcher`/
+  `searcher`; the end-to-end test drives the full chain offline (synthetic
+  granule + inline summaries + a discovery seam), with the BING fit guarded by
+  `importorskip`.
+- **No schema change.**
+
+**Tests** — `pab/tests/test_pipeline.py` (9): `dry_run` plan; stage-subset; idempotent
+`ingest`; `discover` via a searcher seam; `match` through the pipeline + resume
+(all-skip); `report` on an empty store; CLI `--dry-run` + parser stage-subset; and
+a **`bing`-guarded end-to-end** (ingest→…→report on a synthetic fixture →
+matchups + a generated site).
+
+**Docs page** — `pipeline.rst` (stage order, the idempotent/resumable +
+`pab_version` model, the injectable seams, and the CLI; autodoc of `pab.pipeline`).
+
+**Notebook** — `docs/nb/09_pipeline.ipynb` (the full runner on a tiny offline
+fixture: stage summaries, store counts, the generated site, and an idempotent
+re-run; optional `RUN_LIVE`/CLI). Executed offline-safe.
+
+---
+
 ## 6. Cross-cutting conventions (as implemented)
 
 - **Provenance** — every results-bearing row carries `pab_version` + `created`;
@@ -666,8 +718,8 @@ pab/
     rst.py             ✅ aggregate .rst pages (no per-matchup pages)
     interactive.py     ✅ standalone Bokeh scatter/map (embed)
     publish.py         ✅ exports + download manifest + stubbed backends
-  pipeline.py          ⬜ Stage 8
-  tests/               test_smoke, test_db, test_argo, test_pace, test_matchup, test_fit, test_metrics, test_report
+  pipeline.py          ✅ stage runner (ingest→…→report) + ``pab`` CLI
+  tests/               test_smoke, test_db, test_argo, test_pace, test_matchup, test_fit, test_metrics, test_report, test_pipeline
 ```
 
 ---
