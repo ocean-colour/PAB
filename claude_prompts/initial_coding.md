@@ -799,3 +799,18 @@ solid; minor notes only (seam forwarding via `co_varnames` → prefer
 `inspect.signature`; `discover` re-queries earthaccess each run; `--db` parent
 mkdir). Noted single-matchup/parallel/config-file/HOWTO are agreed follow-ups not
 in this PR. Posted as `profxj`; no merge/commit.
+
+### 2026-06-26 (Wrote HOWTO.md for running the Stage 8 pipeline)
+
+Created `HOWTO.md` in the repo root — the operator's guide for running the
+end-to-end pipeline on the workstation. Documents the **current** `pab` CLI only
+(`--db/--stage/--outdir/--profiles-csv/--replace/--no-figures/--dry-run`);
+prerequisites (`pip install -e .`; the three non-PyPI packages bing/ocpy/
+remote_sensing; `~/.netrc` for earthaccess; gdac/expert argo; BING+Loisel data
+for fits); the six stages with idempotency/resume + `pab_version` provenance;
+output locations (`outdir/{site,release/manifest.json,figures}`); gotchas
+(~140–160 s out-of-region granule opens, closest granule may not cover/may be
+cloudy, fits best-effort). Per JXP: added a **publishing reminder** that
+Nautilus S3 / Zenodo backends are stubbed and must be wired up **later, not
+now**, plus a "Planned enhancements" note (single-matchup targeting, parallel
+fitting, config file — agreed, not yet built). No commit (git is the user's).

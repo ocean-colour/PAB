@@ -366,3 +366,15 @@ What I learned / decisions:
   Stage-4 spatial gate works through the pipeline.
 - Output (site/release/figures) goes under `DATA_DIR/pipeline` (or `--outdir`),
   never the repo; tests use tmp dirs.
+
+## HOWTO.md (2026-06-26)
+
+Wrote `HOWTO.md` (repo root) at JXP's request — how to run the Stage 8 pipeline.
+Scoped to the **current** CLI (the agreed single-matchup/parallel/config-file
+work is flagged as "Planned enhancements", not documented as working). Sections:
+prerequisites (editable install; bing/ocpy/remote_sensing from source; `~/.netrc`;
+gdac/expert argo), quick start (`pab --dry-run`, `pab --db data/pab.db`), CLI flag
+table, stages + idempotency/resume + provenance, outputs (`outdir/site`,
+`outdir/release/manifest.json`, `outdir/figures`), gotchas (slow out-of-region
+granule opens, spatial-gate rejections, best-effort fits), and a **publishing
+reminder** (Nautilus S3 / Zenodo stubbed — set up later, NOT yet). No commit.
