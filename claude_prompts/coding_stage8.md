@@ -146,6 +146,20 @@ HOWTO matches the CLI you'll actually run.
 
 A. Add a reminder to the HOWTO.md to set this up, but we should not do it yet.
 
+**Addressed the PR #6 review (Claude, 2026-06-26).** Working-tree edits — the
+three minor review notes:
+- **Seam forwarding** now uses `inspect.signature(func).parameters` (not
+  `co_varnames`), so a same-named local can't misroute a seam.
+- **`discover` resumes**: skips a profile that already has in-window granules
+  (via `candidate_granules`) — no network re-query on a re-run; returns a
+  `skipped` list. New test asserts a second `discover` re-queries nothing.
+- **`main --db`** now `mkdir`s the db's parent dir before `Store.open` (sqlite
+  won't create it) — new CLI test with a nested `--db` path.
+
+Suite **117** (115 + 2 BING-data skips when the mount is down); `ruff` +
+`sphinx -W` clean; impl v0.7.1. (The single-matchup / parallel / config-file /
+HOWTO follow-ups remain the agreed next step.)
+
 - Otherwise, no blockers — Stage 9 (Extensibility: NASA-L2-IOP baseline ingest,
   the `L1B → Rrs` hook, extra model pairs, the once-exported interactive lookup
   table) holds the remaining carried-forward deferrals if/when you want them.
@@ -263,6 +277,36 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-26 (Stage 8 — addressed PR #6 review comments)
+
+Implemented the three minor PR #6 findings (detail in Requests):
+- `run` seam forwarding → `inspect.signature` (robust vs `co_varnames`).
+- `discover` now skips already-discovered profiles (in-window granules via
+  `candidate_granules`) → resumable, no network re-query; returns `skipped`.
+- `main --db` mkdirs the db parent before `Store.open`.
+
+Tests +1 / strengthened (`test_pipeline.py` → 11): discover resume-skip,
+`--db` parent-dir creation. Suite **117** (115 + 2 BING-data skips); `ruff` +
+`sphinx -W` clean; impl v0.7.1. No commit (git is JXP's).
+
+### 2026-06-26 (Stage 8 — reviewed PR #6 and posted the review to GitHub)
+
+Reviewed PR **#6 "Stage 8"** (`stage-8` → **`main`**, 39 files) and posted a
+COMMENT review (https://github.com/ocean-colour/PAB/pull/6) as `profxj`.
+
+- **Cumulative PR:** base is `main` (last at Stage 4), so it carries Stages 5–8;
+  5–7 were reviewed on their own PRs (#3/#4/#5 vs `develop`). Focused the review
+  on the new **Stage 8** surface (`pab.pipeline` + CLI + entry point + docs/nb).
+- **Due diligence:** `pytest` 116 passed; `ruff` + `sphinx -W` clean; `pab
+  --dry-run` works.
+- **Verdict:** solid; only minor notes — (1) `run`'s seam forwarding via
+  `co_varnames` is fragile (prefer `inspect.signature`); (2) `discover`
+  re-queries earthaccess every run (idempotent via upsert, but no skip); (3)
+  `main --db` could `mkdir` the db parent for a custom `PAB_DATA_DIR`. Flagged
+  that single-matchup / parallel / config-file / HOWTO are **agreed follow-ups**,
+  intentionally not in this PR.
+- Posted via `gh pr review 6 --comment`; no merge/commit (git is JXP's).
 
 ### 2026-06-26 (Stage 8 — read JXP's answers; raised implementation follow-ups)
 

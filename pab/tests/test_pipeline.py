@@ -125,13 +125,21 @@ def test_ingest_is_idempotent():
         assert store.count("mld_summary") == 2  # no duplicates
 
 
-def test_discover_with_searcher_seam():
+def test_discover_with_searcher_seam_and_resume():
     cfg = pipeline.PipelineConfig(profiles=_profiles())
     with Store.open(":memory:") as store:
         pipeline.run(store, cfg, stages=("ingest",))
         out = pipeline.run(store, cfg, stages=("discover",), searcher=_searcher)
         assert out["discover"]["granules_upserted"] == 2
         assert store.count("granules") == 2
+
+        # resume: both profiles already have in-window granules -> skipped, no re-query
+        def _boom(*a, **k):  # would fire if discover re-queried
+            raise AssertionError("re-queried an already-discovered profile")
+
+        again = pipeline.run(store, cfg, stages=("discover",), searcher=_boom)
+        assert again["discover"]["granules_upserted"] == 0
+        assert len(again["discover"]["skipped"]) == 2
 
 
 def test_match_through_pipeline_and_resume():
@@ -167,6 +175,15 @@ def test_cli_dry_run(capsys, tmp_path):
 def test_cli_parser_stage_subset():
     args = pipeline.build_parser().parse_args(["--stage", "match", "--stage", "fit"])
     assert args.stages == ["match", "fit"]
+
+
+def test_cli_creates_db_parent_dir(tmp_path):
+    # a --db path under a not-yet-existing dir must work (sqlite won't mkdir it)
+    db = tmp_path / "new" / "sub" / "pab.db"
+    rc = pipeline.main(
+        ["--db", str(db), "--stage", "report", "--outdir", str(tmp_path / "out")]
+    )
+    assert rc == 0 and db.exists()
 
 
 # -- end-to-end (needs bing + emcee) ----------------------------------------

@@ -789,3 +789,13 @@ whole chain runs offline (a `bing`-guarded end-to-end test drives ingest→…�
 on a synthetic fixture). Tests `test_pipeline.py` (9); `pipeline.rst`;
 `09_pipeline.ipynb`. Suite **116** (114 + 2 BING-data skips); `ruff` +
 `sphinx -W` clean. Stage 8 ✅, impl v0.7.0 — Stages 0–8 complete. No commit.
+
+### 2026-06-26 (Reviewed Stage 8 PR #6 and posted the review to GitHub)
+
+Reviewed PR #6 "Stage 8" (`stage-8` → `main`, cumulative: Stages 5–8; 5–7 already
+reviewed vs `develop`). Focused on the new `pab.pipeline` + CLI. Due diligence:
+`pytest` 116 passed, `ruff` + `sphinx -W` clean, `pab --dry-run` works. Verdict:
+solid; minor notes only (seam forwarding via `co_varnames` → prefer
+`inspect.signature`; `discover` re-queries earthaccess each run; `--db` parent
+mkdir). Noted single-matchup/parallel/config-file/HOWTO are agreed follow-ups not
+in this PR. Posted as `profxj`; no merge/commit.

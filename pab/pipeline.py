@@ -16,6 +16,7 @@ so the pipeline runs offline on synthetic inputs in tests while the orchestratio
 from __future__ import annotations
 
 import argparse
+import inspect
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -151,15 +152,24 @@ def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
 
     ``searcher(lat, lon, t0, t1, config)`` overrides the live earthaccess search
     (it returns a granule ``DataFrame``); otherwise ``pab.pace.discover`` is used.
+    A profile that already has granules in its time window is **skipped** (no
+    re-query) unless ``replace`` — so a resume doesn't re-hit the network.
     """
+    from pab.matchup.engine import candidate_granules
     from pab.pace import discover as disc
 
     profiles = store.query(
         "SELECT wmo, cycle, latitude, longitude, time FROM profiles "
         "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
     )
-    n = 0
+    n, skipped = 0, []
+    dtime_hours = config.dtime_days * 24.0
     for p in profiles:
+        if not config.replace and candidate_granules(
+            store, p["time"], dtime_max_hours=dtime_hours
+        ):
+            skipped.append(f"{p['wmo']}_{p['cycle']}")
+            continue
         t = datetime.fromisoformat(str(p["time"]))
         win = (
             t - timedelta(days=config.dtime_days),
@@ -178,7 +188,7 @@ def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
             table = disc.granule_table(res)
         if table is not None and len(table):
             n += disc.persist_granules(store, table, short_name=config.short_name)
-    return {"granules_upserted": n}
+    return {"granules_upserted": n, "skipped": skipped}
 
 
 def match(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
@@ -296,7 +306,10 @@ def run(
     summary: dict[str, Any] = {}
     for stage in plan:
         func = _STAGE_FUNCS[stage]
-        kwargs = {k: v for k, v in seam.items() if k in func.__code__.co_varnames}
+        # forward only the seam(s) the stage actually declares as parameters
+        # (signature, not co_varnames, so a same-named local can't misroute)
+        params = inspect.signature(func).parameters
+        kwargs = {k: v for k, v in seam.items() if k in params}
         summary[stage] = func(store, config, **kwargs)
     return summary
 
@@ -351,7 +364,9 @@ def main(argv=None) -> int:
         print("db:", args.db, "| outdir:", config.out())
         return 0
     created = datetime.now(UTC).isoformat()
-    with Store.open(args.db) as store:
+    db = Path(args.db)
+    db.parent.mkdir(parents=True, exist_ok=True)  # sqlite won't create the dir
+    with Store.open(db) as store:
         summary = run(store, config, stages=stages)
     print(f"pab pipeline done ({created}); stages: {list(summary)}")
     for stage, res in summary.items():
