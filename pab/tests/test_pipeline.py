@@ -7,7 +7,7 @@ import xarray as xr
 from pab import pipeline
 from pab.db import Store
 from pab.fit.models import FitConfig
-from pab.pace import flags
+from pab.pace import cloud, flags
 
 
 def _granule(center=(20.0, -50.0), span=0.02, nwave=31):
@@ -154,6 +154,32 @@ def test_match_through_pipeline_and_resume():
         # resume: a second match writes nothing new
         again = pipeline.run(store, cfg, stages=("match",), opener=opener)
         assert again["match"]["written"] == [] and len(again["match"]["skipped"]) == 2
+
+
+def test_config_cache_dir_default_and_override(tmp_path):
+    assert pipeline.PipelineConfig().cache().name == "granules"
+    assert pipeline.PipelineConfig(cache_dir=tmp_path).cache() == tmp_path
+
+
+def test_run_builds_cached_opener_when_download_set(monkeypatch, tmp_path):
+    # download=True (and no injected opener) -> run() routes stages through the
+    # local-cache opener built from config.cache().
+    profiles = _profiles()
+    built = {}
+
+    def _fake_cached_opener(cache_dir):
+        built["cache_dir"] = cache_dir
+        return _opener_for(profiles)
+
+    monkeypatch.setattr(cloud, "cached_opener", _fake_cached_opener)
+    cfg = pipeline.PipelineConfig(
+        profiles=profiles, download=True, cache_dir=tmp_path
+    )
+    with Store.open(":memory:") as store:
+        pipeline.run(store, cfg, stages=("ingest", "discover"), searcher=_searcher)
+        out = pipeline.run(store, cfg, stages=("match",))
+        assert len(out["match"]["written"]) == 2
+        assert built["cache_dir"] == tmp_path
 
 
 def test_report_stage_on_empty_store(tmp_path):

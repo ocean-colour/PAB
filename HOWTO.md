@@ -78,7 +78,7 @@ override it with the `PAB_DATA_DIR` environment variable.
 ```
 pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
     [--outdir OUTDIR] [--profiles-csv PROFILES_CSV] [--replace]
-    [--no-figures] [--dry-run]
+    [--no-figures] [--download] [--cache-dir CACHE_DIR] [--dry-run]
 ```
 
 | Flag | Meaning |
@@ -89,7 +89,29 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
 | `--profiles-csv PROFILES_CSV` | Profile-selection CSV. Default: `data/dev_profiles.csv`. |
 | `--replace` | Re-do completed work instead of skipping it. |
 | `--no-figures` | Skip the `figure` stage. |
+| `--download` | Pre-download each granule to a local cache and read it locally (the reliable **off-cloud** path). Use this whenever you are **not** running in-region (`us-west-2`). |
+| `--cache-dir CACHE_DIR` | Where downloaded granules live. Default: `DATA_DIR/granules`. |
 | `--dry-run` | Print the stage plan and exit without touching anything. |
+
+### Granule access: in-region vs. `--download`
+
+The `match` (and `figure`/`fit` scene) stages read pixels out of PACE L2
+granules. There are two ways to get the bytes:
+
+- **In-region (default).** Running on AWS `us-west-2`, granules are read lazily
+  from S3 — only the chunks under the nearest pixel transfer. Fast, no local
+  copy. This is the design target.
+- **Off-cloud (`--download`).** From a workstation outside `us-west-2`, lazy
+  HTTPS byte-range reads are unreliable and can stall indefinitely. Pass
+  `--download` to fetch each granule once (a robust streaming download via
+  `earthaccess`) into `--cache-dir` and read it locally instead. The download is
+  idempotent — a granule already in the cache is reused — so it is safe to
+  interrupt and resume. Budget ~0.5 GB per granule on disk.
+
+```bash
+# Off-cloud first run (this workstation): pre-download granules as match needs them
+pab --db data/pab.db --download
+```
 
 
 ## 4. Stages, idempotency & resume

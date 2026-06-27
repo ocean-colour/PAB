@@ -148,6 +148,75 @@ def test_open_granule_unknown_backend():
         cloud.open_granule("x", backend="bogus")
 
 
+# -- pre-download / local cache (no network) --------------------------------
+def test_granule_cache_path_uses_basename(tmp_path):
+    url = "https://host/path/PACE_OCI.20250124T215746.L2.OC_AOP.V3_1.nc"
+    p = cloud.granule_cache_path(url, tmp_path)
+    assert p == tmp_path / "PACE_OCI.20250124T215746.L2.OC_AOP.V3_1.nc"
+
+
+def test_download_granule_local_passthrough(tmp_path):
+    # a local path source is returned unchanged (no network)
+    local = tmp_path / "g.nc"
+    assert cloud.download_granule(str(local), tmp_path) == local
+
+
+def test_download_granule_idempotent_skips_network(tmp_path, monkeypatch):
+    # a cached granule is reused without invoking earthaccess.download
+    import earthaccess
+
+    def _boom(*a, **k):  # pragma: no cover - must not be called
+        raise AssertionError("earthaccess.download should not run for a cache hit")
+
+    monkeypatch.setattr(earthaccess, "download", _boom)
+    url = "https://host/g.nc"
+    target = cloud.granule_cache_path(url, tmp_path)
+    target.write_bytes(b"cached")
+    assert cloud.download_granule(url, tmp_path) == target
+
+
+def test_cached_opener_opens_local_path_directly(tmp_path, monkeypatch):
+    ds = make_granule()
+    seen = {}
+
+    def _open_local(fn):
+        seen["fn"] = fn
+        return ds
+
+    monkeypatch.setattr(cloud, "open_local", _open_local)
+    opener = cloud.cached_opener(tmp_path)
+    out = opener(str(tmp_path / "g.nc"))
+    assert out.identical(ds)
+    assert seen["fn"] == str(tmp_path / "g.nc")
+
+
+def test_cached_opener_downloads_then_opens(tmp_path, monkeypatch):
+    ds = make_granule()
+    calls = {}
+
+    def _download(src, cd):
+        calls["dl"] = src
+        return tmp_path / "g.nc"
+
+    def _open_local(fn):
+        calls["fn"] = fn
+        return ds
+
+    monkeypatch.setattr(cloud, "download_granule", _download)
+    monkeypatch.setattr(cloud, "open_local", _open_local)
+    opener = cloud.cached_opener(tmp_path)
+    out = opener("https://host/g.nc")
+    assert out.identical(ds)
+    assert calls["dl"] == "https://host/g.nc"
+    assert calls["fn"] == str(tmp_path / "g.nc")
+
+
+def test_cached_opener_no_download_raises_when_missing(tmp_path):
+    opener = cloud.cached_opener(tmp_path, download=False)
+    with pytest.raises(FileNotFoundError):
+        opener("https://host/missing.nc")
+
+
 # -- discovery persistence (no network) -------------------------------------
 def test_persist_granules_from_table():
     import pandas as pd

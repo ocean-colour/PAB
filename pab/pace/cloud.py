@@ -19,6 +19,8 @@ tests (no network/S3 in the suite).
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
+from urllib.parse import urlparse
 
 import numpy as np
 import xarray as xr
@@ -47,6 +49,88 @@ def open_local(fn: str) -> xr.Dataset:
     return to_granule_ds(ds, flags)
 
 
+def granule_cache_path(source: str, cache_dir: str | Path) -> Path:
+    """Local cache path for a granule ``source`` (URL or path) under ``cache_dir``.
+
+    Uses the granule file's basename so the same granule maps to a stable file
+    regardless of run — PACE L2 basenames are unique
+    (e.g. ``PACE_OCI.20250124T215746.L2.OC_AOP.V3_1.nc``).
+    """
+    name = Path(urlparse(str(source)).path).name or Path(str(source)).name
+    return Path(cache_dir) / name
+
+
+def download_granule(
+    source: str, cache_dir: str | Path, *, replace: bool = False
+) -> Path:
+    """Download a granule to ``cache_dir`` and return its local path (idempotent).
+
+    Uses ``earthaccess.download`` (a robust streaming HTTP download with the
+    operator's Earthdata Login), which — unlike lazy ``fsspec`` byte-range reads —
+    does **not** stall out-of-region. A granule already in the cache is reused
+    unless ``replace``. This is the *pre-download* path for off-cloud dev runs;
+    in-region S3 access (:func:`open_s3`) needs no local copy.
+
+    Args:
+        source: The granule URL (or local path, returned unchanged if it exists).
+        cache_dir: Directory to hold the downloaded granule(s).
+        replace: Re-download even if the cached file already exists.
+
+    Returns:
+        The local :class:`~pathlib.Path` of the granule file.
+    """
+    if not str(source).startswith(("http://", "https://", "s3://")):
+        return Path(source)  # already a local path
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = granule_cache_path(source, cache_dir)
+    if target.exists() and not replace:
+        return target
+
+    import earthaccess
+
+    paths = earthaccess.download([str(source)], local_path=str(cache_dir))
+    got = Path(paths[0])
+    # earthaccess names the file by its basename, which is our cache path; guard
+    # against a divergent name by trusting whatever it actually wrote.
+    return got if got.exists() else target
+
+
+def cached_opener(
+    cache_dir: str | Path, *, download: bool = True
+) -> Callable[[str], xr.Dataset]:
+    """An ``opener`` that reads granules from a **local cache** (pre-download path).
+
+    Returns a ``source -> canonical dataset`` callable suitable for
+    :func:`pab.matchup.engine.build_matchups` / the pipeline ``opener`` seam. For
+    a URL source it ensures the granule is in ``cache_dir`` (downloading on first
+    use when ``download``) and then opens it with the reliable local reader
+    (:func:`open_local`); a local-path source is opened directly. This is what
+    makes the ``match`` stage dependable off-cloud — no out-of-region byte-range
+    stalls (Q&A *Task 2*).
+
+    Args:
+        cache_dir: Directory holding (or to hold) the downloaded granules.
+        download: If False, a missing cached granule raises instead of being
+            fetched (use when the cache is expected to be pre-populated).
+    """
+    cache_dir = Path(cache_dir)
+
+    def _open(source: str) -> xr.Dataset:
+        if not str(source).startswith(("http://", "https://", "s3://")):
+            return open_local(str(source))
+        target = granule_cache_path(source, cache_dir)
+        if not target.exists():
+            if not download:
+                raise FileNotFoundError(
+                    f"granule not in cache and download=False: {target}"
+                )
+            target = download_granule(source, cache_dir)
+        return open_local(str(target))
+
+    return _open
+
+
 def open_s3(url: str) -> xr.Dataset:
     """Open a PACE L2 AOP granule lazily from S3 (in-region ``us-west-2``).
 
@@ -69,6 +153,14 @@ def read_datatree(source) -> xr.Dataset:
     pattern in ``docs/context.md`` — rather than opening the source once per
     group, which is fragile for an already-opened S3/fsspec file handle.
 
+    The ``Rrs``/``Rrs_unc`` cubes are kept **lazy**: the canonical dataset wraps
+    the on-disk variables (renamed to ``(x, y, wl)``) without materialising them,
+    so a nearest-pixel ``isel(...).values`` in :mod:`pab.pace.extract` fetches
+    only the few HDF5 chunks covering that pixel rather than the full ~GB cube.
+    This is what makes the cloud read affordable out-of-region (HTTP byte-range)
+    and realises the "only the requested bytes transfer" design. The 2-D
+    navigation / flag arrays are small and read whole by the nearest-pixel search.
+
     Args:
         source: A path, URL, or file-like object accepted by
             ``xr.open_datatree`` (``h5netcdf`` engine).
@@ -76,26 +168,40 @@ def read_datatree(source) -> xr.Dataset:
     Returns:
         The canonical granule dataset (includes ``FLH``/``nflh`` when present).
     """
-    dt = xr.open_datatree(source, engine="h5netcdf", mask_and_scale=True)
+    dt = xr.open_datatree(
+        source, engine="h5netcdf", mask_and_scale=True, decode_timedelta=False
+    )
     geo = dt["geophysical_data"].ds
     nav = dt["navigation_data"].ds
     sbp = dt["sensor_band_parameters"].ds
-    dims = ("x", "y", "wl")
+
+    def _canon(da, target_dims):
+        """Lazy ``Variable`` with dims renamed to ``target_dims`` positionally.
+
+        Renaming by position (not by source name) mirrors the original eager
+        ``(dims, values)`` construction and is robust to PACE groups using
+        different source dim names for the same axis (e.g. the spectral dim is
+        ``wavelength_3d`` in ``geophysical_data`` but ``wavelength`` in
+        ``sensor_band_parameters`` on some granules). ``.variable`` keeps the
+        on-disk data lazy.
+        """
+        return da.rename(dict(zip(da.dims, target_dims))).variable
+
     data_vars = {
-        "Rrs": (dims, geo["Rrs"].values),
-        "Rrs_unc": (dims, geo["Rrs_unc"].values),
-        "l2_flags": (("x", "y"), geo["l2_flags"].values),
+        "Rrs": _canon(geo["Rrs"], ("x", "y", "wl")),
+        "Rrs_unc": _canon(geo["Rrs_unc"], ("x", "y", "wl")),
+        "l2_flags": _canon(geo["l2_flags"], ("x", "y")),
     }
     # FLH is carried by the local (ocpy) reader too; include it when present so
     # both backends yield the same canonical dataset.
     if "nflh" in geo:
-        data_vars["FLH"] = (("x", "y"), geo["nflh"].values)
+        data_vars["FLH"] = _canon(geo["nflh"], ("x", "y"))
     return xr.Dataset(
         data_vars,
         coords={
-            "latitude": (("x", "y"), nav["latitude"].values),
-            "longitude": (("x", "y"), nav["longitude"].values),
-            "wavelength": ("wl", sbp["wavelength_3d"].values),
+            "latitude": _canon(nav["latitude"], ("x", "y")),
+            "longitude": _canon(nav["longitude"], ("x", "y")),
+            "wavelength": _canon(sbp["wavelength_3d"], ("wl",)),
         },
     )
 

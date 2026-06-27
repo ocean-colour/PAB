@@ -48,6 +48,9 @@ class PipelineConfig:
         outdir: base output directory (defaults to ``DATA_DIR/pipeline``).
         make_figures: render per-matchup figures in the ``figure`` stage.
         replace: re-do already-completed work (else stages skip it).
+        download: pre-download granules to ``cache_dir`` and read them locally
+            (the reliable off-cloud path) instead of lazy out-of-region S3/HTTPS.
+        cache_dir: where downloaded granules live (defaults to ``DATA_DIR/granules``).
     """
 
     profiles: list[dict[str, Any]] | None = None
@@ -63,10 +66,16 @@ class PipelineConfig:
     outdir: str | Path | None = None
     make_figures: bool = True
     replace: bool = False
+    download: bool = False
+    cache_dir: str | Path | None = None
 
     def out(self) -> Path:
         """The resolved base output directory."""
         return Path(self.outdir) if self.outdir else Path(DATA_DIR) / "pipeline"
+
+    def cache(self) -> Path:
+        """The resolved granule download cache directory."""
+        return Path(self.cache_dir) if self.cache_dir else Path(DATA_DIR) / "granules"
 
     def profile_rows(self) -> list[dict[str, Any]]:
         """The profile selection — inline ``profiles`` or the dev-set CSV rows."""
@@ -302,6 +311,14 @@ def run(
     if dry_run:
         return {"dry_run": True, "stages": plan, "pab_version": _pab_version}
 
+    # Off-cloud pre-download path: read granules from a reliable local cache
+    # rather than lazy out-of-region S3/HTTPS (Q&A Task 2). An explicitly injected
+    # opener (the test seam) always wins.
+    if opener is None and config.download:
+        from pab.pace.cloud import cached_opener
+
+        opener = cached_opener(config.cache())
+
     seam = {"opener": opener, "fetcher": fetcher, "searcher": searcher}
     summary: dict[str, Any] = {}
     for stage in plan:
@@ -339,6 +356,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--replace", action="store_true", help="Re-do completed work.")
     p.add_argument("--no-figures", action="store_true", help="Skip the figure stage.")
     p.add_argument(
+        "--download",
+        action="store_true",
+        help="Pre-download granules to a local cache and read them locally "
+        "(reliable off-cloud; use this when not running in-region us-west-2).",
+    )
+    p.add_argument(
+        "--cache-dir",
+        default=None,
+        help="Granule download cache dir (default DATA_DIR/granules).",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the stage plan and exit without touching anything.",
@@ -356,12 +384,16 @@ def main(argv=None) -> int:
         outdir=args.outdir,
         replace=args.replace,
         make_figures=not args.no_figures,
+        download=args.download,
+        cache_dir=args.cache_dir,
     )
     stages = args.stages or list(STAGES)
     if args.dry_run:
         plan = run(None, config, stages=stages, dry_run=True)
         print("pab pipeline (dry run) — stages:", " → ".join(plan["stages"]))
         print("db:", args.db, "| outdir:", config.out())
+        if config.download:
+            print("granule access: pre-download → local cache:", config.cache())
         return 0
     created = datetime.now(UTC).isoformat()
     db = Path(args.db)

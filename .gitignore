@@ -11,6 +11,7 @@ __pycache__/
 
 # Data files
 *.npz
+*.db
 
 # Distribution / packaging
 .Python
