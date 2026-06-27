@@ -61,6 +61,8 @@ Read these before coding:
 2. Execute the 2nd task in Tasks below
 
 4. Execute the 4th task in Tasks below
+5. Execute the 5th task in Tasks below
+6. Execute the 6th task in Tasks below
 
 
 ## Tasks
@@ -72,6 +74,12 @@ Read these before coding:
 3. Read my answer to the Q&A below and modify the code accordingly.  If you have any additional questions, put them in the Q&A.  Log your work.
 
 4. Can you check the `HOWTO.md` file?  I just tried running `pab --db data/pab.db` and it failed saying "FileNotFoundError: [Errno 2] No such file or directory: '/mnt/tank/Oceanography/python/PAB/data/dev_profiles.csv'".  I don't see why it is looking for that file.  My $PAB_DATA_DIR variable is set.
+
+5. I ran the report.  How do I view it?  
+
+6. I have now viewed the report.  There are no figures.  Was this as expected?  I am sure our design included figures in the Reports.  Please advise
+
+7. This looks great now!
 
 ### Q&A
 
@@ -294,6 +302,46 @@ pab --db data/pab.db --download          # off-cloud: pre-download + local read
 pab --db data/pab.db                      # in-region us-west-2: lazy S3 (default)
 ```
 
+#### Task 6 — report had no figures: wired the interactive + per-matchup figures in
+
+**Verdict: partly expected, partly a real gap (now fixed).** Two kinds of figure
+were designed in:
+
+- **Per-matchup fit/scene PNGs inline** — *deliberately absent*. The design's hard
+  constraint (no per-matchup pages at ~10⁴ matchups) means these are reached on
+  demand, not embedded. So not seeing them on their own pages was correct.
+- **Interactive Bokeh figures (sat-vs-float `b_bp` scatter + matchup map)** —
+  *genuinely missing*. `pab.report.interactive` implemented `comparison_scatter`
+  and `matchup_map`, and `docs/reporting.rst` documented them as part of the site,
+  but `build_site`/`aggregates_page` only ever embedded the stats `DataTable`s
+  (`interactive.stats_table`). The promised figures were never wired into page
+  generation.
+
+**Fix (implemented in `pab/report/rst.py`).**
+- `interactive_figures(df)` — embeds the `comparison_scatter` (hover + **tap a
+  point to open that matchup's fit figure**) and `matchup_map` (coloured by the
+  per-matchup sat/float ratio) on the **summary** landing page. Bokeh-guarded
+  (returns `""` without bokeh), gated on the existing `sortable` switch.
+- `figure_gallery(df)` — an **N-guarded** inline thumbnail strip of the
+  per-matchup fit figures (clickable → full PNG), suppressed above
+  `MAX_INLINE_FIGURES` (50) to honour the no-page-explosion rule; above the
+  threshold detail comes via tap-to-open + the release-manifest downloads.
+- `_gather_with_figures(store, outdir)` copies each `fits.figure_path` into
+  `outdir/_static/figures/` and records a page-relative `figure_url`; `conf.py`
+  now sets `html_static_path = ["_static"]` so one mechanism serves the inline
+  gallery, the download links, and the scatter's tap-to-open.
+
+**Verified.** `pab/tests/test_report.py` 15 passed (added two: figures embedded +
+copied; gallery N-guard). Rebuilt the real site from `DATA_DIR/pab.db` (4
+matchups): 4 fit PNGs copied to `_static/figures/`, scatter + map + gallery
+embedded, `sphinx-build` succeeds, and `summary.html` references all four figures.
+The fix flows through the pipeline automatically — `pab --stage report` calls
+`build_site` with `sortable=True`.
+
+> Note: only the **fit** figure is stored per matchup (`fits.figure_path`); the
+> scene quick-looks in `pipeline/figures/*_scene.png` are produced but not yet
+> recorded in the DB, so they aren't linked. Easy follow-up if we want them too.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -377,3 +425,31 @@ extract). Full `pab --stage match --download` run completed cleanly with no hang
 (granules opened fine — float falls outside footprints or pixels flagged), worth
 triaging before the fit run. Confirmed the union of candidates is all 38 granules
 because each profile's ±24 h window picks a distinct, non-overlapping set.
+
+### 2026-06-27 (Wired figures into the report site)
+
+The reporting site is `.rst` + a Sphinx `conf.py` (not HTML); built it with
+`sphinx-build` to view (Task 5). Then found Task 6's real gap: `build_site` only
+embedded the stats `DataTable`s — the designed **interactive `b_bp` scatter** and
+**matchup map** (`pab.report.interactive.comparison_scatter`/`matchup_map`,
+already implemented and documented) were never called from page generation. The
+inline per-matchup PNGs are *intentionally* absent (no-per-matchup-pages rule).
+
+Fixed `pab/report/rst.py`: `interactive_figures()` embeds the scatter (hover +
+tap-to-open the matchup's fit figure) and the ratio-coloured map on the summary
+page; `figure_gallery()` adds an N-guarded (`MAX_INLINE_FIGURES=50`) inline
+thumbnail strip; `_gather_with_figures()` copies `fits.figure_path` into
+`_static/figures/` and `conf.py` gains `html_static_path = ["_static"]` so one
+mechanism serves the gallery, downloads, and tap-to-open. Gated the Bokeh figures
+on the existing `sortable` switch; the gallery needs no Bokeh.
+
+Key learning: the interactive figures and the per-matchup PNGs are *different
+deliverables* with opposite display rules — the scatter/map are the **per-matchup
+detail surface** (so they belong embedded on a fixed page), while the PNGs are
+**downloads reached via tap**, never their own pages. Serving the PNGs through
+`html_static_path` (rather than RST `image`/`download` directives) gives a single
+stable URL for inline `<img>`, the download link, and the Bokeh `OpenURL` tap.
+Tests: `test_report.py` 15 passed (added figures-embedded-and-copied + gallery
+N-guard); rebuilt the real 4-matchup site, `sphinx-build` clean, all 4 fit PNGs
+linked. Only the fit figure is stored per matchup; `*_scene.png` quick-looks are
+produced but not in the DB, so unlinked — a small follow-up.

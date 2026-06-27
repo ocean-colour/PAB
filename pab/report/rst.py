@@ -10,11 +10,22 @@ reached on demand through the interactive figures). Pure string generation
 
 from __future__ import annotations
 
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
 from pab.config import pab_version as _pab_version
 from pab.metrics import compare
+
+#: Where per-matchup figures are copied inside the site source tree so Sphinx
+#: serves them verbatim (``html_static_path``). The same relative URL works for
+#: the inline gallery, the per-matchup download links, and the scatter's
+#: tap-to-open — one mechanism, no reliance on Sphinx's ``_images`` renaming.
+FIGURE_URL_COL = "figure_url"
+_STATIC_FIGURES = "_static/figures"
+#: Above this matchup count the inline gallery is suppressed (the design's
+#: no-page-explosion constraint); detail then comes via tap-to-open + downloads.
+MAX_INLINE_FIGURES = 50
 
 #: The fixed set of generated page stems (there is no per-matchup page).
 PAGE_STEMS = ("index", "summary", "aggregates", "methods")
@@ -95,6 +106,92 @@ def summary_page(store, *, pab_version: str | None = None) -> str:
             f"{_fmt(chl['median_ratio'])}; Spearman ρ = {_fmt(chl['spearman'])}.\n"
         )
     return "\n".join(out)
+
+
+def interactive_figures(df, *, artifact_url_col: str = FIGURE_URL_COL) -> str:
+    """Standalone Bokeh **scatter + map** for the landing page (Bokeh-guarded).
+
+    The design's route to per-matchup detail without per-matchup pages: a
+    satellite-vs-float ``b_bp`` log-log scatter (hover for values, **tap** to open
+    that matchup's fit figure when ``artifact_url_col`` is present) and a matchup
+    map coloured by the per-matchup sat/float ratio. Returns ``""`` when ``bokeh``
+    is unavailable or there are no matchups, so the page still builds.
+    """
+    if not len(df):
+        return ""
+    try:
+        import numpy as np
+
+        from pab.report import interactive
+
+        url_col = artifact_url_col if artifact_url_col in df.columns else None
+        scatter = interactive.comparison_scatter(df, artifact_url_col=url_col)
+        dfm = df.copy()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dfm["ratio"] = (
+                dfm["bbp_bing"].to_numpy(dtype=float)
+                / dfm["bbp_argo"].to_numpy(dtype=float)
+            )
+        mp = interactive.matchup_map(dfm, color_col="ratio")
+    except ImportError:
+        return ""
+
+    out = [_heading("Figures", "-"), ""]
+    out.append(
+        "Satellite-vs-float ``b_bp`` (700 nm) and the matchup map. **Hover** a "
+        "point for its values; **tap** a scatter point to open that matchup's fit "
+        "figure. Per-matchup detail is reached here, not as individual pages.\n"
+    )
+    out.append(interactive.raw_html(scatter))
+    out.append(interactive.raw_html(mp))
+    return "\n".join(out)
+
+
+def figure_gallery(
+    df, *, url_col: str = FIGURE_URL_COL, max_inline: int = MAX_INLINE_FIGURES
+) -> str:
+    """An N-guarded inline gallery of per-matchup fit figures (no per-matchup pages).
+
+    For a small population (``len <= max_inline``) every matchup's fit figure is
+    shown as a clickable thumbnail (tap opens the full PNG / download). Above the
+    threshold the gallery is suppressed — honouring the design's
+    no-page-explosion constraint — and detail comes via tap-to-open on the scatter
+    plus the release-manifest downloads. Returns ``""`` when no figures exist.
+    """
+    rows = [
+        r
+        for _, r in df.iterrows()
+        if isinstance(r.get(url_col), str) and r.get(url_col)
+    ]
+    if not rows:
+        return ""
+    out = [_heading("Per-matchup figures", "-"), ""]
+    if len(rows) > max_inline:
+        out.append(
+            f"{len(rows)} matchups — too many to show inline. Per-matchup fit "
+            "figures are available as downloads (see the release manifest) and by "
+            "tapping a point in the scatter above.\n"
+        )
+        return "\n".join(out)
+    out.append(
+        "One thumbnail per matchup (the design exposes figures, not per-matchup "
+        "pages). Click a thumbnail to open the full-resolution PNG.\n"
+    )
+    html = ['<div class="pab-gallery">']
+    for r in rows:
+        url = r[url_col]
+        cap = f"{r.get('wmo')}/{r.get('cycle')}"
+        html.append(
+            '<figure style="display:inline-block;margin:8px;text-align:center;'
+            'vertical-align:top">'
+            f'<a href="{url}"><img src="{url}" style="max-width:360px;height:auto">'
+            "</a>"
+            f"<figcaption>{cap}</figcaption></figure>"
+        )
+    html.append("</div>")
+    out.append(".. raw:: html\n")
+    out.extend("   " + ln for ln in html)
+    return "\n".join(out) + "\n"
 
 
 def _table_block(df, *, columns=None, sortable: bool = True) -> str:
@@ -199,7 +296,42 @@ def reporting_conf(*, pab_version: str | None = None) -> str:
         "except ImportError:\n"
         '    html_theme = "alabaster"\n'
         f"html_js_files = {js_files!r}\n"
+        '# Per-matchup figures are copied under _static/figures and served verbatim.\n'
+        'html_static_path = ["_static"]\n'
     )
+
+
+def _gather_with_figures(store, outdir: Path):
+    """The per-matchup comparison frame with a ``figure_url`` column.
+
+    Each matchup's fit figure (``fits.figure_path``) is copied into
+    ``outdir/_static/figures`` (so Sphinx serves it verbatim) and the
+    page-relative URL recorded in :data:`FIGURE_URL_COL`. Rows whose figure is
+    missing on disk get ``None`` there. Returns the strata-augmented frame.
+    """
+    df = compare.add_strata(compare.gather_matchups(store))
+    if not len(df):
+        return df
+    fig_paths = {
+        r["fit_id"]: r["figure_path"]
+        for r in store.query(
+            "SELECT fit_id, figure_path FROM fits WHERE figure_path IS NOT NULL"
+        )
+    }
+    static_figs = outdir / "_static" / "figures"
+    urls: list[str | None] = []
+    for fit_id in df["fit_id"]:
+        src = fig_paths.get(fit_id)
+        if src and Path(src).is_file():
+            static_figs.mkdir(parents=True, exist_ok=True)
+            name = Path(src).name
+            shutil.copyfile(src, static_figs / name)
+            urls.append(f"{_STATIC_FIGURES}/{name}")
+        else:
+            urls.append(None)
+    df = df.copy()
+    df[FIGURE_URL_COL] = urls
+    return df
 
 
 def build_site(
@@ -224,9 +356,21 @@ def build_site(
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    # Always present so the conf's html_static_path entry exists (no Sphinx warning).
+    (outdir / "_static").mkdir(parents=True, exist_ok=True)
+
+    df = _gather_with_figures(store, outdir)
+    summary = summary_page(store, pab_version=pab_version)
+    # The interactive scatter/map are the design's route to per-matchup detail;
+    # gate them on `sortable` (the same interactive-vs-static switch the tables
+    # use). The image gallery needs no Bokeh, so it is always included.
+    if sortable:
+        summary += "\n" + interactive_figures(df)
+    summary += "\n" + figure_gallery(df)
+
     pages = {
         "index": index_page(),
-        "summary": summary_page(store, pab_version=pab_version),
+        "summary": summary,
         "aggregates": aggregates_page(store, sortable=sortable),
         "methods": methods_page(),
     }

@@ -17,6 +17,7 @@ earthaccess
 gsw
 bokeh
 healpy
+ruff
 
 # Docs (Sphinx site under docs/)
 sphinx

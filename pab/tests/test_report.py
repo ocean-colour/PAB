@@ -226,6 +226,53 @@ def test_rst_table_renders():
     assert "0.123" in out and "—" in out  # float fmt + NaN placeholder
 
 
+def test_build_site_embeds_figures_and_copies_them(tmp_path):
+    pytest.importorskip("bokeh")
+    fig = tmp_path / "M1_fit.png"
+    fig.write_bytes(b"fake-png")
+    with Store.open(":memory:") as store:
+        _seed(
+            store,
+            "M1",
+            7902226,
+            5,
+            lat=27.0,
+            lon=-46.0,
+            time="2025-02-18T20:00:00",
+            bbp_argo=1e-3,
+            bbp_bing=2e-3,
+            figure_path=str(fig),
+        )
+        site = tmp_path / "site"
+        rst.build_site(store, site)  # sortable=True -> interactive figures
+        summary = (site / "summary.rst").read_text()
+        # the interactive scatter/map are embedded on the landing page
+        assert "Figures" in summary and ".. raw:: html" in summary
+        # the per-matchup figure was copied into the static tree and linked
+        copied = site / "_static" / "figures" / "M1_fit.png"
+        assert copied.exists()
+        assert "_static/figures/M1_fit.png" in summary  # gallery + tap-to-open URL
+        # conf serves the static tree
+        assert 'html_static_path = ["_static"]' in (site / "conf.py").read_text()
+
+
+def test_figure_gallery_guarded_above_threshold():
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "wmo": [1, 2, 3],
+            "cycle": [1, 2, 3],
+            rst.FIGURE_URL_COL: ["_static/figures/a.png"] * 3,
+        }
+    )
+    # small N -> inline thumbnails
+    assert "<img" in rst.figure_gallery(df, max_inline=50)
+    # above threshold -> suppressed with a downloads note, no <img>
+    out = rst.figure_gallery(df, max_inline=2)
+    assert "too many to show inline" in out and "<img" not in out
+
+
 # -- interactive (bokeh) ----------------------------------------------------
 def test_comparison_scatter_embed():
     pytest.importorskip("bokeh")
