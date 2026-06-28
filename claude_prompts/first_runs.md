@@ -63,6 +63,7 @@ Read these before coding:
 4. Execute the 4th task in Tasks below
 5. Execute the 5th task in Tasks below
 6. Execute the 6th task in Tasks below
+7. Execute the 7th task in Tasks below
 
 
 ## Tasks
@@ -71,7 +72,7 @@ Read these before coding:
 
 2.  It ran further this time.  Can you view `pab_error_00.md` and see what you can do?
 
-3. Read my answer to the Q&A below and modify the code accordingly.  If you have any additional questions, put them in the Q&A.  Log your work.
+3. Read my answer to the Q&A below and modify the code accordingly.  If you have any additional questions, put them in the Q&A.  Log your work.  
 
 4. Can you check the `HOWTO.md` file?  I just tried running `pab --db data/pab.db` and it failed saying "FileNotFoundError: [Errno 2] No such file or directory: '/mnt/tank/Oceanography/python/PAB/data/dev_profiles.csv'".  I don't see why it is looking for that file.  My $PAB_DATA_DIR variable is set.
 
@@ -79,7 +80,7 @@ Read these before coding:
 
 6. I have now viewed the report.  There are no figures.  Was this as expected?  I am sure our design included figures in the Reports.  Please advise
 
-7. This looks great now!
+7. This looks great now!  Remind me, were we planning to stage this on `readthedocs` or GitHub?  Either way, how do I do so?
 
 ### Q&A
 
