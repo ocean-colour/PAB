@@ -313,3 +313,33 @@ anywhere with just the Sphinx stack. One unrelated, pre-existing test failure
 (`test_pace.py::test_download_granule_idempotent_skips_network`) does a bare
 `import earthaccess` without `importorskip` and fails because `earthaccess` isn't
 installed here — untouched by this work.
+
+### 2026-06-28 (Switched the RTD report config to a subfolder, same branch)
+
+During RTD setup the user hit two dashboard facts that reshaped the Phase-1
+publishing approach: (1) there is no separate "Advanced Settings" page anymore,
+and (2) the "Path to configuration file" field **validates that the filename ends
+in `.readthedocs.yaml`** — so the original `.readthedocs.report.yaml` was rejected.
+Key realisation: RTD accepts a config named `.readthedocs.yaml` **in a subfolder**,
+and paths *inside* it resolve relative to the **repo root** (not the file's
+folder). That means both RTD projects can live on the **same branch** — no
+dedicated `report-site` branch needed (we started down that path, then abandoned it
+at the user's suggestion).
+
+Changes: deleted root `.readthedocs.report.yaml`; added `report_site/.readthedocs.yaml`
+(filename RTD accepts; `sphinx.configuration: report_site/conf.py` and
+`requirements: report_site/requirements.txt`, both repo-root-relative); added a slim
+`report_site/requirements.txt` (`sphinx` + `sphinx-rtd-theme` only — the report
+build imports no `pab` and no Bokeh, since the generated `conf.py` has
+`extensions=[]` and bakes the BokehJS CDN list as a literal). Updated HOWTO §7a to
+the two-projects-one-branch model (dev docs → root `.readthedocs.yaml`; report →
+`report_site/.readthedocs.yaml`). Verified the tree still builds standalone with
+`sphinx-build` (4 figures served, valid YAML, no warnings about the extra non-source
+files in the source dir).
+
+Setup left to the user: commit the new files + the deletion, then set the
+`pab-report` RTD project's "Path to configuration file" to
+`report_site/.readthedocs.yaml` and its default branch to the one carrying
+`report_site/`. Flagged one residual unknown: if RTD ever resolves config paths
+relative to the file's folder (contrary to its docs), the fix is to change the two
+paths to `conf.py` / `requirements.txt`.
