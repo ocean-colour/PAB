@@ -177,15 +177,21 @@ truth; the site and manifest are derived from it.
 
 The community report is published on **Read the Docs**; GitHub
 (`ocean-colour/PAB`) is the *source* RTD builds from. There are **two RTD
-projects**, each with its own config:
+projects** off the **same branch** — RTD requires the config filename
+`.readthedocs.yaml`, but it may live in a subfolder, so each project just points
+at a different copy:
 
-- `.readthedocs.yaml` → the **developer/methods docs** under `docs/`.
-- `.readthedocs.report.yaml` → the **matchup report** under `report_site/`.
+- `.readthedocs.yaml` (repo root) → the **developer/methods docs** under `docs/`.
+- `report_site/.readthedocs.yaml` → the **matchup report** under `report_site/`.
+
+Paths *inside* each config are relative to the **repo root**, not the config
+file's folder — so `report_site/.readthedocs.yaml` still says
+`sphinx.configuration: report_site/conf.py`.
 
 `report_site/` is a self-contained, **committed** Sphinx tree (the aggregate
-`.rst` pages + `conf.py` + small `_static/figures/` thumbnails). Keep it small —
-only the aggregate site is committed; bulky per-matchup figures/MCMC chains belong
-in the object store (§7b), not git.
+`.rst` pages + `conf.py` + a slim `requirements.txt` + small `_static/figures/`
+thumbnails). Keep it small — only the aggregate site is committed; bulky
+per-matchup figures/MCMC chains belong in the object store (§7b), not git.
 
 **Regenerate and publish (current dev workflow):**
 
@@ -200,10 +206,12 @@ python -m sphinx -b html report_site report_site/_build   # _build is git-ignore
 # 3. commit report_site/ and push; RTD rebuilds on push
 ```
 
-**One-time RTD setup:** on readthedocs.org → *Import a Project* → connect GitHub →
-authorize the `ocean-colour` org → pick `PAB` → name it e.g. `pab-report` →
-**Settings → Advanced → "Path to configuration file"** = `.readthedocs.report.yaml`.
-The existing project keeps building the developer docs.
+**One-time RTD setup:** on readthedocs.org → *Add project* → connect GitHub →
+authorize the `ocean-colour` org → pick `PAB` (import the same repo a second time;
+use *Configure manually* if it isn't re-listed) → name it e.g. `pab-report` → set
+its **"Path to configuration file"** to `report_site/.readthedocs.yaml` and its
+default branch to the one carrying `report_site/`. The existing project keeps
+building the developer docs from the root `.readthedocs.yaml`.
 
 > The interactive Bokeh figures load BokehJS from `cdn.bokeh.org` over HTTPS (the
 > CDN list is baked into the generated `conf.py`), and the thumbnails are served
