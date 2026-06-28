@@ -203,6 +203,19 @@ def test_cli_parser_stage_subset():
     assert args.stages == ["match", "fit"]
 
 
+def test_cli_emit_site(capsys, tmp_path):
+    # --emit-site generates the RTD reporting-site sources from the DB and exits
+    # (no pipeline stages run); used to (re)generate an in-repo report_site/.
+    db = tmp_path / "pab.db"
+    with Store.open(db) as store:
+        pass  # an empty store is enough for the smoke (build_site handles len==0)
+    out = tmp_path / "report_site"
+    rc = pipeline.main(["--db", str(db), "--emit-site", str(out)])
+    assert rc == 0
+    assert (out / "summary.rst").exists() and (out / "conf.py").exists()
+    assert "emitted reporting site" in capsys.readouterr().out
+
+
 def test_cli_creates_db_parent_dir(tmp_path):
     # a --db path under a not-yet-existing dir must work (sqlite won't mkdir it)
     db = tmp_path / "new" / "sub" / "pab.db"

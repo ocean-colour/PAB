@@ -77,6 +77,9 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+# Local HTML build of the committed reporting-site source (report_site/ itself
+# IS committed; only its built output is ignored). RTD builds this on its own.
+report_site/_build/
 
 # PyBuilder
 .pybuilder/

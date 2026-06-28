@@ -371,6 +371,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the stage plan and exit without touching anything.",
     )
+    p.add_argument(
+        "--emit-site",
+        default=None,
+        metavar="DIR",
+        help="Generate the reporting-site sources (rst.build_site) into DIR from "
+        "the --db store and exit. Use to (re)generate an in-repo report_site/ for "
+        "Read the Docs to build (see HOWTO §7).",
+    )
     return p
 
 
@@ -394,6 +402,16 @@ def main(argv=None) -> int:
         print("db:", args.db, "| outdir:", config.out())
         if config.download:
             print("granule access: pre-download → local cache:", config.cache())
+        return 0
+    if args.emit_site:
+        # Standalone: (re)generate the RTD reporting-site sources from the store.
+        from pab.report import rst
+
+        with Store.open(Path(args.db)) as store:
+            written = rst.build_site(store, args.emit_site)
+        print(f"emitted reporting site → {args.emit_site}")
+        for name, path in sorted(written.items()):
+            print(f"  {name}: {path}")
         return 0
     created = datetime.now(UTC).isoformat()
     db = Path(args.db)

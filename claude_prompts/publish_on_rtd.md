@@ -161,6 +161,13 @@ in-repo path `report_site/`. OK, or prefer another name/location?
 
 A.  Depends.  We can't push huge files to GitHub.  Given that, what do you recommend?
 
+**Task 3 — proceeded with the recommended defaults (no blockers).** Coded Phase 1
+using the two open-item recommendations: the generation entry point is a
+`pab --emit-site DIR` CLI flag (the pipeline already owns `build_site`), and the
+generated site is committed at the in-repo path `report_site/` (branch placement —
+`develop` for the MVP — is the user's `git` call; the dedicated `report-site`
+branch stays a Phase 2 option). No new questions.
+
 ## Reports
 
 ### RTD
@@ -277,3 +284,32 @@ S3 URLs instead of copied PNGs (keeps git bounded at any N), externalise the Bok
 data at very large N, and optionally publish the generated site on a dedicated
 `report-site` branch to avoid history bloat. Left two entry-point questions open
 (generation hook; branch placement) before scaffolding. No code changed this task.
+
+### 2026-06-28 (Coded Phase 1 — RTD reporting site)
+
+Implemented Phase 1 of the plan. **Generation step:** added a `pab --emit-site DIR`
+CLI flag (`pab/pipeline.py`) that runs `rst.build_site(store, DIR)` from `--db`
+and exits without running any pipeline stages — the reproducible way to
+(re)generate the in-repo site. **Second RTD project:** added
+`.readthedocs.report.yaml` (`sphinx.configuration: report_site/conf.py`, installs
+the package + `requirements.txt`, `fail_on_warning: false`) alongside the existing
+`.readthedocs.yaml` (dev docs), so the two sites stay separate. **Generated the
+site:** `pab --db $PAB_DATA_DIR/pab.db --emit-site report_site` → 4 `.rst` +
+`conf.py` + 4 thumbnails, **~277 KB total** (well within "small"); committed by the
+user. **Git hygiene:** `.gitignore` now ignores `report_site/_build/` (the source
+tree is committed; its local HTML build is not). **Docs:** HOWTO §7 split into
+*7a — RTD reporting site (active)* with the regenerate/preview/import workflow and
+*7b — bulk artifacts & DOI snapshots (deferred)*; `--emit-site` added to the CLI
+table. **Tests:** added `test_cli_emit_site`; `test_pipeline.py` + `test_report.py`
+green (27 passed). Verified the committed tree builds standalone with
+`sphinx-build` (build succeeds, 4 figures served, 5 BokehJS CDN refs in
+`summary.html`).
+
+Key learning: the generated `conf.py` **bakes the BokehJS CDN list as a literal**
+(`html_js_files = [...]`) at emit time, and the figure HTML/JSON is inlined in the
+`.rst` — so RTD needs **no Bokeh at build time**, only sphinx + sphinx-rtd-theme
+(both in `requirements.txt`). That makes `report_site/` fully portable: it builds
+anywhere with just the Sphinx stack. One unrelated, pre-existing test failure
+(`test_pace.py::test_download_granule_idempotent_skips_network`) does a bare
+`import earthaccess` without `importorskip` and fails because `earthaccess` isn't
+installed here — untouched by this work.

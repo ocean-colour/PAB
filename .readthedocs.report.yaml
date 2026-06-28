@@ -1,0 +1,34 @@
+# Read the Docs build configuration for the PAB community **reporting** site.
+# https://docs.readthedocs.io/en/stable/config-file/v2.html
+#
+# This is the SECOND RTD project, separate from the developer docs:
+#   - .readthedocs.yaml         -> developer/methods docs under docs/
+#   - .readthedocs.report.yaml  -> the generated matchup report under report_site/
+#
+# report_site/ is generated (and committed) with:
+#     pab --db <DATA_DIR>/pab.db --emit-site report_site
+# It is a self-contained Sphinx tree (.rst + conf.py + _static/figures). The
+# interactive Bokeh figures load BokehJS from the CDN (baked into the generated
+# conf.py's html_js_files) over HTTPS, so no Bokeh install is needed to build.
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.12"          # matches the project floor (>= 3.12)
+
+sphinx:
+  configuration: report_site/conf.py
+  # Keep the report build lenient: a stray environment warning should never block
+  # publication of the community site (the dev-docs config does the same).
+  fail_on_warning: false
+
+python:
+  install:
+    # Install the package + its Sphinx stack (sphinx, sphinx-rtd-theme via
+    # requirements.txt) so report_site/conf.py's `import sphinx_rtd_theme` theme
+    # resolves. The generated site needs no Bokeh at build time (the CDN JS list
+    # is baked into conf.py and the figure HTML/JSON is inlined in the .rst).
+    - method: pip
+      path: .
+    - requirements: requirements.txt

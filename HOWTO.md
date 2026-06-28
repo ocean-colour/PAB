@@ -79,6 +79,7 @@ override it with the `PAB_DATA_DIR` environment variable.
 pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
     [--outdir OUTDIR] [--profiles-csv PROFILES_CSV] [--replace]
     [--no-figures] [--download] [--cache-dir CACHE_DIR] [--dry-run]
+    [--emit-site DIR]
 ```
 
 | Flag | Meaning |
@@ -92,6 +93,7 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
 | `--download` | Pre-download each granule to a local cache and read it locally (the reliable **off-cloud** path). Use this whenever you are **not** running in-region (`us-west-2`). |
 | `--cache-dir CACHE_DIR` | Where downloaded granules live. Default: `DATA_DIR/granules`. |
 | `--dry-run` | Print the stage plan and exit without touching anything. |
+| `--emit-site DIR` | Generate the reporting-site sources (`rst.build_site`) into `DIR` from `--db` and exit — no stages run. Use to (re)generate the in-repo `report_site/` that Read the Docs builds (see §7). |
 
 ### Granule access: in-region vs. `--download`
 
@@ -169,17 +171,57 @@ truth; the site and manifest are derived from it.
   still complete.
 
 
-## 7. Publishing — set up later, NOT yet
+## 7. Publishing
 
-The `report` stage writes a release **manifest** and uploads artifacts through a
-pluggable backend. Today only the **local stub** backend is active; the real
-**Nautilus S3** and **Zenodo** backends are stubbed and **must not be wired up
-yet**.
+### 7a. The reporting site on Read the Docs (active)
+
+The community report is published on **Read the Docs**; GitHub
+(`ocean-colour/PAB`) is the *source* RTD builds from. There are **two RTD
+projects**, each with its own config:
+
+- `.readthedocs.yaml` → the **developer/methods docs** under `docs/`.
+- `.readthedocs.report.yaml` → the **matchup report** under `report_site/`.
+
+`report_site/` is a self-contained, **committed** Sphinx tree (the aggregate
+`.rst` pages + `conf.py` + small `_static/figures/` thumbnails). Keep it small —
+only the aggregate site is committed; bulky per-matchup figures/MCMC chains belong
+in the object store (§7b), not git.
+
+**Regenerate and publish (current dev workflow):**
+
+```bash
+# 1. (Re)generate the site sources from the populated store into the repo
+pab --db "$PAB_DATA_DIR/pab.db" --emit-site report_site
+
+# 2. (optional) preview locally — needs sphinx + sphinx-rtd-theme
+python -m sphinx -b html report_site report_site/_build   # _build is git-ignored
+# open report_site/_build/index.html
+
+# 3. commit report_site/ and push; RTD rebuilds on push
+```
+
+**One-time RTD setup:** on readthedocs.org → *Import a Project* → connect GitHub →
+authorize the `ocean-colour` org → pick `PAB` → name it e.g. `pab-report` →
+**Settings → Advanced → "Path to configuration file"** = `.readthedocs.report.yaml`.
+The existing project keeps building the developer docs.
+
+> The interactive Bokeh figures load BokehJS from `cdn.bokeh.org` over HTTPS (the
+> CDN list is baked into the generated `conf.py`), and the thumbnails are served
+> as static files — both render on RTD with no Bokeh install at build time.
+
+### 7b. Bulk artifacts & DOI snapshots — set up later, NOT yet
+
+The `report` stage also writes a release **manifest** and uploads artifacts
+through a pluggable backend. Today only the **local stub** backend is active; the
+real **Nautilus S3** (bulk figures/chains) and **Zenodo** (citable DOI snapshots)
+backends are stubbed and **must not be wired up yet**.
 
 > **TODO (do not do now):** when we're ready to publish to the community, set up
 > the Nautilus S3 and/or Zenodo publishing backends (credentials + the
 > `publish` configuration) and switch `report` over from the local stub. Until
-> then, releases stay local under `outdir/release/`.
+> then, releases stay local under `outdir/release/`. Once S3 is live, the
+> reporting site will reference figures by their S3 URL instead of committing
+> thumbnails (the Phase 2 enhancement), so `report_site/` stays bounded at scale.
 
 
 ## Planned enhancements
