@@ -126,6 +126,7 @@ def interactive_figures(df, *, artifact_url_col: str = FIGURE_URL_COL) -> str:
 
         url_col = artifact_url_col if artifact_url_col in df.columns else None
         scatter = interactive.comparison_scatter(df, artifact_url_col=url_col)
+        chl = _chl_scatter(df, interactive, np, url_col)
         dfm = df.copy()
         with np.errstate(divide="ignore", invalid="ignore"):
             dfm["ratio"] = (
@@ -138,13 +139,41 @@ def interactive_figures(df, *, artifact_url_col: str = FIGURE_URL_COL) -> str:
 
     out = [_heading("Figures", "-"), ""]
     out.append(
-        "Satellite-vs-float ``b_bp`` (700 nm) and the matchup map. **Hover** a "
-        "point for its values; **tap** a scatter point to open that matchup's fit "
-        "figure. Per-matchup detail is reached here, not as individual pages.\n"
+        "Satellite-vs-float ``b_bp`` (700 nm) and chlorophyll, plus the matchup "
+        "map. **Hover** a point for its values; **tap** a scatter point to open "
+        "that matchup's fit figure. Per-matchup detail is reached here, not as "
+        "individual pages.\n"
     )
     out.append(interactive.raw_html(scatter))
+    if chl is not None:
+        out.append(interactive.raw_html(chl))
     out.append(interactive.raw_html(mp))
     return "\n".join(out)
+
+
+def _chl_scatter(df, interactive, np, url_col):
+    """The satellite-vs-in-situ **Chl** scatter (``chl_bing`` vs Argo ``chla``),
+    overlaying the OC4 band-ratio Chl (``chl_oc``) when present. Returns ``None``
+    when the frame has no finite Chl pair to plot."""
+    if not {"chl_bing", "chla_argo"} <= set(df.columns):
+        return None
+    pairs = df[["chl_bing", "chla_argo"]].to_numpy(dtype=float)
+    if not np.isfinite(pairs).all(axis=1).any():
+        return None
+    extra = (
+        [("chl_oc", "OC4 band-ratio Chl")]
+        if "chl_oc" in df.columns
+        and np.isfinite(df["chl_oc"].to_numpy(dtype=float)).any()
+        else None
+    )
+    return interactive.comparison_scatter(
+        df,
+        sat_col="chl_bing",
+        insitu_col="chla_argo",
+        label="Chl",
+        artifact_url_col=url_col,
+        extra_series=extra,
+    )
 
 
 def figure_gallery(
@@ -301,17 +330,26 @@ def reporting_conf(*, pab_version: str | None = None) -> str:
     )
 
 
-def _gather_with_figures(store, outdir: Path):
+def _gather_with_figures(store, outdir: Path, *, opener=None):
     """The per-matchup comparison frame with a ``figure_url`` column.
 
     Each matchup's fit figure (``fits.figure_path``) is copied into
     ``outdir/_static/figures`` (so Sphinx serves it verbatim) and the
     page-relative URL recorded in :data:`FIGURE_URL_COL`. Rows whose figure is
-    missing on disk get ``None`` there. Returns the strata-augmented frame.
+    missing on disk get ``None`` there. When ``opener`` is given, the OC4
+    band-ratio Chl cross-check (``chl_oc``) is added via
+    :func:`pab.metrics.compare.add_oc_chl` — best-effort: it re-reads each
+    matchup's pixel ``Rrs`` through the opener, so it is skipped silently if
+    ``ocpy`` is missing or a granule read fails. Returns the strata-augmented frame.
     """
     df = compare.add_strata(compare.gather_matchups(store))
     if not len(df):
         return df
+    if opener is not None:
+        try:
+            df = compare.add_oc_chl(df, store, opener=opener)
+        except Exception:  # noqa: BLE001 — ocpy missing / granule read failure
+            pass
     fig_paths = {
         r["fit_id"]: r["figure_path"]
         for r in store.query(
@@ -335,7 +373,12 @@ def _gather_with_figures(store, outdir: Path):
 
 
 def build_site(
-    store, outdir, *, pab_version: str | None = None, sortable: bool = True
+    store,
+    outdir,
+    *,
+    pab_version: str | None = None,
+    sortable: bool = True,
+    opener=None,
 ) -> dict[str, Path]:
     """Write the fixed aggregate ``.rst`` pages **and a Sphinx ``conf.py``** to
     ``outdir`` — a self-contained, buildable reporting-site source tree.
@@ -349,6 +392,8 @@ def build_site(
         pab_version: Provenance stamp (defaults to :data:`pab.config.pab_version`).
         sortable: Render the stats tables as sortable Bokeh ``DataTable`` embeds
             when ``bokeh`` is available (else static ``list-table``).
+        opener: Optional granule opener (test/cache seam). When given, the OC4
+            band-ratio Chl cross-check (``chl_oc``) is added to the Chl figure.
 
     Returns:
         ``{name: path}`` for each written file — the fixed :data:`PAGE_STEMS`
@@ -359,7 +404,7 @@ def build_site(
     # Always present so the conf's html_static_path entry exists (no Sphinx warning).
     (outdir / "_static").mkdir(parents=True, exist_ok=True)
 
-    df = _gather_with_figures(store, outdir)
+    df = _gather_with_figures(store, outdir, opener=opener)
     summary = summary_page(store, pab_version=pab_version)
     # The interactive scatter/map are the design's route to per-matchup detail;
     # gate them on `sortable` (the same interactive-vs-static switch the tables

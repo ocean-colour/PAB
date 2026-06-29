@@ -153,3 +153,41 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-06-29 (Task 1 — Chl Bokeh plots in the Report)
+
+Added the interactive **chlorophyll** figure to the reporting site, beside the
+existing `b_bp` scatter. Changes:
+
+- `pab/report/interactive.py`: gave `comparison_scatter` an optional `extra_series`
+  (`[(col, legend_label), …]`) that overlays additional satellite series against
+  the same in-situ x-axis (used for OC4 Chl), labelling the primary glyph too so
+  the sources are distinguishable; widened the 1:1-line span to cover overlays;
+  added `chla_argo` + `chl_oc` to `HOVER_FIELDS`. Backward compatible — the `b_bp`
+  call (no `extra_series`) is unchanged.
+- `pab/report/rst.py`: `interactive_figures` now also emits a Chl scatter via a new
+  `_chl_scatter` helper (`chl_bing` vs Argo `chla`, OC4 `chl_oc` overlaid when
+  present), guarded to return `None` when there is no finite Chl pair. Threaded an
+  `opener` seam through `build_site` → `_gather_with_figures`, which calls
+  `compare.add_oc_chl` (best-effort, exception-guarded) to add `chl_oc` only when
+  an opener is supplied.
+- `pab/pipeline.py`: `report(store, config, *, opener=None)` (so `run` forwards the
+  opener like other stages) passes it to `build_site`; the `--emit-site` path
+  builds a `cached_opener` when `--download` is set, so the OC4 cross-check can be
+  populated from the local granule cache without slow out-of-region reads.
+
+Tests (`test_report.py`): `test_build_site_embeds_chl_scatter` (both scatters on
+the landing page) and `test_comparison_scatter_oc4_overlay` (OC4 legend present);
+**29 passed**. Rebuilt `report_site` via `--emit-site` and confirmed the Chl
+scatter is embedded and renders in the built HTML (`satellite vs in-situ Chl`).
+
+Key learning / decision: OC4 (`add_oc_chl`) re-reads each matchup's pixel `Rrs`
+through a granule opener, so running it during the report build risks the same
+out-of-region hang as the `match` stage. I made it **opt-in via the `opener`
+seam** (network-free by default; `--emit-site --download` uses the local cache),
+rather than always-on. The BING-Chl-vs-Argo scatter needs no network and is the
+guaranteed deliverable; OC4 is an overlay that appears only once `chl_oc` is
+populated. `ocpy` is not installed in this env, so the OC4 overlay is covered by a
+synthetic-`chl_oc` unit test rather than a live rebuild. A cleaner future option is
+to persist `chl_oc` (e.g. as a `fit_result` quantity) during a stage that already
+holds the opener, so the report stays purely DB-driven.

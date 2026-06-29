@@ -258,11 +258,15 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
     return {"written": written, "skipped": skipped, "failed": failed}
 
 
-def report(store, config: PipelineConfig) -> dict[str, Any]:
-    """Stage 7: build the aggregate site and the (stub-published) release."""
+def report(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
+    """Stage 7: build the aggregate site and the (stub-published) release.
+
+    ``opener`` (forwarded by :func:`run` like the other stages) lets the report
+    add the OC4 band-ratio Chl cross-check, which re-reads each matchup's pixel.
+    """
     from pab.report import publish, rst
 
-    site = rst.build_site(store, config.out() / "site")
+    site = rst.build_site(store, config.out() / "site", opener=opener)
     release = publish.publish_release(store, config.out() / "release")
     return {
         "site": {k: str(v) for k, v in site.items()},
@@ -405,10 +409,17 @@ def main(argv=None) -> int:
         return 0
     if args.emit_site:
         # Standalone: (re)generate the RTD reporting-site sources from the store.
+        # With --download, reuse the local granule cache so the OC4 Chl cross-check
+        # (chl_oc) can be added without slow/uncertain out-of-region reads.
         from pab.report import rst
 
+        opener = None
+        if config.download:
+            from pab.pace.cloud import cached_opener
+
+            opener = cached_opener(config.cache())
         with Store.open(Path(args.db)) as store:
-            written = rst.build_site(store, args.emit_site)
+            written = rst.build_site(store, args.emit_site, opener=opener)
         print(f"emitted reporting site → {args.emit_site}")
         for name, path in sorted(written.items()):
             print(f"  {name}: {path}")

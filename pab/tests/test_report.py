@@ -256,6 +256,38 @@ def test_build_site_embeds_figures_and_copies_them(tmp_path):
         assert 'html_static_path = ["_static"]' in (site / "conf.py").read_text()
 
 
+def test_build_site_embeds_chl_scatter(tmp_path):
+    pytest.importorskip("bokeh")
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        written = rst.build_site(store, tmp_path)  # sortable=True default
+        summary = written["summary"].read_text()
+        # both the b_bp and the Chl scatter are embedded on the landing page
+        assert "satellite vs in-situ b_bp" in summary
+        assert "satellite vs in-situ Chl" in summary
+
+
+def test_comparison_scatter_oc4_overlay():
+    pytest.importorskip("bokeh")
+    from pab.metrics import compare
+    from pab.report import interactive
+
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        df = compare.gather_matchups(store)
+        df = df.copy()
+        df["chl_oc"] = df["chla_argo"] * 1.1  # a synthetic OC4 cross-check series
+        fig = interactive.comparison_scatter(
+            df,
+            sat_col="chl_bing",
+            insitu_col="chla_argo",
+            label="Chl",
+            extra_series=[("chl_oc", "OC4 band-ratio Chl")],
+        )
+        script, _ = interactive.embed(fig)
+        assert "OC4 band-ratio Chl" in script  # the overlay legend is present
+
+
 def test_figure_gallery_guarded_above_threshold():
     import pandas as pd
 
