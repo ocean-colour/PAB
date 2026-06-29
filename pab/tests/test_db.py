@@ -75,6 +75,22 @@ def test_create_is_idempotent(store):
     assert schema.get_version(store.conn) == schema.SCHEMA_VERSION
 
 
+def test_migration_adds_qa_path(tmp_path):
+    # a v1 database (mld_summary without qa_path) migrates forward to add it
+    import sqlite3
+
+    db = tmp_path / "v1.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE mld_summary (profile_id INTEGER PRIMARY KEY, mld REAL)")
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    schema.migrate(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(mld_summary)")}
+    assert "qa_path" in cols
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 2
+    conn.close()
+
+
 # -- create / insert / query round trip -------------------------------------
 def test_insert_query_roundtrip(seeded):
     store, pid = seeded

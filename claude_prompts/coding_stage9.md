@@ -191,3 +191,39 @@ populated. `ocpy` is not installed in this env, so the OC4 overlay is covered by
 synthetic-`chl_oc` unit test rather than a live rebuild. A cleaner future option is
 to persist `chl_oc` (e.g. as a `fit_result` quantity) during a stage that already
 holds the opener, so the report stays purely DB-driven.
+
+### 2026-06-29 (Task 2 — Argo Q&A plots wired into pipeline + Report)
+
+Wired the per-profile Argo Q&A figures (BBP700/CHLA vs pressure, MLD marked) end
+to end. Key constraint discovered: `qa.plot_profile` needs the **full profile
+arrays**, which exist only on the **live argopy fetch** path — the
+precomputed-summary path (and the dev DB) carry scalars only. So QA generation
+lives in `ingest`'s live branch, not as a post-hoc step over the DB.
+
+Changes:
+- **Schema** (`pab/db/schema.py`): added `mld_summary.qa_path TEXT`, bumped
+  `SCHEMA_VERSION` 1→2, and registered `MIGRATIONS[1] = _v1_to_v2`
+  (`ALTER TABLE … ADD COLUMN qa_path`). Verified on a copy of the real dev DB:
+  migrates v1→v2 additively, all 10 profiles / 4 matchups intact, `qa_path` NULL.
+- **ingest** (`pab/pipeline.py`): new `_emit_profile_qa(...)` — gated on
+  `config.make_figures` (so `--no-figures` skips it), fully exception-guarded,
+  renders to `config.out()/argo_qa/<wmo>_<cycle>.png` and records the path via
+  `UPDATE mld_summary SET qa_path`. Called from the live-fetch branch with the
+  in-hand `PRES`/`BBP700`/`CHLA` arrays + the summary MLD.
+- **Report** (`pab/report/rst.py`): refactored the gallery into a shared
+  `_thumbnail_gallery(items, …)` (N-guarded by `MAX_INLINE_FIGURES`); reused it for
+  the existing `figure_gallery` and a new `argo_qa_gallery(store, outdir)` that
+  copies each recorded `qa_path` into `_static/argo_qa/` and links it. `build_site`
+  now appends the QA gallery to the summary page.
+
+Tests: `test_db` migration adds `qa_path`; `test_pipeline` QA emit writes+records
+and respects `--no-figures`; `test_report` QA gallery copies+links and is empty
+without paths. **126 passed** (only the pre-existing, unrelated `earthaccess`
+import test still fails). Rebuilt `report_site` — builds clean; the QA gallery is
+correctly absent because the current dev DB predates QA wiring (`qa_path` all NULL).
+
+Operator note for actually populating it: in the full env (with argopy), re-run
+`pab --stage ingest --replace` to fetch profiles and emit/record QA figures, then
+`pab --emit-site report_site` to copy them into the site and commit. Cannot be
+demonstrated live here (argopy not installed); covered by unit tests with synthetic
+arrays instead. HOWTO/docs updates deferred to Task 5.

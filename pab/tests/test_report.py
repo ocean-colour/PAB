@@ -288,6 +288,28 @@ def test_comparison_scatter_oc4_overlay():
         assert "OC4 band-ratio Chl" in script  # the overlay legend is present
 
 
+def test_argo_qa_gallery_copies_and_links(tmp_path):
+    qa = tmp_path / "qa_src.png"
+    qa.write_bytes(b"fake-png")
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        store.execute(
+            "UPDATE mld_summary SET qa_path = ? WHERE profile_id = "
+            "(SELECT profile_id FROM profiles WHERE wmo = 7902226)",
+            (str(qa),),
+        )
+        site = tmp_path / "site"
+        out = rst.argo_qa_gallery(store, site)
+        assert "Argo profile Q&A" in out and "_static/argo_qa/" in out
+        assert (site / "_static" / "argo_qa" / "qa_src.png").exists()
+
+
+def test_argo_qa_gallery_empty_without_paths():
+    with Store.open(":memory:") as store:
+        _two_matchups(store)  # no qa_path set
+        assert rst.argo_qa_gallery(store, "unused") == ""
+
+
 def test_figure_gallery_guarded_above_threshold():
     import pandas as pd
 

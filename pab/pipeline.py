@@ -143,7 +143,7 @@ def ingest(store, config: PipelineConfig, *, fetcher=None) -> dict[str, Any]:
                 lon=meta["longitude"],
                 lat=meta["latitude"],
             )
-            summary.persist_summary(
+            pid = summary.persist_summary(
                 store,
                 wmo=wmo,
                 cycle=cycle,
@@ -152,8 +152,56 @@ def ingest(store, config: PipelineConfig, *, fetcher=None) -> dict[str, Any]:
                 longitude=meta["longitude"],
                 time=meta["time"],
             )
+            # Q&A figure: only the live fetch carries the full profile arrays the
+            # plot needs (the precomputed-summary path has scalars only).
+            _emit_profile_qa(
+                store,
+                pid,
+                wmo,
+                cycle,
+                config,
+                pres=v["PRES"],
+                bbp700=v.get("BBP700"),
+                chla=v.get("CHLA"),
+                mld=summ.get("mld"),
+            )
         written.append(f"{wmo}_{cycle}")
     return {"written": written, "skipped": skipped}
+
+
+def _emit_profile_qa(
+    store, profile_id, wmo, cycle, config: PipelineConfig, *, pres, bbp700, chla, mld
+) -> None:
+    """Best-effort Argo Q&A figure for a freshly-fetched profile.
+
+    Renders ``BBP700``/``CHLA`` vs pressure (MLD marked) to
+    ``config.out()/argo_qa/<wmo>_<cycle>.png`` and records the path in
+    ``mld_summary.qa_path`` so the report can surface it. Gated on
+    ``config.make_figures`` and fully guarded — a plotting failure (or no
+    plottable variable) must never abort ``ingest``.
+    """
+    if not config.make_figures:
+        return
+    try:
+        from pab.argo import qa
+
+        qadir = config.out() / "argo_qa"
+        qadir.mkdir(parents=True, exist_ok=True)
+        path = qadir / f"{wmo}_{cycle}.png"
+        qa.save_profile_qa(
+            path,
+            pres,
+            bbp700=bbp700,
+            chla=chla,
+            mld=mld,
+            title=f"WMO {wmo} / cycle {cycle}",
+        )
+        store.execute(
+            "UPDATE mld_summary SET qa_path = ? WHERE profile_id = ?",
+            (str(path), profile_id),
+        )
+    except Exception:  # noqa: BLE001 — the Q&A plot is a bonus artifact
+        pass
 
 
 def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:

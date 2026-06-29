@@ -203,6 +203,71 @@ def test_cli_parser_stage_subset():
     assert args.stages == ["match", "fit"]
 
 
+def test_emit_profile_qa_writes_and_records(tmp_path):
+    # the Q&A figure is rendered to outdir/argo_qa and its path recorded in the DB
+    import numpy as np
+
+    from pab.argo.summary import persist_summary
+
+    with Store.open(":memory:") as store:
+        pid = persist_summary(
+            store,
+            wmo=1,
+            cycle=2,
+            summary={
+                "mld": 30.0,
+                "mld_method": "x",
+                "bbp700": 1e-3,
+                "chla": 0.1,
+                "n_points": 5,
+            },
+            latitude=0.0,
+            longitude=0.0,
+            time="2025-01-01T00:00:00",
+        )
+        cfg = pipeline.PipelineConfig(outdir=tmp_path)
+        pipeline._emit_profile_qa(
+            store,
+            pid,
+            1,
+            2,
+            cfg,
+            pres=np.linspace(0, 100, 20),
+            bbp700=np.linspace(2e-3, 1e-3, 20),
+            chla=np.linspace(0.2, 0.1, 20),
+            mld=30.0,
+        )
+        png = tmp_path / "argo_qa" / "1_2.png"
+        assert png.exists()
+        row = store.query(
+            "SELECT qa_path FROM mld_summary WHERE profile_id = ?", (pid,)
+        )[0]
+        assert row["qa_path"] == str(png)
+
+
+def test_emit_profile_qa_respects_no_figures(tmp_path):
+    import numpy as np
+
+    from pab.argo.summary import persist_summary
+
+    with Store.open(":memory:") as store:
+        pid = persist_summary(
+            store,
+            wmo=1,
+            cycle=2,
+            summary={"mld": 30.0, "mld_method": "x", "bbp700": 1e-3, "n_points": 5},
+            latitude=0.0,
+            longitude=0.0,
+            time="2025-01-01T00:00:00",
+        )
+        cfg = pipeline.PipelineConfig(outdir=tmp_path, make_figures=False)
+        pipeline._emit_profile_qa(
+            store, pid, 1, 2, cfg, pres=np.linspace(0, 100, 20),
+            bbp700=np.linspace(2e-3, 1e-3, 20), chla=None, mld=30.0,
+        )
+        assert not (tmp_path / "argo_qa").exists()
+
+
 def test_cli_emit_site(capsys, tmp_path):
     # --emit-site generates the RTD reporting-site sources from the DB and exits
     # (no pipeline stages run); used to (re)generate an in-repo report_site/.

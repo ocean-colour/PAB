@@ -176,40 +176,26 @@ def _chl_scatter(df, interactive, np, url_col):
     )
 
 
-def figure_gallery(
-    df, *, url_col: str = FIGURE_URL_COL, max_inline: int = MAX_INLINE_FIGURES
+def _thumbnail_gallery(
+    items, *, heading: str, intro: str, over_limit: str, max_inline: int
 ) -> str:
-    """An N-guarded inline gallery of per-matchup fit figures (no per-matchup pages).
+    """An N-guarded clickable-thumbnail gallery from ``(url, caption)`` items.
 
-    For a small population (``len <= max_inline``) every matchup's fit figure is
-    shown as a clickable thumbnail (tap opens the full PNG / download). Above the
-    threshold the gallery is suppressed — honouring the design's
-    no-page-explosion constraint — and detail comes via tap-to-open on the scatter
-    plus the release-manifest downloads. Returns ``""`` when no figures exist.
+    For a small set (``<= max_inline``) every item is shown as a thumbnail that
+    links to the full PNG; above the threshold the gallery is suppressed (the
+    design's no-page-explosion constraint) and ``over_limit`` (a ``{n}`` template)
+    is shown instead. Returns ``""`` when there are no items.
     """
-    rows = [
-        r
-        for _, r in df.iterrows()
-        if isinstance(r.get(url_col), str) and r.get(url_col)
-    ]
-    if not rows:
+    items = [(u, c) for (u, c) in items if isinstance(u, str) and u]
+    if not items:
         return ""
-    out = [_heading("Per-matchup figures", "-"), ""]
-    if len(rows) > max_inline:
-        out.append(
-            f"{len(rows)} matchups — too many to show inline. Per-matchup fit "
-            "figures are available as downloads (see the release manifest) and by "
-            "tapping a point in the scatter above.\n"
-        )
+    out = [_heading(heading, "-"), ""]
+    if len(items) > max_inline:
+        out.append(over_limit.format(n=len(items)) + "\n")
         return "\n".join(out)
-    out.append(
-        "One thumbnail per matchup (the design exposes figures, not per-matchup "
-        "pages). Click a thumbnail to open the full-resolution PNG.\n"
-    )
+    out.append(intro + "\n")
     html = ['<div class="pab-gallery">']
-    for r in rows:
-        url = r[url_col]
-        cap = f"{r.get('wmo')}/{r.get('cycle')}"
+    for url, cap in items:
         html.append(
             '<figure style="display:inline-block;margin:8px;text-align:center;'
             'vertical-align:top">'
@@ -221,6 +207,63 @@ def figure_gallery(
     out.append(".. raw:: html\n")
     out.extend("   " + ln for ln in html)
     return "\n".join(out) + "\n"
+
+
+def figure_gallery(
+    df, *, url_col: str = FIGURE_URL_COL, max_inline: int = MAX_INLINE_FIGURES
+) -> str:
+    """An N-guarded inline gallery of per-matchup fit figures (no per-matchup pages).
+
+    For a small population every matchup's fit figure is a clickable thumbnail
+    (tap opens the full PNG / download); above the threshold detail comes via
+    tap-to-open on the scatter plus the release-manifest downloads.
+    """
+    items = [
+        (r.get(url_col), f"{r.get('wmo')}/{r.get('cycle')}") for _, r in df.iterrows()
+    ]
+    return _thumbnail_gallery(
+        items,
+        heading="Per-matchup figures",
+        intro="One thumbnail per matchup (the design exposes figures, not "
+        "per-matchup pages). Click a thumbnail to open the full-resolution PNG.",
+        over_limit="{n} matchups — too many to show inline. Per-matchup fit "
+        "figures are available as downloads (see the release manifest) and by "
+        "tapping a point in the scatter above.",
+        max_inline=max_inline,
+    )
+
+
+def argo_qa_gallery(store, outdir, *, max_inline: int = MAX_INLINE_FIGURES) -> str:
+    """An N-guarded gallery of the **Argo profile Q&A** figures.
+
+    Each ``mld_summary.qa_path`` (BBP700/CHLA vs pressure with the MLD marked,
+    emitted by ``ingest``) is copied into ``outdir/_static/argo_qa`` and linked.
+    Returns ``""`` when no profile has a recorded, on-disk Q&A figure.
+    """
+    rows = store.query(
+        "SELECT p.wmo, p.cycle, ms.qa_path FROM mld_summary ms "
+        "JOIN profiles p ON p.profile_id = ms.profile_id "
+        "WHERE ms.qa_path IS NOT NULL ORDER BY p.wmo, p.cycle"
+    )
+    dest = Path(outdir) / "_static" / "argo_qa"
+    items: list[tuple[str | None, str]] = []
+    for r in rows:
+        src = r["qa_path"]
+        if src and Path(src).is_file():
+            dest.mkdir(parents=True, exist_ok=True)
+            name = Path(src).name
+            shutil.copyfile(src, dest / name)
+            items.append((f"_static/argo_qa/{name}", f"{r['wmo']}/{r['cycle']}"))
+    return _thumbnail_gallery(
+        items,
+        heading="Argo profile Q&A",
+        intro="Per-profile quality-assurance plots: ``BBP700`` and ``CHLA`` vs "
+        "pressure with the mixed-layer depth marked — to eyeball the MLD and the "
+        "de-spiking behind each summary. Click a thumbnail to enlarge.",
+        over_limit="{n} profiles — too many to show inline; the per-profile Q&A "
+        "plots are available as downloads.",
+        max_inline=max_inline,
+    )
 
 
 def _table_block(df, *, columns=None, sortable: bool = True) -> str:
@@ -412,6 +455,7 @@ def build_site(
     if sortable:
         summary += "\n" + interactive_figures(df)
     summary += "\n" + figure_gallery(df)
+    summary += "\n" + argo_qa_gallery(store, outdir)
 
     pages = {
         "index": index_page(),
