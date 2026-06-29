@@ -82,7 +82,22 @@ Read these before coding:
 
 7. This looks great now!  Remind me, were we planning to stage this on `readthedocs` or GitHub?  Either way, how do I do so?
 
-### Q&A
+8. Ok, the beta version with 4 matchups is now up on `readthedocs`.  Please remind me:
+    - When we were going to incorporate Chl
+    - Where are the Q&A figures for Argo?
+    - Where are the figures showing the PACE "scenes"
+    - Write a report on this in the Reporting section below
+    - Log your work
+
+9. Got it.  Please create a new prompt doc named `coding_stage9.md` modeled after the others.  It should include tasks that will:
+
+    - Generate Bokeh plots on Chl to include in the online Report
+    - Generate the Q&A plots for Argo and PACE as described in the Task 8 Report
+    - Flesh out the online Report to provide the reader with sufficient context on what was performed and why
+    - Any other items that you think would be useful at this point
+    - Log your work
+
+## Q&A
 
 (Task 1 — no blocking questions; see the recommendation in the Report.)
 
@@ -343,6 +358,44 @@ The fix flows through the pipeline automatically — `pab --stage report` calls
 > scene quick-looks in `pipeline/figures/*_scene.png` are produced but not yet
 > recorded in the DB, so they aren't linked. Easy follow-up if we want them too.
 
+#### Task 8 — reminders: Chl status, and the Argo Q&A figures
+
+**(a) Chl is already incorporated** — it landed with the fit + metrics + report
+stages (milestone **M3 → M4**, Stages 5–7), not as a separate future step, and is
+live in the published RTD report:
+
+- BING **retrieves** Chl from the fitted phytoplankton amplitude `Aph`
+  (`chl_from_aph`: `Chl = 10**Aph / 0.05582`), emitted as `BING_*_chl`
+  (`PAB_implementation.md:496-499`). The Argo `CHLA` only *seeds* the `a_ph` shape;
+  it is not a fixed input, so this is a genuine retrieval-vs-in-situ test, parallel
+  to `b_bp` (`PAB_design.md:460-464`).
+- `compare.gather_matchups` pulls `chl_bing` vs Argo `chla`, shown as the
+  **Chlorophyll headline on the summary page**.
+
+  Two Chl-related pieces **still deferred**:
+- **OC4 band-ratio cross-check** (`compare.add_oc_chl`, `ocpy.chl.band_ratios.oc4`)
+  is *implemented but not wired into the pipeline/report* — an optional, on-demand
+  independent satellite-Chl check (`PAB_implementation.md:471-473`).
+- **BING-vs-NASA-L2-IOP** comparison awaits an `ocpy.pace.io.load_iop_l2` ingest
+  (`PAB_implementation.md:507`).
+
+**(b) Argo Q&A figures — capability exists, but nothing emits them.** These are
+QA (quality-assurance) profile plots: `BBP700` and `CHLA` vs pressure with the MLD
+marked, to eyeball the MLD + de-spiking before trusting a summary. They live in
+`pab/argo/qa.py` — `plot_profile()` renders, `save_profile_qa(path, …)` writes a
+PNG. **They are not wired into the pipeline:** `ingest` / `argo/summary.py` never
+call `save_profile_qa`, so the run produced none, and there is no QA-figure output
+directory. The only place one is written today is the unit test
+`test_qa_plot_produced` (`test_argo.py:181`), to a throwaway `tmp_path`; and
+`save_profile_qa` has **no default location** (the caller must pass a path). So the
+QA plots were designed (Stage 2 deliverable `pab.argo.qa`) and the code is ready,
+but the orchestration to emit one per profile during `ingest` was never added.
+
+**Offered follow-ups (not yet done):** wire QA figures into `ingest` (emit per
+profile to e.g. `outdir/argo_qa/<wmo>_<cycle>.png`, mirroring the `figure` stage);
+and wire the OC4 Chl cross-check into the report so `chl_oc` shows alongside
+`chl_bing`/`chla_argo`.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -454,3 +507,24 @@ Tests: `test_report.py` 15 passed (added figures-embedded-and-copied + gallery
 N-guard); rebuilt the real 4-matchup site, `sphinx-build` clean, all 4 fit PNGs
 linked. Only the fit figure is stored per matchup; `*_scene.png` quick-looks are
 produced but not in the DB, so unlinked — a small follow-up.
+
+### 2026-06-29 (Created the Stage 9 prompt doc)
+
+Per Task 9, created `claude_prompts/coding_stage9.md`, modeled on `first_runs.md`
+and `publish_on_rtd.md` (Goals / Claude → Skills + Working agreements / Context /
+Prompts / Tasks / Q&A / Reports / Logging / Logs). Turned the user's four content
+goals into concrete, grounded tasks: (1) interactive **Chl** Bokeh plots in the
+Report — reuse the generic `interactive.comparison_scatter(sat_col="chl_bing",
+insitu_col="chla_argo")` and finally wire the OC4 `add_oc_chl` cross-check; (2)
+wire the **Argo Q&A** plots (`pab.argo.qa.save_profile_qa`) into `ingest` + the
+site (they exist but nothing emits them); (3) wire the **PACE scene** quick-looks
+(already produced as `pipeline/figures/*_scene.png` but unrecorded/unlinked) into
+the DB + site, plus a granule flagged-pixel quality table; (4) flesh out the
+Report **narrative** (overview, data, Bisson matchup protocol, BING retrieval, how
+to read the metrics, caveats + provenance, citations). Added a Task 5 "other
+useful items" (manifest links, build/version footer, coverage summary, figure-path
+de-dup, docs updates). The Context section points at the exact seams to extend
+(`pab.report.{rst,interactive,aggregate}`, `pab.argo.qa`, `pab.plotting.scene`,
+`pab.pace.{quality,flags}`, `pab.db.schema`, `pab.pipeline`) and reiterates the
+keep-git-small / no-per-matchup-pages / `MAX_INLINE_FIGURES` constraints. No code
+changed — this task only authored the new prompt doc.
