@@ -268,6 +268,46 @@ def test_emit_profile_qa_respects_no_figures(tmp_path):
         assert not (tmp_path / "argo_qa").exists()
 
 
+def test_figure_stage_backfills_existing_scene(tmp_path):
+    # a plain `figure` run (no --replace) records an already-on-disk scene PNG
+    # into matchups.scene_path, without re-rendering (no bing needed).
+    from pab.argo.summary import persist_summary
+
+    with Store.open(":memory:") as store:
+        pid = persist_summary(
+            store,
+            wmo=1,
+            cycle=2,
+            summary={"mld": 30.0, "mld_method": "x", "bbp700": 1e-3, "n_points": 5},
+            latitude=0.0,
+            longitude=0.0,
+            time="2025-01-01T00:00:00",
+        )
+        store.upsert("granules", {"granule_id": "G1", "data_url": "s3://b/G1.nc"})
+        store.upsert(
+            "matchups",
+            {"matchup_id": "M1", "profile_id": pid, "granule_id": "G1", "n_spectra": 1},
+        )
+        store.upsert(
+            "fits",
+            {
+                "fit_id": "M1_ExpBPow",
+                "matchup_id": "M1",
+                "algorithm": "BING",
+                "model_pair": "ExpBPow",
+                "figure_path": "/already/rendered_fit.png",  # so the fit is skipped
+                "pab_version": "0",
+            },
+        )
+        figdir = tmp_path / "figures"
+        figdir.mkdir(parents=True)
+        (figdir / "M1_scene.png").write_bytes(b"fake-scene")
+        out = pipeline.figure(store, pipeline.PipelineConfig(outdir=tmp_path))
+        assert "M1_ExpBPow" in out["skipped"]  # re-render skipped, but…
+        row = store.query("SELECT scene_path FROM matchups WHERE matchup_id = 'M1'")[0]
+        assert row["scene_path"] == str(figdir / "M1_scene.png")  # …scene backfilled
+
+
 def test_cli_emit_site(capsys, tmp_path):
     # --emit-site generates the RTD reporting-site sources from the DB and exits
     # (no pipeline stages run); used to (re)generate an in-repo report_site/.

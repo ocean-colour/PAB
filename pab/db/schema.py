@@ -35,7 +35,7 @@ from collections.abc import Callable
 
 #: Bumped whenever the DDL changes; stored in ``PRAGMA user_version`` so a
 #: database file knows which schema it was created under (see ``migrate``).
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Ordered list of ``CREATE TABLE``/``CREATE INDEX`` statements. ``IF NOT
 #: EXISTS`` keeps ``create_all`` idempotent.
@@ -99,6 +99,7 @@ TABLES: tuple[str, ...] = (
         distance_km REAL,              -- float <-> nearest pixel
         dtime_hours REAL,              -- |profile time - granule time|
         n_spectra   INTEGER,           -- valid spectra selected (~10)
+        scene_path  TEXT,              -- PACE scene quick-look PNG on disk (not in DB)
         created     TEXT,
         pab_version TEXT,
         UNIQUE (profile_id, granule_id)
@@ -225,9 +226,17 @@ def _v1_to_v2(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE mld_summary ADD COLUMN qa_path TEXT")
 
 
+def _v2_to_v3(conn: sqlite3.Connection) -> None:
+    """v2 → v3: add ``matchups.scene_path`` (PACE scene quick-look figure path)."""
+    conn.execute("ALTER TABLE matchups ADD COLUMN scene_path TEXT")
+
+
 # Forward migrations: map a *starting* version to a callable that upgrades the
 # database by one step.
-MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _v1_to_v2}
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    1: _v1_to_v2,
+    2: _v2_to_v3,
+}
 
 
 def migrate(conn: sqlite3.Connection) -> int:

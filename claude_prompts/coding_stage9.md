@@ -258,3 +258,46 @@ Key learning: a library that renders figures in batch — and especially one tha
 plots alongside another library's threads (argopy) — must pin a non-interactive
 backend; relying on the Matplotlib default is a latent core-dump waiting for the
 first machine whose default is interactive.
+
+### 2026-06-30 (Task 4 — PACE scene quick-looks + matchup-quality table)
+
+Wired the PACE scene quick-looks into the Report and added a network-free
+per-matchup quality table.
+
+- **Schema** (`pab/db/schema.py`): added `matchups.scene_path TEXT`, bumped
+  `SCHEMA_VERSION` 2→3, registered `MIGRATIONS[2] = _v2_to_v3`
+  (`ALTER TABLE matchups ADD COLUMN scene_path`).
+- **figure stage** (`pab/pipeline.py`): capture `scene_from_store`'s returned path
+  and record it (`UPDATE matchups SET scene_path`). Plus a **cheap backfill** in
+  the skip branch — a plain `pab --stage figure` (no `--replace`, no bing, no
+  granule) records an already-on-disk `figures/<matchup_id>_scene.png` into a NULL
+  `scene_path`, so existing runs surface scenes without re-rendering.
+- **Report** (`pab/report/rst.py`): `scene_gallery(store, outdir)` (mirrors the
+  QA/fit galleries — copies `scene_path` into `_static/scenes/`, N-guarded) and
+  `matchup_quality_table(store)` (per-matchup wmo/cycle, distance_km, dtime_hours,
+  n_spectra — straight from the DB). `build_site` appends the scene gallery to the
+  summary page and the quality table to the aggregates page.
+
+Tests: migration test now covers v1→v3 (qa_path + scene_path); added scene-gallery
+(copy/empty), matchup-quality-table, and figure-stage scene backfill tests.
+**131 passed** (only the pre-existing `earthaccess` test fails).
+
+Verified end-to-end on the real `Color/PAB` DB (no bing/network): ran
+`pab --stage figure` → backfilled all 4 `scene_path`s from existing PNGs;
+`--emit-site report_site` → the summary now shows b_bp + Chl scatters, **4 PACE
+scene quick-looks**, 4 fit thumbnails, and the aggregates page shows the matchup
+quality table; `sphinx-build` clean.
+
+Scope call: there is **no `pab.pace.quality` module** — only `flags.py`, whose
+flagged-pixel-% over the local box needs a granule re-read (the same out-of-region
+hazard as OC4). So I delivered the network-free distance/Δt/n_spectra table (the
+scene quick-looks already make cloudy/glinty scenes visible to the reader), and
+deferred a flagged-% column as a network-dependent follow-up.
+
+State note (two-DB split from the prior turn persists): the rebuilt `report_site`
+now has scenes + both scatters + quality table, but **Argo Q&A is absent** because
+`Color/PAB`'s `qa_path` is empty (QA was generated against `data/pab.db`). The
+clean full report still needs, in the full env: `export PAB_DATA_DIR=…/Color/PAB`
+then `pab --stage ingest --replace` (populate qa_path) → `pab --stage figure`
+(scene_path, already done) → `pab --emit-site report_site`. The regen self-heals
+the orphaned `_static/argo_qa/*.png` (same `<wmo>_<cycle>.png` names).

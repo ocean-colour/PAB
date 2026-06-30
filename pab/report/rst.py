@@ -266,6 +266,39 @@ def argo_qa_gallery(store, outdir, *, max_inline: int = MAX_INLINE_FIGURES) -> s
     )
 
 
+def scene_gallery(store, outdir, *, max_inline: int = MAX_INLINE_FIGURES) -> str:
+    """An N-guarded gallery of the **PACE scene quick-looks** per matchup.
+
+    Each ``matchups.scene_path`` (false-colour scene around the float, emitted by
+    the ``figure`` stage) is copied into ``outdir/_static/scenes`` and linked.
+    Returns ``""`` when no matchup has a recorded, on-disk scene figure.
+    """
+    rows = store.query(
+        "SELECT p.wmo, p.cycle, m.scene_path FROM matchups m "
+        "JOIN profiles p ON p.profile_id = m.profile_id "
+        "WHERE m.scene_path IS NOT NULL ORDER BY p.wmo, p.cycle"
+    )
+    dest = Path(outdir) / "_static" / "scenes"
+    items: list[tuple[str | None, str]] = []
+    for r in rows:
+        src = r["scene_path"]
+        if src and Path(src).is_file():
+            dest.mkdir(parents=True, exist_ok=True)
+            name = Path(src).name
+            shutil.copyfile(src, dest / name)
+            items.append((f"_static/scenes/{name}", f"{r['wmo']}/{r['cycle']}"))
+    return _thumbnail_gallery(
+        items,
+        heading="PACE scene quick-looks",
+        intro="False-colour PACE/OCI scene around each float (red star = float "
+        "position; white circles = the analyzed pixels) — so cloudy or glinty "
+        "scenes are visible at a glance. Click a thumbnail to enlarge.",
+        over_limit="{n} matchups — too many to show inline; the scene quick-looks "
+        "are available as downloads.",
+        max_inline=max_inline,
+    )
+
+
 def _table_block(df, *, columns=None, sortable: bool = True) -> str:
     """A **sortable** Bokeh ``DataTable`` (embedded) when available, else a static
     ``list-table`` — so pages render with or without ``bokeh``."""
@@ -315,6 +348,34 @@ def aggregates_page(store, *, sortable: bool = True) -> str:
         # HEALPix aggregation needs healpy / remote_sensing.healpix; the flat
         # region/season bins above are the default, so degrade gracefully.
         out.append("(HEALPix aggregation requires ``healpy`` / ``remote_sensing``)\n")
+    return "\n".join(out)
+
+
+def matchup_quality_table(store, *, sortable: bool = True) -> str:
+    """A compact per-matchup quality/coverage table.
+
+    The space/time separation and spectra count per matchup — how close (km) and
+    how near in time (h) the PACE scene was to the float, and how many valid
+    spectra fed the fit — so a reader can judge each matchup. Network-free
+    (straight from the DB). Returns ``""`` when there are no matchups.
+    """
+    import pandas as pd
+
+    rows = store.query(
+        "SELECT p.wmo, p.cycle, m.distance_km, m.dtime_hours, m.n_spectra "
+        "FROM matchups m JOIN profiles p ON p.profile_id = m.profile_id "
+        "ORDER BY p.wmo, p.cycle"
+    )
+    if not rows:
+        return ""
+    df = pd.DataFrame(rows)
+    out = [_heading("Matchup quality", "-"), ""]
+    out.append(
+        "Space/time separation and spectra count per matchup: how close (km) and "
+        "how near in time (h) the PACE scene was to the float, and how many valid "
+        "spectra fed the BING fit.\n"
+    )
+    out.append(_table_block(df, sortable=sortable))
     return "\n".join(out)
 
 
@@ -455,12 +516,16 @@ def build_site(
     if sortable:
         summary += "\n" + interactive_figures(df)
     summary += "\n" + figure_gallery(df)
+    summary += "\n" + scene_gallery(store, outdir)
     summary += "\n" + argo_qa_gallery(store, outdir)
+
+    aggregates = aggregates_page(store, sortable=sortable)
+    aggregates += "\n" + matchup_quality_table(store, sortable=sortable)
 
     pages = {
         "index": index_page(),
         "summary": summary,
-        "aggregates": aggregates_page(store, sortable=sortable),
+        "aggregates": aggregates,
         "methods": methods_page(),
     }
     written = {}

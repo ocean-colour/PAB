@@ -75,19 +75,23 @@ def test_create_is_idempotent(store):
     assert schema.get_version(store.conn) == schema.SCHEMA_VERSION
 
 
-def test_migration_adds_qa_path(tmp_path):
-    # a v1 database (mld_summary without qa_path) migrates forward to add it
+def test_migrations_add_figure_path_columns(tmp_path):
+    # a v1 database migrates forward, adding mld_summary.qa_path (v2) and
+    # matchups.scene_path (v3) without touching existing data.
     import sqlite3
 
     db = tmp_path / "v1.db"
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE mld_summary (profile_id INTEGER PRIMARY KEY, mld REAL)")
+    conn.execute("CREATE TABLE matchups (matchup_id TEXT PRIMARY KEY, profile_id INT)")
     conn.execute("PRAGMA user_version = 1")
     conn.commit()
     schema.migrate(conn)
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(mld_summary)")}
-    assert "qa_path" in cols
-    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 2
+    mld_cols = {r[1] for r in conn.execute("PRAGMA table_info(mld_summary)")}
+    mch_cols = {r[1] for r in conn.execute("PRAGMA table_info(matchups)")}
+    assert "qa_path" in mld_cols
+    assert "scene_path" in mch_cols
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 3
     conn.close()
 
 

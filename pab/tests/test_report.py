@@ -310,6 +310,34 @@ def test_argo_qa_gallery_empty_without_paths():
         assert rst.argo_qa_gallery(store, "unused") == ""
 
 
+def test_scene_gallery_copies_and_links(tmp_path):
+    scene = tmp_path / "scene_src.png"
+    scene.write_bytes(b"fake-png")
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        store.execute(
+            "UPDATE matchups SET scene_path = ? WHERE matchup_id = 'M1'", (str(scene),)
+        )
+        site = tmp_path / "site"
+        out = rst.scene_gallery(store, site)
+        assert "PACE scene quick-looks" in out and "_static/scenes/" in out
+        assert (site / "_static" / "scenes" / "scene_src.png").exists()
+
+
+def test_scene_gallery_empty_without_paths():
+    with Store.open(":memory:") as store:
+        _two_matchups(store)  # no scene_path set
+        assert rst.scene_gallery(store, "unused") == ""
+
+
+def test_matchup_quality_table():
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        out = rst.matchup_quality_table(store, sortable=False)
+        assert "Matchup quality" in out
+        assert "n_spectra" in out and "distance_km" in out
+
+
 def test_figure_gallery_guarded_above_threshold():
     import pandas as pd
 

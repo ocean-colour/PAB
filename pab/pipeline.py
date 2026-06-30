@@ -283,12 +283,22 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
     for r in rows:
         if r["figure_path"] and not config.replace:
             skipped.append(r["fit_id"])
+            # Cheap backfill: record an already-rendered scene (no re-render, no
+            # bing/granule), so existing runs surface scenes without --replace.
+            sp = figdir / f"{r['matchup_id']}_scene.png"
+            if sp.is_file():
+                store.execute(
+                    "UPDATE matchups SET scene_path = ? "
+                    "WHERE matchup_id = ? AND scene_path IS NULL",
+                    (str(sp), r["matchup_id"]),
+                )
             continue
         try:
             fpath = figdir / f"{r['fit_id']}_fit.png"
             fit_fig.fit_figure(store, r["fit_id"], outfile=fpath)
+            scene_path = None
             try:  # the scene is a bonus artifact; don't fail the fit figure on it
-                scene.scene_from_store(
+                scene_path = scene.scene_from_store(
                     store,
                     r["matchup_id"],
                     opener=opener,
@@ -300,6 +310,11 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
                 "UPDATE fits SET figure_path = ? WHERE fit_id = ?",
                 (str(fpath), r["fit_id"]),
             )
+            if scene_path is not None:
+                store.execute(
+                    "UPDATE matchups SET scene_path = ? WHERE matchup_id = ?",
+                    (str(scene_path), r["matchup_id"]),
+                )
             written.append(r["fit_id"])
         except Exception:  # noqa: BLE001 — one bad render must not abort the batch
             failed.append(r["fit_id"])
