@@ -98,7 +98,9 @@ Read these before coding:
    rule). Add a `--no-figures`-style guard if appropriate. Tests + rebuild +
    verify. Log your work.
 
-3. **Wire the PACE "scene" Q&A figures into the Report.** The `figure` stage
+3. **Debug.** I ran the `pab --stage ingest --replace` as per your direction.  It crashed.  The log is in the file `Oceanography/python/PAB/bugs/replace_crash.txt`.  Please examine and try to fix.  
+
+4. **Wire the PACE "scene" Q&A figures into the Report.** The `figure` stage
    already produces `pipeline/figures/*_scene.png` (`plotting.scene`), but the path
    is not recorded nor linked. Persist the scene path (e.g. `matchups.scene_path`
    or alongside `fits.figure_path`) and surface each scene in the site next to its
@@ -107,7 +109,7 @@ Read these before coding:
    `pab.pace.{quality,flags}`) so cloudy/glinty scenes are visible to the reader.
    Tests + rebuild + verify. Log your work.
 
-4. **Flesh out the Report's narrative / context.** Expand the methods/landing
+5. **Flesh out the Report's narrative / context.** Expand the methods/landing
    pages so a first-time reader understands what was performed and why:
    - **Overview** — PACE (satellite ocean colour) ↔ BGC-Argo (in-situ floats)
      matchups, and the goal (validate satellite IOP/Chl against in-situ truth).
@@ -227,3 +229,32 @@ Operator note for actually populating it: in the full env (with argopy), re-run
 `pab --emit-site report_site` to copy them into the site and commit. Cannot be
 demonstrated live here (argopy not installed); covered by unit tests with synthetic
 arrays instead. HOWTO/docs updates deferred to Task 5.
+
+### 2026-06-30 (Task 3 — fixed the `ingest --replace` core dump)
+
+`pab --stage ingest --replace` crashed in the user's full env (`bugs/replace_crash.txt`).
+The argopy lines were just warnings; the fatal part was an **interactive Matplotlib
+(Tk) backend** crash: `RuntimeError: main thread is not in main loop` →
+`Tcl_AsyncDelete: async handler deleted by the wrong thread` → `Aborted (core
+dumped)`. Root cause: **no PAB plotting module set a non-interactive backend** —
+they all just `import matplotlib.pyplot`, so the default (TkAgg on the user's
+machine) was used. My Task-2 change made `ingest` render Q&A figures *while
+argopy's worker threads run*, so Tk objects were torn down on the wrong thread and
+aborted the process. (The `figure` stage hadn't tripped this because no argopy
+threads run alongside it; `qa.py`'s docstring already *claimed* a non-interactive
+backend but never enforced it.)
+
+Fix (two layers): (1) `pab/__init__.py` sets `os.environ.setdefault("MPLBACKEND",
+"Agg")` before Matplotlib is ever imported — a central headless default for the
+whole package (also hardens `fit_fig`/`scene`/`population`); (2) `pab/argo/qa.py`
+explicitly `matplotlib.use("Agg")` before importing pyplot — import-order-proof and
+honouring its own docstring. Added `test_qa_uses_headless_backend` (asserts
+`MPLBACKEND==Agg` and `matplotlib.get_backend()=="agg"`). Verified a fresh
+`import pab` yields the Agg backend; **63 passed** in the argo/pipeline/report/db
+suites. With Agg no Tk objects are created, so the teardown abort cannot recur.
+The user can now re-run `pab --stage ingest --replace`.
+
+Key learning: a library that renders figures in batch — and especially one that
+plots alongside another library's threads (argopy) — must pin a non-interactive
+backend; relying on the Matplotlib default is a latent core-dump waiting for the
+first machine whose default is interactive.
