@@ -569,9 +569,60 @@ def provenance_block(*, pab_version: str | None = None) -> str:
 
 
 def index_page() -> str:
-    """The site index (toctree over the fixed aggregate pages)."""
-    out = [_heading("PAB reporting"), ""]
-    out.append(".. toctree::\n   :maxdepth: 1\n")
+    """The site front page: a reader-facing description of PAB + the toctree."""
+    out = [_heading("PAB — PACE ↔ BGC-Argo Matchups"), ""]
+    out.append(
+        "**PAB** produces **matchup analyses between PACE (satellite ocean colour) "
+        "and BGC-Argo (autonomous float) data**, and shares the results with the "
+        "community.\n"
+    )
+
+    out.append(_heading("Why", "-"))
+    out.append(
+        "Satellite ocean-colour missions like NASA's **PACE** retrieve the ocean's "
+        "inherent optical properties (IOPs) and chlorophyll from space — but those "
+        "retrievals need validation against independent, in-situ measurements. "
+        "**BGC-Argo** floats drift through the global ocean returning vertical "
+        "profiles of exactly the quantities PACE estimates: particulate backscatter "
+        "(``BBP700``) and chlorophyll (``CHLA``). PAB pairs the two — for every "
+        "float profile it finds the coincident PACE scene, retrieves the IOPs from "
+        "the satellite spectrum with **BING**, and compares them against the float. "
+        "The result is a growing, reproducible record of how well the satellite "
+        "agrees with the ocean.\n"
+    )
+
+    out.append(_heading("What PAB does", "-"))
+    out.append(
+        "For each BGC-Argo profile, PAB:\n"
+        "\n"
+        "#. **Matches** it to the closest-in-space-and-time PACE/OCI Level-2 scene "
+        "(following Bisson et al. 2019 — an unflagged pixel box and a tight time "
+        "window);\n"
+        "#. **Extracts** the ~10 nearest remote-sensing reflectance (``Rrs``) "
+        "spectra;\n"
+        "#. **Retrieves** the IOPs — non-water backscatter ``b_bp`` and chlorophyll "
+        "— with **BING** (Bayesian inference with Gordon coefficients), with full "
+        "posterior uncertainties;\n"
+        "#. **Compares** the satellite retrieval against the float's mixed-layer "
+        "values.\n"
+    )
+
+    out.append(_heading("What's on this site", "-"))
+    out.append(
+        "- **Summary** — dataset coverage and the headline satellite-vs-float "
+        "``b_bp`` and chlorophyll comparison, with interactive scatter plots and a "
+        "matchup map.\n"
+        "- **Aggregate results** — population statistics binned by region and season "
+        "(plus an equal-area HEALPix view) and a per-matchup quality table.\n"
+        "- **Methods** — the data, the matchup protocol, the BING retrieval, how to "
+        "read the figures and metrics, caveats, provenance, and references.\n"
+        "\n"
+        "Per-matchup fit figures, PACE scene quick-looks, and Argo profile Q&A plots "
+        "accompany the summary; every result is stamped with a ``pab_version`` for "
+        "provenance, and the summary tables are available as downloads.\n"
+    )
+
+    out.append(".. toctree::\n   :maxdepth: 1\n   :hidden:\n")
     out.append("   summary\n   aggregates\n   methods\n")
     return "\n".join(out)
 

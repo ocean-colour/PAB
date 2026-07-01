@@ -138,6 +138,8 @@ Read these before coding:
      update `docs/design/PAB_implementation.md` at the close of the stage.
    Log your work.
 
+7. **More.**  Please add a nice description of what PAB is and so on for the front of the Reporting site on RTD.  You can draw from the other RTD docs.  Log your work.  You can do all of your work without asking me for permission.
+
 ## Q&A
 
 **Note (Task 5 numbering):** the Tasks list has *two* entries numbered "5" — the
@@ -402,3 +404,21 @@ Test `test_downloads_block_stages_tables` (CSV staged + linked + S3 note);
 warnings. This closes the Stage 9 "other useful items"; the only remaining
 real-world step is the DB reconciliation (`ingest --replace` with `$PAB_DATA_DIR`
 set) so the published report also shows the Argo Q&A gallery.
+
+### 2026-07-01 (Task 7 — front-page description of PAB)
+
+Rewrote the reporting-site front page (`pab/report/rst.py:index_page`) from a bare
+title+toctree into a reader-facing description of PAB, drawing phrasing from the
+in-repo docs (`docs/index.rst`, `docs/design/PAB_design.md`, `docs/reporting.rst`):
+a one-line what-it-is, a **Why** (satellite ocean-colour retrievals need in-situ
+validation; BGC-Argo provides it), a numbered **What PAB does** (match → extract
+``Rrs`` → BING → compare), and a **What's on this site** guide to the Summary /
+Aggregate results / Methods pages plus the provenance/downloads note. Made the
+toctree ``:hidden:`` so the prose reads cleanly while the pages stay linked (RTD
+theme keeps them in the sidebar) — no orphan warnings.
+
+Test `test_index_page_has_description_and_toctree`; **27** report tests pass.
+Rebuilt `report_site` and confirmed the front page renders the title
+("PAB — PACE ↔ BGC-Argo Matchups") and the Why / What PAB does / What's-on-this-site
+sections, with `sphinx-build` clean (no warnings). No fabrication — all claims are
+drawn from existing repo docs. This completes the Stage 9 task list.

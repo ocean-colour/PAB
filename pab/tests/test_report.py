@@ -338,6 +338,16 @@ def test_matchup_quality_table():
         assert "n_spectra" in out and "distance_km" in out
 
 
+def test_index_page_has_description_and_toctree():
+    out = rst.index_page()
+    assert "matchup analyses between PACE" in out  # reader-facing description
+    assert "What PAB does" in out and "What's on this site" in out
+    # the pages stay linked (toctree), so Sphinx has no orphan warnings
+    for stem in ("summary", "aggregates", "methods"):
+        assert stem in out
+    assert ".. toctree::" in out
+
+
 def test_downloads_block_stages_tables(tmp_path):
     with Store.open(":memory:") as store:
         _two_matchups(store)
