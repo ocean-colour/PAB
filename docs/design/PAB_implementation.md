@@ -726,4 +726,32 @@ pab/
 
 ---
 
+## Stage 9 — richer Report (Chl plots, Q&A figures, context)
+
+Closed out the community Report so it is complete and self-explanatory, without
+bloating git or breaking the no-per-matchup-pages rule.
+
+- **Headless plotting (bug fix).** `pab/__init__.py` sets
+  `os.environ.setdefault("MPLBACKEND", "Agg")` and `pab/argo/qa.py` calls
+  `matplotlib.use("Agg")` before importing pyplot. Cause: `ingest` renders Q&A
+  figures *alongside argopy's worker threads*, where an interactive (Tk) backend
+  aborts the process at teardown (`Tcl_AsyncDelete: … wrong thread`).
+- **Schema → v3.** `mld_summary.qa_path` (v2) and `matchups.scene_path` (v3), each
+  added via a registered forward migration; `SCHEMA_VERSION = 3`.
+- **Q&A figures wired in.** `ingest` emits per-profile Argo Q&A plots
+  (`_emit_profile_qa` → `outdir/argo_qa/<wmo>_<cycle>.png`, live-fetch path only,
+  gated on `make_figures`); the `figure` stage records `scene_path` and a plain
+  `--stage figure` re-run **backfills** already-rendered scenes (no re-render).
+- **Report additions** (`pab.report.rst`): a **Chl** scatter (reusing
+  `comparison_scatter`, with an OC4 `chl_oc` overlay when `build_site(opener=…)`);
+  N-guarded `figure_gallery` / `scene_gallery` / `argo_qa_gallery` sharing one
+  `_thumbnail_gallery` + `_stage_static` copier; a `matchup_quality_table`
+  (distance/Δt/spectra) on the aggregates page; a `provenance_block`
+  (`pab_version` + build date + `package_versions()`); coverage medians on the
+  summary; and a fleshed-out reader-facing `methods_page`.
+- **CLI.** `pab --emit-site DIR` regenerates the RTD site sources; with
+  `--download` it uses the local granule cache so the OC4 cross-check can run
+  network-free. Published on Read the Docs from `report_site/.readthedocs.yaml`
+  (a second project; see `HOWTO.md` §7a).
+
 *Living document; updated at the close of each stage.*

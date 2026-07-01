@@ -85,11 +85,38 @@ def summary_page(store, *, pab_version: str | None = None) -> str:
         f"``pab_version`` ``{pab_version}`` on "
         f"{datetime.now(UTC).date().isoformat()}.\n"
     )
-    out.append(_heading("Coverage", "-"))
     out.append(
+        "**PAB** validates ocean-colour retrievals from NASA's **PACE/OCI** "
+        "satellite against in-situ profiles from autonomous **BGC-Argo** floats. "
+        "For each float profile we find the closest-in-space-and-time PACE scene, "
+        "extract the remote-sensing reflectance (``Rrs``) at the float, retrieve "
+        "the inherent optical properties with **BING**, and compare the "
+        "satellite-derived particulate backscatter ``b_bp`` and chlorophyll "
+        "against the float's mixed-layer values. The headline numbers below "
+        "summarise that comparison; the figures give the per-matchup detail and "
+        "the *Methods* page explains how to read them.\n"
+    )
+    import numpy as np
+
+    n_profiles = store.count("profiles")
+    sep = store.query("SELECT distance_km, dtime_hours FROM matchups")
+    dist = np.array(
+        [r["distance_km"] for r in sep if r["distance_km"] is not None], dtype=float
+    )
+    dt = np.array(
+        [r["dtime_hours"] for r in sep if r["dtime_hours"] is not None], dtype=float
+    )
+    out.append(_heading("Coverage", "-"))
+    cov = (
+        f"- **Profiles ingested:** {n_profiles}\n"
         f"- **Matchups:** {n_matchups}\n- **Floats:** {n_floats}\n"
         f"- **BING fits:** {n_fits}\n"
     )
+    if dist.size:
+        cov += f"- **Median separation:** {_fmt(float(np.median(dist)))} km\n"
+    if dt.size:
+        cov += f"- **Median Δtime:** {_fmt(float(np.median(dt)))} h\n"
+    out.append(cov)
     out.append(_heading("Headline comparison (b_bp 700 nm)", "-"))
     if bbp.get("n"):
         out.append(
@@ -176,6 +203,22 @@ def _chl_scatter(df, interactive, np, url_col):
     )
 
 
+def _stage_static(src, outdir, subdir: str) -> str | None:
+    """Copy an artifact into ``outdir/_static/<subdir>`` and return its
+    page-relative URL, or ``None`` if ``src`` is missing/not on disk.
+
+    The one place that copies a figure into the site tree — shared by the fit,
+    scene, and Argo-Q&A galleries so the copy/URL convention stays consistent.
+    """
+    if not (src and Path(src).is_file()):
+        return None
+    dest = Path(outdir) / "_static" / subdir
+    dest.mkdir(parents=True, exist_ok=True)
+    name = Path(src).name
+    shutil.copyfile(src, dest / name)
+    return f"_static/{subdir}/{name}"
+
+
 def _thumbnail_gallery(
     items, *, heading: str, intro: str, over_limit: str, max_inline: int
 ) -> str:
@@ -245,15 +288,10 @@ def argo_qa_gallery(store, outdir, *, max_inline: int = MAX_INLINE_FIGURES) -> s
         "JOIN profiles p ON p.profile_id = ms.profile_id "
         "WHERE ms.qa_path IS NOT NULL ORDER BY p.wmo, p.cycle"
     )
-    dest = Path(outdir) / "_static" / "argo_qa"
-    items: list[tuple[str | None, str]] = []
-    for r in rows:
-        src = r["qa_path"]
-        if src and Path(src).is_file():
-            dest.mkdir(parents=True, exist_ok=True)
-            name = Path(src).name
-            shutil.copyfile(src, dest / name)
-            items.append((f"_static/argo_qa/{name}", f"{r['wmo']}/{r['cycle']}"))
+    items = [
+        (_stage_static(r["qa_path"], outdir, "argo_qa"), f"{r['wmo']}/{r['cycle']}")
+        for r in rows
+    ]
     return _thumbnail_gallery(
         items,
         heading="Argo profile Q&A",
@@ -278,15 +316,10 @@ def scene_gallery(store, outdir, *, max_inline: int = MAX_INLINE_FIGURES) -> str
         "JOIN profiles p ON p.profile_id = m.profile_id "
         "WHERE m.scene_path IS NOT NULL ORDER BY p.wmo, p.cycle"
     )
-    dest = Path(outdir) / "_static" / "scenes"
-    items: list[tuple[str | None, str]] = []
-    for r in rows:
-        src = r["scene_path"]
-        if src and Path(src).is_file():
-            dest.mkdir(parents=True, exist_ok=True)
-            name = Path(src).name
-            shutil.copyfile(src, dest / name)
-            items.append((f"_static/scenes/{name}", f"{r['wmo']}/{r['cycle']}"))
+    items = [
+        (_stage_static(r["scene_path"], outdir, "scenes"), f"{r['wmo']}/{r['cycle']}")
+        for r in rows
+    ]
     return _thumbnail_gallery(
         items,
         heading="PACE scene quick-looks",
@@ -380,16 +413,158 @@ def matchup_quality_table(store, *, sortable: bool = True) -> str:
 
 
 def methods_page() -> str:
-    """A static methods/algorithm page citing BING and Bisson."""
+    """Reader-facing methods/context page: data, protocol, retrieval, how to read
+    the figures and metrics, caveats, and references."""
     out = [_heading("Methods"), ""]
     out.append(
-        "PAB matches BGC-Argo mixed-layer summaries to PACE/OCI Level-2 ``Rrs`` "
-        "and retrieves IOPs with **BING** (Bayesian inference with Gordon "
-        "coefficients; Prochaska & Frouin 2025). The matchup protocol follows "
-        "**Bisson et al. (2019)** — a small unflagged pixel box near the float "
-        "and a tight time window. The matchup observable is non-water "
-        "backscatter ``b_bp``; chlorophyll is retrieved from the fitted ``Aph``.\n"
+        "This page explains what PAB does and how to read the results. PAB pairs "
+        "satellite ocean-colour observations with in-situ float profiles, retrieves "
+        "the optical properties from the satellite spectrum, and compares them "
+        "against the float — a like-for-like validation of the satellite product.\n"
     )
+
+    out.append(_heading("Data", "-"))
+    out.append(
+        "- **Satellite — PACE/OCI Level-2 AOP.** NASA's PACE mission (Ocean Colour "
+        "Instrument) hyperspectral remote-sensing reflectance ``Rrs(λ)``, accessed "
+        "by ``earthaccess``. PAB reads only the pixels near each float.\n"
+        "- **In-situ — BGC-Argo.** Autonomous biogeochemical floats, fetched via "
+        "``argopy``. PAB de-spikes and averages ``BBP700`` (particulate backscatter "
+        "at 700 nm) and ``CHLA`` (chlorophyll-a) within the mixed layer, and records "
+        "the mixed-layer depth (MLD) and mean temperature/salinity.\n"
+    )
+
+    out.append(_heading("Matchup protocol", "-"))
+    out.append(
+        "Following **Bisson et al. (2019)**: for each float profile PAB takes a "
+        "small box of **unflagged** PACE pixels centred on the float position and a "
+        "**tight time window** between the profile and the overpass. A profile with "
+        "no qualifying pixels (cloud, glint, or simply no coincident scene) yields "
+        "no matchup — that is expected, not an error. The space/time separation and "
+        "the number of valid spectra for each matchup are listed in the *Matchup "
+        "quality* table on the *Aggregate results* page.\n"
+    )
+
+    out.append(_heading("Retrieval (BING)", "-"))
+    out.append(
+        "The satellite ``Rrs`` spectrum is fit with **BING** (Bayesian inference "
+        "with Gordon coefficients; Prochaska & Frouin 2025), which returns the "
+        "inherent optical properties with full posterior uncertainties:\n"
+        "\n"
+        "- **``b_bp``** — non-water particulate backscatter (reported at 700 nm, to "
+        "match the float ``BBP700``); the primary matchup observable.\n"
+        "- **Chlorophyll** — retrieved from the fitted phytoplankton absorption "
+        "amplitude ``Aph`` (``Chl = 10**Aph / 0.05582``). The float ``CHLA`` only "
+        "*seeds* the absorption shape; it is **not** a fixed input, so the BING Chl "
+        "is a genuine retrieval compared against the in-situ value. An independent "
+        "**OC4** band-ratio Chl is shown as a cross-check when available.\n"
+    )
+
+    out.append(_heading("How to read the figures & metrics", "-"))
+    out.append(
+        "Each scatter plots the **satellite** value (y) against the **in-situ** "
+        "float value (x) on log axes, with the **1:1 line** for reference; points on "
+        "the line are perfect agreement. **Hover** a point to see its matchup id, "
+        "float, and values; **tap** a point to open that matchup's BING fit figure. "
+        "The headline and binned tables report, per group:\n"
+        "\n"
+        "- **median sat/float ratio** — typical multiplicative bias (1.0 = no bias);\n"
+        "- **Spearman ρ** — rank correlation between satellite and float (1 = "
+        "perfectly monotonic);\n"
+        "- **log10 bias / RMS / MAD** — mean / scatter / robust scatter of "
+        "``log10(satellite / in-situ)`` (0 = unbiased; smaller is tighter).\n"
+        "\n"
+        "The **PACE scene quick-looks** show the false-colour scene around each "
+        "float (red star) with the analyzed pixels (white circles), so cloudy or "
+        "glinty scenes are obvious. The **Argo profile Q&A** plots show ``BBP700`` "
+        "and ``CHLA`` vs pressure with the MLD marked, to sanity-check each "
+        "in-situ summary.\n"
+    )
+
+    out.append(_heading("Caveats & provenance", "-"))
+    out.append(
+        "- **Sample size.** This release may cover a small development set; treat "
+        "the aggregate statistics accordingly.\n"
+        "- **Granule access.** Run out-of-region (outside AWS ``us-west-2``), PACE "
+        "reads are slow; PAB pre-downloads granules for reliability. This affects "
+        "*how* the data were read, not the results.\n"
+        "- **BING vs NASA L2 IOPs.** A direct comparison against NASA's own L2 IOP "
+        "product is planned but **not yet included**.\n"
+        "- **Provenance.** Every record is stamped with a ``pab_version``; the "
+        "landing page shows the version and build date for this site. Per-matchup "
+        "MCMC chains and figures are published as downloads (see the release "
+        "manifest), keyed by matchup id.\n"
+    )
+
+    out.append(_heading("References", "-"))
+    out.append(
+        "- Prochaska & Frouin (2025), *BING* — Bayesian inference of IOPs from "
+        "remote-sensing reflectance with the Gordon model.\n"
+        "- Bisson et al. (2019) — satellite/in-situ ocean-colour matchup protocol "
+        "and uncertainty assessment.\n"
+    )
+    return "\n".join(out)
+
+
+def downloads_block(store, outdir) -> str:
+    """A **Downloads** section linking the small summary tables.
+
+    Stages the matchup summary CSV/Parquet (``publish.export_tables``) into
+    ``outdir/_static/downloads`` and links them (small, committed with the site).
+    The bulky per-matchup MCMC chains and figures live in the object store
+    (Nautilus S3) keyed by matchup id — noted here as available once that backend
+    is wired (``HOWTO.md`` §7b). Best-effort: never breaks the build.
+    """
+    from pab.report import publish
+
+    try:
+        tables = publish.export_tables(store, Path(outdir) / "_static" / "downloads")
+    except Exception:  # noqa: BLE001 — downloads are a bonus, not load-bearing
+        tables = {}
+    out = [_heading("Downloads", "-"), ""]
+    links = []
+    if "summary_csv" in tables:
+        links.append(
+            '<li><a href="_static/downloads/matchup_summary.csv">'
+            "Matchup summary (CSV)</a></li>"
+        )
+    if "summary_parquet" in tables:
+        links.append(
+            '<li><a href="_static/downloads/matchup_summary.parquet">'
+            "Matchup summary (Parquet)</a></li>"
+        )
+    if links:
+        out.append(".. raw:: html\n")
+        out.extend("   " + ln for ln in ["<ul>", *links, "</ul>"])
+        out.append("")
+    out.append(
+        "Per-matchup MCMC chains and BING fit figures are published as object-store "
+        "artifacts (NSF/Nautilus S3), keyed by ``matchup_id`` in the release "
+        "manifest — available once that backend is activated.\n"
+    )
+    return "\n".join(out)
+
+
+def provenance_block(*, pab_version: str | None = None) -> str:
+    """A provenance footer: the ``pab_version`` + build date and a table of the
+    installed package versions (:func:`pab.config.package_versions`), so every
+    published site is traceable to the code and environment that produced it.
+
+    Uses a static reStructuredText table (no Bokeh) — provenance must always render.
+    """
+    import pandas as pd
+
+    from pab.config import package_versions
+
+    pab_version = pab_version or _pab_version
+    out = [_heading("Provenance", "-"), ""]
+    out.append(
+        f"Built from ``pab_version`` ``{pab_version}`` on "
+        f"{datetime.now(UTC).date().isoformat()}. Installed package versions:\n"
+    )
+    pv = package_versions()
+    df = pd.DataFrame({"package": list(pv), "version": list(pv.values())})
+    out.append(rst_table(df))
     return "\n".join(out)
 
 
@@ -460,17 +635,7 @@ def _gather_with_figures(store, outdir: Path, *, opener=None):
             "SELECT fit_id, figure_path FROM fits WHERE figure_path IS NOT NULL"
         )
     }
-    static_figs = outdir / "_static" / "figures"
-    urls: list[str | None] = []
-    for fit_id in df["fit_id"]:
-        src = fig_paths.get(fit_id)
-        if src and Path(src).is_file():
-            static_figs.mkdir(parents=True, exist_ok=True)
-            name = Path(src).name
-            shutil.copyfile(src, static_figs / name)
-            urls.append(f"{_STATIC_FIGURES}/{name}")
-        else:
-            urls.append(None)
+    urls = [_stage_static(fig_paths.get(fit_id), outdir, "figures") for fit_id in df["fit_id"]]
     df = df.copy()
     df[FIGURE_URL_COL] = urls
     return df
@@ -518,15 +683,18 @@ def build_site(
     summary += "\n" + figure_gallery(df)
     summary += "\n" + scene_gallery(store, outdir)
     summary += "\n" + argo_qa_gallery(store, outdir)
+    summary += "\n" + downloads_block(store, outdir)
 
     aggregates = aggregates_page(store, sortable=sortable)
     aggregates += "\n" + matchup_quality_table(store, sortable=sortable)
+
+    methods = methods_page() + "\n" + provenance_block(pab_version=pab_version)
 
     pages = {
         "index": index_page(),
         "summary": summary,
         "aggregates": aggregates,
-        "methods": methods_page(),
+        "methods": methods,
     }
     written = {}
     for stem, text in pages.items():

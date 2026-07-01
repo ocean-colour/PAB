@@ -148,11 +148,21 @@ pab --db data/pab.db --stage report
 
 Relative to `--outdir` (default `DATA_DIR/pipeline`):
 
-- `site/` — the static report site (`summary.rst` + aggregate pages). Build it to
-  HTML with Sphinx, or browse the `.rst` directly.
+- `site/` — the static report site. Build it to HTML with Sphinx, or browse the
+  `.rst` directly. It carries: a **summary** page (coverage counts incl. median
+  separation/Δtime, headline `b_bp` & Chl metrics, the interactive `b_bp` and
+  **Chl** scatters + matchup map, and the per-matchup fit / **PACE scene** /
+  **Argo Q&A** thumbnail galleries); an **aggregates** page (binned tables + a
+  per-matchup **quality** table); and a **methods** page (reader-facing context +
+  a **provenance** block with `pab_version`, build date, and package versions).
+- `argo_qa/` — per-profile Q&A plots (`BBP700`/`CHLA` vs pressure, MLD marked),
+  emitted by the `ingest` stage on the live-fetch path.
+- `figures/` — per-matchup fit figures and PACE scene quick-looks (when the
+  `figure` stage runs). A plain `--stage figure` re-run backfills already-rendered
+  scene paths into the DB without re-rendering.
 - `release/manifest.json` — the release manifest listing the published artifacts
-  and package versions.
-- `figures/` — per-matchup figures (when the `figure` stage runs).
+  and package versions; `release/matchup_summary.{csv,parquet}` — the exported
+  summary tables.
 
 The SQLite store (`--db`) holds all the structured results and is the source of
 truth; the site and manifest are derived from it.

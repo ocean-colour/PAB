@@ -338,6 +338,43 @@ def test_matchup_quality_table():
         assert "n_spectra" in out and "distance_km" in out
 
 
+def test_downloads_block_stages_tables(tmp_path):
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        site = tmp_path / "site"
+        out = rst.downloads_block(store, site)
+        assert "Downloads" in out
+        csv = site / "_static" / "downloads" / "matchup_summary.csv"
+        assert csv.exists()
+        assert "_static/downloads/matchup_summary.csv" in out
+        assert "Nautilus S3" in out  # bulky artifacts noted as deferred
+
+
+def test_provenance_block_lists_versions():
+    out = rst.provenance_block(pab_version="9.9.test")
+    assert "Provenance" in out
+    assert "9.9.test" in out
+    assert "pab" in out and "version" in out  # the package-versions table
+
+
+def test_build_site_methods_has_provenance(tmp_path):
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        written = rst.build_site(store, tmp_path, sortable=False)
+        methods = written["methods"].read_text()
+        assert "Provenance" in methods and "Methods" in methods
+
+
+def test_summary_coverage_stats(tmp_path):
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        # give the matchups a separation so the medians render
+        store.execute("UPDATE matchups SET distance_km = 0.5, dtime_hours = 3.0")
+        summary = rst.summary_page(store)
+        assert "Profiles ingested:" in summary
+        assert "Median separation:" in summary and "Median Δtime:" in summary
+
+
 def test_figure_gallery_guarded_above_threshold():
     import pandas as pd
 

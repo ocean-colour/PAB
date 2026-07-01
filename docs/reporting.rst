@@ -51,6 +51,26 @@ values; an optional **tap** opens the matchup's artifact by URL — this is how 
 site exposes per-matchup detail. Large scatter/maps use
 ``output_backend="webgl"``.
 
+``comparison_scatter`` is quantity-agnostic (``sat_col``/``insitu_col``), so the
+same function renders a **chlorophyll** scatter (``chl_bing`` vs Argo ``chla``)
+alongside ``b_bp``; its ``extra_series`` overlays the independent **OC4**
+band-ratio Chl (``chl_oc``) when a granule opener is supplied to
+:func:`~pab.report.rst.build_site`.
+
+Beyond the interactive plots, :mod:`pab.report.rst` surfaces the quality-assurance
+imagery and provenance the pipeline now records:
+
+* **Per-matchup fit figures**, **PACE scene quick-looks**
+  (:func:`~pab.report.rst.scene_gallery`, from ``matchups.scene_path``), and
+  **Argo profile Q&A** plots (:func:`~pab.report.rst.argo_qa_gallery`, from
+  ``mld_summary.qa_path``) — each an **N-guarded** thumbnail gallery
+  (:data:`~pab.report.rst.MAX_INLINE_FIGURES`) served from ``_static/`` via the
+  shared :func:`~pab.report.rst._stage_static` copier.
+* A **matchup-quality table** (:func:`~pab.report.rst.matchup_quality_table`:
+  distance / Δtime / spectra count) on the aggregates page.
+* A **provenance block** (:func:`~pab.report.rst.provenance_block`: ``pab_version``
+  + build date + :func:`pab.config.package_versions` table) on the methods page.
+
 Downloads, manifest & publishing
 --------------------------------
 

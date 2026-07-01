@@ -125,7 +125,7 @@ Read these before coding:
      downloads. Cite BING and Bisson. Keep it concise and reader-facing (this is
      the community site, not the dev docs). Log your work.
 
-5. **Other useful items (propose, confirm, then do).** Pick the high-value ones
+6. **Other useful items (propose, confirm, then do).** Pick the high-value ones
    and put any open choices in Q&A first:
    - Link the **download manifest** (chains NPZ + figures, with checksums) from the
      Report so artifacts are reachable.
@@ -139,6 +139,32 @@ Read these before coding:
    Log your work.
 
 ## Q&A
+
+**Note (Task 5 numbering):** the Tasks list has *two* entries numbered "5" — the
+narrative/context task and an "Other useful items" task. I read prompt 5 as the
+**narrative/context** task (the 5th task block in order) and executed that; the
+"Other useful items" block is treated as a separate, later task. Flag if you meant
+the other one.
+
+**Q (Task 6 — download manifest links):** the other Task-6 items are done
+(provenance block, coverage stats, figure-copy de-dup, docs). I held back the
+**"link the download manifest from the Report"** item because it needs a decision:
+the bulky artifacts (per-matchup MCMC chains, figures) are meant for the **Nautilus
+S3** object store, which is **deferred/not wired** (`HOWTO.md` §7b), so there are no
+public URLs to link yet. Options:
+
+- **A (recommended, now):** add a **Downloads** section linking only the small,
+  already-committed **summary tables** (`matchup_summary.csv`/`.parquet`, copied
+  into `_static/downloads/`), and *describe* the chains/figures as
+  object-store artifacts coming once S3 is live. Keeps git small.
+- **B:** wait for S3 activation, then link the real manifest URLs (chains +
+  figures + tables) with checksums. Fully deferred.
+- **C:** also commit the per-matchup chains/figures into the repo and link them —
+  **not recommended** (violates the keep-git-small rule at scale).
+
+Which would you like? (My pick: **A** now, **B** later.)
+
+**A (done).** Implemented option A — see the 2026-07-01 (Downloads) log entry.
 
 ## Reports
 
@@ -301,3 +327,78 @@ clean full report still needs, in the full env: `export PAB_DATA_DIR=…/Color/P
 then `pab --stage ingest --replace` (populate qa_path) → `pab --stage figure`
 (scene_path, already done) → `pab --emit-site report_site`. The regen self-heals
 the orphaned `_static/argo_qa/*.png` (same `<wmo>_<cycle>.png` names).
+
+### 2026-06-30 (Task 5 — fleshed out the Report narrative/context)
+
+Expanded the community site so a first-time reader understands what was done and
+why (the two "Task 5" entries — flagged in Q&A; executed the narrative one).
+
+- `summary_page` (`pab/report/rst.py`): added an **Overview** paragraph after the
+  provenance line — PAB validates PACE/OCI retrievals against BGC-Argo floats;
+  the one-line pipeline (nearest scene → extract ``Rrs`` → BING → compare ``b_bp``
+  & Chl); pointer to the figures and Methods. Kept the Coverage/headline metrics
+  (and the `Matchups:`/`median sat/float ratio` strings the tests pin).
+- `methods_page`: rewrote the one-paragraph stub into reader-facing sections —
+  **Data** (PACE OCI L2 AOP ``Rrs`` via earthaccess; BGC-Argo ``BBP700``/``CHLA``
+  via argopy), **Matchup protocol** (Bisson 2019: unflagged pixel box + tight time
+  window; zero-matchup profiles are expected), **Retrieval (BING)** (what ``b_bp``,
+  Chl and the IOPs are; Chl from posterior ``Aph``, not an input; OC4 cross-check),
+  **How to read the figures & metrics** (1:1 line, hover/tap, median ratio /
+  Spearman ρ / log10 bias·RMS·MAD), **Caveats & provenance** (sample size,
+  out-of-region access, deferred NASA-IOP, `pab_version` + build-date stamp,
+  downloads), and **References** (BING; Bisson 2019).
+
+Both pages stay pure string builders. Tests: report suite **22 passed**; rebuilt
+`report_site` and confirmed every new section renders and `sphinx-build` is clean.
+
+Care taken: kept the project's own BING phrasing ("Bayesian inference with Gordon
+coefficients") rather than inventing a backronym, and the ``Chl = 10**Aph /
+0.05582`` relation matches the implementation — no fabricated DOIs/journal details
+in the references (author/year only), since I couldn't verify them.
+
+### 2026-07-01 (Task 6 — provenance, coverage, de-dup, docs)
+
+Did the high-value "other useful items"; left one for a decision (Q&A).
+
+- **Provenance block** (`pab/report/rst.py:provenance_block`): `pab_version` +
+  build date + a `pab.config.package_versions()` table (static list-table — always
+  renders), appended to the methods page by `build_site`.
+- **Coverage stats**: `summary_page` now shows profiles ingested + **median
+  separation (km)** and **median Δtime (h)** from the matchups (network-free).
+- **De-dup (#4)**: extracted `_stage_static(src, outdir, subdir)` — the single
+  copy-into-`_static` + URL helper now shared by `_gather_with_figures`,
+  `scene_gallery`, and `argo_qa_gallery` (removed three near-identical loops).
+- **Docs (#5)**: `docs/reporting.rst` (Chl/OC4 scatter, scene/QA galleries, quality
+  table, provenance), `HOWTO.md` §5 Outputs (new site sections + `argo_qa/` +
+  scene backfill), and a **Stage 9** close-out section in
+  `docs/design/PAB_implementation.md` (headless fix, schema v3, Q&A wiring, report
+  additions, `--emit-site`).
+
+Tests: added provenance-block, methods-has-provenance, and summary-coverage-stats
+cases; **134 passed** (only the pre-existing `earthaccess` test fails). Rebuilt
+`report_site` and confirmed the Provenance block + coverage medians render and
+`sphinx-build` is clean.
+
+Held for a decision (Q&A): **linking the download manifest**. Bulky artifacts
+(chains, figures) target the deferred Nautilus S3, so there are no public URLs yet;
+proposed adding a Downloads section for the small summary tables now (option A) and
+the full manifest once S3 is live (option B). Awaiting the user's pick before
+implementing.
+
+### 2026-07-01 (Task 6 — Downloads section, option A)
+
+User picked **A**. Added `pab/report/rst.py:downloads_block(store, outdir)`: stages
+the summary tables via `publish.export_tables` into `_static/downloads/`
+(`matchup_summary.csv` always; `.parquet` best-effort) and links them with raw-HTML
+relative anchors (no docutils link-resolution quirks); notes that the bulky
+per-matchup chains/figures are object-store (Nautilus S3) artifacts keyed by
+`matchup_id`, available once that backend is wired. `build_site` appends it to the
+summary page. Best-effort (export failure never breaks the build).
+
+Test `test_downloads_block_stages_tables` (CSV staged + linked + S3 note);
+**135 passed** (only the pre-existing `earthaccess` test fails). Rebuilt
+`report_site` — Downloads section renders, CSV + Parquet staged under
+`_static/downloads/`, links resolve in the built HTML, `sphinx-build` clean with no
+warnings. This closes the Stage 9 "other useful items"; the only remaining
+real-world step is the DB reconciliation (`ingest --replace` with `$PAB_DATA_DIR`
+set) so the published report also shows the Argo Q&A gallery.
