@@ -27,8 +27,17 @@ _STATIC_FIGURES = "_static/figures"
 #: no-page-explosion constraint); detail then comes via tap-to-open + downloads.
 MAX_INLINE_FIGURES = 50
 
-#: The fixed set of generated page stems (there is no per-matchup page).
-PAGE_STEMS = ("index", "summary", "aggregates", "methods")
+#: The fixed set of generated page stems (there is no per-matchup page). The
+#: matchup results are split across topical pages so no single page is overloaded.
+PAGE_STEMS = (
+    "index",
+    "summary",
+    "comparisons",
+    "figures",
+    "aggregates",
+    "methods",
+    "downloads",
+)
 
 
 def _fmt(x, spec: str = "{:.3g}") -> str:
@@ -164,13 +173,12 @@ def interactive_figures(df, *, artifact_url_col: str = FIGURE_URL_COL) -> str:
     except ImportError:
         return ""
 
-    out = [_heading("Figures", "-"), ""]
-    out.append(
+    out = [
         "Satellite-vs-float ``b_bp`` (700 nm) and chlorophyll, plus the matchup "
         "map. **Hover** a point for its values; **tap** a scatter point to open "
         "that matchup's fit figure. Per-matchup detail is reached here, not as "
         "individual pages.\n"
-    )
+    ]
     out.append(interactive.raw_html(scatter))
     if chl is not None:
         out.append(interactive.raw_html(chl))
@@ -201,6 +209,35 @@ def _chl_scatter(df, interactive, np, url_col):
         artifact_url_col=url_col,
         extra_series=extra,
     )
+
+
+def comparisons_page(df, *, sortable: bool = True) -> str:
+    """The **Comparisons** page: interactive satellite-vs-float scatters + map."""
+    out = [_heading("Satellite vs float comparisons"), ""]
+    body = interactive_figures(df) if sortable else ""
+    if body:
+        out.append(body)
+    else:
+        out.append(
+            "The interactive ``b_bp`` and chlorophyll scatters and the matchup map "
+            "require ``bokeh`` at build time.\n"
+        )
+    return "\n".join(out)
+
+
+def figures_page(store, outdir, df) -> str:
+    """The **Figures** page: the per-matchup fit, PACE scene, and Argo Q&A
+    thumbnail galleries (each N-guarded; no per-matchup pages)."""
+    out = [_heading("Matchup & profile figures"), ""]
+    out.append(
+        "Per-matchup **BING fit** figures and **PACE scene** quick-looks, plus the "
+        "**Argo profile Q&A** plots. Shown as thumbnails (click to enlarge), never "
+        "as separate per-matchup pages.\n"
+    )
+    out.append(figure_gallery(df))
+    out.append(scene_gallery(store, outdir))
+    out.append(argo_qa_gallery(store, outdir))
+    return "\n".join(out)
 
 
 def _stage_static(src, outdir, subdir: str) -> str | None:
@@ -506,8 +543,8 @@ def methods_page() -> str:
     return "\n".join(out)
 
 
-def downloads_block(store, outdir) -> str:
-    """A **Downloads** section linking the small summary tables.
+def downloads_page(store, outdir) -> str:
+    """The **Downloads** page: links the small summary tables.
 
     Stages the matchup summary CSV/Parquet (``publish.export_tables``) into
     ``outdir/_static/downloads`` and links them (small, committed with the site).
@@ -521,7 +558,7 @@ def downloads_block(store, outdir) -> str:
         tables = publish.export_tables(store, Path(outdir) / "_static" / "downloads")
     except Exception:  # noqa: BLE001 — downloads are a bonus, not load-bearing
         tables = {}
-    out = [_heading("Downloads", "-"), ""]
+    out = [_heading("Downloads"), ""]
     links = []
     if "summary_csv" in tables:
         links.append(
@@ -610,20 +647,25 @@ def index_page() -> str:
     out.append(_heading("What's on this site", "-"))
     out.append(
         "- **Summary** — dataset coverage and the headline satellite-vs-float "
-        "``b_bp`` and chlorophyll comparison, with interactive scatter plots and a "
-        "matchup map.\n"
+        "``b_bp`` and chlorophyll metrics.\n"
+        "- **Comparisons** — the interactive ``b_bp`` and chlorophyll scatter plots "
+        "and the matchup map (hover for values, tap for the fit figure).\n"
+        "- **Figures** — per-matchup BING fit figures, PACE scene quick-looks, and "
+        "the Argo profile Q&A plots.\n"
         "- **Aggregate results** — population statistics binned by region and season "
         "(plus an equal-area HEALPix view) and a per-matchup quality table.\n"
         "- **Methods** — the data, the matchup protocol, the BING retrieval, how to "
         "read the figures and metrics, caveats, provenance, and references.\n"
+        "- **Downloads** — the exported summary tables (CSV/Parquet).\n"
         "\n"
-        "Per-matchup fit figures, PACE scene quick-looks, and Argo profile Q&A plots "
-        "accompany the summary; every result is stamped with a ``pab_version`` for "
-        "provenance, and the summary tables are available as downloads.\n"
+        "Every result is stamped with a ``pab_version`` for provenance.\n"
     )
 
     out.append(".. toctree::\n   :maxdepth: 1\n   :hidden:\n")
-    out.append("   summary\n   aggregates\n   methods\n")
+    out.append(
+        "   summary\n   comparisons\n   figures\n   aggregates\n   methods\n"
+        "   downloads\n"
+    )
     return "\n".join(out)
 
 
@@ -725,27 +767,22 @@ def build_site(
     (outdir / "_static").mkdir(parents=True, exist_ok=True)
 
     df = _gather_with_figures(store, outdir, opener=opener)
-    summary = summary_page(store, pab_version=pab_version)
-    # The interactive scatter/map are the design's route to per-matchup detail;
-    # gate them on `sortable` (the same interactive-vs-static switch the tables
-    # use). The image gallery needs no Bokeh, so it is always included.
-    if sortable:
-        summary += "\n" + interactive_figures(df)
-    summary += "\n" + figure_gallery(df)
-    summary += "\n" + scene_gallery(store, outdir)
-    summary += "\n" + argo_qa_gallery(store, outdir)
-    summary += "\n" + downloads_block(store, outdir)
-
-    aggregates = aggregates_page(store, sortable=sortable)
-    aggregates += "\n" + matchup_quality_table(store, sortable=sortable)
-
-    methods = methods_page() + "\n" + provenance_block(pab_version=pab_version)
-
+    # The matchup results are split across topical pages so none is overloaded:
+    # summary (coverage + headline metrics), comparisons (interactive scatters +
+    # map), figures (the thumbnail galleries), aggregates (tables), methods,
+    # downloads. All are fixed pages — still no per-matchup page.
     pages = {
         "index": index_page(),
-        "summary": summary,
-        "aggregates": aggregates,
-        "methods": methods,
+        "summary": summary_page(store, pab_version=pab_version),
+        "comparisons": comparisons_page(df, sortable=sortable),
+        "figures": figures_page(store, outdir, df),
+        "aggregates": (
+            aggregates_page(store, sortable=sortable)
+            + "\n"
+            + matchup_quality_table(store, sortable=sortable)
+        ),
+        "methods": methods_page() + "\n" + provenance_block(pab_version=pab_version),
+        "downloads": downloads_page(store, outdir),
     }
     written = {}
     for stem, text in pages.items():

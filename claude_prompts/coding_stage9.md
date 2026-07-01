@@ -74,6 +74,8 @@ Read these before coding:
 3. Execute the 3rd task in Tasks below
 4. Execute the 4th task in Tasks below
 5. Execute the 5th task in Tasks below
+8. Execute the 8th task in Tasks below
+
 
 ## Tasks
 
@@ -139,6 +141,8 @@ Read these before coding:
    Log your work.
 
 7. **More.**  Please add a nice description of what PAB is and so on for the front of the Reporting site on RTD.  You can draw from the other RTD docs.  Log your work.  You can do all of your work without asking me for permission.
+
+8. **Reformat.**  This looks great, but the matchup results are a bit much.  Can we break them up into separate sub-web-pages?  Please do.  Log your work
 
 ## Q&A
 
@@ -422,3 +426,31 @@ Rebuilt `report_site` and confirmed the front page renders the title
 ("PAB — PACE ↔ BGC-Argo Matchups") and the Why / What PAB does / What's-on-this-site
 sections, with `sphinx-build` clean (no warnings). No fabrication — all claims are
 drawn from existing repo docs. This completes the Stage 9 task list.
+
+### 2026-07-01 (Task 8 — split the results across topical sub-pages)
+
+The summary page had grown long (overview + coverage + metrics + scatters + map +
+three galleries + downloads). Split it into a **fixed set of topical pages** —
+still no per-matchup page, so the ~10⁴ design constraint holds.
+
+`PAGE_STEMS` grew from 4 → **7**: `index`, `summary`, `comparisons`, `figures`,
+`aggregates`, `methods`, `downloads`. In `pab/report/rst.py`:
+
+- **summary** is now concise (overview + coverage + headline `b_bp`/Chl metrics).
+- **comparisons** (new `comparisons_page`) — the interactive `b_bp` + Chl scatters
+  and the matchup map (moved off summary; `interactive_figures` lost its inner
+  heading so the page owns the title).
+- **figures** (new `figures_page`) — the per-matchup fit, PACE scene, and Argo
+  Q&A thumbnail galleries.
+- **downloads** — `downloads_block` promoted to `downloads_page` (top-level title).
+- `aggregates`/`methods` unchanged (tables+quality / narrative+provenance).
+- `index_page` toctree now lists all six content pages (hidden; sidebar nav) and
+  its "What's on this site" guide matches the new structure.
+
+Tests: `test_build_site_fixed_pages_no_per_matchup` auto-tracks `PAGE_STEMS`;
+updated the two build-site assertions to read the **comparisons** (scatters) and
+**figures** (gallery + copied PNG) pages, and renamed `downloads_block` →
+`downloads_page`. **136 passed** (only the pre-existing `earthaccess` test fails).
+Rebuilt `report_site` → 7 pages, summary carries no scatter, comparisons has both,
+figures has the galleries, downloads has the tables; `sphinx-build` clean, no
+orphan/toctree warnings. Updated `docs/reporting.rst` to describe the page set.

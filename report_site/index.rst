@@ -22,16 +22,22 @@ For each BGC-Argo profile, PAB:
 What's on this site
 -------------------
 
-- **Summary** — dataset coverage and the headline satellite-vs-float ``b_bp`` and chlorophyll comparison, with interactive scatter plots and a matchup map.
+- **Summary** — dataset coverage and the headline satellite-vs-float ``b_bp`` and chlorophyll metrics.
+- **Comparisons** — the interactive ``b_bp`` and chlorophyll scatter plots and the matchup map (hover for values, tap for the fit figure).
+- **Figures** — per-matchup BING fit figures, PACE scene quick-looks, and the Argo profile Q&A plots.
 - **Aggregate results** — population statistics binned by region and season (plus an equal-area HEALPix view) and a per-matchup quality table.
 - **Methods** — the data, the matchup protocol, the BING retrieval, how to read the figures and metrics, caveats, provenance, and references.
+- **Downloads** — the exported summary tables (CSV/Parquet).
 
-Per-matchup fit figures, PACE scene quick-looks, and Argo profile Q&A plots accompany the summary; every result is stamped with a ``pab_version`` for provenance, and the summary tables are available as downloads.
+Every result is stamped with a ``pab_version`` for provenance.
 
 .. toctree::
    :maxdepth: 1
    :hidden:
 
    summary
+   comparisons
+   figures
    aggregates
    methods
+   downloads

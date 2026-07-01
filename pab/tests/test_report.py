@@ -245,13 +245,13 @@ def test_build_site_embeds_figures_and_copies_them(tmp_path):
         )
         site = tmp_path / "site"
         rst.build_site(store, site)  # sortable=True -> interactive figures
-        summary = (site / "summary.rst").read_text()
-        # the interactive scatter/map are embedded on the landing page
-        assert "Figures" in summary and ".. raw:: html" in summary
-        # the per-matchup figure was copied into the static tree and linked
+        # interactive scatter/map live on the Comparisons page
+        assert ".. raw:: html" in (site / "comparisons.rst").read_text()
+        # the per-matchup figure gallery lives on the Figures page
+        figures = (site / "figures.rst").read_text()
         copied = site / "_static" / "figures" / "M1_fit.png"
         assert copied.exists()
-        assert "_static/figures/M1_fit.png" in summary  # gallery + tap-to-open URL
+        assert "_static/figures/M1_fit.png" in figures  # gallery + tap-to-open URL
         # conf serves the static tree
         assert 'html_static_path = ["_static"]' in (site / "conf.py").read_text()
 
@@ -261,10 +261,10 @@ def test_build_site_embeds_chl_scatter(tmp_path):
     with Store.open(":memory:") as store:
         _two_matchups(store)
         written = rst.build_site(store, tmp_path)  # sortable=True default
-        summary = written["summary"].read_text()
-        # both the b_bp and the Chl scatter are embedded on the landing page
-        assert "satellite vs in-situ b_bp" in summary
-        assert "satellite vs in-situ Chl" in summary
+        # both the b_bp and the Chl scatter are on the Comparisons page
+        comparisons = written["comparisons"].read_text()
+        assert "satellite vs in-situ b_bp" in comparisons
+        assert "satellite vs in-situ Chl" in comparisons
 
 
 def test_comparison_scatter_oc4_overlay():
@@ -348,11 +348,11 @@ def test_index_page_has_description_and_toctree():
     assert ".. toctree::" in out
 
 
-def test_downloads_block_stages_tables(tmp_path):
+def test_downloads_page_stages_tables(tmp_path):
     with Store.open(":memory:") as store:
         _two_matchups(store)
         site = tmp_path / "site"
-        out = rst.downloads_block(store, site)
+        out = rst.downloads_page(store, site)
         assert "Downloads" in out
         csv = site / "_static" / "downloads" / "matchup_summary.csv"
         assert csv.exists()
