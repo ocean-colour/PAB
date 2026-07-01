@@ -75,6 +75,7 @@ Read these before coding:
 4. Execute the 4th task in Tasks below
 5. Execute the 5th task in Tasks below
 8. Execute the 8th task in Tasks below
+9. Execute the 9th task in Tasks below
 
 
 ## Tasks
@@ -143,6 +144,8 @@ Read these before coding:
 7. **More.**  Please add a nice description of what PAB is and so on for the front of the Reporting site on RTD.  You can draw from the other RTD docs.  Log your work.  You can do all of your work without asking me for permission.
 
 8. **Reformat.**  This looks great, but the matchup results are a bit much.  Can we break them up into separate sub-web-pages?  Please do.  Log your work
+
+9. **More x2.** That is good, but we need links off the main page.   Please make an effort to have this web page be more user friendly.  Log your work.
 
 ## Q&A
 
@@ -454,3 +457,25 @@ updated the two build-site assertions to read the **comparisons** (scatters) and
 Rebuilt `report_site` → 7 pages, summary carries no scatter, comparisons has both,
 figures has the galleries, downloads has the tables; `sphinx-build` clean, no
 orphan/toctree warnings. Updated `docs/reporting.rst` to describe the page set.
+
+### 2026-07-01 (Task 9 — user-friendly navigation / links off the main page)
+
+The Task-8 split left the front page with a ``:hidden:`` toctree, so its **body had
+no clickable links** to the sub-pages (only the sidebar). Made the site navigable:
+
+- **`index_page`**: the "What's on this site" list is now real ``:doc:`` links to
+  every content page (Summary / Comparisons / Figures / Aggregate results /
+  Methods / Downloads), plus a "New here? Start with the Summary, then open the
+  Comparisons" pointer.
+- **`summary_page`**: linked the overview's *comparisons / figures / Methods*
+  mentions, and added an **"Explore the results"** section with ``:doc:`` links to
+  the other five pages — so a reader landing on Summary can reach everything
+  without the sidebar.
+
+Kept the toctree ``:hidden:`` (the descriptive linked lists replace a bare
+contents block; the sidebar nav still comes from it). Updated
+`test_index_page_has_description_and_toctree` to assert a ``:doc:`` link to each
+sub-page. **136 passed** (only the pre-existing `earthaccess` test fails). Rebuilt
+`report_site` and confirmed all six links resolve to real
+``<a href="…​.html">`` anchors in the built `index.html`, with `sphinx-build` clean
+(no unresolved-reference warnings). This wraps up the Stage 9 task list.

@@ -342,9 +342,10 @@ def test_index_page_has_description_and_toctree():
     out = rst.index_page()
     assert "matchup analyses between PACE" in out  # reader-facing description
     assert "What PAB does" in out and "What's on this site" in out
-    # the pages stay linked (toctree), so Sphinx has no orphan warnings
-    for stem in ("summary", "aggregates", "methods"):
-        assert stem in out
+    # clickable links off the main page to every content sub-page
+    for stem in ("summary", "comparisons", "figures", "aggregates", "methods",
+                 "downloads"):
+        assert f"<{stem}>" in out  # :doc:`Title <stem>` link
     assert ".. toctree::" in out
 
 

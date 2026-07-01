@@ -102,8 +102,9 @@ def summary_page(store, *, pab_version: str | None = None) -> str:
         "the inherent optical properties with **BING**, and compare the "
         "satellite-derived particulate backscatter ``b_bp`` and chlorophyll "
         "against the float's mixed-layer values. The headline numbers below "
-        "summarise that comparison; the figures give the per-matchup detail and "
-        "the *Methods* page explains how to read them.\n"
+        "summarise that comparison; the :doc:`comparisons <comparisons>` and "
+        ":doc:`figures <figures>` give the per-matchup detail, and the "
+        ":doc:`Methods <methods>` page explains how to read them.\n"
     )
     import numpy as np
 
@@ -141,6 +142,18 @@ def summary_page(store, *, pab_version: str | None = None) -> str:
             f"- n = {chl['n']}; median sat/float ratio = "
             f"{_fmt(chl['median_ratio'])}; Spearman ρ = {_fmt(chl['spearman'])}.\n"
         )
+    out.append(_heading("Explore the results", "-"))
+    out.append(
+        "- :doc:`Comparisons <comparisons>` — interactive ``b_bp`` & Chl scatters "
+        "and the matchup map.\n"
+        "- :doc:`Figures <figures>` — per-matchup fit, PACE scene, and Argo Q&A "
+        "thumbnails.\n"
+        "- :doc:`Aggregate results <aggregates>` — binned statistics + a matchup "
+        "quality table.\n"
+        "- :doc:`Methods <methods>` — how the analysis works and how to read these "
+        "numbers.\n"
+        "- :doc:`Downloads <downloads>` — the summary tables (CSV/Parquet).\n"
+    )
     return "\n".join(out)
 
 
@@ -646,19 +659,25 @@ def index_page() -> str:
 
     out.append(_heading("What's on this site", "-"))
     out.append(
-        "- **Summary** — dataset coverage and the headline satellite-vs-float "
-        "``b_bp`` and chlorophyll metrics.\n"
-        "- **Comparisons** — the interactive ``b_bp`` and chlorophyll scatter plots "
-        "and the matchup map (hover for values, tap for the fit figure).\n"
-        "- **Figures** — per-matchup BING fit figures, PACE scene quick-looks, and "
-        "the Argo profile Q&A plots.\n"
-        "- **Aggregate results** — population statistics binned by region and season "
-        "(plus an equal-area HEALPix view) and a per-matchup quality table.\n"
-        "- **Methods** — the data, the matchup protocol, the BING retrieval, how to "
-        "read the figures and metrics, caveats, provenance, and references.\n"
-        "- **Downloads** — the exported summary tables (CSV/Parquet).\n"
+        "- :doc:`Summary <summary>` — dataset coverage and the headline "
+        "satellite-vs-float ``b_bp`` and chlorophyll metrics.\n"
+        "- :doc:`Comparisons <comparisons>` — the interactive ``b_bp`` and "
+        "chlorophyll scatter plots and the matchup map (hover for values, tap for "
+        "the fit figure).\n"
+        "- :doc:`Figures <figures>` — per-matchup BING fit figures, PACE scene "
+        "quick-looks, and the Argo profile Q&A plots.\n"
+        "- :doc:`Aggregate results <aggregates>` — population statistics binned by "
+        "region and season (plus an equal-area HEALPix view) and a per-matchup "
+        "quality table.\n"
+        "- :doc:`Methods <methods>` — the data, the matchup protocol, the BING "
+        "retrieval, how to read the figures and metrics, caveats, provenance, and "
+        "references.\n"
+        "- :doc:`Downloads <downloads>` — the exported summary tables "
+        "(CSV/Parquet).\n"
         "\n"
-        "Every result is stamped with a ``pab_version`` for provenance.\n"
+        "New here? Start with the :doc:`Summary <summary>`, then open the "
+        ":doc:`Comparisons <comparisons>`. Every result is stamped with a "
+        "``pab_version`` for provenance.\n"
     )
 
     out.append(".. toctree::\n   :maxdepth: 1\n   :hidden:\n")

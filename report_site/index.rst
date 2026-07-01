@@ -22,14 +22,14 @@ For each BGC-Argo profile, PAB:
 What's on this site
 -------------------
 
-- **Summary** — dataset coverage and the headline satellite-vs-float ``b_bp`` and chlorophyll metrics.
-- **Comparisons** — the interactive ``b_bp`` and chlorophyll scatter plots and the matchup map (hover for values, tap for the fit figure).
-- **Figures** — per-matchup BING fit figures, PACE scene quick-looks, and the Argo profile Q&A plots.
-- **Aggregate results** — population statistics binned by region and season (plus an equal-area HEALPix view) and a per-matchup quality table.
-- **Methods** — the data, the matchup protocol, the BING retrieval, how to read the figures and metrics, caveats, provenance, and references.
-- **Downloads** — the exported summary tables (CSV/Parquet).
+- :doc:`Summary <summary>` — dataset coverage and the headline satellite-vs-float ``b_bp`` and chlorophyll metrics.
+- :doc:`Comparisons <comparisons>` — the interactive ``b_bp`` and chlorophyll scatter plots and the matchup map (hover for values, tap for the fit figure).
+- :doc:`Figures <figures>` — per-matchup BING fit figures, PACE scene quick-looks, and the Argo profile Q&A plots.
+- :doc:`Aggregate results <aggregates>` — population statistics binned by region and season (plus an equal-area HEALPix view) and a per-matchup quality table.
+- :doc:`Methods <methods>` — the data, the matchup protocol, the BING retrieval, how to read the figures and metrics, caveats, provenance, and references.
+- :doc:`Downloads <downloads>` — the exported summary tables (CSV/Parquet).
 
-Every result is stamped with a ``pab_version`` for provenance.
+New here? Start with the :doc:`Summary <summary>`, then open the :doc:`Comparisons <comparisons>`. Every result is stamped with a ``pab_version`` for provenance.
 
 .. toctree::
    :maxdepth: 1
