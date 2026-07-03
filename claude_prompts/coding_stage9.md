@@ -149,6 +149,8 @@ Read these before coding:
 
 10. **Big run.** Ok, we are ready to run the full pipeline.  Please generate a new prompt doc called `PAB/claude_prompts/run_full_pipeline.md`.  Log your work.
 
+11. I am about to issue a PR for this branch, but I see that CI is failing on GitHub.  Please investigate and fix the issues.  Log your work.
+
 ## Q&A
 
 **Note (Task 5 numbering):** the Tasks list has *two* entries numbered "5" — the
@@ -499,3 +501,26 @@ the new doc's **Q&A** (run scope; in-region vs off-cloud; fit parallelism;
 `pab_version` bump; bulky-artifact hosting) — these gate the run and are the user's
 to make. No code changed; this is a planning doc. Recommended answers noted inline
 (in-region + implement `fit_batch` parallelism + bump to a tagged version).
+
+### 2026-07-01 (Task 11 — fixed failing CI before the PR)
+
+`gh` wasn't authenticated, so I reproduced both CI jobs (`.github/workflows/ci.yml`)
+locally. **Root cause: the pytest job.** `pab/tests/test_pace.py::
+test_download_granule_idempotent_skips_network` did a bare `import earthaccess`
+inside the test — but CI's lean env installs only numpy/scipy/pandas/pyarrow/
+xarray/gsw/matplotlib/pytest (heavy/optional deps use `pytest.importorskip` and
+skip). `earthaccess` isn't installed there, so the test errored → job red. It's a
+**pre-existing** bug (from the stage-3 `--download` work), not a Stage 9 change.
+
+Fix: `earthaccess = pytest.importorskip("earthaccess")` at the top of that test —
+the same guard every other optional-dep test uses. In the full env it still runs
+and passes (verified: **145 passed, 0 failures** in `os_313`); in lean CI it skips.
+
+Ruled out other causes: (1) scanned all test files — no module-level optional
+imports (collection is safe in lean CI) and `test_fit`'s `import bing` only runs
+under an existing `importorskip("bing")`, so `earthaccess` was the only unguarded
+one; (2) reproduced the **docs job** (`sphinx-build -b html -W --keep-going docs …`)
+with the CI doc deps — **build succeeded, no warnings** (my Stage 9 `reporting.rst`
+`:func:` refs don't error: missing xrefs only warn under `nitpicky`, which is off);
+(3) CI runs **no ruff gate**, so style isn't a factor. One-line test fix; the PR
+should go green.

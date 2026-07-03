@@ -97,6 +97,8 @@ Read these before coding:
     - Any other items that you think would be useful at this point
     - Log your work
 
+10. Blablabla
+
 ## Q&A
 
 (Task 1 — no blocking questions; see the recommendation in the Report.)
