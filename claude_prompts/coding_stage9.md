@@ -147,6 +147,8 @@ Read these before coding:
 
 9. **More x2.** That is good, but we need links off the main page.   Please make an effort to have this web page be more user friendly.  Log your work.
 
+10. **Big run.** Ok, we are ready to run the full pipeline.  Please generate a new prompt doc called `PAB/claude_prompts/run_full_pipeline.md`.  Log your work.
+
 ## Q&A
 
 **Note (Task 5 numbering):** the Tasks list has *two* entries numbered "5" — the
@@ -479,3 +481,21 @@ sub-page. **136 passed** (only the pre-existing `earthaccess` test fails). Rebui
 `report_site` and confirmed all six links resolve to real
 ``<a href="…​.html">`` anchors in the built `index.html`, with `sphinx-build` clean
 (no unresolved-reference warnings). This wraps up the Stage 9 task list.
+
+### 2026-07-01 (Task 10 — authored the full-pipeline run prompt doc)
+
+Created `claude_prompts/run_full_pipeline.md`, modelled on the existing prompt docs
+(Goals / Claude → Skills + Working agreements / Context / Prompts / Tasks / Q&A /
+Reports / Logging / Logs). It turns the dev-set experience into a safe, resumable
+**scale-up** playbook: 7 tasks (pin config → assemble the full profile CSV → pilot
+on a subset → ingest+discover → match+fit → figure+report+publish → verify/close
+out). Baked in the hard-won operational lessons as Context bullets so the run
+doesn't repeat Stage 9's mistakes: **one canonical `$PAB_DATA_DIR`** (the two-DB
+split), `--download` vs in-region granule access (~0.5 GB/granule), the `fit`
+stage being the cost with **parallel fitting not yet implemented**, idempotent/
+resumable stages, headless matplotlib, schema auto-migration to v3, and where the
+Argo-Q&A / PACE-scene figures come from. Put the five genuinely-open decisions in
+the new doc's **Q&A** (run scope; in-region vs off-cloud; fit parallelism;
+`pab_version` bump; bulky-artifact hosting) — these gate the run and are the user's
+to make. No code changed; this is a planning doc. Recommended answers noted inline
+(in-region + implement `fit_batch` parallelism + bump to a tagged version).
