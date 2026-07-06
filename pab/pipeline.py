@@ -143,7 +143,7 @@ def ingest(store, config: PipelineConfig, *, fetcher=None) -> dict[str, Any]:
                 lon=meta["longitude"],
                 lat=meta["latitude"],
             )
-            summary.persist_summary(
+            pid = summary.persist_summary(
                 store,
                 wmo=wmo,
                 cycle=cycle,
@@ -152,8 +152,56 @@ def ingest(store, config: PipelineConfig, *, fetcher=None) -> dict[str, Any]:
                 longitude=meta["longitude"],
                 time=meta["time"],
             )
+            # Q&A figure: only the live fetch carries the full profile arrays the
+            # plot needs (the precomputed-summary path has scalars only).
+            _emit_profile_qa(
+                store,
+                pid,
+                wmo,
+                cycle,
+                config,
+                pres=v["PRES"],
+                bbp700=v.get("BBP700"),
+                chla=v.get("CHLA"),
+                mld=summ.get("mld"),
+            )
         written.append(f"{wmo}_{cycle}")
     return {"written": written, "skipped": skipped}
+
+
+def _emit_profile_qa(
+    store, profile_id, wmo, cycle, config: PipelineConfig, *, pres, bbp700, chla, mld
+) -> None:
+    """Best-effort Argo Q&A figure for a freshly-fetched profile.
+
+    Renders ``BBP700``/``CHLA`` vs pressure (MLD marked) to
+    ``config.out()/argo_qa/<wmo>_<cycle>.png`` and records the path in
+    ``mld_summary.qa_path`` so the report can surface it. Gated on
+    ``config.make_figures`` and fully guarded — a plotting failure (or no
+    plottable variable) must never abort ``ingest``.
+    """
+    if not config.make_figures:
+        return
+    try:
+        from pab.argo import qa
+
+        qadir = config.out() / "argo_qa"
+        qadir.mkdir(parents=True, exist_ok=True)
+        path = qadir / f"{wmo}_{cycle}.png"
+        qa.save_profile_qa(
+            path,
+            pres,
+            bbp700=bbp700,
+            chla=chla,
+            mld=mld,
+            title=f"WMO {wmo} / cycle {cycle}",
+        )
+        store.execute(
+            "UPDATE mld_summary SET qa_path = ? WHERE profile_id = ?",
+            (str(path), profile_id),
+        )
+    except Exception:  # noqa: BLE001 — the Q&A plot is a bonus artifact
+        pass
 
 
 def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
@@ -235,12 +283,22 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
     for r in rows:
         if r["figure_path"] and not config.replace:
             skipped.append(r["fit_id"])
+            # Cheap backfill: record an already-rendered scene (no re-render, no
+            # bing/granule), so existing runs surface scenes without --replace.
+            sp = figdir / f"{r['matchup_id']}_scene.png"
+            if sp.is_file():
+                store.execute(
+                    "UPDATE matchups SET scene_path = ? "
+                    "WHERE matchup_id = ? AND scene_path IS NULL",
+                    (str(sp), r["matchup_id"]),
+                )
             continue
         try:
             fpath = figdir / f"{r['fit_id']}_fit.png"
             fit_fig.fit_figure(store, r["fit_id"], outfile=fpath)
+            scene_path = None
             try:  # the scene is a bonus artifact; don't fail the fit figure on it
-                scene.scene_from_store(
+                scene_path = scene.scene_from_store(
                     store,
                     r["matchup_id"],
                     opener=opener,
@@ -252,17 +310,26 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
                 "UPDATE fits SET figure_path = ? WHERE fit_id = ?",
                 (str(fpath), r["fit_id"]),
             )
+            if scene_path is not None:
+                store.execute(
+                    "UPDATE matchups SET scene_path = ? WHERE matchup_id = ?",
+                    (str(scene_path), r["matchup_id"]),
+                )
             written.append(r["fit_id"])
         except Exception:  # noqa: BLE001 — one bad render must not abort the batch
             failed.append(r["fit_id"])
     return {"written": written, "skipped": skipped, "failed": failed}
 
 
-def report(store, config: PipelineConfig) -> dict[str, Any]:
-    """Stage 7: build the aggregate site and the (stub-published) release."""
+def report(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
+    """Stage 7: build the aggregate site and the (stub-published) release.
+
+    ``opener`` (forwarded by :func:`run` like the other stages) lets the report
+    add the OC4 band-ratio Chl cross-check, which re-reads each matchup's pixel.
+    """
     from pab.report import publish, rst
 
-    site = rst.build_site(store, config.out() / "site")
+    site = rst.build_site(store, config.out() / "site", opener=opener)
     release = publish.publish_release(store, config.out() / "release")
     return {
         "site": {k: str(v) for k, v in site.items()},
@@ -405,10 +472,17 @@ def main(argv=None) -> int:
         return 0
     if args.emit_site:
         # Standalone: (re)generate the RTD reporting-site sources from the store.
+        # With --download, reuse the local granule cache so the OC4 Chl cross-check
+        # (chl_oc) can be added without slow/uncertain out-of-region reads.
         from pab.report import rst
 
+        opener = None
+        if config.download:
+            from pab.pace.cloud import cached_opener
+
+            opener = cached_opener(config.cache())
         with Store.open(Path(args.db)) as store:
-            written = rst.build_site(store, args.emit_site)
+            written = rst.build_site(store, args.emit_site, opener=opener)
         print(f"emitted reporting site → {args.emit_site}")
         for name, path in sorted(written.items()):
             print(f"  {name}: {path}")

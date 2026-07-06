@@ -13,14 +13,20 @@ Aggregate pages, not per-matchup pages
 
 A hard design constraint: at ~10⁴ matchups PAB does **not** render one page per
 matchup (nor per float). :func:`pab.report.rst.build_site` emits a **fixed set**
-of pages — a landing/summary page (coverage counts + the headline sat-vs-float
-``b_bp`` and Chl metrics), a binned-results page, and a methods page — plus a
-**Sphinx ``conf.py``**, so the output directory is a **self-contained, buildable
-reporting site, separate from the developer docs** (build with ``sphinx-build
-<outdir> <outdir>/_build``). Per-matchup detail is reached on demand through the
-interactive figures, not pre-rendered. The binned-results tables are **sortable**
-Bokeh ``DataTable`` embeds when ``bokeh`` is available, falling back to static
-reStructuredText ``list-table`` (:func:`pab.report.rst.rst_table`) otherwise.
+of topical pages (:data:`~pab.report.rst.PAGE_STEMS`) — an **index** (what PAB is),
+a **summary** (coverage counts + headline sat-vs-float ``b_bp`` and Chl metrics), a
+**comparisons** page (the interactive scatters + matchup map), a **figures** page
+(the per-matchup fit / PACE scene / Argo Q&A thumbnail galleries), an
+**aggregates** page (binned tables + a matchup-quality table), a **methods** page
+(context + provenance), and a **downloads** page — plus a **Sphinx ``conf.py``**,
+so the output directory is a **self-contained, buildable reporting site, separate
+from the developer docs** (build with ``sphinx-build <outdir> <outdir>/_build``).
+The results are split across these pages so none is overloaded, but the set is
+still fixed — never one page per matchup. Per-matchup detail is reached on demand
+through the interactive figures, not pre-rendered. The binned-results tables are
+**sortable** Bokeh ``DataTable`` embeds when ``bokeh`` is available, falling back
+to static reStructuredText ``list-table`` (:func:`pab.report.rst.rst_table`)
+otherwise.
 
 Aggregation
 -----------
@@ -50,6 +56,26 @@ they work on static hosting with no Bokeh server. **Hover** shows each matchup's
 values; an optional **tap** opens the matchup's artifact by URL — this is how the
 site exposes per-matchup detail. Large scatter/maps use
 ``output_backend="webgl"``.
+
+``comparison_scatter`` is quantity-agnostic (``sat_col``/``insitu_col``), so the
+same function renders a **chlorophyll** scatter (``chl_bing`` vs Argo ``chla``)
+alongside ``b_bp``; its ``extra_series`` overlays the independent **OC4**
+band-ratio Chl (``chl_oc``) when a granule opener is supplied to
+:func:`~pab.report.rst.build_site`.
+
+Beyond the interactive plots, :mod:`pab.report.rst` surfaces the quality-assurance
+imagery and provenance the pipeline now records:
+
+* **Per-matchup fit figures**, **PACE scene quick-looks**
+  (:func:`~pab.report.rst.scene_gallery`, from ``matchups.scene_path``), and
+  **Argo profile Q&A** plots (:func:`~pab.report.rst.argo_qa_gallery`, from
+  ``mld_summary.qa_path``) — each an **N-guarded** thumbnail gallery
+  (:data:`~pab.report.rst.MAX_INLINE_FIGURES`) served from ``_static/`` via the
+  shared :func:`~pab.report.rst._stage_static` copier.
+* A **matchup-quality table** (:func:`~pab.report.rst.matchup_quality_table`:
+  distance / Δtime / spectra count) on the aggregates page.
+* A **provenance block** (:func:`~pab.report.rst.provenance_block`: ``pab_version``
+  + build date + :func:`pab.config.package_versions` table) on the methods page.
 
 Downloads, manifest & publishing
 --------------------------------

@@ -245,15 +245,145 @@ def test_build_site_embeds_figures_and_copies_them(tmp_path):
         )
         site = tmp_path / "site"
         rst.build_site(store, site)  # sortable=True -> interactive figures
-        summary = (site / "summary.rst").read_text()
-        # the interactive scatter/map are embedded on the landing page
-        assert "Figures" in summary and ".. raw:: html" in summary
-        # the per-matchup figure was copied into the static tree and linked
+        # interactive scatter/map live on the Comparisons page
+        assert ".. raw:: html" in (site / "comparisons.rst").read_text()
+        # the per-matchup figure gallery lives on the Figures page
+        figures = (site / "figures.rst").read_text()
         copied = site / "_static" / "figures" / "M1_fit.png"
         assert copied.exists()
-        assert "_static/figures/M1_fit.png" in summary  # gallery + tap-to-open URL
+        assert "_static/figures/M1_fit.png" in figures  # gallery + tap-to-open URL
         # conf serves the static tree
         assert 'html_static_path = ["_static"]' in (site / "conf.py").read_text()
+
+
+def test_build_site_embeds_chl_scatter(tmp_path):
+    pytest.importorskip("bokeh")
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        written = rst.build_site(store, tmp_path)  # sortable=True default
+        # both the b_bp and the Chl scatter are on the Comparisons page
+        comparisons = written["comparisons"].read_text()
+        assert "satellite vs in-situ b_bp" in comparisons
+        assert "satellite vs in-situ Chl" in comparisons
+
+
+def test_comparison_scatter_oc4_overlay():
+    pytest.importorskip("bokeh")
+    from pab.metrics import compare
+    from pab.report import interactive
+
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        df = compare.gather_matchups(store)
+        df = df.copy()
+        df["chl_oc"] = df["chla_argo"] * 1.1  # a synthetic OC4 cross-check series
+        fig = interactive.comparison_scatter(
+            df,
+            sat_col="chl_bing",
+            insitu_col="chla_argo",
+            label="Chl",
+            extra_series=[("chl_oc", "OC4 band-ratio Chl")],
+        )
+        script, _ = interactive.embed(fig)
+        assert "OC4 band-ratio Chl" in script  # the overlay legend is present
+
+
+def test_argo_qa_gallery_copies_and_links(tmp_path):
+    qa = tmp_path / "qa_src.png"
+    qa.write_bytes(b"fake-png")
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        store.execute(
+            "UPDATE mld_summary SET qa_path = ? WHERE profile_id = "
+            "(SELECT profile_id FROM profiles WHERE wmo = 7902226)",
+            (str(qa),),
+        )
+        site = tmp_path / "site"
+        out = rst.argo_qa_gallery(store, site)
+        assert "Argo profile Q&A" in out and "_static/argo_qa/" in out
+        assert (site / "_static" / "argo_qa" / "qa_src.png").exists()
+
+
+def test_argo_qa_gallery_empty_without_paths():
+    with Store.open(":memory:") as store:
+        _two_matchups(store)  # no qa_path set
+        assert rst.argo_qa_gallery(store, "unused") == ""
+
+
+def test_scene_gallery_copies_and_links(tmp_path):
+    scene = tmp_path / "scene_src.png"
+    scene.write_bytes(b"fake-png")
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        store.execute(
+            "UPDATE matchups SET scene_path = ? WHERE matchup_id = 'M1'", (str(scene),)
+        )
+        site = tmp_path / "site"
+        out = rst.scene_gallery(store, site)
+        assert "PACE scene quick-looks" in out and "_static/scenes/" in out
+        assert (site / "_static" / "scenes" / "scene_src.png").exists()
+
+
+def test_scene_gallery_empty_without_paths():
+    with Store.open(":memory:") as store:
+        _two_matchups(store)  # no scene_path set
+        assert rst.scene_gallery(store, "unused") == ""
+
+
+def test_matchup_quality_table():
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        out = rst.matchup_quality_table(store, sortable=False)
+        assert "Matchup quality" in out
+        assert "n_spectra" in out and "distance_km" in out
+
+
+def test_index_page_has_description_and_toctree():
+    out = rst.index_page()
+    assert "matchup analyses between PACE" in out  # reader-facing description
+    assert "What PAB does" in out and "What's on this site" in out
+    # clickable links off the main page to every content sub-page
+    for stem in ("summary", "comparisons", "figures", "aggregates", "methods",
+                 "downloads"):
+        assert f"<{stem}>" in out  # :doc:`Title <stem>` link
+    assert ".. toctree::" in out
+
+
+def test_downloads_page_stages_tables(tmp_path):
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        site = tmp_path / "site"
+        out = rst.downloads_page(store, site)
+        assert "Downloads" in out
+        csv = site / "_static" / "downloads" / "matchup_summary.csv"
+        assert csv.exists()
+        assert "_static/downloads/matchup_summary.csv" in out
+        assert "Nautilus S3" in out  # bulky artifacts noted as deferred
+
+
+def test_provenance_block_lists_versions():
+    out = rst.provenance_block(pab_version="9.9.test")
+    assert "Provenance" in out
+    assert "9.9.test" in out
+    assert "pab" in out and "version" in out  # the package-versions table
+
+
+def test_build_site_methods_has_provenance(tmp_path):
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        written = rst.build_site(store, tmp_path, sortable=False)
+        methods = written["methods"].read_text()
+        assert "Provenance" in methods and "Methods" in methods
+
+
+def test_summary_coverage_stats(tmp_path):
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        # give the matchups a separation so the medians render
+        store.execute("UPDATE matchups SET distance_km = 0.5, dtime_hours = 3.0")
+        summary = rst.summary_page(store)
+        assert "Profiles ingested:" in summary
+        assert "Median separation:" in summary and "Median Δtime:" in summary
 
 
 def test_figure_gallery_guarded_above_threshold():

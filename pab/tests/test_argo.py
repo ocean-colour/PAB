@@ -194,3 +194,17 @@ def test_qa_plot_produced(tmp_path):
         title="WMO 6903823 / cycle 387",
     )
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_qa_uses_headless_backend():
+    # regression: ingest renders Q&A figures alongside argopy worker threads, where
+    # an interactive (Tk) backend aborts the process. The backend must be Agg.
+    pytest.importorskip("matplotlib")
+    import os
+
+    import matplotlib
+
+    from pab.argo import qa  # noqa: F401 — importing forces matplotlib.use("Agg")
+
+    assert os.environ.get("MPLBACKEND") == "Agg"
+    assert matplotlib.get_backend().lower() == "agg"

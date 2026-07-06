@@ -1,0 +1,46 @@
+(os_313) profx> pab --stage ingest --replace
+/home/xavier/miniconda3/envs/os_313/lib/python3.13/site-packages/argopy/fetchers.py:194: UserWarning: BGC data support with the 'gdac' data source is still in Work In Progress
+  warnings.warn(
+/home/xavier/miniconda3/envs/os_313/lib/python3.13/site-packages/argopy/fetchers.py:795: FutureWarning: Note that the long name for institution is now in 'institution_name' while the 'institution' column will hold the institution code -- Deprecated since version 1.4
+  df = idx.to_dataframe()
+/home/xavier/miniconda3/envs/os_313/lib/python3.13/site-packages/argopy/fetchers.py:194: UserWarning: BGC data support with the 'gdac' data source is still in Work In Progress
+  warnings.warn(
+/home/xavier/miniconda3/envs/os_313/lib/python3.13/site-packages/argopy/fetchers.py:795: FutureWarning: Note that the long name for institution is now in 'institution_name' while the 'institution' column will hold the institution code -- Deprecated since version 1.4
+  df = idx.to_dataframe()
+/home/xavier/miniconda3/envs/os_313/lib/python3.13/site-packages/argopy/fetchers.py:194: UserWarning: BGC data support with the 'gdac' data source is still in Work In Progress
+  warnings.warn(
+/home/xavier/miniconda3/envs/os_313/lib/python3.13/site-packages/argopy/fetchers.py:795: FutureWarning: Note that the long name for institution is now in 'institution_name' while the 'institution' column will hold the institution code -- Deprecated since version 1.4
+  df = idx.to_dataframe()
+/home/xavier/miniconda3/envs/os_313/lib/python3.13/site-packages/argopy/fetchers.py:194: UserWarning: BGC data support with the 'gdac' data source is still in Work In Progress
+  warnings.warn(
+/home/xavier/miniconda3/envs/os_313/lib/python3.13/site-packages/argopy/fetchers.py:795: FutureWarning: Note that the long name for institution is now in 'institution_name' while the 'institution' column will hold the institution code -- Deprecated since version 1.4
+  df = idx.to_dataframe()
+/home/xavier/miniconda3/envs/os_313/lib/python3.13/site-packages/argopy/fetchers.py:194: UserWarning: BGC data support with the 'gdac' data source is still in Work In Progress
+  warnings.warn(
+Exception ignored in: <function Image.__del__ at 0x71cff0461300>
+Traceback (most recent call last):
+  File "/home/xavier/miniconda3/envs/os_313/lib/python3.13/tkinter/__init__.py", line 4242, in __del__
+    self.tk.call('image', 'delete', self.name)
+RuntimeError: main thread is not in main loop
+Exception ignored in: <function Variable.__del__ at 0x71cff05f6ac0>
+Traceback (most recent call last):
+  File "/home/xavier/miniconda3/envs/os_313/lib/python3.13/tkinter/__init__.py", line 414, in __del__
+    if self._tk.getboolean(self._tk.call("info", "exists", self._name)):
+RuntimeError: main thread is not in main loop
+Exception ignored in: <function Variable.__del__ at 0x71cff05f6ac0>
+Traceback (most recent call last):
+  File "/home/xavier/miniconda3/envs/os_313/lib/python3.13/tkinter/__init__.py", line 414, in __del__
+    if self._tk.getboolean(self._tk.call("info", "exists", self._name)):
+RuntimeError: main thread is not in main loop
+Exception ignored in: <function Variable.__del__ at 0x71cff05f6ac0>
+Traceback (most recent call last):
+  File "/home/xavier/miniconda3/envs/os_313/lib/python3.13/tkinter/__init__.py", line 414, in __del__
+    if self._tk.getboolean(self._tk.call("info", "exists", self._name)):
+RuntimeError: main thread is not in main loop
+Exception ignored in: <function Variable.__del__ at 0x71cff05f6ac0>
+Traceback (most recent call last):
+  File "/home/xavier/miniconda3/envs/os_313/lib/python3.13/tkinter/__init__.py", line 414, in __del__
+    if self._tk.getboolean(self._tk.call("info", "exists", self._name)):
+RuntimeError: main thread is not in main loop
+Tcl_AsyncDelete: async handler deleted by the wrong thread
+Aborted (core dumped)

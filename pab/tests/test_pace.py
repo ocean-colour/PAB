@@ -162,8 +162,9 @@ def test_download_granule_local_passthrough(tmp_path):
 
 
 def test_download_granule_idempotent_skips_network(tmp_path, monkeypatch):
-    # a cached granule is reused without invoking earthaccess.download
-    import earthaccess
+    # a cached granule is reused without invoking earthaccess.download.
+    # earthaccess is an optional dep (not in the lean CI env), so skip when absent.
+    earthaccess = pytest.importorskip("earthaccess")
 
     def _boom(*a, **k):  # pragma: no cover - must not be called
         raise AssertionError("earthaccess.download should not run for a cache hit")
