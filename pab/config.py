@@ -13,8 +13,9 @@ from pathlib import Path
 
 #: Version stamp recorded with every fit for provenance (see design §Provenance
 #: & versioning). Bumped as the analysis pipeline evolves; distinct from the
-#: packaging version in ``setup.py``.
-pab_version = "0.0.dev0"
+#: packaging version in ``setup.py``. ``1.0`` = the first full-pipeline release
+#: (all BGC-Argo × PACE), provenance-distinct from the ``0.0.dev0`` dev runs.
+pab_version = "1.0"
 
 #: Packages whose versions are captured per fit for reproducibility.
 _PROVENANCE_PACKAGES = (

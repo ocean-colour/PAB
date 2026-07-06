@@ -75,54 +75,85 @@ Read these before running — plus the **hard-won operational lessons** below.
 
 ## Prompts
 
-1. Execute the first task in Tasks below
+0. Execute the 0th task in Tasks below
+1. Execute the 1st task in Tasks below
 2. Execute the 2nd task in Tasks below
 3. Execute the 3rd task in Tasks below
 4. Execute the 4th task in Tasks below
 5. Execute the 5th task in Tasks below
 6. Execute the 6th task in Tasks below
 7. Execute the 7th task in Tasks below
+8. Execute the 8th task in Tasks below
+9. Execute the 9th task in Tasks below
 
 ## Tasks
 
-1. **Pin the run configuration (answer the Q&A first).** Record, for this
-   production run: the single canonical `$PAB_DATA_DIR` and `--db`; where it runs
-   (in-region `us-west-2` vs off-cloud `--download` + `--cache-dir`); the
-   `pab_version` for the release; and the profile-selection source. Confirm with
-   `pab --dry-run` (and `--download` echo) that the plan and paths are right.
-   Log the pinned config.
+0. **Converse.** ✅ *done* — See my answers to the Q&A first; understand them and
+   ask any additional questions before proceeding. Log your work.
 
-2. **Assemble the full profile selection.** Produce the production `--profiles-csv`
-   (the full BGC-Argo set per the Q&A scope), replacing the 10-row dev CSV.
-   Sanity-check the count, the WMO/cycle coverage, and the lat/lon/time spread
-   before committing to a multi-hour run. Log the selection size + provenance.
+1. **More conversation.** ✅ *done* — Confirm the Q6–Q9 answers and raise anything
+   remaining before pinning the config. Log your work.
 
-3. **Pilot on a subset first.** Before the full run, execute the whole pipeline on
-   a **small representative slice** (e.g. one region or a ~50-profile sample) end to
-   end — ingest → … → report — to shake out rate limits, disk, fit time, and the
-   published report at non-trivial N. Extrapolate the cost. Log the pilot metrics.
+   *Decisions locked (Q1–Q9):* off-cloud `--download` on `/mnt/tank` (9.8 TB free);
+   scope = all BGC floats with **`BBP700` or `CHLA`** over the PACE window (start =
+   earliest `PACE_OCI_L2_AOP` granule, end = today);
+   `$PAB_DATA_DIR=/mnt/tank/Oceanography/data/PAB` (fresh DB); `pab_version = 1.0`;
+   implement parallel `fit_batch` first; keep artifacts local; **monitor disk, no
+   eviction**.
 
-4. **Ingest + discover.** Run `pab --stage ingest` (argopy fetch, MLD summaries,
-   Argo Q&A figures) then `--stage discover` (CMR granule search). Expect argopy
-   slowness / CMR transient 500s; both stages are resumable, so re-run to continue.
-   Log counts (`profiles`, `granules`) and any failures.
+2. **Pin the run configuration.** Create `$PAB_DATA_DIR=/mnt/tank/Oceanography/data/PAB`
+   (fresh `pab.db`, distinct from the dev `…/Color/PAB`); bump `pab_version`
+   `0.0.dev0` → **`1.0`** in `pab/config.py` (and `setup.py` for consistency);
+   default to the off-cloud path (`--download`, `--cache-dir` under
+   `$PAB_DATA_DIR/granules`). Confirm with `pab --dry-run --download` that the plan,
+   `--db`, `--outdir`, and cache paths are right, and that the suite still passes
+   after the version bump. Log the pinned config.
 
-5. **Match + fit (the heavy stages).** Run `--stage match` (with `--download` if
-   off-cloud) to build matchups, then `--stage fit`. For the fit stage use the
-   parallel/batch approach decided in Q&A (or chunk + resume serially). Monitor
-   convergence on a sample (`diagnose-mcmc`). Log matchups written, fits
-   written/failed, and wall-clock.
+3. **Assemble the full profile selection (count first).** Determine the window
+   start = the **earliest available `PACE_OCI_L2_AOP` granule** (query live via
+   earthaccess), end = today. From the Argo **bgc index**
+   (`argopy.ArgoIndex(index_file='bgc-s')`), select every in-window profile from any
+   BGC float carrying **`BBP700` or `CHLA`**. **Report the count first** (floats,
+   profiles) before any per-profile fetch. Write the production `--profiles-csv` and
+   sanity-check WMO/cycle coverage + lat/lon/time spread. Log the selection size +
+   provenance.
 
-6. **Figure + report + publish.** Run `--stage figure` then `--stage report`;
+4. **Implement parallel `fit_batch` (per Q3).** Add matchup-level parallelism to the
+   `fit` stage (the `batch-fit-argo` pattern; BING `fit_batch` across cores) with a
+   cores/`--jobs` control; keep it idempotent/resumable (skip fits that already have
+   a `fit_id`). Tests; confirm identical results to the serial path on the dev set.
+   Do this **before** the pilot so the pilot measures parallel fit time. Log.
+
+5. **Pilot on a subset.** Run the whole pipeline on a small representative slice
+   (~50 profiles across regions/seasons) end to end — ingest → … → report — using
+   the parallel fitter, to shake out rate limits, disk, fit time, and the published
+   report at non-trivial N. **Extrapolate to the full N.** **Disk gate:** if
+   projected granules exceed the ~19k ceiling (9.8 TB ÷ ~0.5 GB), pause and decide
+   (more room on the 15 T volume, subsample, or revisit eviction) before the full
+   send. Log the pilot metrics + extrapolation.
+
+6. **Ingest + discover (full).** Run `pab --stage ingest` (argopy fetch, MLD
+   summaries, Argo Q&A figures) then `--stage discover` (CMR granule search). Expect
+   argopy slowness / transient CMR 500s; both stages resume on re-run. Log counts
+   (`profiles`, `granules`) and any failures.
+
+7. **Match + fit (the heavy stages).** Run `pab --stage match --download` to build
+   matchups (**monitor disk; warn near ~9.8 TB; no eviction** per Q9), then
+   `--stage fit` with the parallel fitter. Spot-check convergence (`diagnose-mcmc`).
+   Log matchups written, fits written/failed, wall-clock, and peak disk.
+
+8. **Figure + report + publish.** Run `--stage figure` then `--stage report`;
    `pab --emit-site report_site`; preview locally (`sphinx-build`), then commit
-   `report_site/` and push so RTD rebuilds. Confirm the summary coverage counts,
-   the scatters/map, and that the galleries N-guard sensibly at scale. Decide
-   bulky-artifact hosting (see Q&A). Log the published counts + the RTD build.
+   `report_site/` and push so RTD rebuilds. Keep bulky artifacts **local** (Q5);
+   publish the report + summary tables only. Confirm the summary coverage counts,
+   the scatters/map, and that the galleries N-guard sensibly at scale. Log the
+   published counts + the RTD build.
 
-7. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
-   quality, scene), confirm every record carries the release `pab_version`, update
-   `docs/design/PAB_implementation.md` if anything changed, and write a run report
-   (coverage, timings, failures, follow-ups). Log your work.
+9. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
+   quality, scene), confirm every record carries `pab_version = 1.0`, update
+   `docs/design/PAB_implementation.md`, and write the full-run report (coverage,
+   timings, failures, follow-ups — incl. the deferred Nautilus namespace/bucket
+   TODO). Log your work.
 
 ## Q&A
 
@@ -130,26 +161,59 @@ Read these before running — plus the **hard-won operational lessons** below.
 "full"? (e.g. *all* BGC-Argo floats with `BBP700`+`CHLA` over a time window; a set
 of regions; a specific float list; a date range aligned to PACE's mission, launched
 2024.) This decides N (matchups, disk, fit time) and everything downstream.
+>A. Let us run on all BGC-Argo floats during the PACE mission.
 
 **Q2 — Where do we run it?** In-region on AWS `us-west-2` (fast S3, the design
 target — recommended at scale) or off-cloud on the workstation with `--download`
 (reliable but ~0.5 GB/granule on disk and slower)? At ~10³⁺ granules the disk +
 time cost of off-cloud may be prohibitive.
+>A. I just cleared up >5Tb on my workstation. Let's use that.  Let me know if you need me to provide the path, but the parent is `/mnt/tank/Oceanography/data`.
 
 **Q3 — Fit parallelism?** Matchup-level parallel fitting is **not implemented** yet.
 For a big run, do we (a) implement parallel `fit_batch` across cores first
 (recommended; the `batch-fit-argo` pattern), (b) run serially and accept the wall
 clock, or (c) chunk with `--replace`-free resumes? (a) is likely required to finish
 in reasonable time.
+>A. Let's implement parallel `fit_batch` across cores first.
 
 **Q4 — `pab_version` for the release?** Bump from `0.0.dev0` to a tagged release
 version (e.g. `1.0`) so the production records are provenance-distinct from the dev
 runs? (Design: a new version adds records rather than overwriting.)
+>A. Let's bump from `0.0.dev0` to a tagged release version (e.g. `1.0`) so the production records are provenance-distinct from the dev runs.
 
 **Q5 — Bulky-artifact hosting.** A full run produces many MCMC-chain NPZs and
 figures. Nautilus S3 is still deferred (`HOWTO.md` §7b). Do we (a) keep them local
 and publish only the report + summary tables now, or (b) activate the Nautilus S3
 backend first so the report can link the artifacts by URL?
+>A. Let's keep them local and publish only the report + summary tables now.  Remind me to create a new Namespace for this on Nautilus.  And its own s3 bucket.
+
+---
+
+**Follow-ups (Task 0 — Claude, awaiting answers before Task 1):**
+
+**Q6 — PACE window start.** Pin the start to the **earliest available
+`PACE_OCI_L2_AOP` granule** (queried live) with end = today, or a fixed date (e.g.
+`2024-03-01`)? PACE launched 2024-02-08; OCI L2 ocean-color came slightly later.
+*(Lean: earliest-available.)*
+
+>A. Let's use the earliest available `PACE_OCI_L2_AOP` granule.
+
+**Q7 — "All floats" filter.** Require **`BBP700`** (the primary `b_bp` observable),
+using `CHLA` when present (i.e. skip floats with no backscatter)? And take **every**
+in-window profile from each qualifying float (no subsampling / cap)?
+*(Lean: require BBP700; all in-window profiles.)*
+>A. We can use any float with either BBP700 or CHLA. 
+
+**Q8 — Canonical data dir + version.** Use **`/mnt/tank/Oceanography/data/PAB`** as
+the production `$PAB_DATA_DIR` (a **fresh** `pab.db`, distinct from the dev
+`…/Color/PAB` DB), stamped `pab_version = 1.0`? *(Lean: yes.)*
+>A. yes
+
+**Q9 — Disk-bounding.** ~0.5 GB/granule × 5 TB ≈ a **~10k-granule ceiling**. Add
+**cache eviction** (delete each granule once its matchups are extracted) so disk
+stays bounded regardless of granule count, or just **monitor** and warn near 5 TB?
+*(Lean: add eviction for an unbounded "all floats" run.)*
+>A. Monitor and warn near 5 TB.
 
 ## Reports
 
@@ -166,3 +230,82 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-07-06 (Task 0 — reviewed the run decisions; raised follow-ups)
+
+Read the user's Q&A answers and confirmed understanding: (1) scope = **all**
+BGC-Argo floats over the PACE-mission window; (2) run **off-cloud** on the
+workstation (>5 TB freed under `/mnt/tank/Oceanography/data`) via `--download`, not
+in-region; (3) **implement parallel `fit_batch`** across cores before the fit stage;
+(4) bump `pab_version` `0.0.dev0` → **`1.0`**; (5) keep chains/figures **local**,
+publish report + summary tables only — with a standing reminder to **create a
+Nautilus namespace + S3 bucket** later.
+
+Flagged the scale reality: "all BGC floats with backscatter, 2024→now" is plausibly
+tens of thousands of profiles and thousands of matched granules; at ~0.5 GB/granule
+5 TB is a **~10k-granule ceiling**, and off-cloud reads are slow → a multi-day run.
+This is why the Task-3 pilot must precede the full send.
+
+Raised four follow-ups in the Q&A (Q6–Q9) before touching Task 1: PACE window start
+(earliest-available vs fixed), the "all floats" filter (require `BBP700`? all
+in-window profiles?), the canonical `$PAB_DATA_DIR`/version
+(`/mnt/tank/Oceanography/data/PAB`, fresh DB, v1.0), and disk-bounding (add cache
+eviction vs monitor). No code changed — conversational/planning step; awaiting
+answers before pinning the config.
+
+### 2026-07-06 (Task 1a — confirmed Q6–Q9 answers, verified ground truth)
+
+User answered the follow-ups: Q6 **earliest-available `PACE_OCI_L2_AOP` granule**
+as the window start (end = today); Q7 include any float with **`BBP700` *or*
+`CHLA`** (broader than my lean — some floats will contribute only a Chl or only a
+b_bp matchup, which the report already tolerates); Q8 **yes** —
+`/mnt/tank/Oceanography/data/PAB`, fresh DB, `pab_version = 1.0`; Q9 **monitor &
+warn**, no eviction.
+
+Verified ground truth (read-only): `/mnt/tank` has **9.8 TB free** (roomier than
+the 5 TB assumed → a ~19k-granule ceiling at ~0.5 GB each); `…/data/PAB` doesn't
+exist yet (created at pin time); the version string lives only in `pab/config.py`
+and `setup.py` — **no test pins `0.0.dev0`**, so the v1.0 bump is clean.
+
+Two plan refinements (no decision needed): (a) in Task 2, get a **count** of
+qualifying floats/profiles from the Argo bgc index *before* the expensive ingest;
+(b) a **post-pilot disk gate** — if the granule-per-matchup rate extrapolates past
+~19k granules, pause and decide (more room on the 15 T volume, subsample, or revisit
+eviction) rather than overrun. Reminded the user to create the Nautilus namespace +
+S3 bucket (Q5). No blocking questions remain; ready to pin the config. No code
+changed.
+
+### 2026-07-06 (Task list update — inserted the parallel-fit task, baked in decisions)
+
+Tidied Prompts/Tasks now that the Q&A is resolved: marked tasks 0/1 (the two
+converse steps) **done**; added a **new Task 4 — "Implement parallel `fit_batch`"**
+(per Q3) *before* the pilot so the pilot measures parallel fit time; renumbered the
+pilot → 5, ingest+discover → 6, match+fit → 7, figure+report+publish → 8,
+verify → 9; extended the Prompts list to 0–9 to match. Baked the locked decisions
+into the task text so each is self-contained: `$PAB_DATA_DIR=/mnt/tank/Oceanography/data/PAB`
++ fresh DB + `pab_version=1.0` (Task 2); earliest-`PACE_OCI_L2_AOP`-granule window +
+`BBP700`-or-`CHLA` filter + count-first (Task 3); `--download` + monitor-disk /
+no-eviction with a post-pilot disk gate (Tasks 5/7); keep-artifacts-local (Task 8).
+No code changed — doc maintenance.
+
+### 2026-07-06 (Task 2 — pinned the run configuration; bumped to v1.0)
+
+Pinned the production config and verified it:
+
+- **Data dir:** created `/mnt/tank/Oceanography/data/PAB` (+ `granules/` cache) —
+  fresh, no `pab.db` yet, distinct from the dev `…/Color/PAB`.
+- **Paths (dry-run confirmed):** `--db /mnt/tank/Oceanography/data/PAB/pab.db`,
+  `--outdir …/pipeline`, `--cache-dir …/granules`, off-cloud `--download`, full
+  stage order `ingest → … → report`.
+- **Version bump:** `pab_version` `0.0.dev0` → **`1.0`** in `pab/config.py` and the
+  packaging version in `setup.py`. Suite still green (**145 passed** in `os_313`).
+
+Pinned invocation for the run:
+`PAB_DATA_DIR=/mnt/tank/Oceanography/data/PAB pab --db $PAB_DATA_DIR/pab.db --download …`
+(the explicit `--db` guards against the Stage-9 two-DB split).
+
+Provenance nuance flagged to the user: the record **stamp** (`pab.config.pab_version`)
+is `1.0`, but `package_versions()["pab"]` still reads `0.0.dev0` (installed dist
+metadata) until `pip install -e . --no-deps` is re-run — do that before the run so
+the Methods provenance table matches the stamp. Not blocking. Profiles CSV is Task 3.
+Code changed: version bump only (config.py, setup.py).
