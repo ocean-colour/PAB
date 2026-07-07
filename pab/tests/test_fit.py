@@ -174,6 +174,60 @@ def test_build_fits_records_failed_without_aborting():
         assert store.count("fits") == 0  # the failed fit wrote nothing
 
 
+def _stub_fit_only(wave, Rrs, Rrs_unc, chl, config):
+    """A deterministic, picklable stand-in for the real per-spectrum fit."""
+    return _fake_result()
+
+
+def test_build_fits_parallel_matches_serial(tmp_path, monkeypatch):
+    # The parallel path must persist exactly the fits the serial path would — same
+    # fit_ids, same rows. Stub the (stochastic, bing-backed) compute with a
+    # deterministic result and farm it across 2 processes; extraction + all DB
+    # writes stay in the parent.
+    from pab.tests.test_pace import make_granule
+
+    monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)  # chains -> tmp, not DATA_DIR
+    monkeypatch.setattr(run, "_fit_only", _stub_fit_only)
+
+    with Store.open(":memory:") as store:
+        _seed_matchup(store)  # 7902226_5_G1
+        pid2 = persist_summary(
+            store,
+            wmo=7902226,
+            cycle=6,
+            summary={"mld": 30.0, "mld_method": "x", "chla": 0.1, "n_points": 6},
+            latitude=21.0,
+            longitude=-51.0,
+            time="2025-05-02T12:00:00",
+        )
+        store.upsert("granules", {"granule_id": "G2", "data_url": "s3://b/G2.nc"})
+        store.upsert(
+            "matchups",
+            {
+                "matchup_id": "7902226_6_G2",
+                "profile_id": pid2,
+                "granule_id": "G2",
+                "n_spectra": 1,
+            },
+        )
+        store.upsert(
+            "matchup_pixels",
+            {"matchup_id": "7902226_6_G2", "ix": 2, "iy": 2, "rank": 1, "flagged": 0},
+        )
+        out = run.build_fits(store, opener=lambda _s: make_granule(), jobs=2)
+        expected = {
+            run.make_fit_id("7902226_5_G1", 2, 2, "ExpBPow"),
+            run.make_fit_id("7902226_6_G2", 2, 2, "ExpBPow"),
+        }
+        assert set(out["written"]) == expected
+        assert out["failed"] == [] and out["skipped"] == []
+        assert store.count("fits") == 2
+        assert store.count("fit_results") == 4  # 2 quantities × 2 fits
+        # resumable: a second parallel pass skips both (idempotent by fit_id)
+        again = run.build_fits(store, opener=lambda _s: make_granule(), jobs=2)
+        assert set(again["skipped"]) == expected and again["written"] == []
+
+
 def test_save_load_chains_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
     res = _fake_result()

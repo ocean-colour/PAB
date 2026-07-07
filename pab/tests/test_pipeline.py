@@ -203,6 +203,11 @@ def test_cli_parser_stage_subset():
     assert args.stages == ["match", "fit"]
 
 
+def test_cli_parser_jobs():
+    assert pipeline.build_parser().parse_args([]).jobs == 1  # serial default
+    assert pipeline.build_parser().parse_args(["--jobs", "8"]).jobs == 8
+
+
 def test_emit_profile_qa_writes_and_records(tmp_path):
     # the Q&A figure is rendered to outdir/argo_qa and its path recorded in the DB
     import numpy as np

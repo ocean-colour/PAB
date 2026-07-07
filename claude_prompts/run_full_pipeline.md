@@ -309,3 +309,27 @@ is `1.0`, but `package_versions()["pab"]` still reads `0.0.dev0` (installed dist
 metadata) until `pip install -e . --no-deps` is re-run — do that before the run so
 the Methods provenance table matches the stamp. Not blocking. Profiles CSV is Task 3.
 Code changed: version bump only (config.py, setup.py).
+
+### 2026-07-06 (Task 3 — assembled the full profile selection, count first)
+
+**Window start** (queried live via earthaccess): earliest `PACE_OCI_L2_AOP` granule
+= **2024-03-05**; end = today. **Selection** from the Argo synthetic-profile index
+(`ArgoIndex(index_file="bgc-s")`, 394,641 rows, loaded in ~6 s): every in-window
+profile whose `parameters` list contains **`BBP700` or `CHLA`**.
+
+**Count (reported before any per-profile fetch):** **55,305 profiles / 882 floats**;
+after dropping 799 asc/desc `(wmo,cycle)` duplicates → **54,506 profiles** written.
+Global coverage (lat −77.6→79, lon ±180; Pacific 23.8k / Atlantic 20.3k / Indian
+10.2k); profiles/float min 1, median 62, max 398.
+
+**Output:** `/mnt/tank/Oceanography/data/PAB/full_profiles.csv` (columns
+`wmo,cycle,date,latitude,longitude`; kept in `$PAB_DATA_DIR`, out of git). No
+existing "select-all-BGC" helper in `pab` (dev CSV was hand-picked), so this was a
+one-off script over `ArgoIndex`; `search_params` doesn't exist in argopy 1.4, so I
+token-filtered the `parameters` column in pandas.
+
+Learning / flag: **54.5k profiles is a very large run** — ingest (argopy fetch each)
++ discover (CMR query each) alone is multi-day; matched granules feed the ~19k
+disk ceiling. **Task 5 (pilot) must extrapolate before the full send**, and
+subsampling the 882 floats is a live option if the projected cost/disk is
+prohibitive. No package code changed (one-off selection script only).

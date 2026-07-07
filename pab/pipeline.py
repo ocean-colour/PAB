@@ -68,6 +68,7 @@ class PipelineConfig:
     replace: bool = False
     download: bool = False
     cache_dir: str | Path | None = None
+    jobs: int = 1  # matchup-level parallel processes for the fit stage (1 = serial)
 
     def out(self) -> Path:
         """The resolved base output directory."""
@@ -261,7 +262,13 @@ def fit(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
     """Stage 5: fit each matchup with BING (idempotent by ``fit_id``)."""
     from pab.fit.run import build_fits
 
-    return build_fits(store, opener=opener, config=config.fit, replace=config.replace)
+    return build_fits(
+        store,
+        opener=opener,
+        config=config.fit,
+        replace=config.replace,
+        jobs=config.jobs,
+    )
 
 
 def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
@@ -434,6 +441,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Granule download cache dir (default DATA_DIR/granules).",
     )
     p.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Parallel processes for the fit stage (matchup-level; 1 = serial).",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the stage plan and exit without touching anything.",
@@ -461,6 +474,7 @@ def main(argv=None) -> int:
         make_figures=not args.no_figures,
         download=args.download,
         cache_dir=args.cache_dir,
+        jobs=args.jobs,
     )
     stages = args.stages or list(STAGES)
     if args.dry_run:
