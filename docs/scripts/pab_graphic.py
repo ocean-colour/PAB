@@ -218,7 +218,7 @@ def mini_curve(ax, T, x0, y0, w, h, title):
                  zorder=7))
     wl, rrs = rrs_spectrum()
     xs = x0 + 0.12 * w + 0.76 * w * (wl - wl.min()) / np.ptp(wl)
-    ys = y0 + 0.20 * h + 0.58 * h * rrs
+    ys = y0 + 0.14 * h + 0.50 * h * rrs   # lowered to clear the panel title
     ax.plot(xs, ys, color=T["rrs"], lw=3.2, zorder=8, solid_capstyle="round")
     ax.text(x0 + w / 2, y0 + h - 1.6, title, ha="center", va="top",
             color=T["ink"], fontsize=16, zorder=8)
@@ -233,7 +233,8 @@ def iop_callout(ax, T, x0, y0, w, h):
                  fc=T["panel"], ec=T["panel_edge"], lw=1.3, alpha=0.96,
                  zorder=7))
     wl, a, bb = iop_spectra()
-    xs = x0 + 0.13 * w + 0.74 * w * (wl - wl.min()) / np.ptp(wl)
+    # leave a right-hand margin so the a_nw / b_b,nw labels sit off the curves
+    xs = x0 + 0.10 * w + 0.64 * w * (wl - wl.min()) / np.ptp(wl)
 
     def place(v, lo=0.20, hi=0.66):
         return y0 + lo * h + hi * h * v
@@ -249,10 +250,10 @@ def iop_callout(ax, T, x0, y0, w, h):
     ax.text(x0 + w / 2, y0 + h - 1.7, "BING retrieval",
             ha="center", va="top", color=T["ink"], fontsize=17,
             fontweight="bold", zorder=9)
-    ax.text(x0 + w - 1.6, ya[-1] + 0.8, r"$a_{nw}$", color=T["iop_a"],
-            fontsize=16, va="center", ha="right", zorder=9)
-    ax.text(x0 + w - 1.6, ybb[-1] - 1.6, r"$b_{b,nw}$", color=T["iop_b"],
-            fontsize=16, va="center", ha="right", zorder=9)
+    ax.text(xs[-1] + 1.1, ya[-1], r"$a_{nw}$", color=T["iop_a"],
+            fontsize=16, va="center", ha="left", zorder=9)
+    ax.text(xs[-1] + 1.1, ybb[-1], r"$b_{b,nw}$", color=T["iop_b"],
+            fontsize=16, va="center", ha="left", zorder=9)
     ax.text(x0 + w / 2, y0 + 1.4, "IOPs + uncertainties", ha="center",
             va="bottom", color=T["ink2"], fontsize=15, zorder=9)
 
@@ -279,7 +280,7 @@ def build(theme="dark", out_path=None):
     ax.set_ylim(0, 100)
     ax.axis("off")
 
-    SEA = 66.0  # sea-surface height
+    SEA = 60.0  # sea-surface height (lowered to enlarge the sky/top imagery)
     # sky + sea gradients
     vgrad(ax, 0, 100, SEA, 100, T["sky_top"], T["sky_bot"], z=0)
     vgrad(ax, 0, 100, 0, SEA, T["sea_top"], T["sea_bot"], z=0)
@@ -295,9 +296,9 @@ def build(theme="dark", out_path=None):
 
     # ---- geometry anchors -------------------------------------------------
     foot_x = 51.0            # PACE footprint center at the surface
-    sat_x, sat_y = 68.0, 90.0
-    sun_x, sun_y = 50.0, 92.5
-    float_x, float_y = foot_x, 30.0
+    sat_x, sat_y = 64.0, 91.0
+    sun_x, sun_y = 50.0, 94.0
+    float_x, float_y = foot_x, 32.0
 
     # matched water column (surface footprint -> below the float): glowing band
     col_w = 11.0
@@ -335,15 +336,16 @@ def build(theme="dark", out_path=None):
             arrowstyle="-|>", mutation_scale=16, color=T["rrs"], lw=2.6,
             alpha=0.9, zorder=3, connectionstyle="arc3,rad=0.08"))
     # label kept in clear sky, off the arrows
-    label(ax, T, 37.0, 80.5, "water-leaving", size=16, weight="normal",
+    label(ax, T, 41.0, 78.0, "water-leaving", size=16, weight="normal",
           ha="center", color=T["rrs"])
-    label(ax, T, 37.0, 75.6, r"$R_{rs}(\lambda)$", size=18, weight="normal",
+    label(ax, T, 41.0, 73.0, r"$R_{rs}(\lambda)$", size=18, weight="normal",
           ha="center", color=T["rrs"])
 
-    # real PACE ocean-color inset + illustrative Rrs panel (both enlarged)
-    rounded_image(ax, T, img, 73.5, 68.6, 24.5, 18.0,
+    # real PACE ocean-color inset + illustrative Rrs panel (both enlarged,
+    # made possible by the lowered sea surface)
+    rounded_image(ax, T, img, 70.0, 62.0, 27.5, 23.0,
                   "PACE / OCI  ·  ocean color")
-    mini_curve(ax, T, 2.5, 68.6, 30.0, 19.0, "hyperspectral Rrs, ~340–895 nm")
+    mini_curve(ax, T, 2.5, 62.0, 34.0, 23.0, "hyperspectral Rrs, ~340–895 nm")
 
     # ---- BGC-Argo float + depth profile ----------------------------------
     draw_float(ax, T, float_x, float_y)
@@ -357,17 +359,17 @@ def build(theme="dark", out_path=None):
             solid_capstyle="round")   # soft glow
     ax.plot(px, pz, color=T["float_stripe"], lw=3.2, zorder=5,
             solid_capstyle="round")
-    # profile labels parked in the open water to the left (off the curve)
-    label(ax, T, 15.0, 60.0, r"$b_{bp}\,\cdot\,$Chl$\,\cdot\,$T/S", size=16,
-          weight="normal", ha="center", color=T["ink2"])
-    label(ax, T, 15.0, 55.0, "profile (z)", size=16, weight="normal",
-          ha="center", color=T["ink2"])
+    # profile labels near the curve (to its left), in the darker primary ink
+    label(ax, T, 22.0, 50.0, r"$b_{bp}\,\cdot\,$Chl$\,\cdot\,$T/S", size=16,
+          weight="normal", ha="center", color=T["ink"])
+    label(ax, T, 22.0, 45.0, "profile (z)", size=16, weight="normal",
+          ha="center", color=T["ink"])
 
     # actor labels, kept in open space (not on lines/curves)
-    label(ax, T, sat_x, sat_y + 7.2, "PACE satellite", size=19)
-    label(ax, T, 64.0, 33.0, "BGC-Argo\nfloat", size=19)
+    label(ax, T, sat_x, sat_y + 6.5, "PACE satellite", size=19)
+    label(ax, T, 60.0, 46.0, "BGC-Argo\nfloat", size=19)
     # matched-column label in a readable pill (was low-contrast on the column)
-    ax.text(foot_x, 62.8, "matched water column", ha="center", va="center",
+    ax.text(foot_x, 57.5, "matched water column", ha="center", va="center",
             fontsize=16, fontweight="bold", color=T["ink"], zorder=10,
             bbox=dict(boxstyle="round,pad=0.5", fc=T["panel"],
                       ec=T["surface"], lw=1.8, alpha=0.95))
@@ -381,7 +383,8 @@ def build(theme="dark", out_path=None):
 
     # ---- title / branding -------------------------------------------------
     label(ax, T, 3.0, 96.0, "PAB", size=42, ha="left")
-    label(ax, T, 3.5, 89.4, "PACE × BGC-Argo matchup analyses", size=20,
+    # spelled-out acronym: PAB = PACE And BGC-Argo
+    label(ax, T, 3.5, 89.4, "PACE and BGC-Argo matchup analyses", size=20,
           weight="normal", ha="left", color=T["ink2"])
     label(ax, T, 97.5, 2.2, "Sea Meets the Stars  ·  ocean-colour/PAB",
           size=14, weight="normal", ha="right", color=T["foot"])

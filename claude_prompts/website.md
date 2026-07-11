@@ -11,6 +11,9 @@ This prompt doc will be used to update the websites for the PAB GitHub Repositor
 2. Read this file.  Execute the 2nd task under "GitHub Website"
 4. Read this file.  Execute the 4th task under "GitHub Website"
 5. Read this file.  Execute the 5th task under "GitHub Website"
+6. Read this file.  Execute the 6th task under "GitHub Website"
+7. Read this file.  Execute the 7th task under "GitHub Website"
+8. Read this file.  Execute the 8th task under "GitHub Website"
 
 ## GitHub Website
 
@@ -45,6 +48,27 @@ In addition, create a new graphic which summarizes the project.  Use your imagin
     - The BGC-Argo float should have a longer aspect ratio.
     - The "matched water column" text is too hard to read
     - Most of the text needs to be larger still
+    - Log your work.
+
+6. Almost there.  Now:
+
+    - The a_nw in the BING retrieval panel is on the curve and hard to read.  Move it to the right
+    - Move the BGC-Argo float text up and off the BING retrieval panel
+    - Make the bbp, Chl, and T-S text darker
+    - Move the Rrs curve down a little so it is off the "hyperspectral" text
+    - Move the water surface down a bit so you can make the images up top larger. do so
+    - Log your work.
+
+7. Hopefully the last edits for now:
+
+    - You moved the BGC-Argo float text up too high.  Move it down a bit
+    - Move the "water-leaving Rrs(λ)" text a little to the left
+    - Move the "bbp / Chl / T-S" text closer to the profile curve
+    - Log your work.
+
+8. Last one for now
+
+    - Spell out PAB (PACE and BGC-Argo)
     - Log your work.
 
 ### Q&A
@@ -241,3 +265,53 @@ Re-rendered both themes (~495 KB each) and verified in light and dark: the
 caption, pill, and long float all read cleanly and nothing collides. README
 still needs no change (same file names). The `--real` (data-backed) variant
 remains available if wanted.
+
+### 2026-07-11 (Graphic fine-tuning pass — task 6)
+
+Applied JXP's third edit list to `docs/scripts/pab_graphic.py`:
+
+- **`a_nw` moved right, off the curve** — the a_nw label sat on the aph
+  fluorescence bump near the right end of the BING panel. Compressed the IOP
+  curves into the left ~64% of the panel (xs range 0.74→0.64 of width) and moved
+  both the `a_nw` and `b_b,nw` labels into the clear right-hand margin,
+  left-aligned just past each curve's endpoint.
+- **"BGC-Argo float" text up and off the BING panel** — was at (64, 33), which
+  overlapped the BING panel's top-left corner. Moved up-and-left to (60, 51),
+  above the float and clear of both the panel and the float's up-arrow.
+- **Darker bbp/Chl/T-S labels** — switched the profile labels from the muted
+  secondary ink (`ink2`) to the primary ink (`ink`) for maximum contrast in both
+  themes.
+- **Lowered the Rrs curve** — in `mini_curve()`, dropped the curve baseline and
+  amplitude (0.20+0.58h → 0.14+0.50h) so the blue-green peak clears the
+  "hyperspectral Rrs…" panel title.
+- **Lowered the sea surface + enlarged the top imagery** — `SEA` 66→60, opening
+  up the sky. Grew the PACE inset (24.5×18 → 27.5×23) and the Rrs panel
+  (30×19 → 34×23), and re-anchored the sun/satellite and the underwater
+  elements (profile, float, matched-column pill) to the new surface height.
+
+Re-rendered and verified both themes (~585 KB each). README unchanged (same
+file names). The `--real` data-backed variant is still on the table.
+
+### 2026-07-11 (Graphic nudge pass — task 7)
+
+Three position tweaks in `docs/scripts/pab_graphic.py`:
+
+- **"BGC-Argo float" label lowered** — task 6 moved it up too far (y 51); brought
+  it back down to y 46, so it sits beside the float rather than floating high.
+- **"water-leaving Rrs(λ)" moved left** — x 46 → 41, further from the upwelling
+  arrows and into clearer sky.
+- **"bbp / Chl / T-S · profile(z)" moved closer to the profile curve** — x 16 →
+  22, so the labels read as belonging to the orange bbp(z) curve (kept just left
+  of the curve so they don't sit on it).
+
+Re-rendered and verified both themes. README unchanged (same file names).
+
+### 2026-07-11 (Spell out the acronym — task 8)
+
+Changed the graphic's subtitle in `docs/scripts/pab_graphic.py` from
+"PACE × BGC-Argo matchup analyses" to **"PACE and BGC-Argo matchup analyses"**.
+This spells out the acronym literally — PAB = **P**ACE **a**nd **B**GC-Argo —
+using "and" in place of the "×" so the three initials read straight off the
+tagline under the big "PAB" title. Re-rendered both themes; no overflow, layout
+otherwise unchanged. (The README tagline already reads "PACE and BGC-Argo
+matchup analyses", so it needed no change.)
