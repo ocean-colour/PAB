@@ -14,6 +14,8 @@ tests).
 
 from __future__ import annotations
 
+import contextlib
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,6 +23,21 @@ import numpy as np
 
 from pab.fit import artifacts as _artifacts
 from pab.fit.models import FitConfig, build_models, model_param_names
+
+
+@contextlib.contextmanager
+def _quiet():
+    """Silence a wrapped call's stdout/stderr.
+
+    BING's ``run_emcee`` hard-codes emcee ``progress=True`` (tqdm bars) and prints
+    status lines; across many parallel workers that floods the console. We can't
+    pass a flag through ``fit_one``, so redirect both streams to ``os.devnull``
+    around the MCMC call. Only *printed* output is dropped — exceptions still
+    propagate, so failures remain diagnosable.
+    """
+    with open(os.devnull, "w") as devnull:
+        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+            yield
 
 #: Reference wavelengths (nm) at which derived IOP scalars are reported. 700 nm
 #: is the BGC-Argo ``BBP700`` band — the primary matchup observable.
@@ -271,13 +288,14 @@ def fit_spectrum(
     pdict = bing_inf.init_mcmc(models, nsteps=config.nsteps, nburn=config.nburn)
     pdict["Chl"] = np.array([chl_val if chl_val is not None else 0.0])
     pdict["Y"] = np.array([Y if Y is not None else 0.0])
-    sampler, _ = bing_inf.fit_one(
-        (Rrs_w, varRrs_w, p_best, 0),
-        models=models,
-        pdict=pdict,
-        chains_only=False,
-        rt_dict=rt_dict,
-    )
+    with _quiet():  # suppress BING's tqdm bars + status prints (see _quiet)
+        sampler, _ = bing_inf.fit_one(
+            (Rrs_w, varRrs_w, p_best, 0),
+            models=models,
+            pdict=pdict,
+            chains_only=False,
+            rt_dict=rt_dict,
+        )
     chains = np.asarray(sampler.get_chain(), dtype=float)
     accept_frac = float(np.mean(sampler.acceptance_fraction))
 
@@ -530,11 +548,16 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
     out. In-flight futures are bounded (~2×``jobs``) so completed chains are drained
     and persisted promptly rather than piling up in memory.
     """
+    import multiprocessing as mp
     from collections import defaultdict
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
     from pab.pace import cloud
     from pab.pace import extract as _extract
+
+    # 'spawn' avoids fork-in-a-multithreaded-parent deadlocks (Py3.13 warns on
+    # fork here); workers re-import cleanly and `_fit_only` pickles by qualname.
+    ctx = mp.get_context("spawn")
 
     by_source: dict[str, list[dict]] = defaultdict(list)
     for inp in inputs:
@@ -551,7 +574,9 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
         except Exception:  # noqa: BLE001
             failed.append(inp["fit_id"])
 
-    with ProcessPoolExecutor(max_workers=jobs, initializer=_worker_init) as ex:
+    with ProcessPoolExecutor(
+        max_workers=jobs, mp_context=ctx, initializer=_worker_init
+    ) as ex:
         for source, group in by_source.items():
             try:
                 ds = cloud.open_granule(source, opener=opener)

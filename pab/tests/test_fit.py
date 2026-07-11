@@ -174,6 +174,19 @@ def test_build_fits_records_failed_without_aborting():
         assert store.count("fits") == 0  # the failed fit wrote nothing
 
 
+def test_quiet_suppresses_stdout_and_stderr(capsys):
+    import sys
+
+    with run._quiet():
+        print("tqdm-like bar")
+        print("status line", file=sys.stderr)
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""
+    # streams are restored afterwards
+    print("visible again")
+    assert "visible again" in capsys.readouterr().out
+
+
 def _stub_fit_only(wave, Rrs, Rrs_unc, chl, config):
     """A deterministic, picklable stand-in for the real per-spectrum fit."""
     return _fake_result()

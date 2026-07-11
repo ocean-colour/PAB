@@ -80,6 +80,13 @@ def test_moving_median_rejects_even_window():
         summary.moving_median([1, 2, 3], window=2)
 
 
+def test_moving_median_handles_scalar_profile():
+    # a profile with a single BBP700/CHLA sample arrives 0-dimensional; slicing a
+    # 0-d array used to raise IndexError and abort the whole ingest (pilot bug).
+    out = summary.moving_median(3.0)
+    assert out.shape == (1,) and out[0] == pytest.approx(3.0)
+
+
 # -- mixed-layer average ----------------------------------------------------
 def test_mixed_layer_mean_correctness():
     pres = np.array([5.0, 10.0, 20.0, 30.0])

@@ -124,7 +124,9 @@ Read these before running — plus the **hard-won operational lessons** below.
    a `fit_id`). Tests; confirm identical results to the serial path on the dev set.
    Do this **before** the pilot so the pilot measures parallel fit time. Log.
 
-5. **Pilot on a subset.** Run the whole pipeline on a small representative slice
+5. **Suppress tqdm progress bars.** Suppress the tqdm progress bars in the BING fitter.  Log your work.
+
+6. **Pilot on a subset.** Run the whole pipeline on a small representative slice
    (~50 profiles across regions/seasons) end to end — ingest → … → report — using
    the parallel fitter, to shake out rate limits, disk, fit time, and the published
    report at non-trivial N. **Extrapolate to the full N.** **Disk gate:** if
@@ -132,30 +134,67 @@ Read these before running — plus the **hard-won operational lessons** below.
    (more room on the 15 T volume, subsample, or revisit eviction) before the full
    send. Log the pilot metrics + extrapolation.
 
-6. **Ingest + discover (full).** Run `pab --stage ingest` (argopy fetch, MLD
+7. **Ingest + discover (full).** Run `pab --stage ingest` (argopy fetch, MLD
    summaries, Argo Q&A figures) then `--stage discover` (CMR granule search). Expect
    argopy slowness / transient CMR 500s; both stages resume on re-run. Log counts
    (`profiles`, `granules`) and any failures.
 
-7. **Match + fit (the heavy stages).** Run `pab --stage match --download` to build
+8. **Match + fit (the heavy stages).** Run `pab --stage match --download` to build
    matchups (**monitor disk; warn near ~9.8 TB; no eviction** per Q9), then
    `--stage fit` with the parallel fitter. Spot-check convergence (`diagnose-mcmc`).
    Log matchups written, fits written/failed, wall-clock, and peak disk.
 
-8. **Figure + report + publish.** Run `--stage figure` then `--stage report`;
+9. **Figure + report + publish.** Run `--stage figure` then `--stage report`;
    `pab --emit-site report_site`; preview locally (`sphinx-build`), then commit
    `report_site/` and push so RTD rebuilds. Keep bulky artifacts **local** (Q5);
    publish the report + summary tables only. Confirm the summary coverage counts,
    the scatters/map, and that the galleries N-guard sensibly at scale. Log the
    published counts + the RTD build.
 
-9. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
+10. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
    quality, scene), confirm every record carries `pab_version = 1.0`, update
    `docs/design/PAB_implementation.md`, and write the full-run report (coverage,
    timings, failures, follow-ups — incl. the deferred Nautilus namespace/bucket
    TODO). Log your work.
 
 ## Q&A
+
+**Q11 — Discover-count is in: 124,218 unique granules = 18.55 TB (~2× the 9.8 TB
+free). Off-cloud download is infeasible. How do we run the matchups?** Pick a path
+(answer inline):
+
+- **B — In-region AWS `us-west-2` + lazy S3.** The design target. `open_s3` reads
+  only the ~MB pixel chunks per matchup — **no 18.55 TB download**, dramatically
+  faster. Needs a `us-west-2` instance with the repo + `~/.netrc`. *(My
+  recommendation.)*
+- **C — Subsample the 882 floats** to a tractable set (e.g. 1 profile/float/month,
+  a region, or top-N floats) so the download fits off-cloud. No longer "all
+  floats", but stays on the workstation.
+- **D — Eviction, off-cloud.** Delete each granule after extraction so disk stays
+  bounded — but the full 18.55 TB still transits the network and match is serial
+  (~weeks); would also need to parallelize `match`. Slowest.
+
+>A. 
+
+**Q10 — Post-pilot gate: how do we proceed with the full run?** The pilot shows the
+full **off-cloud `--download`** run projects to **~8–41 TB and ~11–56 days** — match
+(granule downloads), not the fit, is the bottleneck, and it's at/over the 9.8 TB
+ceiling. Pick a path (answer inline):
+
+- **A — Discover-first, then decide.** Run `discover` on all 54,506 profiles
+  (~10 h, cheap CMR queries, resumable) to get the **true unique-granule count**
+  (accounts for cross-profile sharing). Then compute exact disk/time and choose.
+  De-risks before any download. *(My recommendation.)*
+- **B — Switch to in-region `us-west-2` + lazy S3.** The design target: `open_s3`
+  reads only the needed chunks, no multi-TB download, far faster. Needs a cloud
+  instance (revisits Q2's off-cloud choice).
+- **C — Subsample the selection.** Reduce scope to fit disk/time (e.g. one region,
+  1 profile/float/month, or top-N floats). Off-cloud but no longer "all floats".
+- **D — Cache eviction, stay off-cloud.** Delete each granule after its matchups
+  are extracted (revisits Q9). Bounds disk to a small working set, but match still
+  takes ~weeks.
+
+>A. Proceed with Option A 
 
 **Q1 — Scope of the full run?** The dev set is 10 profiles / 2 floats. What defines
 "full"? (e.g. *all* BGC-Argo floats with `BBP700`+`CHLA` over a time window; a set
@@ -218,6 +257,60 @@ stays bounded regardless of granule count, or just **monitor** and warn near 5 T
 ## Reports
 
 ### Full run
+
+#### Pilot (Task 6) — 50 profiles, off-cloud `--download`, `--jobs 8`
+
+**Two findings; the second is a go/no-go gate.**
+
+**(1) Ingest bug — found & fixed.** Ingest crashed (`IndexError: … 0-dimensional`)
+in `summary.moving_median` when a profile carried a **single** `BBP700`/`CHLA`
+sample (0-d array → unsliceable), and — worse — the crash **aborted the whole
+stage** (only 16 of 50 profiles ingested). Fixes: `moving_median` now `atleast_1d`s
+its input; **`ingest` wraps each profile in try/except** and records failures under
+`"failed"` (like `build_fits`) so one bad profile can't kill a 50k run. Tests added;
+147→ suite green.
+
+**(2) Disk/time gate — TRIPPED.** Per-stage timing (the 16 ingested profiles):
+
+| stage | time | notes |
+| --- | --- | --- |
+| ingest | 112 s (crashed) | ~7 s/profile (argopy) |
+| discover | 11 s | ~0.7 s/profile (CMR) |
+| **match** | **1425 s** | **85 granules, 12 GB downloaded**, 4 matchups / 40 pixels |
+| fit (×4, jobs=8) | 65 s | parallel fitter works, quiet |
+| figure / report | 71 s / 55 s | — |
+
+Key rates: **~5.3 candidate granules/profile**, **141 MB/granule**, **~17 s/granule**
+(download+open+extract), **25 % match rate**. **Match (granule download) dominates —
+not the fit**, off-cloud.
+
+**Extrapolation to 54,506 profiles:** discover ≈ 10 h; ingest ≈ 4–5 days;
+**match ≈ 289k granule-fetches ≈ 41 TB / ~56 days** at the pilot's (low-sharing)
+rate — and even if cross-profile granule sharing cuts unique granules 5×, that is
+**~8 TB / ~11 days**, at/over the **9.8 TB** ceiling. Fits ≈ 13.6k matchups ≈ hours
+(not the bottleneck). **Conclusion: the full off-cloud `--download` run is
+infeasible on disk and time as configured.** Paused at the gate for a decision
+(revisit Q2 in-region / subsample / eviction / discover-first). See Logs.
+
+#### Discover-count (Option A) — exact granule volume, no downloads
+
+Ran the pipeline's per-profile CMR search over **all 54,506 profiles** (±0.4°,
+±1 day, cloud 0–100), unioning granules by name and summing **CMR-reported sizes**
+(no downloads). Threaded (8 workers), resumable; ~1.7 h wall.
+
+| metric | value |
+| --- | --- |
+| profiles queried | 54,506 (944 CMR-failed, ~1.7% — contribute no candidates) |
+| candidate refs (with dup) | 303,900 → **5.67 / profile** |
+| **unique candidate granules** | **124,218** |
+| **total download size** | **18.55 TB** (mean 157 MB/granule) |
+| vs 9.8 TB ceiling | **189 % — ~2× over** |
+| est. match time @ ~17 s/granule (serial) | **~24 days** |
+
+**Verdict: off-cloud `--download` is out** — 18.55 TB is ~2× the free disk, and
+even with eviction the full volume must transit the network (~days–weeks). The
+design-target **in-region us-west-2 + lazy S3** avoids the 18.55 TB transfer
+entirely (reads only the ~MB pixel chunks). Decision surfaced as Q11.
 
 ## Logging
 
@@ -333,3 +426,100 @@ Learning / flag: **54.5k profiles is a very large run** — ingest (argopy fetch
 disk ceiling. **Task 5 (pilot) must extrapolate before the full send**, and
 subsampling the 882 floats is a live option if the projected cost/disk is
 prohibitive. No package code changed (one-off selection script only).
+
+### 2026-07-07 (Task 4 — implemented parallel `fit_batch`)
+
+Added matchup-level parallelism to the `fit` stage. Design (in `pab/fit/run.py`):
+split the old monolithic `fit_matchup` into `_gather_fit_input` (DB-only),
+`_fit_only` (pure per-spectrum compute — module-level, picklable) and
+`_persist_result` (DB writes). `build_fits(..., jobs=N)`:
+
+- **Serial (`jobs=1`, default):** unchanged behaviour/results — existing tests pass
+  untouched.
+- **Parallel (`jobs>1`):** granules opened **once each** and pixels extracted in the
+  **parent** (the `opener` needn't be picklable); `_fit_only` farmed to a
+  `ProcessPoolExecutor`; **all DB writes back in the parent** → no SQLite writer
+  contention. In-flight futures bounded at ~2×`jobs` and persisted as they complete
+  → memory-bounded and **resumable** (already-persisted `fit_id`s skip on re-run).
+- Uses the **`spawn`** start method (avoids the Py3.13 fork-in-a-multithreaded-parent
+  deadlock warning) with a `_worker_init` that caps BLAS/OpenMP threads to 1 so N
+  workers don't oversubscribe cores.
+
+Wired `PipelineConfig.jobs` + `--jobs` CLI (default 1) → `build_fits`. Updated HOWTO
+(new `--jobs` row; removed parallel fitting from "planned"). Tests:
+`test_build_fits_parallel_matches_serial` (deterministic stub, 2 workers → same
+fit_ids/rows as serial + idempotent re-run) and `test_cli_parser_jobs`; **147
+passed**. De-risked the real path: ran the actual `fit_spectrum` in a **spawned**
+worker via a guarded script — recovered bbp700 = 0.00346 (truth ≈ 0.00343), chisq
+0.026 → bing imports and runs correctly under spawn.
+
+Learnings / flags for the pilot (Task 5): (a) spawn re-imports `__main__`, so it must
+be run via the guarded `pab` CLI / `python -m pab.pipeline` (a bare heredoc/`<stdin>`
+breaks spawn — not a code bug); (b) BING's emcee prints tqdm progress bars per fit —
+across many parallel workers this will be noisy on stderr; consider quieting it (a
+BING `progress` flag) or redirecting worker stderr for the full run. Code changed:
+`pab/fit/run.py`, `pab/pipeline.py`, tests, `HOWTO.md`.
+
+### 2026-07-07 (Task 5 — suppressed BING's tqdm progress bars)
+
+Followed up the Task-4 flag. BING's `run_emcee` hard-codes emcee `progress=True`
+(tqdm bars) plus bare `print()`s (`idx=…`, "Running burn-in", "Running full
+model") and exposes **no** flag through `fit_one`/`init_mcmc`. Rather than edit the
+separate BING package (working agreement: build on it, don't re-implement), I
+suppressed it **PAB-side**: a `_quiet()` context manager in `pab/fit/run.py` that
+redirects stdout+stderr to `os.devnull`, wrapped around the single
+`bing_inf.fit_one(...)` MCMC call in `fit_spectrum`. It drops only *printed* output
+— exceptions still propagate (so a failed fit is still caught + recorded), and it
+works in the serial path and in every spawned worker.
+
+Tests: `test_quiet_suppresses_stdout_and_stderr` (prints inside are swallowed,
+streams restored after); **148 passed**. Verified on the real path — re-ran the
+spawned-worker fit smoke: output is now just the final result line (no bars, no
+status prints), fit still correct (bbp700 = 0.00345, truth ≈ 0.00343). This clears
+the console-noise blocker for the 54k-matchup run. Code changed: `pab/fit/run.py`,
+`pab/tests/test_fit.py`.
+
+### 2026-07-07 (Task 6 — pilot: fixed an ingest crash; disk/time gate tripped)
+
+Ran the full pipeline over 50 representative profiles (isolated
+`…/PAB/pilot/`, `--download --jobs 8`). Finished in ~29 min. See the Reports →
+Pilot table for numbers.
+
+**Finding 1 — ingest crash (fixed).** `summary.moving_median` did `x[lo:hi]` on a
+0-d array (a profile with a single `BBP700`/`CHLA` sample) → `IndexError`, which
+**aborted the entire ingest stage** (16/50 done). Fixed `moving_median` (`atleast_1d`)
+and, more importantly, made `ingest` **per-profile resilient** (try/except →
+`failed` list), so one bad profile can't kill a 50k run. Added
+`test_moving_median_handles_scalar_profile` + `test_ingest_survives_a_bad_profile`;
+37 passed in argo+pipeline (full suite green).
+
+**Finding 2 — disk/time gate TRIPPED (needs a decision).** Off-cloud, **match
+(granule download) is the bottleneck, not fit**: ~5.3 candidate granules/profile,
+141 MB each, ~17 s each. Extrapolated to 54,506 profiles → ~289k granule-fetches ≈
+**41 TB / ~56 days** at the pilot's low-sharing rate; even with 5× granule sharing,
+~**8 TB / ~11 days** — at/over the 9.8 TB ceiling. The full off-cloud `--download`
+run is **infeasible as configured**.
+
+**Paused at the gate.** Options put to the user: (A) run `discover` on the full set
+first (~10 h, cheap, resumable) to get the *true* unique-granule count before
+committing; (B) switch to **in-region us-west-2 + lazy S3** (the design target — no
+multi-TB download, far faster; revisits Q2); (C) subsample the 882 floats; (D) turn
+on cache eviction (revisits Q9; bounds disk but match still ~weeks). Recommendation:
+A to measure, expecting B or C. Awaiting the decision before the full send. Code
+changed: `pab/argo/summary.py`, `pab/pipeline.py`, tests.
+
+### 2026-07-09 (Q10=A — discover-count: 18.55 TB, off-cloud ruled out)
+
+Per the user's **Q10 = Option A**, measured the exact candidate-granule volume
+without downloading. A one-off threaded script (`discover_count.py`) ran the
+pipeline's per-profile CMR search over all 54,506 profiles and summed CMR-reported
+granule sizes; ~1.7 h, resumable, 8 workers, retry-on-transient (944/54,506 queries
+failed after retries, ~1.7%, harmless).
+
+**Result: 124,218 unique candidate granules = 18.55 TB** (157 MB/granule; 5.67
+candidate refs/profile), i.e. **~2× the 9.8 TB free** and ~24 days of serial match.
+So off-cloud `--download` for all 882 floats is **definitively infeasible** — even
+with eviction the 18.55 TB must transit the network. Recommended pivot to the
+design-target **in-region us-west-2 + lazy S3** (Q11-B), which skips the bulk
+transfer entirely (reads ~MB/pixel). Surfaced the B/C/D choice as **Q11**; stopped
+the 30-min status loop. No package code changed (analysis-only script).

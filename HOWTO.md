@@ -78,8 +78,8 @@ override it with the `PAB_DATA_DIR` environment variable.
 ```
 pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
     [--outdir OUTDIR] [--profiles-csv PROFILES_CSV] [--replace]
-    [--no-figures] [--download] [--cache-dir CACHE_DIR] [--dry-run]
-    [--emit-site DIR]
+    [--no-figures] [--download] [--cache-dir CACHE_DIR] [--jobs JOBS]
+    [--dry-run] [--emit-site DIR]
 ```
 
 | Flag | Meaning |
@@ -90,6 +90,7 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
 | `--profiles-csv PROFILES_CSV` | Profile-selection CSV. Default: `data/dev_profiles.csv`. |
 | `--replace` | Re-do completed work instead of skipping it. |
 | `--no-figures` | Skip the `figure` stage. |
+| `--jobs JOBS` | Parallel processes for the `fit` stage (matchup-level; default `1` = serial). Granules are opened and pixels extracted in the parent; only the MCMC runs in workers; all DB writes stay in the parent (no SQLite contention). |
 | `--download` | Pre-download each granule to a local cache and read it locally (the reliable **off-cloud** path). Use this whenever you are **not** running in-region (`us-west-2`). |
 | `--cache-dir CACHE_DIR` | Where downloaded granules live. Default: `DATA_DIR/granules`. |
 | `--dry-run` | Print the stage plan and exit without touching anything. |
@@ -248,5 +249,6 @@ Agreed but **not yet implemented** — don't expect these flags to work yet:
 
 - **Single-matchup targeting** (e.g. `--matchup` / `--wmo` / `--cycle`) to run
   one profile/matchup instead of the whole selection.
-- **Parallel fitting** — matchup-level parallelism in the `fit` stage.
 - **Config file** — load run configuration from a file (TOML) instead of flags.
+
+*(Matchup-level parallel fitting is now implemented — see `--jobs`.)*

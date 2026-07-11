@@ -105,7 +105,7 @@ def ingest(store, config: PipelineConfig, *, fetcher=None) -> dict[str, Any]:
     """
     from pab.argo import fetch, summary
 
-    written, skipped = [], []
+    written, skipped, failed = [], [], []
     for row in config.profile_rows():
         wmo, cycle = int(row["wmo"]), int(row["cycle"])
         have = store.query(
@@ -116,58 +116,63 @@ def ingest(store, config: PipelineConfig, *, fetcher=None) -> dict[str, Any]:
         if have and not config.replace:
             skipped.append(f"{wmo}_{cycle}")
             continue
-        if "summary" in row:  # offline: a precomputed summary
-            summary.persist_summary(
-                store,
-                wmo=wmo,
-                cycle=cycle,
-                summary=row["summary"],
-                latitude=row.get("latitude"),
-                longitude=row.get("longitude"),
-                time=row.get("time"),
-            )
-        else:
-            ds = (
-                fetcher(wmo, cycle, config.argo_src, config.argo_mode)
-                if fetcher is not None
-                else fetch.fetch_profile(
-                    wmo, cycle, src=config.argo_src, mode=config.argo_mode
+        # A single bad profile (odd argopy return, a 0-d array, a fetch error) must
+        # not abort a 50k-profile ingest — record it and resume, like build_fits.
+        try:
+            if "summary" in row:  # offline: a precomputed summary
+                summary.persist_summary(
+                    store,
+                    wmo=wmo,
+                    cycle=cycle,
+                    summary=row["summary"],
+                    latitude=row.get("latitude"),
+                    longitude=row.get("longitude"),
+                    time=row.get("time"),
                 )
-            )
-            meta, v = next(fetch.iter_profiles(ds))
-            summ = summary.summarize_profile(
-                v["PRES"],
-                bbp700=v.get("BBP700"),
-                chla=v.get("CHLA"),
-                psal=v.get("PSAL"),
-                temp=v.get("TEMP"),
-                lon=meta["longitude"],
-                lat=meta["latitude"],
-            )
-            pid = summary.persist_summary(
-                store,
-                wmo=wmo,
-                cycle=cycle,
-                summary=summ,
-                latitude=meta["latitude"],
-                longitude=meta["longitude"],
-                time=meta["time"],
-            )
-            # Q&A figure: only the live fetch carries the full profile arrays the
-            # plot needs (the precomputed-summary path has scalars only).
-            _emit_profile_qa(
-                store,
-                pid,
-                wmo,
-                cycle,
-                config,
-                pres=v["PRES"],
-                bbp700=v.get("BBP700"),
-                chla=v.get("CHLA"),
-                mld=summ.get("mld"),
-            )
-        written.append(f"{wmo}_{cycle}")
-    return {"written": written, "skipped": skipped}
+            else:
+                ds = (
+                    fetcher(wmo, cycle, config.argo_src, config.argo_mode)
+                    if fetcher is not None
+                    else fetch.fetch_profile(
+                        wmo, cycle, src=config.argo_src, mode=config.argo_mode
+                    )
+                )
+                meta, v = next(fetch.iter_profiles(ds))
+                summ = summary.summarize_profile(
+                    v["PRES"],
+                    bbp700=v.get("BBP700"),
+                    chla=v.get("CHLA"),
+                    psal=v.get("PSAL"),
+                    temp=v.get("TEMP"),
+                    lon=meta["longitude"],
+                    lat=meta["latitude"],
+                )
+                pid = summary.persist_summary(
+                    store,
+                    wmo=wmo,
+                    cycle=cycle,
+                    summary=summ,
+                    latitude=meta["latitude"],
+                    longitude=meta["longitude"],
+                    time=meta["time"],
+                )
+                # Q&A figure: only the live fetch carries the full profile arrays
+                # the plot needs (the precomputed-summary path has scalars only).
+                _emit_profile_qa(
+                    store,
+                    pid,
+                    wmo,
+                    cycle,
+                    config,
+                    pres=v["PRES"],
+                    bbp700=v.get("BBP700"),
+                    chla=v.get("CHLA"),
+                    mld=summ.get("mld"),
+                )
+            written.append(f"{wmo}_{cycle}")
+        except Exception:  # noqa: BLE001 — one bad profile must not abort the batch
+            failed.append(f"{wmo}_{cycle}")
+    return {"written": written, "skipped": skipped, "failed": failed}
 
 
 def _emit_profile_qa(

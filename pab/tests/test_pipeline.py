@@ -125,6 +125,25 @@ def test_ingest_is_idempotent():
         assert store.count("mld_summary") == 2  # no duplicates
 
 
+def test_ingest_survives_a_bad_profile():
+    # one good (offline) profile + one whose live fetch fails: the bad one is
+    # recorded under "failed" and does NOT abort the stage (a single 0-d array or
+    # fetch error must not kill a 50k-profile ingest — the pilot crash).
+    good = _profiles()[0]  # has a precomputed summary (offline path)
+    bad = {"wmo": 5905000, "cycle": 1}  # no summary -> live fetch path
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("argopy fetch failed")
+
+    with Store.open(":memory:") as store:
+        out = pipeline.ingest(
+            store, pipeline.PipelineConfig(profiles=[good, bad]), fetcher=_boom
+        )
+        assert out["written"] == ["7902226_5"]
+        assert out["failed"] == ["5905000_1"]
+        assert store.count("mld_summary") == 1  # the good profile still persisted
+
+
 def test_discover_with_searcher_seam_and_resume():
     cfg = pipeline.PipelineConfig(profiles=_profiles())
     with Store.open(":memory:") as store:

@@ -39,7 +39,9 @@ def moving_median(values: ArrayLike, window: int = 3) -> np.ndarray:
     """
     if window < 1 or window % 2 == 0:
         raise ValueError("window must be a positive odd integer")
-    x = np.asarray(values, dtype=float)
+    # atleast_1d: a profile with a single BBP700/CHLA sample arrives 0-dimensional,
+    # and slicing a 0-d array raises IndexError (crashed a real ingest run).
+    x = np.atleast_1d(np.asarray(values, dtype=float))
     n = x.size
     half = window // 2
     out = np.full(n, np.nan)
