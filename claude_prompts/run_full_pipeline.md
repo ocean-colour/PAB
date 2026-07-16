@@ -134,30 +134,122 @@ Read these before running — plus the **hard-won operational lessons** below.
    (more room on the 15 T volume, subsample, or revisit eviction) before the full
    send. Log the pilot metrics + extrapolation.
 
-7. **Ingest + discover (full).** Run `pab --stage ingest` (argopy fetch, MLD
+7. **Setup Nautilus**.  Given the projected size of the PACE granules, it is time to setup Nautilus.  Remind me of what you have done so far and what needs to be done.  Put this in the Q&A section below.  Log your work
+
+8. **More Nautilus**.  Read my answers to N1-N3.  If you have more questions, ask them in the Q&A section below.  Log your work.
+
+9. **Yet more Nautilus**.  Read my answers to N4-N6.  We will continue this conversation in the `nautilus_prompts.md` file.  Log your work.
+
+10. **Ingest + discover (full).** Run `pab --stage ingest` (argopy fetch, MLD
    summaries, Argo Q&A figures) then `--stage discover` (CMR granule search). Expect
    argopy slowness / transient CMR 500s; both stages resume on re-run. Log counts
    (`profiles`, `granules`) and any failures.
 
-8. **Match + fit (the heavy stages).** Run `pab --stage match --download` to build
+11. **Match + fit (the heavy stages).** Run `pab --stage match --download` to build
    matchups (**monitor disk; warn near ~9.8 TB; no eviction** per Q9), then
    `--stage fit` with the parallel fitter. Spot-check convergence (`diagnose-mcmc`).
    Log matchups written, fits written/failed, wall-clock, and peak disk.
 
-9. **Figure + report + publish.** Run `--stage figure` then `--stage report`;
+12. **Figure + report + publish.** Run `--stage figure` then `--stage report`;
    `pab --emit-site report_site`; preview locally (`sphinx-build`), then commit
    `report_site/` and push so RTD rebuilds. Keep bulky artifacts **local** (Q5);
    publish the report + summary tables only. Confirm the summary coverage counts,
    the scatters/map, and that the galleries N-guard sensibly at scale. Log the
    published counts + the RTD build.
 
-10. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
+13. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
    quality, scene), confirm every record carries `pab_version = 1.0`, update
    `docs/design/PAB_implementation.md`, and write the full-run report (coverage,
    timings, failures, follow-ups — incl. the deferred Nautilus namespace/bucket
    TODO). Log your work.
 
 ## Q&A
+
+**Nautilus setup (Task 7) — status + what's left.**
+
+*What's already done (more than I'd realised):*
+- **Access is live.** This workstation has an active `kubectl` context **`nautilus`**,
+  Nautilus S3 creds (`~/.aws/credentials` + `~/.config/rclone/rclone.conf`), and the
+  endpoint **`ENDPOINT_URL=https://s3-west.nrp-nautilus.io`** — `aws --endpoint-url
+  $ENDPOINT_URL s3 ls` works (9 buckets visible).
+- **Code interfaces exist.** `pab.report.publish` already has the seam:
+  `LocalStubBackend` (active), a `NautilusS3Backend` **stub** (`NotImplementedError`),
+  and `publish_release(store, outdir, *, backend=…)` / `build_manifest` that upload
+  each artifact via `backend.upload(local_path, key) -> url` and record URL +
+  SHA-256 in `manifest.json`, stamped `pab_version`.
+- **Design + docs** specify NSF/Nautilus S3 as the bulk-artifact store; `HOWTO.md`
+  §7b marks it deferred. `ToDo.md` carries the "create namespace + S3 bucket" item.
+
+*Not done yet:*
+- **No PAB bucket** (none of the 9 existing buckets is PAB-related).
+- **No PAB Kubernetes namespace** (only needed if we also *run compute* on Nautilus).
+- `NautilusS3Backend.upload()` is unimplemented; `publish_release` isn't wired to it;
+  manifest still carries local-stub URLs.
+
+*To do:*
+1. **(infra)** Create the bucket — `aws --endpoint-url $ENDPOINT_URL s3 mb s3://<name>`
+   (needs a name + public-read-vs-private decision). Namespace only if compute-on-Nautilus.
+2. **(code, me — once the bucket + name exist)** implement `NautilusS3Backend.upload()`
+   (boto3, endpoint from `ENDPOINT_URL`, creds from `~/.aws`; **config-gated**, never
+   hardcoded); wire `publish_release(backend=NautilusS3Backend(...))` behind a flag;
+   put real `https://s3-west.nrp-nautilus.io/<bucket>/…` URLs in the manifest; add an
+   offline-mocked test; update HOWTO §7b.
+
+**⚠️ Important scoping — Nautilus ≠ AWS us-west-2.** Setting up Nautilus solves
+**artifact hosting/distribution** (Q5: publish chains/figures) and gives us big S3
+storage. It does **not** fix the **PACE-granule read** bottleneck (Q11): PACE L2
+granules live on **NASA's AWS us-west-2**; reading them from Nautilus is
+out-of-region (slow/hangs), and copying all 18.55 TB onto Nautilus is the same
+infeasible transfer. So **Q11 (how to read granules: us-west-2 / subsample /
+eviction) is still open and separate** from the Nautilus artifact store.
+
+*Questions for you (answer inline):*
+- **N1 — Nautilus scope?** Artifact hosting only (the design's role), or also **run
+  compute + stage granules** on Nautilus? (Decides whether we need a K8s namespace +
+  containerizing PAB, and whether it touches Q11.)
+>A. Artifact hosting only.  We will just their storage for now.  Note, it is not backed-up so anything that we want to keep should also be copied to my Google Drive.  For that, we will use the Shared Drive named AIOcean and `rclone` to copy the files.
+- **N2 — Bucket name + access?** e.g. `pab`, `pab-v1`, `ocean-color-pab`; and
+  **public-read** (so the RTD report can link downloads directly) or **private**?
+>A. pab.  Yes, public-read.  Let me know if you need help accessing it.  This command works for me: `aws --endpoint https://s3-west.nrp-nautilus.io s3 ls s3://pab`
+- **N3 — Confirm Q11 still needs a separate answer** (B in-region / C subsample /
+  D eviction) for the granule reads — Nautilus doesn't replace it.
+>A.  We will put the files in Nautilus.  I don't think Q11 is relevant anymore.
+
+**Follow-ups (Task 8 — from N1–N3).** Read the answers. **Infra is ready:**
+`s3://pab` exists (empty) with a public policy; rclone remotes `nautilus_s3:`,
+`AIOcean:` (Google shared-drive root: AAII, AI, MHW, SharedFiles, data, …) and
+`GDrive:` are configured. Three things need your input:
+
+- **N4 — the granule *read* path (Q11) is still open — Nautilus doesn't remove it.**
+  N1 says Nautilus is **storage only, no compute**, and it holds our **outputs**.
+  But to *produce* those outputs PAB must still **read pixels from 124,218 PACE
+  *input* granules that live on NASA's AWS `us-west-2`** — that's the 18.55 TB.
+  Where we store outputs doesn't change how we read inputs. Even "copy all granules
+  into `s3://pab`" is the *same* 18.55 TB NASA→Nautilus transfer (then a read-back
+  to the workstation, since compute stays local). So the read path still needs a
+  choice: **B** reads in `us-west-2` (lazy S3, ~MB/pixel, no bulk transfer —
+  recommended); **C** subsample the 882 floats; **D** download→extract→evict on the
+  workstation (bounded disk, but the full 18.55 TB transits + ~weeks; needs a
+  parallel `match`). Did you perhaps mean to stage the granules on `s3://pab` and
+  read them lazily from there? (Works *only if compute runs near Nautilus* —
+  otherwise it's the big transfer twice.) **Which read path?**
+
+>A.  Ok, I am reconsidering my answer. It might be faster to process all of this in Nautilus.  Let's do a deeper dive on all of this in a separate prompt doc called `nautilus_prompts.md`.  Create that file and populate it in a similar fashion as this and the other prompt docs.  Log your work.
+
+- **N5 — backup scope + target.** Nautilus isn't backed up → keepers go to
+  `AIOcean:` via rclone. Back up **everything** (`pab.db`, `matchup_summary.*`,
+  MCMC-chain NPZs, figures, `report_site/`) or just the **reproducible-from-DB
+  keepers** (the `pab.db` + summary tables + report, skipping the bulky chains)?
+  Target path `AIOcean:PAB/`?
+
+>A.  I think we should back up everything.  Let me know if you need help accessing the AIOcean drive.  This command works for me: `rclone ls AIOcean:`
+
+- **N6 — bucket policy is too open.** `s3://pab`'s policy grants `*` (anyone)
+  **GetObject + PutObject + DeleteObject** — so anyone can overwrite/wipe the
+  artifacts, not just read them. Tighten to **public `GetObject` only** (writes via
+  your authenticated creds)? I can apply it.
+
+>A.  Yes, please do.  
 
 **Q11 — Discover-count is in: 124,218 unique granules = 18.55 TB (~2× the 9.8 TB
 free). Off-cloud download is infeasible. How do we run the matchups?** Pick a path
@@ -523,3 +615,65 @@ with eviction the 18.55 TB must transit the network. Recommended pivot to the
 design-target **in-region us-west-2 + lazy S3** (Q11-B), which skips the bulk
 transfer entirely (reads ~MB/pixel). Surfaced the B/C/D choice as **Q11**; stopped
 the 30-min status loop. No package code changed (analysis-only script).
+
+### 2026-07-12 (Task 7 — Nautilus setup status)
+
+Assessed the Nautilus state and wrote a status + plan into Q&A. Discovered the
+workstation is **already connected**: active `kubectl` context `nautilus`, working
+Nautilus S3 creds (`~/.aws/credentials`, rclone), endpoint
+`ENDPOINT_URL=https://s3-west.nrp-nautilus.io`, and `aws s3 ls` lists 9 buckets —
+**none PAB-related**. Code-side, the seam exists (`LocalStubBackend` active,
+`NautilusS3Backend` a `NotImplementedError` stub, `publish_release`/`build_manifest`
+ready for a real backend). So remaining work = (infra) create a PAB bucket [+ K8s
+namespace only if running compute there]; (code) implement `NautilusS3Backend.upload`
+(boto3 → endpoint, creds from `~/.aws`, config-gated), wire `publish_release`, put
+real URLs in the manifest, offline-mocked test, HOWTO §7b.
+
+Key point I flagged: **Nautilus ≠ AWS us-west-2.** Nautilus solves *artifact
+hosting* (Q5) + storage, but **not** the PACE-granule read bottleneck (Q11) — those
+granules are on NASA AWS us-west-2, and staging 18.55 TB onto Nautilus is the same
+infeasible transfer. So Q11 (us-west-2 / subsample / eviction) stays open and
+separate. Raised N1–N3 in Q&A (Nautilus scope? bucket name + public/private?
+confirm Q11 separate?). Held off creating the bucket/namespace pending the name +
+public-vs-private decision (outward-facing, my-to-propose-not-assume). No code
+changed.
+
+### 2026-07-13 (Task 8 — read N1–N3; raised N4–N6)
+
+N1 = **Nautilus storage-only** (no compute); **not backed up → keepers rclone'd to
+Google Shared Drive `AIOcean`**. N2 = bucket **`pab`, public-read**. N3 = "put files
+in Nautilus, Q11 not relevant". Verified infra: **`s3://pab` exists (empty)**;
+rclone remotes `nautilus_s3:`, `AIOcean:` (shared-drive root reachable), `GDrive:`
+all configured.
+
+Pushed back (respectfully) on N3: storing **outputs** on Nautilus doesn't remove the
+need to **read** 124,218 PACE **input** granules (18.55 TB) from NASA AWS us-west-2
+to compute the matchups; with compute staying local (N1), the read path is still
+B/us-west-2 vs C/subsample vs D/evict — even staging granules on `s3://pab` is the
+same big transfer. Raised as **N4** (which read path? — the real open decision).
+Also **N5** (backup scope: everything vs reproducible-from-DB keepers; target
+`AIOcean:PAB/`) and **N6 — security**: the `pab` policy grants `*` GetObject **+
+PutObject + DeleteObject** (public write/delete, not just read) → offered to tighten
+to public GetObject-only. Held off changing the policy / creating anything pending
+answers. No code changed.
+
+### 2026-07-13 (Task 9 — N4–N6 resolved; Nautilus pivot → new prompt doc)
+
+Read N4–N6. **N6 done:** tightened the `s3://pab` bucket policy from public
+Get+Put+Delete to **public `GetObject` only** (`aws s3api put-bucket-policy`;
+verified) — writes/deletes now require authenticated creds. **N5 recorded:** back
+up **everything** to `AIOcean:` (rclone) since Nautilus isn't backed up. **N4:** the
+user is reconsidering — rather than storage-only, it may be **faster to run all the
+compute on Nautilus** (co-locating the 18.55 TB reads + 124k fits with Ceph/S3), so
+they asked for a dedicated deep-dive doc.
+
+Created **`claude_prompts/nautilus_prompts.md`**, modelled on the other prompt docs
+(Goals / Claude / Context / Prompts / Tasks / Q&A / Reports / Logs). It frames the
+compute-on-Nautilus plan and pins the crux: **Nautilus nodes aren't in AWS
+us-west-2**, so Task 1 must *measure* pod↔NASA-S3 lazy-read throughput before
+choosing lazy-read vs a one-time 18.55 TB stage-to-Ceph. Tasks: measure →
+containerize → namespace/secrets/storage → data+DB strategy → run stages as K8s
+Jobs (fan-out, resumable) → publish to `s3://pab` + rclone to `AIOcean:` → verify.
+Open questions M1–M5 (namespace/quota, registry, connectivity, stage-vs-subsample,
+compute shape). The full-run conversation continues in that doc. Code changed: none
+(applied the bucket-policy fix via aws-cli; authored the new prompt doc).
