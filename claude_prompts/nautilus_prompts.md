@@ -100,16 +100,25 @@ once** and read locally? Task 1 measures this before we commit to either.
    stages write from one process, so it's safe) or reconsider if fan-out needs
    concurrent writers. Confirm `--emit-site`/artifacts land on `s3://pab`.
 
-6. **Run the pipeline as K8s Jobs.** ingest → discover → match → fit → figure →
+6. **YAML fix.**  I have looked at the logs for the `inspect_pod.yaml` run and they give:
+
+```
+/bin/bash: line 4: warning: here-document at line 1 delimited by end-of-file (wanted `EOF')
+/bin/bash: -c: line 4: syntax error near unexpected token `('
+/bin/bash: -c: line 4: `echo "=== /data tree ==="; find /data -maxdepth 3 -type f 2>/dev/null | head -40; echo "=== /data usage ==="; du -sh /data/* 2>/dev/null; echo "=== db counts ==="; python - <<'EOF' import os, sqlite3 db="/data/val/pab.db" if not os.path.exists(db): print("NO pab.db at", db); raise SystemExit c=sqlite3.connect(db) for t in ("profiles","granules","matchups","matchup_pixels","fits","fit_results"):
+```
+Modify the file in `nautilus/inspect_pod.yaml` to fix the syntax error and I will relaunch the pod.  If you have any questions, ask them in the Q&A section below.  Log your work.  Use Fable if you can.
+
+7. **Run the pipeline as K8s Jobs.** ingest → discover → match → fit → figure →
    report via the containerized `pab` CLI. Fan out the heavy stages (match/fit)
    across pods where safe; rely on stage idempotency/resume for preemption. Monitor
    progress, disk/quota, and failures. Log per-stage counts + wall-clock.
 
-7. **Publish + back up.** Implement + wire `NautilusS3Backend` (upload artifacts to
+8. **Publish + back up.** Implement + wire `NautilusS3Backend` (upload artifacts to
    `s3://pab`, real URLs in the manifest); emit `report_site/` and push to RTD; then
    **rclone everything to `AIOcean:PAB/`** (N5). Log published counts + backup.
 
-8. **Verify & close out.** Spot-check matchups, confirm `pab_version = 1.0` on every
+9. **Verify & close out.** Spot-check matchups, confirm `pab_version = 1.0` on every
    record, update `docs/design/PAB_implementation.md` + `HOWTO.md` (§7b → activated),
    and write the full-run report. Log your work.
 
@@ -322,3 +331,40 @@ host. Next: on "logged in", push + verify in the registry. Code changed: added
 **Update (pushed):** user logged in; `docker push` of both tags succeeded and
 `docker manifest inspect` confirms **`pab:1.0` + `:latest` are in the registry**
 (public → pods pull with no secret). **Task 3 done.**
+
+### 2026-07-16 (Task 4 — namespace, secrets, storage)
+
+Namespace `sea-meets-the-stars` confirmed (M1). **Secrets** now in place:
+`earthdata-netrc` (Task 1), `prp-s3-credentials` (existing; key `credentials` =
+`.aws/credentials` for Nautilus S3), and a new **`rclone-config`** (from
+`~/.config/rclone/rclone.conf`; remotes GDrive/AIOcean=drive, nautilus_s3=s3 — for
+the AIOcean backup). **PVC `pab-data`** created **500Gi RWX** and **Bound**.
+
+Storage-class gotcha (learning): the listed `cephfs`
+(`rook-ceph.cephfs.csi.ceph.com`) never provisioned (Pending 11 min) — the
+namespace's working PVCs use **`rook-cephfs`** (`rook-system.cephfs.csi.ceph.com`);
+recreated on that → Bound in seconds. Use `rook-cephfs` for future PVCs.
+
+**Storage layout decided:** granules **lazy-read from NASA** (Task 1 — never stored
+on PVC/Ceph); the SQLite `pab.db` + working dir (chains, figures, argo_qa,
+report_site) live on **PVC `pab-data`** during the run; artifacts publish to
+**`s3://pab`** + back up to **`AIOcean:PAB/`** (N5).
+
+Flag for Task 5/6: at the default `FitConfig.nsteps=10000`, MCMC chains are ~13 MB
+each × ~13.6k matchups ≈ **~180 GB** — fits in 500Gi alongside the DB/figures, but
+we should **upload chains to `s3://pab` and evict locally as they're produced** (or
+thin them) so the PVC doesn't fill. No package code changed (kubectl infra only).
+
+### 2026-07-19 (Task 6 — fixed inspect_pod.yaml YAML/heredoc bug)
+
+The `pab-inspect` pod errored (`syntax error near unexpected token '('`). Cause:
+`args: - >` is a YAML **folded** scalar → newlines become spaces, so the
+`python - <<'EOF' … EOF` here-doc flattened onto one line (the `EOF` terminator
+never matched and the multi-line python collapsed). Fix (delegated to a **Fable**
+subagent, per the user's ask): switched `>` → `|` (literal block, newlines kept)
+and replaced the here-doc with a single-line `python -c` counts query. `yaml.safe_load`
+confirms it parses. User will relaunch. No package code changed (manifest only).
+
+Process learning for all embedded-script K8s manifests: use `|` (literal), never `>`
+(folded), for shell/python blocks — and prefer a one-line `python -c` over a
+here-doc to avoid indentation/terminator-column pitfalls.
