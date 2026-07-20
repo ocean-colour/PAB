@@ -15,6 +15,7 @@ tests).
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,6 +24,8 @@ import numpy as np
 
 from pab.fit import artifacts as _artifacts
 from pab.fit.models import FitConfig, build_models, model_param_names
+
+_log = logging.getLogger("pab.fit")
 
 
 @contextlib.contextmanager
@@ -537,6 +540,7 @@ def build_fits(
             _persist_result(store, inp, result, config, created)
             written.append(inp["fit_id"])
         except Exception:  # noqa: BLE001 — one bad matchup must not abort the batch
+            _log.exception("fit failed for %s", inp["fit_id"])
             failed.append(inp["fit_id"])
     return {"written": written, "skipped": skipped, "failed": failed}
 
@@ -572,6 +576,7 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
             _persist_result(store, inp, fut.result(), config, created)
             written.append(inp["fit_id"])
         except Exception:  # noqa: BLE001
+            _log.exception("fit failed for %s (worker/persist)", inp["fit_id"])
             failed.append(inp["fit_id"])
 
     with ProcessPoolExecutor(
@@ -581,12 +586,14 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
             try:
                 ds = cloud.open_granule(source, opener=opener)
             except Exception:  # noqa: BLE001 — a bad granule fails its whole group
+                _log.exception("open_granule failed for %s (%d fits)", source, len(group))
                 failed.extend(inp["fit_id"] for inp in group)
                 continue
             for inp in group:
                 try:
                     wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
                 except Exception:  # noqa: BLE001
+                    _log.exception("extract_spectrum failed for %s", inp["fit_id"])
                     failed.append(inp["fit_id"])
                     continue
                 fut = ex.submit(_fit_only, wave, rrs, unc, inp["chl"], config)

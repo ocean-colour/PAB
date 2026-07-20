@@ -131,6 +131,24 @@ def cached_opener(
     return _open
 
 
+_EARTHACCESS_LOGGED_IN = False
+
+
+def _ensure_earthaccess_login(earthaccess) -> None:
+    """Log in to Earthdata once (idempotent) so ``earthaccess.__store__`` exists.
+
+    ``earthaccess.open`` needs an authenticated *store*, which only ``login()``
+    creates. In a fresh process (e.g. a Nautilus pod) nothing has logged in, so
+    the open would fail with ``'NoneType' has no attribute 'open'``; on an
+    interactive workstation it happens to be masked by a prior login. Reads the
+    Earthdata credentials from ``~/.netrc``.
+    """
+    global _EARTHACCESS_LOGGED_IN
+    if not _EARTHACCESS_LOGGED_IN:
+        earthaccess.login(strategy="netrc")
+        _EARTHACCESS_LOGGED_IN = True
+
+
 def open_s3(url: str) -> xr.Dataset:
     """Open a PACE L2 AOP granule lazily from S3 (in-region ``us-west-2``).
 
@@ -142,6 +160,7 @@ def open_s3(url: str) -> xr.Dataset:
     """
     import earthaccess
 
+    _ensure_earthaccess_login(earthaccess)
     fileset = earthaccess.open([url])
     return read_datatree(fileset[0])
 
