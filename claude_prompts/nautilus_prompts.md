@@ -421,3 +421,33 @@ means the full fit dependency chain is satisfied in-image. Code changed: PAB
 in-code (still serial), then a small **pilot** (few hundred–1k profiles) to
 measure matchup rate / per-fit time / memory / chains storage before the full
 54,506-profile run.
+
+### 2026-07-26 (parallel `match` reviewed + two scaling bugs fixed; 1k-run artifacts)
+
+Picked up the "next" items from the Task-5 close-out (parallelize `match`, then
+a few-hundred–1k pilot). Parallel `match` was already written
+(`pab/matchup/engine.py`, 2026-07-26) — reviewing it for a 1000-profile run
+surfaced three problems, all now fixed; **full write-up + the run plan live in
+`run_full_pipeline.md` (Task 10 report + log)**. Nautilus-relevant points:
+
+- **The registry image is stale.** `pab:1.0` was built 2026-07-22; parallel
+  `match` and today's fixes are newer, so the 1k run needs a rebuild. The Task-3
+  staged build (rsync a 90 MB context so bing's 94 GB stays out) is now a script:
+  **`nautilus/build_image.sh [--push]`**, with a smoke test that also imports the
+  new `GranuleIndex`. Needs the user's `docker login` (deploy token).
+- **New Job manifest `nautilus/run1k_job.yaml`** — 1 pod × **50 cores** / 100Gi
+  (the M5 answer: one pod, one SQLite writer), `--jobs 50`, **lazy NASA-S3 reads**
+  (Task-1 decision, no staging), stages run one at a time with per-stage
+  wall-clock + DB counts, `backoffLimit: 4` and **no `rm -rf`** so an evicted pod
+  *resumes* rather than restarting from zero (validate_job.yaml wipes — that is
+  fine for a 5-profile smoke, fatal for a 3 h run). Manifest verified with
+  `yaml.safe_load` + `bash -n`, and it follows the Task-6 lesson: literal `|`
+  block, one-line `python -c`, no here-docs.
+- **Profile set:** `nautilus/run1k_profiles.csv` (1000 profiles / 659 floats,
+  ≤3 per float, 90 per quarter) + its generator `make_1k_subsample.py`; mount as
+  the `pab-run1k-csv` ConfigMap (47 KB, well under the 1 MiB limit).
+- **The Task-1 follow-up is now moot in the worst direction and fixed:** `match`
+  wasn't merely opening a granule per profile instead of per unique granule — it
+  was opening every granule in the ±24 h window *globally* (291/profile at full
+  scale → 15.9 M opens ≈ 388 h on 50 cores). With the footprint pre-filter it is
+  ~0.3–0.6 M opens ≈ 8–14 h, which is what makes the full run schedulable here.

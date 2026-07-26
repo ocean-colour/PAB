@@ -251,3 +251,107 @@ def test_write_matchup_requires_profile_id():
     with Store.open(":memory:") as store:
         with pytest.raises(ValueError):
             engine.write_matchup(store, m)
+
+
+# -- candidate pre-filter (footprint) ---------------------------------------
+_POLY = "POLYGON ((-130.06 4.46, -133.13 22.33, -158.25 17.15, -153.79 -0.59, -130.06 4.46))"
+
+
+def test_footprint_bbox_parses_polygon():
+    assert engine.footprint_bbox(_POLY) == pytest.approx(
+        (-158.25, -0.59, -130.06, 22.33)
+    )
+
+
+def test_footprint_bbox_widens_longitude_when_it_wraps():
+    # a polar/antimeridian swath: keep the latitude band, drop the lon bound
+    poly = "POLYGON ((-179 62, 179 65, 170 80, -170 78, -179 62))"
+    lon_min, lat_min, lon_max, lat_max = engine.footprint_bbox(poly)
+    assert (lon_min, lon_max) == (-180.0, 180.0)
+    assert (lat_min, lat_max) == pytest.approx((62.0, 80.0))
+
+
+def test_footprint_bbox_unknown_is_none_and_covers_everything():
+    for bad in (None, "", "POLYGON EMPTY", "POLYGON ((1 2, 3 4))"):
+        assert engine.footprint_bbox(bad) is None
+    assert engine.footprint_covers(None, 0.0, 0.0) is True
+
+
+def test_candidate_granules_filters_on_footprint():
+    """A granule whose swath is elsewhere must not be offered to the profile.
+
+    Opening a granule is the expensive step at scale (~4.4 s in-cloud), so the
+    pre-filter has to exclude same-time granules over a different ocean.
+    """
+    far = "POLYGON ((10 40, 20 40, 20 50, 10 50, 10 40))"
+    with Store.open(":memory:") as store:
+        for gid, poly in (("near", _POLY), ("far", far)):
+            store.upsert(
+                "granules",
+                {
+                    "granule_id": gid,
+                    "time_start": "2025-05-01T11:30:00",
+                    "footprint": poly,
+                    "data_url": f"s3://b/{gid}.nc",
+                },
+            )
+        t = "2025-05-01T12:00:00"
+        # inside the _POLY swath (N Pacific)
+        got = engine.candidate_granules(
+            store, t, dtime_max_hours=24.0, latitude=10.0, longitude=-145.0
+        )
+        assert [c["granule_id"] for c in got] == ["near"]
+        # no position given -> time-only, both offered (back-compatible)
+        assert len(engine.candidate_granules(store, t, dtime_max_hours=24.0)) == 2
+        # outside both swaths -> nothing
+        assert engine.candidate_granules(
+            store, t, dtime_max_hours=24.0, latitude=-40.0, longitude=100.0
+        ) == []
+
+
+def test_granule_index_respects_the_time_window():
+    with Store.open(":memory:") as store:
+        for gid, t in (("g_in", "2025-05-01T11:30:00"), ("g_out", "2025-05-03T11:30:00")):
+            store.upsert("granules", {"granule_id": gid, "time_start": t})
+        idx = engine.GranuleIndex.load(store)
+        assert len(idx) == 2
+        got = idx.candidates("2025-05-01T12:00:00", dtime_max_hours=24.0)
+        assert [c["granule_id"] for c in got] == ["g_in"]
+        # source falls back to the granule id when there is no data_url
+        assert got[0]["source"] == "g_in"
+
+
+# -- parallel matching ------------------------------------------------------
+def _stub_opener(source):  # module-level -> picklable, so spawned workers can use it
+    return make_granule(center=(20.0, -50.0))
+
+
+def test_build_matchups_parallel_matches_serial(tmp_path):
+    """The parallel path must persist exactly what the serial path does.
+
+    Exercises the real ProcessPoolExecutor (spawn) with a picklable opener, so
+    the fan-out used for the production run is actually run in the test suite.
+    """
+    with Store.open(tmp_path / "par.db") as store:
+        _seed_store(store)
+        out = engine.build_matchups(store, opener=_stub_opener, jobs=2)
+        assert out["written"] == ["7902226_5_G1"]
+        assert store.count("matchup_pixels") == 10
+        # resumable: a second parallel pass skips it, no duplicate rows
+        again = engine.build_matchups(store, opener=_stub_opener, jobs=2)
+        assert again["written"] == [] and again["skipped"] == ["7902226_5_G1"]
+        assert store.count("matchups") == 1
+
+    with Store.open(tmp_path / "ser.db") as store:
+        _seed_store(store)
+        serial = engine.build_matchups(store, opener=_stub_opener, jobs=1)
+    assert serial["written"] == out["written"]
+
+
+def test_build_matchups_falls_back_to_serial_for_an_unpicklable_opener():
+    ds = make_granule(center=(20.0, -50.0))
+    with Store.open(":memory:") as store:
+        _seed_store(store)
+        # a lambda cannot cross a spawn boundary -> must still produce the matchup
+        out = engine.build_matchups(store, opener=lambda s: ds, jobs=4)
+        assert out["written"] == ["7902226_5_G1"]

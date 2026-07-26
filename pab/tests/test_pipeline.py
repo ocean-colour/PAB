@@ -383,3 +383,59 @@ def test_end_to_end_offline():
         # if the fits ran (BING data present), results were persisted
         if summary["fit"]["written"]:
             assert store.count("fit_results") > 0
+
+
+def test_discover_searches_a_distant_profile_in_the_same_time_window():
+    """Granules over one ocean must not suppress the search for another ocean.
+
+    The skip test used to be time-only, so once *any* granule sat within +-24 h
+    of a profile's time that profile was skipped — at 1000 profiles ~71 % were
+    starved of granules (they could then never match). Skipping must be keyed on
+    coverage of the profile's own position.
+    """
+    import pandas as pd
+
+    calls = []
+
+    def searcher(lat, lon, t0, t1, config):
+        calls.append((round(lat, 1), round(lon, 1)))
+        mid = t0 + (t1 - t0) / 2
+        # a 10-deg box footprint around the float, as CMR reports
+        poly = (
+            f"POLYGON (({lon - 5:.2f} {lat - 5:.2f}, {lon + 5:.2f} {lat - 5:.2f}, "
+            f"{lon + 5:.2f} {lat + 5:.2f}, {lon - 5:.2f} {lat + 5:.2f}, "
+            f"{lon - 5:.2f} {lat - 5:.2f}))"
+        )
+        return pd.DataFrame(
+            [
+                {
+                    "id": f"G_{lat:.0f}_{lon:.0f}",
+                    "time": mid.isoformat(),
+                    "polygon": poly,
+                    "CC": 5.0,
+                    "url": f"s3://b/G_{lat:.0f}_{lon:.0f}.nc",
+                }
+            ]
+        )
+
+    summary = {"mld": 30.0, "mld_method": "x", "n_points": 5}
+    profiles = [  # N Pacific, then N Atlantic 8 h later, then S Indian +22 h
+        {"wmo": 1111, "cycle": 1, "latitude": 30.0, "longitude": -140.0,
+         "time": "2024-06-01T02:00:00", "summary": summary},
+        {"wmo": 2222, "cycle": 1, "latitude": 35.0, "longitude": -40.0,
+         "time": "2024-06-01T10:00:00", "summary": summary},
+        {"wmo": 3333, "cycle": 1, "latitude": -45.0, "longitude": 20.0,
+         "time": "2024-06-02T00:00:00", "summary": summary},
+    ]
+    cfg = pipeline.PipelineConfig(profiles=profiles)
+    with Store.open(":memory:") as store:
+        pipeline.run(store, cfg, stages=("ingest",))
+        out = pipeline.run(store, cfg, stages=("discover",), searcher=searcher)
+        assert out["discover"]["skipped"] == []
+        assert len(calls) == 3  # every profile got its own search
+        assert store.count("granules") == 3
+
+        # resume: each profile now has a granule over its own position -> skipped
+        again = pipeline.run(store, cfg, stages=("discover",), searcher=searcher)
+        assert len(again["discover"]["skipped"]) == 3
+        assert len(calls) == 3  # no re-query

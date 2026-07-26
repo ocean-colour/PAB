@@ -90,7 +90,7 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
 | `--profiles-csv PROFILES_CSV` | Profile-selection CSV. Default: `data/dev_profiles.csv`. |
 | `--replace` | Re-do completed work instead of skipping it. |
 | `--no-figures` | Skip the `figure` stage. |
-| `--jobs JOBS` | Parallel processes for the `fit` stage (matchup-level; default `1` = serial). Granules are opened and pixels extracted in the parent; only the MCMC runs in workers; all DB writes stay in the parent (no SQLite contention). |
+| `--jobs JOBS` | Parallel processes for the `match` and `fit` stages (profile-/matchup-level; default `1` = serial). In `fit`, granules are opened and pixels extracted in the parent and only the MCMC runs in workers; in `match`, the granule open + pixel extraction themselves run in workers. Either way **all DB writes stay in the parent** (no SQLite contention). An injected `opener` must be picklable (module-level) to be used in parallel; otherwise `match` falls back to serial. |
 | `--download` | Pre-download each granule to a local cache and read it locally (the reliable **off-cloud** path). Use this whenever you are **not** running in-region (`us-west-2`). |
 | `--cache-dir CACHE_DIR` | Where downloaded granules live. Default: `DATA_DIR/granules`. |
 | `--dry-run` | Print the stage plan and exit without touching anything. |
@@ -122,8 +122,8 @@ pab --db data/pab.db --download
 | Stage | What it does | Reads / writes |
 | --- | --- | --- |
 | `ingest` | Persist BGC-Argo profiles + mixed-layer summaries. | → `mld_summary` |
-| `discover` | Find in-window PACE granules per profile (earthaccess). | → `granules` |
-| `match` | Build PACE↔Argo matchups (Stage 4 spatial/temporal gate). | → `matchups` |
+| `discover` | Find in-window PACE granules per profile (earthaccess). A profile is skipped only if the store already holds a granule **whose footprint covers that profile's own position** in its time window. | → `granules` |
+| `match` | Build PACE↔Argo matchups (Stage 4 spatial/temporal gate). Candidates come from an in-memory `GranuleIndex` (time window **+** footprint bounding box padded by `MatchupConfig.footprint_pad_deg`), so only granules that plausibly cover the float are opened. | → `matchups` |
 | `fit` | Run BING spectral fits per matchup (needs BING + emcee). | → `fit_results` |
 | `figure` | Render per-matchup figures (best-effort; needs Loisel data). | → `outdir/figures` |
 | `report` | Build the static site + a release manifest (Stage 7). | → `outdir/site`, `outdir/release` |

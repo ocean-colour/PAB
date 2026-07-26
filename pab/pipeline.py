@@ -215,10 +215,14 @@ def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
 
     ``searcher(lat, lon, t0, t1, config)`` overrides the live earthaccess search
     (it returns a granule ``DataFrame``); otherwise ``pab.pace.discover`` is used.
-    A profile that already has granules in its time window is **skipped** (no
-    re-query) unless ``replace`` — so a resume doesn't re-hit the network.
+    A profile that already has granules **over its own position** in its time
+    window is **skipped** (no re-query) unless ``replace`` — so a resume doesn't
+    re-hit the network. The position test matters: granules found for a profile
+    on the other side of the planet share its time window but say nothing about
+    this profile's coverage (skipping on time alone silently starved most
+    profiles of granules once the table held many).
     """
-    from pab.matchup.engine import candidate_granules
+    from pab.matchup.engine import GranuleIndex, candidate_granules
     from pab.pace import discover as disc
 
     profiles = store.query(
@@ -227,9 +231,23 @@ def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
     )
     n, skipped = 0, []
     dtime_hours = config.dtime_days * 24.0
+    # Snapshot the granule table once: granules persisted during this pass are
+    # not in the index, so at worst a shared granule is re-queried (an idempotent
+    # upsert) — never a missed search.
+    index = GranuleIndex.load(store)
     for p in profiles:
         if not config.replace and candidate_granules(
-            store, p["time"], dtime_max_hours=dtime_hours
+            store,
+            p["time"],
+            dtime_max_hours=dtime_hours,
+            latitude=p["latitude"],
+            longitude=p["longitude"],
+            # pad 0 here on purpose: skip a search only on *solid* evidence that
+            # this profile is already covered. (match, by contrast, pads the box
+            # generously — opening a granule that turns out not to cover the
+            # float only costs time, whereas a skipped search loses it for good.)
+            pad_deg=0.0,
+            index=index,
         ):
             skipped.append(f"{p['wmo']}_{p['cycle']}")
             continue
@@ -453,7 +471,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--jobs",
         type=int,
         default=1,
-        help="Parallel processes for the fit stage (matchup-level; 1 = serial).",
+        help="Parallel processes for the match + fit stages (profile/matchup "
+        "level; 1 = serial).",
     )
     p.add_argument(
         "--dry-run",

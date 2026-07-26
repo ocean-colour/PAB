@@ -1,0 +1,72 @@
+# PAB 1000-profile run on Nautilus: one pod, 50 cores, lazy NASA-S3 reads.
+#
+# The dress rehearsal for the 54,506-profile run: same code path, same image,
+# same PVC, 1/55th of the profiles. Stages run one at a time so each gets its
+# own wall-clock line in the log; everything is idempotent, so a preempted pod
+# resumes where it stopped (NOTE: unlike validate_job.yaml this does NOT wipe
+# /data/run1k — that is what makes a restart a resume).
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars create configmap pab-run1k-csv \
+#     --from-file=profiles.csv=nautilus/run1k_profiles.csv --dry-run=client -o yaml \
+#     | kubectl apply -f -
+#   kubectl -n sea-meets-the-stars delete job pab-run1k --ignore-not-found
+#   kubectl apply -f nautilus/run1k_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-run1k        # or tail /data/run1k/run.log
+#
+# Expect (see run_full_pipeline.md → Reports → 1000-profile plan):
+#   ingest ~2 h (serial argopy) · discover ~15 min · match ~20-40 min (50 cores)
+#   fit ~10-20 min · figure+report minutes · ~250 matchups, ~3-4 GB of chains.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-run1k
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4          # a preempted/evicted pod restarts and resumes
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0
+        imagePullPolicy: Always
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data}
+        - {name: RUN, value: /data/run1k}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            mkdir -p $RUN
+            # NB (Task-6 lesson): YAML literal block `|` only, and a one-line
+            # `python -c` rather than a here-doc — folded scalars/here-docs break.
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/run.log; }
+            counts() { python -c "import os,sqlite3; db=os.environ['RUN']+'/pab.db'; c=sqlite3.connect(db); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('profiles','granules','matchups','matchup_pixels','fits','fit_results')})" 2>&1 | tee -a $RUN/run.log; }
+            stage() {
+              log "STAGE $1 start"
+              pab --db $RUN/pab.db --outdir $RUN/pipeline \
+                --profiles-csv /cfg/profiles.csv --stage $1 --jobs 50 2>&1 \
+                | tee -a $RUN/run.log
+              log "STAGE $1 end"
+              counts
+            }
+            log "RUN start (1000 profiles, jobs=50)"
+            for s in ingest discover match fit figure report; do stage $s; done
+            log "disk"
+            du -sh $RUN $RUN/pipeline/* 2>/dev/null | tee -a $RUN/run.log
+            log "RUN1K_DONE"
+        resources:
+          requests: {cpu: "50", memory: "100Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "50", memory: "100Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+        - {name: csv, mountPath: /cfg/profiles.csv, subPath: profiles.csv}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}
+      - {name: csv, configMap: {name: pab-run1k-csv}}

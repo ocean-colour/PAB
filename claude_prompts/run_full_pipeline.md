@@ -167,6 +167,47 @@ Read these before running — plus the **hard-won operational lessons** below.
 
 ## Q&A
 
+**Questions for the 1000-profile run (Task 10) — answer inline.**
+
+- **R1 — image tag for the rebuild.** The registry's `pab:1.0` predates parallel
+  `match` and today's two fixes, so a rebuild is required. Overwrite **`:1.0`**
+  (simple; `imagePullPolicy: Always` picks it up, but "1.0" then means two
+  different images over time), or push **`:1.0.1`** and point the Job at it
+  (unambiguous provenance — `pab_version` stays `1.0`, only the image tag moves)?
+  *(My recommendation: `:1.0.1`, and keep `:latest` moving.)*
+
+>A. 
+
+- **R2 — is this the right 1000?** I sampled **≤3 profiles per float, 90 per
+  quarter across all 11 quarters** → 1000 profiles / **659 floats**, global, all
+  seasons (`nautilus/run1k_profiles.csv`). That maximises *coverage* and is the
+  honest dress rehearsal for the full run. The alternative is a **clustered**
+  sample (say 30 floats × 33 cycles) which would exercise per-float time series
+  and cross-profile granule sharing instead. *(My recommendation: keep the
+  stratified one — it's the same statistical shape as the full run.)*
+
+>A. 
+
+- **R3 — parallelise `ingest` before or after the 1k run?** With `match` fixed,
+  **`ingest` is now the bottleneck**: ~7 s/profile serial → ~2 h at 1k and
+  **~4–5 days at 54,506**. argopy fetches are network-bound, so a thread pool
+  (say 8–16 workers, DB writes in the parent) would cut it to hours — the same
+  pattern as the `discover_count.py` script that did 54.5k CMR queries in 1.7 h.
+  Do it **now** (delays the 1k run by ~an hour of my work), or run the 1k first
+  and fold it in before the full send? *(My recommendation: run 1k now — 2 h is
+  tolerable and the run gives us real numbers — then parallelise ingest before
+  the full send.)*
+
+>A. 
+
+- **R4 — MCMC chains: keep local for the 1k run?** ~13 MB/fit → ~3–4 GB at 1k
+  (fine on the 500Gi PVC) but **~180 GB at 54.5k**. The Task-4 flag was to upload
+  chains to `s3://pab` and evict locally as they're produced. Keep it simple for
+  the 1k run (**all local**, measure the real per-fit size) and implement the
+  upload-and-evict from the measured number? *(My recommendation: yes, defer.)*
+
+>A. 
+
 **Nautilus setup (Task 7) — status + what's left.**
 
 *What's already done (more than I'd realised):*
@@ -405,6 +446,106 @@ Ran the pipeline's per-profile CMR search over **all 54,506 profiles** (±0.4°,
 even with eviction the full volume must transit the network (~days–weeks). The
 design-target **in-region us-west-2 + lazy S3** avoids the 18.55 TB transfer
 entirely (reads only the ~MB pixel chunks). Decision surfaced as Q11.
+
+#### 1000-profile run (Task 10) — readiness review, two blocking bugs fixed, and the plan
+
+**State of the two files.** `pab/pipeline.py` + `pab/matchup/engine.py` now carry
+**profile-level parallel `match`** (`--jobs`, spawned workers do the granule
+open + pixel extraction, parent does every DB write — the same shape as parallel
+`fit`). It landed **2026-07-26, after the 2026-07-22 image build**, so
+`pab:1.0` in the registry does **not** contain it: the 1k run needs a rebuild
+either way. Reviewing it against a 1000-profile run turned up three problems;
+all three are now fixed, suite **149 passed** (was 141).
+
+**Bug 1 (run-invalidating) — `discover` skipped profiles on *time* alone.** The
+skip test asked "does the store hold any granule within ±24 h of this profile?"
+— **location-blind**. Proven offline: three profiles on one day in the N
+Pacific, N Atlantic and S Indian → only the *first* got a CMR search; the other
+two were skipped and could never match anything. Simulated on the actual 1000
+selected profiles: **710 of 1000 (71 %) would have been starved of granules.**
+It never bit before because the pilot's 16 profiles and the 5-profile validation
+were far apart in time. *Fix:* the skip test now requires a granule whose
+**footprint covers that profile's own position** (pad 0 — skip only on solid
+evidence).
+
+**Bug 2 (quadratic) — `match` opened every granule in the time window,
+globally.** `candidate_granules` scanned the whole `granules` table per profile
+and filtered on time only, so each profile was handed granules from every ocean.
+Measured against the real discover-count granule set (124,218 names, times from
+the granule names) and the 54,506 profile times:
+
+| | candidates / profile | granule opens | match on 50 cores @4.4 s |
+| --- | --- | --- | --- |
+| before (time only) | **291** | 15.9 M | **388 h (~16 days)** |
+| after (time + footprint) | ~6–11 | ~0.31–0.59 M | **~8–14 h** |
+| location-aware CMR truth | 5.67 | 0.31 M | — |
+
+*Fix:* a `GranuleIndex` built **once per stage** (times parsed once, footprint
+WKT parsed once into bounding boxes, `np.searchsorted` for the time window) plus
+a footprint-box test padded by the new `MatchupConfig.footprint_pad_deg = 1.0`
+(~110 km — CMR footprints are 4-corner approximations of a curved swath; the
+exact test is still the nearest-unflagged-pixel distance). Footprints spanning
+> 180° of longitude (antimeridian / polar sweeps, 12 of the pilot's 85) keep
+their **latitude** band and drop the longitude bound rather than being waved
+through. Regression-checked on the pilot DB: **all 4 real matchups still
+retained**, candidate count unchanged there (16 well-separated profiles), and
+the footprint test discriminates (85 granules → 12–34 cover a given float).
+
+**Bug 3 (untested) — parallel `match` had never run.** There was no test, and
+the `opener is None` gate made one impossible (the test seam forced serial).
+*Fix:* the gate is now "is the opener picklable?" — the opener is forwarded to
+workers, a lambda/closure falls back to serial, and a module-level stub opener
+lets a test exercise the **real** `ProcessPoolExecutor(spawn)` path
+(`test_build_matchups_parallel_matches_serial`, plus a fallback test).
+
+**Projection for the 1000-profile run** (from pilot rates + the Task-1 in-pod
+~4.4 s/granule lazy read; 1 pod × 50 cores):
+
+| stage | projection | note |
+| --- | --- | --- |
+| ingest | **~2 h** | ~7 s/profile, **still serial** (argopy) — the new bottleneck |
+| discover | ~12–15 min | ~1000 CMR queries × ~0.7 s (all 1000 now searched, not 290) |
+| match | ~10–40 min | ~6,300 opens ≈ 7.7 core-h ÷ 50 |
+| fit | ~5–10 min | ~250 matchups × 1 MCMC (~60 s) ÷ 50 |
+| figure + report | ~10 min | ~250 fit figures + scenes |
+| **total** | **~3 h** | ~250 matchups, ~3–4 GB of chains on the 500Gi PVC |
+
+**Artifacts added for the run:** `nautilus/make_1k_subsample.py` +
+`nautilus/run1k_profiles.csv` (**1000 profiles / 659 floats**, ≤3 per float,
+90 per quarter across all 11 quarters of the window, lat −77→77, all basins;
+also at `$PAB_DATA_DIR/run1k_profiles.csv`), `nautilus/build_image.sh`
+(reproducible staged build+push — bing's 94 GB stays out of the context), and
+`nautilus/run1k_job.yaml` (1 pod, 50 cores/100Gi, `--jobs 50`, lazy reads, one
+stage at a time with per-stage timing + DB counts, `backoffLimit: 4` and **no
+`rm -rf`** so a preempted pod *resumes*).
+
+**How to proceed — six steps:**
+
+1. `docker login gitlab-registry.nrp-nautilus.io -u <token-user> -p <token>`
+   (the deploy token is yours; the session isn't logged in).
+2. `bash nautilus/build_image.sh --push` — builds from the local working trees
+   (so it captures these fixes), smoke-tests `--dry-run` **and** the new
+   `GranuleIndex` import, pushes `:1.0` + `:latest`. See **R1** on tagging.
+3. Re-run the 5-profile validation on the new image
+   (`kubectl apply -f nautilus/validate_job.yaml`, ~10 min) — cheap proof the
+   rebuild didn't regress; expect the same `5 / 12 / 1 / 1` counts.
+4. `kubectl -n sea-meets-the-stars create configmap pab-run1k-csv
+   --from-file=profiles.csv=nautilus/run1k_profiles.csv --dry-run=client -o yaml
+   | kubectl apply -f -`
+5. `kubectl apply -f nautilus/run1k_job.yaml`, then
+   `kubectl -n sea-meets-the-stars logs -f job/pab-run1k`.
+6. **Gates to read off the log** (these are what the full run hinges on):
+   (a) `discover` **skipped ≈ 0** on the first pass — if it skips hundreds, Bug 1
+   is not really fixed; (b) **candidates/profile ≈ 6**, not ~20 — the footprint
+   filter is working; (c) **match rate** (matchups ÷ profiles; pilot said 25 %);
+   (d) **s/granule-open** in-pod at 50-way concurrency (does NASA S3 throttle?);
+   (e) **chain GB** → extrapolate the PVC need for 54.5k; (f) peak RSS vs the
+   100Gi request.
+
+**Then extrapolate ×54.5** before the full send: at these numbers the full run is
+ingest ~4–5 days (serial) + discover ~10 h + match ~8–14 h + fit ~4–5 h —
+i.e. **ingest becomes the dominant cost**, which is why **R3** asks about
+parallelising it.
 
 ## Logging
 
@@ -679,3 +820,52 @@ Jobs (fan-out, resumable) → publish to `s3://pab` + rclone to `AIOcean:` → v
 Open questions M1–M5 (namespace/quota, registry, connectivity, stage-vs-subsample,
 compute shape). The full-run conversation continues in that doc. Code changed: none
 (applied the bucket-policy fix via aws-cli; authored the new prompt doc).
+### 2026-07-26 (Task 10 — reviewed the new match code; fixed two blocking bugs; prepared the 1k run)
+
+Back from the Nautilus branch (`nautilus_prompts.md`). Examined `pab/pipeline.py`
+and `pab/matchup/engine.py` — the parallel-`match` work — with one question in
+mind: *would a 1000-profile run give us the right answer?* It would not have.
+Full detail in **Reports → 1000-profile run (Task 10)**; the essentials:
+
+**Bug 1 — `discover` skipped on time alone (run-invalidating).** The resume test
+was "any granule within ±24 h of this profile's time", ignoring *where* those
+granules are. Proven offline with three same-day profiles in three oceans: only
+the first was searched. Simulated over the real 1000-profile selection: **71 %
+would never have been given granules**, and a profile with no granules can never
+match. Invisible until now because the pilot (16 profiles) and the validation
+(5 profiles, one float) were sparse in time — a good reminder that *resume/skip
+logic needs a test at the density it will actually see*.
+
+**Bug 2 — `match` was quadratic.** `candidate_granules` scanned the whole
+granule table per profile, time-filtered only, so every profile was offered
+granules from every ocean. Quantified against the real 124,218-granule
+discover-count: **291 candidates/profile at full scale → 15.9 M opens ≈ 388 h on
+50 cores**, versus the 5.67/profile CMR truth. Fixed with a `GranuleIndex`
+(parse the table once; `searchsorted` on time; footprint-bbox test padded by the
+new `MatchupConfig.footprint_pad_deg = 1.0`) → **~6–11 candidates/profile,
+~8–14 h**. Deliberate asymmetry: `match` pads the box generously (a needless
+open costs seconds), `discover` uses pad 0 (a wrongly-skipped search loses the
+profile for good). Wide-longitude footprints keep their latitude band instead of
+being waved through. Regression: the pilot DB's 4 real matchups all survive.
+
+**Bug 3 — parallel `match` had never executed.** No test, and the `opener is
+None` gate made one impossible. Replaced the gate with a picklability check and
+forwarded the opener to workers, so a module-level stub opener now exercises the
+real spawn/ProcessPool path (unpicklable openers fall back to serial). Suite
+**149 passed** (was 141); 8 new tests.
+
+**Prepared for the run:** `nautilus/make_1k_subsample.py` +
+`nautilus/run1k_profiles.csv` (1000 profiles / 659 floats, ≤3 per float, 90 per
+quarter, global), `nautilus/build_image.sh` (reproducible staged build+push —
+the ad-hoc rsync from Task 3 is now a script), and `nautilus/run1k_job.yaml`
+(1 pod × 50 cores, `--jobs 50`, lazy reads, per-stage timing + counts,
+resumable — no `rm -rf`, `backoffLimit: 4`). Projection: **~3 h, ~250 matchups,
+~3–4 GB of chains**.
+
+**Blocking on the user:** the registry image predates all of this (built
+2026-07-22, parallel match landed 2026-07-26), so a `docker login` + rebuild is
+step 1. Questions **R1–R4** in Q&A: image tag, whether the 1000 are the right
+1000, whether to parallelise `ingest` now (it is the new bottleneck — ~4–5 days
+at full scale) or after, and whether to defer chain upload/eviction. Code
+changed: `pab/matchup/engine.py`, `pab/pipeline.py`, `pab/tests/test_matchup.py`,
+`pab/tests/test_pipeline.py`, `HOWTO.md`, plus the four new `nautilus/` files.

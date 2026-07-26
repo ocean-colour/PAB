@@ -52,6 +52,9 @@ __all__ = [
     "make_matchup_id",
     "parse_time",
     "time_offset_hours",
+    "footprint_bbox",
+    "footprint_covers",
+    "GranuleIndex",
     "find_matchup",
     "write_matchup",
     "qualifying_profiles",
@@ -74,12 +77,19 @@ class MatchupConfig:
             to count as spatially covering the float.
         mask_flags: ``l2_flags`` names that reject a pixel (the standard ocean
             screen by default).
+        footprint_pad_deg: Slack (degrees) added to a granule's footprint
+            bounding box in the cheap spatial pre-filter
+            (:class:`GranuleIndex`). Generous by design — CMR footprints are
+            4-corner approximations of a curved swath, so the box can cut the
+            true edge by tens of km; the exact test is still the
+            nearest-unflagged-pixel distance in :func:`find_matchup`.
     """
 
     dtime_max_hours: float = 24.0
     n_spectra: int = 10
     max_distance_km: float = 5.0
     mask_flags: tuple[str, ...] = field(default=_flags.STANDARD_OCEAN_MASK)
+    footprint_pad_deg: float = 1.0
 
 
 @dataclass
@@ -138,6 +148,146 @@ def time_offset_hours(profile_time: Any, granule_time: Any) -> float:
     """Absolute time offset ``|profile − granule|`` in hours."""
     delta = parse_time(profile_time) - parse_time(granule_time)
     return abs(delta.total_seconds()) / 3600.0
+
+
+def footprint_bbox(wkt: Any) -> tuple[float, float, float, float] | None:
+    """Bounding box ``(lon_min, lat_min, lon_max, lat_max)`` of a WKT footprint.
+
+    A deliberately tolerant parser: it pulls the coordinate pairs out of any
+    ``POLYGON``/``MULTIPOLYGON`` text (CMR gives simple swath quadrilaterals) and
+    returns their extent.
+
+    A footprint spanning more than 180° of longitude either crosses the
+    antimeridian or is a high-latitude swath sweeping many meridians; for those
+    the longitude bounds are widened to the full ``(-180, 180)`` and only the
+    **latitude** band constrains the box — conservative, but still a real filter
+    (a polar granule is never offered to a tropical float).
+
+    Returns:
+        The bounding box, or ``None`` when the footprint is missing or
+        unparseable — which every caller reads as *"unknown, don't exclude"*.
+    """
+    if wkt is None:
+        return None
+    import re
+
+    _num = r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
+    nums = [float(m) for m in re.findall(_num, str(wkt))]
+    if len(nums) < 6 or len(nums) % 2:
+        return None
+    lons = np.asarray(nums[0::2], dtype=float)
+    lats = np.asarray(nums[1::2], dtype=float)
+    if np.any(np.abs(lats) > 90.0) or np.any(np.abs(lons) > 180.0):
+        return None  # not a lon/lat pair list after all
+    if float(lons.max() - lons.min()) > 180.0:
+        # wraps the antimeridian (or sweeps meridians near a pole): keep the
+        # latitude band, drop the longitude constraint
+        return (-180.0, float(lats.min()), 180.0, float(lats.max()))
+    return (float(lons.min()), float(lats.min()), float(lons.max()), float(lats.max()))
+
+
+def footprint_covers(
+    bbox: tuple[float, float, float, float] | None,
+    latitude: float,
+    longitude: float,
+    *,
+    pad_deg: float = 0.0,
+) -> bool:
+    """Whether ``(latitude, longitude)`` falls in ``bbox`` padded by ``pad_deg``.
+
+    An unknown ``bbox`` (``None``) returns ``True`` — the pre-filter never drops
+    a granule it cannot place.
+    """
+    if bbox is None:
+        return True
+    lon_min, lat_min, lon_max, lat_max = bbox
+    return (
+        lat_min - pad_deg <= float(latitude) <= lat_max + pad_deg
+        and lon_min - pad_deg <= float(longitude) <= lon_max + pad_deg
+    )
+
+
+class GranuleIndex:
+    """In-memory time+footprint index over the ``granules`` table.
+
+    Built **once per stage** and queried per profile, so candidate selection is
+    ``O(log M)`` per profile instead of a full table scan (which, with the whole
+    global granule set in the DB, made ``match`` quadratic in the run size).
+
+    Times are parsed once; footprints are parsed once into bounding boxes
+    (:func:`footprint_bbox`). :meth:`candidates` applies the temporal window
+    **and** — when given a position — the spatial box, so a profile is only ever
+    offered granules whose swath plausibly covers it (opening a granule is the
+    expensive step: ~4.4 s in-cloud).
+    """
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        recs = []
+        for row in rows:
+            gtime = row.get("time_start")
+            if gtime is None:
+                continue
+            try:
+                t = parse_time(gtime)
+            except ValueError:
+                continue
+            recs.append(
+                (
+                    t.timestamp(),
+                    str(row["granule_id"]),
+                    gtime,
+                    row.get("data_url") or row["granule_id"],
+                    footprint_bbox(row.get("footprint")),
+                )
+            )
+        recs.sort(key=lambda r: r[0])
+        self._epoch = np.array([r[0] for r in recs], dtype=float)
+        self._recs = recs
+
+    @classmethod
+    def load(cls, store) -> GranuleIndex:
+        """Build the index from every granule in ``store``."""
+        return cls(
+            store.query(
+                "SELECT granule_id, time_start, footprint, data_url FROM granules"
+            )
+        )
+
+    def __len__(self) -> int:
+        return len(self._recs)
+
+    def candidates(
+        self,
+        profile_time: Any,
+        *,
+        dtime_max_hours: float,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        pad_deg: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """Granules within the time window (and, if given, over the position).
+
+        Returns:
+            Candidate dicts with ``granule_id``, ``time`` (``time_start``), and
+            ``source`` (``data_url`` if present, else ``granule_id``) — the
+            input :func:`find_matchup` expects.
+        """
+        if not self._recs:
+            return []
+        try:
+            t0 = parse_time(profile_time).timestamp()
+        except ValueError:
+            return []
+        half = float(dtime_max_hours) * 3600.0
+        lo = int(np.searchsorted(self._epoch, t0 - half, side="left"))
+        hi = int(np.searchsorted(self._epoch, t0 + half, side="right"))
+        out: list[dict[str, Any]] = []
+        for _, gid, gtime, source, bbox in self._recs[lo:hi]:
+            if latitude is not None and longitude is not None:
+                if not footprint_covers(bbox, latitude, longitude, pad_deg=pad_deg):
+                    continue
+            out.append({"granule_id": gid, "time": gtime, "source": source})
+        return out
 
 
 def find_matchup(
@@ -300,36 +450,47 @@ def qualifying_profiles(store) -> list[dict[str, Any]]:
 
 
 def candidate_granules(
-    store, profile_time: Any, *, dtime_max_hours: float
+    store,
+    profile_time: Any,
+    *,
+    dtime_max_hours: float,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    pad_deg: float = 0.0,
+    index: GranuleIndex | None = None,
 ) -> list[dict[str, Any]]:
-    """Granules whose start time is within ``dtime_max_hours`` of the profile.
+    """Candidate granules for a profile: temporal window + optional footprint.
 
-    A cheap temporal pre-filter over the ``granules`` table; the spatial test
-    (the float falls within the footprint) is applied in :func:`find_matchup`
-    after the granule is opened. Granules with an unparseable time are skipped.
+    Granules whose start time is within ``dtime_max_hours`` of the profile and —
+    when ``latitude``/``longitude`` are given — whose footprint bounding box
+    (padded by ``pad_deg``) contains the float. The exact spatial test (the
+    nearest unflagged pixel is within ``max_distance_km``) still happens in
+    :func:`find_matchup` after the granule is opened; this only avoids opening
+    granules that cannot possibly cover the float. Granules with an unparseable
+    time, or a footprint that cannot be placed, are respectively skipped and
+    kept.
+
+    Args:
+        store: An open store (ignored when ``index`` is supplied).
+        profile_time: The profile timestamp.
+        dtime_max_hours: Temporal half-window.
+        latitude, longitude: Float position; omit for a time-only filter.
+        pad_deg: Slack added to the footprint box.
+        index: A prebuilt :class:`GranuleIndex` — pass one when querying many
+            profiles (a stage), so the table is read and parsed **once**.
 
     Returns:
         Candidate dicts with ``granule_id``, ``time`` (``time_start``), and
         ``source`` (``data_url`` if present, else ``granule_id``).
     """
-    out: list[dict[str, Any]] = []
-    for row in store.query("SELECT granule_id, time_start, data_url FROM granules"):
-        gtime = row["time_start"]
-        if gtime is None:
-            continue
-        try:
-            if time_offset_hours(profile_time, gtime) > dtime_max_hours:
-                continue
-        except ValueError:
-            continue
-        out.append(
-            {
-                "granule_id": row["granule_id"],
-                "time": gtime,
-                "source": row["data_url"] or row["granule_id"],
-            }
-        )
-    return out
+    idx = index if index is not None else GranuleIndex.load(store)
+    return idx.candidates(
+        profile_time,
+        dtime_max_hours=dtime_max_hours,
+        latitude=latitude,
+        longitude=longitude,
+        pad_deg=pad_deg,
+    )
 
 
 def _worker_init():  # pragma: no cover - runs in worker processes
@@ -365,9 +526,9 @@ def build_matchups(
     granule opens + nearest-pixel extraction (the I/O- and CPU-heavy
     :func:`find_matchup`) run in a :class:`ProcessPoolExecutor`, while candidate
     lookups and **all DB writes stay in the parent** (single SQLite writer, no lock
-    contention — the same design as the parallel ``fit`` stage). Parallelism
-    requires the real cloud read, so it is only used when ``opener`` is ``None``
-    (the ``opener`` test seam runs serially).
+    contention — the same design as the parallel ``fit`` stage). Workers are
+    spawned, so an injected ``opener`` must be picklable (a module-level
+    function); a closure/lambda opener silently runs the serial path instead.
 
     Args:
         store: An open :class:`pab.db.store.Store` (must already hold profiles +
@@ -392,23 +553,30 @@ def build_matchups(
     # Gather per-profile inputs in the parent (DB reads only); the heavy
     # open+extract in find_matchup is what fans out.
     inputs: list[tuple[dict, list[dict]]] = []
+    index = GranuleIndex.load(store)  # read + parse the granule table once
     for profile in qualifying_profiles(store):
         if profile["latitude"] is None or profile["longitude"] is None:
             # no position to match against — skip rather than raise mid-run
             unmatched.append(f"{profile['wmo']}_{profile['cycle']}")
             continue
         candidates = candidate_granules(
-            store, profile["time"], dtime_max_hours=config.dtime_max_hours
+            store,
+            profile["time"],
+            dtime_max_hours=config.dtime_max_hours,
+            latitude=profile["latitude"],
+            longitude=profile["longitude"],
+            pad_deg=config.footprint_pad_deg,
+            index=index,
         )
         if not candidates:
             unmatched.append(f"{profile['wmo']}_{profile['cycle']}")
             continue
         inputs.append((profile, candidates))
 
-    if jobs and int(jobs) > 1 and opener is None and inputs:
+    if jobs and int(jobs) > 1 and inputs and _picklable(opener):
         return _build_matchups_parallel(
             store, inputs, config, created, int(jobs), replace,
-            written, skipped, unmatched,
+            written, skipped, unmatched, opener=opener,
         )
 
     for profile, candidates in inputs:
@@ -428,21 +596,41 @@ def build_matchups(
     return {"written": written, "skipped": skipped, "unmatched": unmatched}
 
 
+def _picklable(obj) -> bool:
+    """Whether ``obj`` survives a pickle round-trip to a spawned worker.
+
+    ``None`` (the live cloud read) trivially does; a module-level opener does; a
+    lambda/closure/local function does not — so the caller can fall back to the
+    serial path instead of failing every profile in the pool.
+    """
+    if obj is None:
+        return True
+    import pickle
+
+    try:
+        pickle.dumps(obj)
+    except Exception:  # noqa: BLE001 — any pickling failure means "serial"
+        return False
+    return True
+
+
 def _build_matchups_parallel(
-    store, inputs, config, created, jobs, replace, written, skipped, unmatched
+    store, inputs, config, created, jobs, replace, written, skipped, unmatched,
+    *, opener=None,
 ):
     """Parallel backend for :func:`build_matchups`. Mutates the result lists.
 
     ``find_matchup`` (open + extract + select) runs in worker processes; the
     parent drains completed futures and performs every DB write. In-flight futures
     are bounded (~2×``jobs``) so results are persisted promptly and memory stays
-    bounded over a large profile set.
+    bounded over a large profile set. ``opener`` is forwarded to the workers and
+    must be picklable (see :func:`_picklable`).
     """
     import multiprocessing as mp
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
     # 'spawn' avoids fork-in-a-multithreaded-parent hazards; workers re-import
-    # cleanly and find_matchup pickles by qualname (opener stays None in workers).
+    # cleanly and find_matchup pickles by qualname.
     ctx = mp.get_context("spawn")
     fut_prof: dict = {}
     pending: set = set()
@@ -472,7 +660,9 @@ def _build_matchups_parallel(
         max_workers=jobs, mp_context=ctx, initializer=_worker_init
     ) as ex:
         for profile, candidates in inputs:
-            fut = ex.submit(find_matchup, profile, candidates, config=config)
+            fut = ex.submit(
+                find_matchup, profile, candidates, opener=opener, config=config
+            )
             fut_prof[fut] = profile
             pending.add(fut)
             if len(pending) >= 2 * jobs:
