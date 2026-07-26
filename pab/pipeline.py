@@ -68,7 +68,7 @@ class PipelineConfig:
     replace: bool = False
     download: bool = False
     cache_dir: str | Path | None = None
-    jobs: int = 1  # matchup-level parallel processes for the fit stage (1 = serial)
+    jobs: int = 1  # parallel processes for the match + fit stages (1 = serial)
 
     def out(self) -> Path:
         """The resolved base output directory."""
@@ -259,7 +259,11 @@ def match(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
     from pab.matchup.engine import build_matchups
 
     return build_matchups(
-        store, opener=opener, config=config.matchup, replace=config.replace
+        store,
+        opener=opener,
+        config=config.matchup,
+        replace=config.replace,
+        jobs=config.jobs,
     )
 
 

@@ -368,3 +368,56 @@ confirms it parses. User will relaunch. No package code changed (manifest only).
 Process learning for all embedded-script K8s manifests: use `|` (literal), never `>`
 (folded), for shell/python blocks — and prefer a one-line `python -c` over a
 here-doc to avoid indentation/terminator-column pitfalls.
+
+### 2026-07-22 (Task 5 — in-container validation passes end-to-end; six image/packaging bugs fixed)
+
+Drove a 5-profile validation Job (`nautilus/validate_job.yaml`, float 1901614)
+to a **clean pass on the final image** (`…/profx/pab:1.0`, digest
+`49c83e9…`): `ingest 5 / discover 12 / match 1 (10 px) / fit 1 / figure 1 /
+report 7-page site`; DB counts `profiles 5 · granules 12 · matchups 1 ·
+matchup_pixels 10 · fits 1 · fit_results 10`. This confirms the whole cloud
+path in-pod: container + `pab-data` PVC + secrets (netrc/S3) + **lazy S3 reads**
+(no `--download`) + **parallel `fit` (`--jobs 4`)** + reporting.
+
+Getting there uncovered **six bugs**, each caught *before* the next rebuild by
+exercising the real code path against the image (so one rebuild per fix, not
+blind iteration):
+
+1. **argopy/erddapy skew** → `cannot import name '_quote_string_constraints'`,
+   0 profiles. Fix: pin `argopy==1.4.0 erddapy==3.2.1` + build guard.
+2. **earthaccess never logged in** → `match` open: `'NoneType' has no attribute
+   'open'` (`earthaccess.__store__` is None). Masked on the workstation by a
+   prior interactive login. Fix: guarded `earthaccess.login(strategy="netrc")`
+   in `pab/pace/cloud.py::open_s3`.
+3. **`bing/data` dropped by the wheel** — `bing` uses `find_packages()` with no
+   `package_data`, so `pip install ./bing` omits `data/` (the
+   `gordon_coefficients*.csv` every fit needs + adg `.mat`).
+4. **`ocpy/data` dropped** — same gap; its Bricaud table loads at *import* of
+   `bing.models.anw`. Fix (3+4): Dockerfile copies each pkg's `data/` into the
+   installed location (path found via the module, no py-version hardcoding).
+5. **`ocpy.hydrolight` missing `__init__.py`** → `find_packages()` dropped the
+   whole subpackage from the wheel; `bing.models.bbnw` imports
+   `ocpy.hydrolight.loisel23` on every fit. Works on the workstation only
+   because editable installs expose the source (namespace-package). Fix: add
+   `ocpy/hydrolight/__init__.py`.
+6. **Loisel `Hydrolight400.nc` absent** — `bbNWModel.init_bbw` (base class → hit
+   by *every* bbnw model incl. `ExpBPow`/`Pow`) calls `loisel23.load_ds(4,0)` to
+   seed `bb_w` from `$OS_COLOR/Loisel2023/Hydrolight400.nc`. Fix: bundle the one
+   18 MB file (not the 19 GB dataset) + `ENV OS_COLOR=/opt/os_color`.
+
+Diagnosis notes: the fit failure was **not** a parallelism bug — `jobs=1`
+(serial) failed identically in-pod while the same fit *succeeded* on the
+workstation, pointing at environment/packaging, not the ProcessPool. Confirmed
+by reproducing locally with the `try/except` removed and by a debug Job on the
+current image. Also **added traceback logging** to the fit stage's four
+swallowed `except` blocks (`pab/fit/run.py`) — silent per-fit failures across
+54k profiles would be untenable; this is exactly how bugs 5/6 were isolated.
+
+Build guard now imports `bing.models.anw`+`bbnw`, asserts the bing data
+resolves, and runs `loisel23.load_ds(4,0)` (`LOISEL OK (81,)`), so a green build
+means the full fit dependency chain is satisfied in-image. Code changed: PAB
+`pab/pace/cloud.py`, `pab/fit/run.py`, `Dockerfile`; ocpy
+`ocpy/hydrolight/__init__.py` (new). **Task 5 done.** Next: parallelize `match`
+in-code (still serial), then a small **pilot** (few hundred–1k profiles) to
+measure matchup rate / per-fit time / memory / chains storage before the full
+54,506-profile run.

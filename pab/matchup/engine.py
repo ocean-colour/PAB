@@ -32,6 +32,7 @@ seam (``opener=`` injects synthetic granules in tests — no network/S3).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -42,6 +43,8 @@ from pab.config import pab_version
 from pab.pace import cloud
 from pab.pace import extract as _extract
 from pab.pace import flags as _flags
+
+_log = logging.getLogger("pab.match")
 
 __all__ = [
     "MatchupConfig",
@@ -329,6 +332,21 @@ def candidate_granules(
     return out
 
 
+def _worker_init():  # pragma: no cover - runs in worker processes
+    """Cap BLAS/OpenMP threads per worker so N match processes don't oversubscribe
+    the cores (profile-level parallelism is the outer loop)."""
+    import os
+
+    for var in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        os.environ.setdefault(var, "1")
+
+
 def build_matchups(
     store,
     *,
@@ -336,11 +354,20 @@ def build_matchups(
     config: MatchupConfig | None = None,
     replace: bool = False,
     created: str | None = None,
+    jobs: int = 1,
 ) -> dict[str, list[str]]:
     """Match every qualifying profile against the stored granules and persist.
 
     Idempotent and resumable: a matchup already in the DB (by ``matchup_id``) is
     skipped unless ``replace=True``.
+
+    ``jobs > 1`` matches profiles **in parallel across processes** — each profile's
+    granule opens + nearest-pixel extraction (the I/O- and CPU-heavy
+    :func:`find_matchup`) run in a :class:`ProcessPoolExecutor`, while candidate
+    lookups and **all DB writes stay in the parent** (single SQLite writer, no lock
+    contention — the same design as the parallel ``fit`` stage). Parallelism
+    requires the real cloud read, so it is only used when ``opener`` is ``None``
+    (the ``opener`` test seam runs serially).
 
     Args:
         store: An open :class:`pab.db.store.Store` (must already hold profiles +
@@ -349,6 +376,7 @@ def build_matchups(
         config: Matching criteria (defaults to :class:`MatchupConfig`).
         replace: Re-write matchups that already exist.
         created: Timestamp to stamp on written rows.
+        jobs: Profile-level parallel processes (1 = serial).
 
     Returns:
         ``{"written": [...], "skipped": [...], "unmatched": [...]}`` — matchup
@@ -361,6 +389,9 @@ def build_matchups(
     skipped: list[str] = []
     unmatched: list[str] = []
 
+    # Gather per-profile inputs in the parent (DB reads only); the heavy
+    # open+extract in find_matchup is what fans out.
+    inputs: list[tuple[dict, list[dict]]] = []
     for profile in qualifying_profiles(store):
         if profile["latitude"] is None or profile["longitude"] is None:
             # no position to match against — skip rather than raise mid-run
@@ -369,6 +400,18 @@ def build_matchups(
         candidates = candidate_granules(
             store, profile["time"], dtime_max_hours=config.dtime_max_hours
         )
+        if not candidates:
+            unmatched.append(f"{profile['wmo']}_{profile['cycle']}")
+            continue
+        inputs.append((profile, candidates))
+
+    if jobs and int(jobs) > 1 and opener is None and inputs:
+        return _build_matchups_parallel(
+            store, inputs, config, created, int(jobs), replace,
+            written, skipped, unmatched,
+        )
+
+    for profile, candidates in inputs:
         result = find_matchup(profile, candidates, opener=opener, config=config)
         if result is None:
             unmatched.append(f"{profile['wmo']}_{profile['cycle']}")
@@ -381,5 +424,62 @@ def build_matchups(
             continue
         write_matchup(store, result, created=created)
         written.append(result.matchup_id)
+
+    return {"written": written, "skipped": skipped, "unmatched": unmatched}
+
+
+def _build_matchups_parallel(
+    store, inputs, config, created, jobs, replace, written, skipped, unmatched
+):
+    """Parallel backend for :func:`build_matchups`. Mutates the result lists.
+
+    ``find_matchup`` (open + extract + select) runs in worker processes; the
+    parent drains completed futures and performs every DB write. In-flight futures
+    are bounded (~2×``jobs``) so results are persisted promptly and memory stays
+    bounded over a large profile set.
+    """
+    import multiprocessing as mp
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+
+    # 'spawn' avoids fork-in-a-multithreaded-parent hazards; workers re-import
+    # cleanly and find_matchup pickles by qualname (opener stays None in workers).
+    ctx = mp.get_context("spawn")
+    fut_prof: dict = {}
+    pending: set = set()
+
+    def _drain(fut):
+        profile = fut_prof.pop(fut)
+        pid = f"{profile['wmo']}_{profile['cycle']}"
+        try:
+            result = fut.result()
+        except Exception:  # noqa: BLE001 — one bad profile must not abort the batch
+            _log.exception("match failed for %s", pid)
+            unmatched.append(pid)
+            return
+        if result is None:
+            unmatched.append(pid)
+            return
+        exists = store.query(
+            "SELECT 1 FROM matchups WHERE matchup_id = ?", (result.matchup_id,)
+        )
+        if exists and not replace:
+            skipped.append(result.matchup_id)
+            return
+        write_matchup(store, result, created=created)
+        written.append(result.matchup_id)
+
+    with ProcessPoolExecutor(
+        max_workers=jobs, mp_context=ctx, initializer=_worker_init
+    ) as ex:
+        for profile, candidates in inputs:
+            fut = ex.submit(find_matchup, profile, candidates, config=config)
+            fut_prof[fut] = profile
+            pending.add(fut)
+            if len(pending) >= 2 * jobs:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for f in done:
+                    _drain(f)
+        for f in wait(pending).done:
+            _drain(f)
 
     return {"written": written, "skipped": skipped, "unmatched": unmatched}
