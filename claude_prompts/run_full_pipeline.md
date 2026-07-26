@@ -140,24 +140,26 @@ Read these before running — plus the **hard-won operational lessons** below.
 
 9. **Yet more Nautilus**.  Read my answers to N4-N6.  We will continue this conversation in the `nautilus_prompts.md` file.  Log your work.
 
-10. **Ingest + discover (full).** Run `pab --stage ingest` (argopy fetch, MLD
+10. **Nautilus run**.  We branched off for a while to work on running PAB on Nautilus.  You can see that work in the `nautilus_prompts.md` file.  Now we are back to continue with the full pipeline.  You had just created the `pipeline.py` and `pab/matchup/engine.py` files. Please examine those and guide me on how to proceed with a 1000 profile run.  If you have any questions, ask them in the Q&A section below.  Log your work.  Use Fable if you can.
+
+11. **Ingest + discover (full).** Run `pab --stage ingest` (argopy fetch, MLD
    summaries, Argo Q&A figures) then `--stage discover` (CMR granule search). Expect
    argopy slowness / transient CMR 500s; both stages resume on re-run. Log counts
    (`profiles`, `granules`) and any failures.
 
-11. **Match + fit (the heavy stages).** Run `pab --stage match --download` to build
+12. **Match + fit (the heavy stages).** Run `pab --stage match --download` to build
    matchups (**monitor disk; warn near ~9.8 TB; no eviction** per Q9), then
    `--stage fit` with the parallel fitter. Spot-check convergence (`diagnose-mcmc`).
    Log matchups written, fits written/failed, wall-clock, and peak disk.
 
-12. **Figure + report + publish.** Run `--stage figure` then `--stage report`;
+13. **Figure + report + publish.** Run `--stage figure` then `--stage report`;
    `pab --emit-site report_site`; preview locally (`sphinx-build`), then commit
    `report_site/` and push so RTD rebuilds. Keep bulky artifacts **local** (Q5);
    publish the report + summary tables only. Confirm the summary coverage counts,
    the scatters/map, and that the galleries N-guard sensibly at scale. Log the
    published counts + the RTD build.
 
-13. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
+14. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
    quality, scene), confirm every record carries `pab_version = 1.0`, update
    `docs/design/PAB_implementation.md`, and write the full-run report (coverage,
    timings, failures, follow-ups — incl. the deferred Nautilus namespace/bucket
