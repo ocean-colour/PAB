@@ -698,6 +698,68 @@ was silent for 67 min before — `logging.basicConfig` is now set in the CLI, so
 INFO lines actually appear), `granules` climbing past ~4,000, and
 `discover done: … 0 failed`.
 
+#### 1000-profile run, attempts 2 & 3 (2026-07-30) — discover FIXED; `match` failed twice more
+
+Image `:1.0.2` (built + pushed from the working tree; the first push wedged for
+30 min with every layer already uploaded — killed and retried, which completed in
+seconds). Reset job cleared the 14 stale matchups and kept the 972 profiles +
+130 granules.
+
+**The two fixes from attempt 1 are proven at 1k scale:**
+
+| stage | result | rate |
+| --- | --- | --- |
+| ingest | 972 → **986 profiles** — exactly the 14 `IndexError` profiles recovered | 4.6 min (32 procs) |
+| discover | **2,671 granules from 910 searches, 55 skipped, 0 failed** | 26.6 min, 1.75 s/search |
+
+`discover` previously died 82 s in; it now completes cleanly over a global
+selection. Final granule count **2,734 ≈ 2.8/profile**, which matches the CMR
+truth (5.67 refs/profile ÷ 2.45× sharing ≈ 2.3 unique) — so the "≥ 4,000" gate I
+wrote was simply mis-derived, not a miss. The skip rate settled at **5.7 %**, not
+the ~50 % an early progress line suggested.
+
+**Attempt 2 — OOMKilled (exit 137) 5 min into `match` at `--jobs 50`.** Measured
+in attempt 3: 16 workers hold **41 GB** (2.6 GB each — an open PACE granule means
+full lat/lon grids plus s3fs read-ahead). 50 × 2.6 ≈ 130 GB against a 100Gi
+limit, so the kill was arithmetic, not bad luck. Fix: per-stage worker counts in
+the Job — **match/figure 16, fit 50** (MCMC workers are ~0.5 GB).
+
+**Attempt 3 — `match` DEADLOCKED.** After ~11 min of healthy work (22 MB/s
+inbound, 93 matchups) it went to **0 KB/s, zero established sockets, all 16
+workers in `futex_wait` at 0 % CPU, 52 GB held**, and stayed there 40 min until
+killed. Zero sockets rules out a slow network read: the S3 connections had gone
+and the workers were blocked on an in-process lock (HDF5's global lock is the
+likely holder). Nothing in fsspec/HDF5 timed out.
+
+**Two code fixes came out of it:**
+
+1. **Resume re-did completed work.** `find_matchup` opened every candidate granule
+   *before* the code checked whether the matchup already existed, so attempt 3
+   spent ~20 min re-deriving attempt 2's 92 matchups — which is also why the count
+   sat at 93 while data streamed in. Profiles with an existing matchup are now
+   skipped **before** any granule is opened (test asserts *zero* opener calls on
+   resume). This also closes the duplicate-matchup hazard the reset job existed
+   for.
+2. **`match` can no longer hang forever.** Work goes out in **chunks with a fresh
+   pool each**; a chunk producing no result within `MatchupConfig.stall_timeout_s`
+   (default 600 s) has its workers **killed** — `shutdown(cancel_futures=True)`
+   cannot help, since a worker stuck in a C-level lock keeps its interpreter
+   alive — its profiles recorded under a new `"stalled"` key, and the run
+   continues. Stalled profiles keep no matchup, so a resume retries them. Test
+   wedges a real spawned worker and asserts the stage still returns.
+
+Plus `match progress:` logging (its absence made both the OOM and the hang look
+like silence) and `logging.basicConfig` in the CLI.
+
+**Diagnostic worth keeping:** `match` ran at **265m CPU of 50 requested**, workers
+parked in `futex_wait`, 22 MB/s in. It is **bandwidth- and memory-bound, not
+CPU-bound** — the full run should request far fewer cores for match and spend the
+budget on memory headroom.
+
+Image `:1.0.3` carries all of it. **The 1k pilot has still never completed
+end-to-end**, so no extrapolation to 54,506 is trustworthy yet — that is the gate
+before Task 14.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -1200,3 +1262,57 @@ Tests: 3 new (`figure` parallel records paths + contains a failing render + is
 resumable; serial fallback for `:memory:`; `_store_path`) → **171 passed** in
 `os_313`. Code changed: `pab/pipeline.py`, `pab/tests/test_pipeline.py`,
 `HOWTO.md`, `nautilus/run1k_job.yaml`, `claude_prompts/run_full_pipeline.md`.
+
+### 2026-07-30 (Task 13 — 1k re-run: discover fixed and proven; `match` OOMed then deadlocked)
+
+Executed Task 13. Built and pushed `:1.0.2` myself (the registry lacked it; the
+first `docker push` wedged 30 min with all layers already uploaded — killed and
+retried, done in seconds; worth remembering, the NRP registry does this).
+Applied `reset_matchups_job.yaml` (14 stale matchups gone, 972 profiles + 130
+granules kept), then the run Job.
+
+**The good half — attempt 1's fixes hold at 1k.** `ingest` recovered exactly the
+14 profiles the `mixed_layer_mean` alignment fix targeted (972 → 986), and
+`discover` — dead 82 s in on the previous attempt — completed with **2,671
+granules from 910 searches, 0 failed** in 26.6 min. Those two stages are now
+demonstrated at scale, and the granule total (2,734 ≈ 2.8/profile) matches the
+independent CMR discover-count, so the "≥4,000" gate I wrote was mis-derived
+rather than missed. I also over-read an early progress line as a ~50 % skip rate;
+it settled at 5.7 %.
+
+**The bad half — `match` failed twice more, differently each time.** Attempt 2 was
+**OOMKilled** five minutes in at `--jobs 50`; attempt 3 **deadlocked**. The
+deadlock diagnosis is the part worth recording: after 11 healthy minutes (22 MB/s,
+93 matchups) the pod went to **0 KB/s, zero established TCP sockets, all 16
+workers in `futex_wait` at 0 % CPU, 52 GB resident** and sat there 40 minutes.
+Zero sockets is what rules out "slow read" — the connections were gone and the
+workers were blocked on an in-process lock (HDF5's global lock being the likely
+holder), with nothing in fsspec or HDF5 timing out. I only found it by checking
+CPU and `/proc/net/dev` inside the pod; the DB counts alone looked like slow
+progress.
+
+**Three fixes, each derived from evidence rather than guessed:**
+(a) per-stage workers — match/figure **16**, fit **50** — because 16 workers
+measurably hold 41 GB, so 50 × 2.6 GB overruns 100Gi by arithmetic;
+(b) resume now skips matched profiles **before** opening granules (attempt 3 burned
+~20 min re-deriving attempt 2's matchups, which is also why its count looked
+frozen at 93 — and this closes the duplicate-matchup hazard);
+(c) `match` is stall-proofed — chunked pools, and a chunk with no result inside
+`stall_timeout_s` gets its workers **killed** (cancel_futures cannot free a
+C-level lock), profiles recorded as `stalled`, run continues.
+
+**Process lessons.** (1) I twice reported progress from a number that didn't mean
+what I assumed — `matchups` counted attempt 2's rows, and `MAX(profile_id)` was
+its high-water mark, not attempt 3's cursor; the `created` timestamps settled it.
+Check *when* a row was written before treating a count as progress. (2) Every one
+of these three failures was invisible at the log level and obvious at the
+CPU/socket level. (3) A batch stage needs a timeout for the same reason it needs a
+try/except — "it will finish eventually" is not a property I can assume of a
+network read.
+
+Tests: 3 new (resume opens zero granules, wedged worker cannot stall the stage,
+plus the earlier figure ones) → **173 passed** in `os_313`. `:1.0.3` building with
+all of it. **The 1k pilot has still not completed end-to-end, so there is no
+trustworthy ×54.5 extrapolation yet** — that remains the gate before Task 14.
+Code changed: `pab/matchup/engine.py`, `pab/tests/test_matchup.py`,
+`nautilus/{run1k_job.yaml,build_image.sh,validate_job.yaml,reset_matchups_job.yaml}`.

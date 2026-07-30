@@ -7,7 +7,7 @@
 # context, then build from that.
 #
 #   bash nautilus/build_image.sh                # build only
-#   bash nautilus/build_image.sh --push         # build + push :1.0.2 and :latest
+#   bash nautilus/build_image.sh --push         # build + push :1.0.3 and :latest
 #
 # Requires `docker login gitlab-registry.nrp-nautilus.io` (deploy token) for
 # --push. The image is PUBLIC, so pods need no imagePullSecret.
@@ -16,7 +16,7 @@ set -euo pipefail
 SRC=${SRC:-/mnt/tank/Oceanography/python}
 OS_COLOR_SRC=${OS_COLOR:-/home/xavier/Oceanography/data/Color}
 IMAGE=${IMAGE:-gitlab-registry.nrp-nautilus.io/profx/pab}
-TAG=${TAG:-1.0.2}
+TAG=${TAG:-1.0.3}
 STAGE=${STAGE:-/tmp/pab_build_ctx}
 
 echo "== staging build context in $STAGE (from $SRC)"

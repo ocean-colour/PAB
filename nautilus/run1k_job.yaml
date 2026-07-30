@@ -15,7 +15,6 @@
 #   kubectl -n sea-meets-the-stars logs -f job/pab-run1k        # or tail /data/run1k/run.log
 #
 # Expect (see run_full_pipeline.md → Reports → 1000-profile plan):
-# Expected, from attempt 1's measured rates (see the report in the prompt doc):
 #   ingest ~35 min (32 procs; R5 — in-pod fetches are latency-bound, 4.2 s/profile
 #     at 16, so this should roughly halve) · discover ~15 min · match ~20-40 min
 #   fit ~1 h (11.6 s/matchup / 50) · figure ~5 min (was 42 s/matchup SERIAL, now
@@ -34,7 +33,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: pab
-        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.2
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.3
         imagePullPolicy: Always
         env:
         - {name: HOME, value: /root}
@@ -49,15 +48,27 @@ spec:
             # `python -c` rather than a here-doc — folded scalars/here-docs break.
             log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/run.log; }
             counts() { python -c "import os,sqlite3; db=os.environ['RUN']+'/pab.db'; c=sqlite3.connect(db); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('profiles','granules','matchups','matchup_pixels','fits','fit_results')})" 2>&1 | tee -a $RUN/run.log; }
+            # Per-stage worker counts. attempt 2 was OOMKilled (exit 137) five
+            # minutes into `match` at --jobs 50: each match/figure worker holds an
+            # open PACE granule (lat/lon grids + s3fs read-ahead ~1-2 GB), so 50 of
+            # them blow past 100Gi. fit workers are MCMC-only (~0.5 GB), so they
+            # can still use every core.
+            jobs_for() {
+              case "$1" in
+                match|figure) echo 16 ;;
+                *) echo 50 ;;
+              esac
+            }
             stage() {
-              log "STAGE $1 start"
-              # Stop the run if a stage fails. The first attempt built a report
-              # from a discover stage that had aborted at 130 of ~5,000 granules,
-              # because the loop just carried on. Stages are resumable, so the
-              # right move is to stop, fix, and re-apply.
+              J=$(jobs_for $1)
+              log "STAGE $1 start (jobs=$J)"
+              # Stop the run if a stage fails. Attempt 1 built a report from a
+              # discover stage that had aborted at 130 of ~2,700 granules, because
+              # the loop just carried on. Stages are resumable, so the right move
+              # is to stop, fix, and re-apply.
               if ! pab --db $RUN/pab.db --outdir $RUN/pipeline \
                 --profiles-csv /cfg/profiles.csv --stage $1 \
-                --jobs 50 --ingest-jobs 32 2>&1 \
+                --jobs $J --ingest-jobs 32 2>&1 \
                 | tee -a $RUN/run.log; then
                 log "STAGE $1 FAILED — stopping (resume by re-applying the Job)"
                 counts
@@ -66,7 +77,7 @@ spec:
               log "STAGE $1 end"
               counts
             }
-            log "RUN start (1000 profiles, jobs=50)"
+            log "RUN start (1000 profiles; match/figure jobs=16, fit jobs=50)"
             for s in ingest discover match fit figure report; do stage $s; done
             log "disk"
             du -sh $RUN $RUN/pipeline/* /data/fit_chains 2>/dev/null | tee -a $RUN/run.log

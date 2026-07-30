@@ -43,7 +43,7 @@ from pab.config import pab_version
 from pab.pace import cloud
 from pab.pace import extract as _extract
 from pab.pace import flags as _flags
-from pab.parallel import init_worker, picklable
+from pab.parallel import PROGRESS_EVERY, init_worker, picklable
 
 _log = logging.getLogger("pab.match")
 
@@ -84,6 +84,11 @@ class MatchupConfig:
             4-corner approximations of a curved swath, so the box can cut the
             true edge by tens of km; the exact test is still the
             nearest-unflagged-pixel distance in :func:`find_matchup`.
+        stall_timeout_s: In the parallel path, how long a chunk of profiles may
+            go with **no** completed result before its workers are declared
+            wedged and killed (see :func:`_build_matchups_parallel`). Generous —
+            a healthy chunk produces results every few seconds, so 10 min only
+            ever fires on a genuine hang.
     """
 
     dtime_max_hours: float = 24.0
@@ -91,6 +96,7 @@ class MatchupConfig:
     max_distance_km: float = 5.0
     mask_flags: tuple[str, ...] = field(default=_flags.STANDARD_OCEAN_MASK)
     footprint_pad_deg: float = 1.0
+    stall_timeout_s: float = 600.0
 
 
 @dataclass
@@ -540,7 +546,19 @@ def build_matchups(
     # open+extract in find_matchup is what fans out.
     inputs: list[tuple[dict, list[dict]]] = []
     index = GranuleIndex.load(store)  # read + parse the granule table once
+    # Profiles already matched are skipped *before* any granule is opened. The
+    # existence test used to happen only after find_matchup had done the work, so
+    # a resumed match re-read every granule it had already processed (a restarted
+    # 1000-profile run spent 15 min re-deriving matchups it already had; at 54k
+    # that would dominate every restart).
+    done: dict[int, str] = {}
+    if not replace:
+        for row in store.query("SELECT profile_id, matchup_id FROM matchups"):
+            done.setdefault(row["profile_id"], row["matchup_id"])
     for profile in qualifying_profiles(store):
+        if profile["profile_id"] in done:
+            skipped.append(done[profile["profile_id"]])
+            continue
         if profile["latitude"] is None or profile["longitude"] is None:
             # no position to match against — skip rather than raise mid-run
             unmatched.append(f"{profile['wmo']}_{profile['cycle']}")
@@ -589,10 +607,19 @@ def _build_matchups_parallel(
     """Parallel backend for :func:`build_matchups`. Mutates the result lists.
 
     ``find_matchup`` (open + extract + select) runs in worker processes; the
-    parent drains completed futures and performs every DB write. In-flight futures
-    are bounded (~2×``jobs``) so results are persisted promptly and memory stays
-    bounded over a large profile set. ``opener`` is forwarded to the workers and
-    must be picklable (see :func:`pab.parallel.picklable`).
+    parent drains completed futures and performs every DB write. ``opener`` is
+    forwarded to the workers and must be picklable
+    (see :func:`pab.parallel.picklable`).
+
+    **Stall-proofed.** A granule read can wedge with no way back: on a real run
+    every one of 16 workers ended up blocked on an in-process lock with *zero*
+    open sockets and 0 % CPU after their S3 connections dropped, and the stage sat
+    dead for 40 minutes. Neither ``fsspec`` nor HDF5 offers a timeout we can rely
+    on there, so the parent enforces one: work goes out in **chunks with a fresh
+    pool each**, and if a chunk produces no result at all within
+    ``config.stall_timeout_s`` its remaining workers are killed, its profiles are
+    recorded under ``"stalled"``, and the run moves to the next chunk. Stalled
+    profiles keep no matchup, so a later resume simply retries them.
     """
     import multiprocessing as mp
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -601,7 +628,27 @@ def _build_matchups_parallel(
     # cleanly and find_matchup pickles by qualname.
     ctx = mp.get_context("spawn")
     fut_prof: dict = {}
-    pending: set = set()
+    total = len(inputs)
+    stalled: list[str] = []
+    chunk_size = max(1, 4 * jobs)
+    _log.info(
+        "match: %d profiles over %d processes (chunks of %d, stall timeout %.0fs)",
+        total,
+        jobs,
+        chunk_size,
+        config.stall_timeout_s,
+    )
+
+    def _progress(done: int) -> None:
+        if done % PROGRESS_EVERY == 0:
+            _log.info(
+                "match progress: %d/%d (%d written, %d skipped, %d unmatched)",
+                done,
+                total,
+                len(written),
+                len(skipped),
+                len(unmatched),
+            )
 
     def _drain(fut):
         profile = fut_prof.pop(fut)
@@ -611,33 +658,82 @@ def _build_matchups_parallel(
         except Exception:  # noqa: BLE001 — one bad profile must not abort the batch
             _log.exception("match failed for %s", pid)
             unmatched.append(pid)
+            _progress(len(written) + len(skipped) + len(unmatched))
             return
         if result is None:
             unmatched.append(pid)
+            _progress(len(written) + len(skipped) + len(unmatched))
             return
         exists = store.query(
             "SELECT 1 FROM matchups WHERE matchup_id = ?", (result.matchup_id,)
         )
         if exists and not replace:
             skipped.append(result.matchup_id)
-            return
-        write_matchup(store, result, created=created)
-        written.append(result.matchup_id)
+        else:
+            write_matchup(store, result, created=created)
+            written.append(result.matchup_id)
+        _progress(len(written) + len(skipped) + len(unmatched))
 
-    with ProcessPoolExecutor(
-        max_workers=jobs, mp_context=ctx, initializer=init_worker
-    ) as ex:
-        for profile, candidates in inputs:
+    for start in range(0, total, chunk_size):
+        chunk = inputs[start : start + chunk_size]
+        ex = ProcessPoolExecutor(
+            max_workers=jobs, mp_context=ctx, initializer=init_worker
+        )
+        pending = set()
+        for profile, candidates in chunk:
             fut = ex.submit(
                 find_matchup, profile, candidates, opener=opener, config=config
             )
             fut_prof[fut] = profile
             pending.add(fut)
-            if len(pending) >= 2 * jobs:
-                done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                for f in done:
-                    _drain(f)
-        for f in wait(pending).done:
-            _drain(f)
+        while pending:
+            done, pending = wait(
+                pending,
+                timeout=config.stall_timeout_s,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:  # nothing at all finished in the window -> wedged
+                for fut in pending:
+                    profile = fut_prof.pop(fut)
+                    stalled.append(f"{profile['wmo']}_{profile['cycle']}")
+                _log.error(
+                    "match stalled after %.0fs with %d profiles in flight; "
+                    "killing the pool and continuing (they stay unmatched and are "
+                    "retried on the next run)",
+                    config.stall_timeout_s,
+                    len(pending),
+                )
+                _kill_pool(ex)
+                pending = set()
+                break
+            for f in done:
+                _drain(f)
+        ex.shutdown(wait=False, cancel_futures=True)
 
-    return {"written": written, "skipped": skipped, "unmatched": unmatched}
+    if stalled:
+        _log.error("match: %d profiles stalled in total", len(stalled))
+    return {
+        "written": written,
+        "skipped": skipped,
+        "unmatched": unmatched,
+        "stalled": stalled,
+    }
+
+
+def _kill_pool(ex) -> None:
+    """Hard-stop a wedged :class:`ProcessPoolExecutor`'s workers.
+
+    ``shutdown(cancel_futures=True)`` only drops *queued* work — a worker already
+    blocked inside a C-level lock keeps the interpreter alive, so the processes
+    have to be killed outright. Uses the executor's process map when available
+    (private, but there is no public equivalent) and falls back to this process's
+    children.
+    """
+    import multiprocessing as mp
+
+    procs = list(getattr(ex, "_processes", {}).values()) or mp.active_children()
+    for proc in procs:
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001 — best effort; already-dead is fine
+            pass

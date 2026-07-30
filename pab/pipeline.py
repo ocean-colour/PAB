@@ -27,14 +27,9 @@ from pab.config import DATA_DIR
 from pab.config import pab_version as _pab_version
 from pab.fit.models import FitConfig
 from pab.matchup.engine import MatchupConfig
-from pab.parallel import init_worker, picklable
+from pab.parallel import PROGRESS_EVERY, init_worker, picklable
 
 _log = logging.getLogger("pab.pipeline")
-
-#: How often the long stages emit a progress line (records). A 54k-profile
-#: ingest is otherwise silent for hours, which makes a stalled run
-#: indistinguishable from a slow one.
-PROGRESS_EVERY: int = 50
 
 #: The pipeline stages, in run order.
 STAGES: tuple[str, ...] = ("ingest", "discover", "match", "fit", "figure", "report")

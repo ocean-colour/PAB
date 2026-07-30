@@ -355,3 +355,87 @@ def test_build_matchups_falls_back_to_serial_for_an_unpicklable_opener():
         # a lambda cannot cross a spawn boundary -> must still produce the matchup
         out = engine.build_matchups(store, opener=lambda s: ds, jobs=4)
         assert out["written"] == ["7902226_5_G1"]
+
+
+def test_build_matchups_resume_skips_before_opening_granules():
+    """A resumed match must not re-open granules for profiles already matched.
+
+    The existence check used to run *after* find_matchup, so a restart paid the
+    full granule-read cost again — 15 min of wasted I/O on a 1000-profile rerun,
+    and the dominant cost of any restart at 54k.
+    """
+    ds = make_granule(center=(20.0, -50.0))
+    opens = []
+
+    def counting_opener(source):
+        opens.append(source)
+        return ds
+
+    with Store.open(":memory:") as store:
+        _seed_store(store)
+        first = engine.build_matchups(store, opener=counting_opener)
+        assert first["written"] == ["7902226_5_G1"]
+        n_first = len(opens)
+        assert n_first > 0  # the first pass must actually read the granule
+
+        opens.clear()
+        again = engine.build_matchups(store, opener=counting_opener)
+        assert again["skipped"] == ["7902226_5_G1"]
+        assert again["written"] == []
+        assert opens == []  # <- the point: zero granule opens on resume
+
+        # --replace still re-does the work
+        opens.clear()
+        forced = engine.build_matchups(store, opener=counting_opener, replace=True)
+        assert forced["written"] == ["7902226_5_G1"]
+        assert len(opens) == n_first
+
+
+def _hanging_opener(source):
+    """Module-level (picklable) opener that never returns for one granule.
+
+    Stands in for the real failure: a granule read that wedges inside a C-level
+    lock with no timeout of its own.
+    """
+    import time
+
+    if source == "s3://b/HANG.nc":
+        time.sleep(3600)
+    return make_granule(center=(20.0, -50.0))
+
+
+def test_build_matchups_survives_a_wedged_worker(tmp_path):
+    """A hung granule read must not hang the stage.
+
+    On a real run all 16 workers ended up blocked with zero sockets and 0% CPU,
+    and match sat dead for 40 min. The parent now kills a chunk that produces no
+    result within stall_timeout_s and carries on.
+    """
+    with Store.open(tmp_path / "hang.db") as store:
+        # one profile whose granule hangs; nothing else in the chunk
+        pid = persist_summary(
+            store,
+            wmo=7902226,
+            cycle=5,
+            summary={"mld": 30.0, "mld_method": "x", "n_points": 5},
+            latitude=20.0,
+            longitude=-50.0,
+            time="2025-05-01T12:00:00",
+        )
+        assert pid
+        store.upsert(
+            "granules",
+            {
+                "granule_id": "HANG",
+                "time_start": "2025-05-01T11:30:00",
+                "data_url": "s3://b/HANG.nc",
+            },
+        )
+        cfg = engine.MatchupConfig(stall_timeout_s=3.0)
+        out = engine.build_matchups(
+            store, opener=_hanging_opener, config=cfg, jobs=2
+        )
+        # returned rather than hanging, and the profile is reported as stalled
+        assert out["stalled"] == ["7902226_5"]
+        assert out["written"] == []
+        assert store.count("matchups") == 0  # retried on the next run
