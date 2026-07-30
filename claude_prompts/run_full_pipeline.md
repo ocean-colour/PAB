@@ -88,6 +88,11 @@ Read these before running — plus the **hard-won operational lessons** below.
 10. Execute the 10th task in Tasks below
 11. Execute the 11th task in Tasks below
 12. Execute the 12th task in Tasks below
+13. Execute the 13th task in Tasks below
+14. Execute the 14th task in Tasks below
+15. Execute the 15th task in Tasks below
+16. Execute the 16th task in Tasks below
+17. Execute the 17th task in Tasks below
 
 ## Tasks
 
@@ -149,28 +154,42 @@ Read these before running — plus the **hard-won operational lessons** below.
 
 12. **More conversation.**  I have answered the R5 and R6 questions.  Please read the answers and proceed accordingly. Log your work.  You may need to modify the tasks that follow this one to reflect the changes.  If so, do so.
 
-13. **Ingest + discover (full).** Run `pab --stage ingest` (argopy fetch, MLD
-   summaries, Argo Q&A figures) then `--stage discover` (CMR granule search). Expect
-   argopy slowness / transient CMR 500s; both stages resume on re-run. Log counts
-   (`profiles`, `granules`) and any failures.
+13. **Re-run the 1k pilot (corrected).** On image `:1.0.2`: apply
+   `nautilus/reset_matchups_job.yaml` (drops the 14 stale matchups, keeps the 972
+   ingested profiles + 130 granules), then `nautilus/run1k_job.yaml`
+   (`--jobs 50 --ingest-jobs 32`). **Gates:** `discover` skipped ≈ 0 and 0 failed;
+   granules ≳ 4,000; candidates/profile ≈ 6; match rate vs the pilot's 25 %; the
+   new parallel `figure` rate; chain GB in `/data/fit_chains`. Extrapolate every
+   stage ×54.5 and re-check the `--ingest-jobs`/`--jobs` choices before the full
+   send. Log the measured rates + the extrapolation.
 
-14. **Match + fit (the heavy stages).** Run `pab --stage match --download` to build
-   matchups (**monitor disk; warn near ~9.8 TB; no eviction** per Q9), then
-   `--stage fit` with the parallel fitter. Spot-check convergence (`diagnose-mcmc`).
-   Log matchups written, fits written/failed, wall-clock, and peak disk.
+14. **Full-run ingest + discover (54,506 profiles, on Nautilus).** Same pod shape,
+   `--profiles-csv` = the full selection (`$PAB_DATA_DIR/full_profiles.csv`, copied
+   into a ConfigMap or the PVC — 2.5 MB exceeds the 1 MiB ConfigMap limit, so stage
+   it on the PVC). Run `--stage ingest` then `--stage discover`; both resume, both
+   now contain per-profile failures. Expect ~1.7 % CMR and ~2–3 % argopy transient
+   failures. Log counts (`profiles`, `granules`), failure rates, and wall-clock.
 
-15. **Figure + report + publish.** Run `--stage figure` then `--stage report`;
-   `pab --emit-site report_site`; preview locally (`sphinx-build`), then commit
-   `report_site/` and push so RTD rebuilds. Keep bulky artifacts **local** (Q5);
-   publish the report + summary tables only. Confirm the summary coverage counts,
-   the scatters/map, and that the galleries N-guard sensibly at scale. Log the
-   published counts + the RTD build.
+15. **Full-run match + fit.** `--stage match` (lazy S3 reads — **no** `--download`;
+   the footprint pre-filter keeps this at ~0.3–0.6 M granule opens rather than
+   15.9 M) then `--stage fit` with `--jobs 50`. Spot-check convergence
+   (`diagnose-mcmc`). Watch the PVC: chains at ~13 MB × ~13.6 k ≈ 180 GB against
+   the 500 Gi claim — if the 1k run's measured per-fit size projects past ~400 Gi,
+   implement the deferred upload-to-`s3://pab`-and-evict (R4) first. Log matchups
+   written, fits written/failed, wall-clock, peak PVC use.
 
-16. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
+16. **Figure + report + publish.** `--stage figure` (parallel) then `--stage
+   report`; `pab --emit-site report_site`; preview with `sphinx-build`, then the
+   **user** commits `report_site/` and pushes so RTD rebuilds. Publish the report +
+   summary tables; bulky artifacts go to **`s3://pab`** and are backed up to
+   **`AIOcean:PAB/`** via rclone (N5 — Nautilus is not backed up). Confirm the
+   coverage counts, the scatters/map, and that the galleries N-guard at scale. Log
+   the published counts + the RTD build.
+
+17. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
    quality, scene), confirm every record carries `pab_version = 1.0`, update
-   `docs/design/PAB_implementation.md`, and write the full-run report (coverage,
-   timings, failures, follow-ups — incl. the deferred Nautilus namespace/bucket
-   TODO). Log your work.
+   `docs/design/PAB_implementation.md` + `HOWTO.md`, and write the full-run report
+   (coverage, timings, failure rates, follow-ups). Log your work.
 
 ## Q&A
 
@@ -188,6 +207,12 @@ Read these before running — plus the **hard-won operational lessons** below.
   full-run value from that. The failure handling now absorbs throttling.)*
 
 >A. Go to 32 for the 1k re-run
+>
+>**Claude (Task 12) →** Done: `nautilus/run1k_job.yaml` now passes
+>`--ingest-jobs 32`. Read the actual rate off the re-run's `ingest progress:`
+>lines — if it lands near ~2 s/profile the latency-bound reading is confirmed and
+>the full run can use 32; if it stalls near 4 s or GDAC failures climb above the
+>~2–3 % baseline, drop back to 16 and treat the server as the limit.
 
 - **R6 — parallelise `figure`?** It is now the **dominant** stage: 42.1 s/matchup
   **serial** (fit figure + scene, each re-opening the granule) → ~3 h for the 1k
@@ -200,6 +225,13 @@ Read these before running — plus the **hard-won operational lessons** below.
   full run regardless.)*
 
 >A. Yes, do it now
+>
+>**Claude (Task 12) →** Done: `figure` now fans out over `--jobs` (workers render,
+>each opening its own read-only connection to the same DB file with
+>`create=False` so no worker ever writes; the parent records `figure_path` /
+>`scene_path`). Falls back to serial for an in-memory DB or an unpicklable
+>`opener`. At 50 workers the 1k run's ~250 matchups should take ~5 min instead of
+>~3 h, and the full run's ~13.6 k ~1 h instead of ~6.6 days.
 
 **Questions for the 1000-profile run (Task 10) — answer inline.**
 
@@ -1123,3 +1155,48 @@ and against the working agreement; the tree was restored intact, and I won't use
 it again. Code changed: `pab/pipeline.py`, `pab/argo/summary.py`,
 `pab/tests/{test_pipeline,test_argo}.py`,
 `nautilus/{run1k_job.yaml,validate_job.yaml,build_image.sh,reset_matchups_job.yaml}`.
+
+### 2026-07-29 (Task 12 — R5/R6 answered: ingest-jobs 32, parallel `figure`; tasks re-planned)
+
+**R5 — `--ingest-jobs 32`.** `nautilus/run1k_job.yaml` updated. The re-run's
+`ingest progress:` lines will settle whether the in-pod stage really is
+latency-bound (expect ~2 s/profile if it scales from 4.2 at 16) or whether GDAC is
+the limit (rate stays ~4 s and/or failures climb above the ~2–3 % baseline) — that
+decides the full-run value.
+
+**R6 — parallel `figure`, done.** It was the dominant stage (42.1 s/matchup
+serial: each fit figure reconstructs the posterior from its chain NPZ, each scene
+re-opens the granule). Restructured like `match`/`fit`: `_render_figure` is a
+module-level worker that renders one fit figure + scene and returns the two paths;
+`_figures_parallel` fans out over `--jobs` with in-flight work bounded at ~2×jobs;
+the **parent** does every `UPDATE`. The wrinkle is that both renderers take a
+`store`, so workers open **their own connection to the same DB file** with
+`Store.open(path, create=False)` — `create=True` would run `schema.migrate`, which
+*writes* `PRAGMA user_version`, and 50 workers writing would fight over the lock.
+Falls back to serial when the DB is `:memory:` (nothing to share — new
+`_store_path` helper) or the `opener` isn't picklable. Expected: ~5 min for the 1k
+run's ~250 matchups (was ~3 h) and ~1 h for the full ~13.6 k (was ~6.6 days).
+
+De-risked the real path rather than trusting the stubbed tests: rendered all 4
+**real** pilot fits through `_render_figure` inside a spawned pool (55–62 KB PNGs,
+parent DB unharmed). That check also surfaced something worth knowing for the run:
+**chains resolve from `$PAB_DATA_DIR/fit_chains`, not from `--outdir`** — in-pod
+that is `/data/fit_chains`, *outside* `/data/run1k`. The Job's `du` line now
+measures it too, so the R4 chain-size decision has real numbers, and any backup
+must include it.
+
+**Tasks re-planned (13–17).** The old 13–16 still described the abandoned
+workstation run — `--download`, "monitor disk; warn near ~9.8 TB", off-cloud
+caching — none of which applies now that compute runs on Nautilus with lazy S3
+reads. Rewrote them: **13** = re-run the corrected 1k pilot with explicit gates and
+a ×54.5 extrapolation; **14** = full ingest+discover (noting the 2.5 MB profile CSV
+exceeds the 1 MiB ConfigMap limit, so it must be staged on the PVC); **15** = full
+match+fit (lazy reads, and a PVC gate that triggers the deferred chain
+upload/evict if the measured size projects past ~400 Gi of the 500 Gi claim);
+**16** = figure+report+publish, including the `s3://pab` + `AIOcean:` backup that
+N5 requires; **17** = verify & close out. Prompts extended to 17.
+
+Tests: 3 new (`figure` parallel records paths + contains a failing render + is
+resumable; serial fallback for `:memory:`; `_store_path`) → **171 passed** in
+`os_313`. Code changed: `pab/pipeline.py`, `pab/tests/test_pipeline.py`,
+`HOWTO.md`, `nautilus/run1k_job.yaml`, `claude_prompts/run_full_pipeline.md`.

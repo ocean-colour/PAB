@@ -644,3 +644,105 @@ def test_search_with_retry_recovers_from_a_transient_failure(monkeypatch):
 
     with pytest.raises(RuntimeError, match="permanent"):
         pipeline._search_with_retry(always_bad, 0.0, 0.0, None, None, None)
+
+
+# -- parallel figure stage --------------------------------------------------
+def _stub_render(db_path, fit_id, matchup_id, figdir, opener, *, store=None):
+    """Module-level stand-in for _render_figure: writes the files, no plotting.
+
+    Keeps the test about the fan-out + parent-side bookkeeping (the renderers
+    themselves need BING/Loisel data, which CI does not have).
+    """
+    from pathlib import Path
+
+    figdir = Path(figdir)
+    if fit_id.endswith("_bad"):
+        raise RuntimeError("render failed")
+    fpath = figdir / f"{fit_id}_fit.png"
+    fpath.write_bytes(b"png")
+    spath = figdir / f"{matchup_id}_scene.png"
+    spath.write_bytes(b"png")
+    return str(fpath), str(spath)
+
+
+def _seed_fits(store, n):
+    """n matchups each with a fit row, enough for the figure stage to iterate."""
+    from pab.argo.summary import persist_summary
+
+    ids = []
+    for i in range(n):
+        wmo = 7900100 + i
+        pid = persist_summary(
+            store,
+            wmo=wmo,
+            cycle=1,
+            summary={"mld": 30.0, "mld_method": "x", "n_points": 5},
+            latitude=10.0 + i,
+            longitude=-40.0,
+            time="2025-05-01T12:00:00",
+        )
+        gid = f"G{i}"
+        store.upsert("granules", {"granule_id": gid, "time_start": "2025-05-01T11:30:00"})
+        mid = f"{wmo}_1_{gid}"
+        store.upsert(
+            "matchups",
+            {"matchup_id": mid, "profile_id": pid, "granule_id": gid, "n_spectra": 1},
+        )
+        fid = f"fit{i}_bad" if i == 0 else f"fit{i}"
+        store.upsert(
+            "fits",
+            {
+                "fit_id": fid,
+                "matchup_id": mid,
+                "model_pair": "ExpBPow",
+                "pab_version": "test",
+            },
+        )
+        ids.append((fid, mid))
+    return ids
+
+
+def test_figure_parallel_records_paths_and_contains_failures(tmp_path, monkeypatch):
+    """The parallel figure path must write exactly what the serial one records.
+
+    figure is the most expensive stage per matchup (42 s measured in-pod), so it
+    fans out like match/fit — workers render, the parent writes the paths.
+    """
+    monkeypatch.setattr(pipeline, "_render_figure", _stub_render)
+    db = tmp_path / "fig.db"
+    cfg = pipeline.PipelineConfig(outdir=tmp_path / "out", jobs=3)
+    with Store.open(db) as store:
+        _seed_fits(store, 5)
+        out = pipeline.figure(store, cfg)
+        assert sorted(out["written"]) == ["fit1", "fit2", "fit3", "fit4"]
+        assert out["failed"] == ["fit0_bad"]  # contained, not raised
+        rows = store.query(
+            "SELECT fit_id, figure_path FROM fits WHERE figure_path IS NOT NULL"
+        )
+        assert len(rows) == 4
+        assert store.count("matchups") == 5
+        scenes = store.query("SELECT scene_path FROM matchups WHERE scene_path IS NOT NULL")
+        assert len(scenes) == 4
+
+        # resume: everything with a figure_path is skipped, nothing re-rendered
+        again = pipeline.figure(store, cfg)
+        assert sorted(again["skipped"]) == ["fit1", "fit2", "fit3", "fit4"]
+        assert again["written"] == [] and again["failed"] == ["fit0_bad"]
+
+
+def test_figure_serial_when_db_is_in_memory(tmp_path, monkeypatch):
+    """A :memory: store cannot be shared with workers -> render serially."""
+    monkeypatch.setattr(pipeline, "_render_figure", _stub_render)
+    cfg = pipeline.PipelineConfig(outdir=tmp_path / "out", jobs=4)
+    with Store.open(":memory:") as store:
+        assert pipeline._store_path(store) is None
+        _seed_fits(store, 3)
+        out = pipeline.figure(store, cfg)
+        assert sorted(out["written"]) == ["fit1", "fit2"]
+        assert out["failed"] == ["fit0_bad"]
+
+
+def test_store_path_reports_the_file(tmp_path):
+    db = tmp_path / "p.db"
+    with Store.open(db) as store:
+        assert pipeline._store_path(store) == str(db)

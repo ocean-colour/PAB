@@ -91,7 +91,7 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
 | `--profiles-csv PROFILES_CSV` | Profile-selection CSV. Default: `data/dev_profiles.csv`. |
 | `--replace` | Re-do completed work instead of skipping it. |
 | `--no-figures` | Skip the `figure` stage. |
-| `--jobs JOBS` | Parallel processes for the `match` and `fit` stages (profile-/matchup-level; default `1` = serial). In `fit`, granules are opened and pixels extracted in the parent and only the MCMC runs in workers; in `match`, the granule open + pixel extraction themselves run in workers. Either way **all DB writes stay in the parent** (no SQLite contention). An injected `opener` must be picklable (module-level) to be used in parallel; otherwise `match` falls back to serial. |
+| `--jobs JOBS` | Parallel processes for the `match`, `fit` and `figure` stages (profile-/matchup-level; default `1` = serial). In `fit`, granules are opened and pixels extracted in the parent and only the MCMC runs in workers; in `match`, the granule open + pixel extraction themselves run in workers. In `figure`, workers render (each opening its own read-only connection to the same DB file) and the parent records the paths. Either way **all DB writes stay in the parent** (no SQLite contention). An injected `opener` must be picklable (module-level) to be used in parallel; otherwise `match` falls back to serial. |
 | `--ingest-jobs N` | Concurrent argopy fetches in the `ingest` stage. Default: `--jobs` capped at 16 (the Argo GDAC/ERDDAP servers are shared). Fetch+summarize runs in worker **processes** — measured 6.2 s/profile serial, 2.75 s with 12 threads, **0.97 s with 12 processes** (argopy's parsing is GIL-bound, not network-bound) — while DB writes and Q&A plots stay in the parent. |
 | `--download` | Pre-download each granule to a local cache and read it locally (the reliable **off-cloud** path). Use this whenever you are **not** running in-region (`us-west-2`). |
 | `--cache-dir CACHE_DIR` | Where downloaded granules live. Default: `DATA_DIR/granules`. |
@@ -127,7 +127,7 @@ pab --db data/pab.db --download
 | `discover` | Find in-window PACE granules per profile (earthaccess). A profile is skipped only if the store already holds a granule **whose footprint covers that profile's own position** in its time window. | → `granules` |
 | `match` | Build PACE↔Argo matchups (Stage 4 spatial/temporal gate). Candidates come from an in-memory `GranuleIndex` (time window **+** footprint bounding box padded by `MatchupConfig.footprint_pad_deg`), so only granules that plausibly cover the float are opened. | → `matchups` |
 | `fit` | Run BING spectral fits per matchup (needs BING + emcee). | → `fit_results` |
-| `figure` | Render per-matchup figures (best-effort; needs Loisel data). | → `outdir/figures` |
+| `figure` | Render per-matchup fit + scene figures (best-effort; needs Loisel data; parallel via `--jobs` — the costliest stage per matchup at ~42 s serial). | → `outdir/figures` |
 | `report` | Build the static site + a release manifest (Stage 7). | → `outdir/site`, `outdir/release` |
 
 **Idempotent & resumable.** Each stage skips records that already exist (keyed on

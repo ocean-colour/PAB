@@ -539,18 +539,23 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
 
     Best-effort per fit (a failed render is recorded, not fatal). Skips fits that
     already have a ``figure_path`` unless ``replace``.
+
+    Rendering is the **most expensive stage per matchup** — 42 s measured in-pod,
+    because each fit figure reconstructs the posterior and each scene re-opens the
+    granule. With ``jobs > 1`` the renders run in worker processes
+    (:func:`_render_figure`); the parent records the paths, so it stays the only
+    DB writer.
     """
     if not config.make_figures:
         return {"written": [], "skipped": [], "failed": []}
-    from pab.plotting import fit_fig, scene
 
     figdir = config.out() / "figures"
     figdir.mkdir(parents=True, exist_ok=True)
     written, skipped, failed = [], [], []
-    rows = store.query(
+    todo: list[tuple[str, str]] = []
+    for r in store.query(
         "SELECT fit_id, matchup_id, figure_path FROM fits ORDER BY fit_id"
-    )
-    for r in rows:
+    ):
         if r["figure_path"] and not config.replace:
             skipped.append(r["fit_id"])
             # Cheap backfill: record an already-rendered scene (no re-render, no
@@ -563,32 +568,128 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
                     (str(sp), r["matchup_id"]),
                 )
             continue
-        try:
-            fpath = figdir / f"{r['fit_id']}_fit.png"
-            fit_fig.fit_figure(store, r["fit_id"], outfile=fpath)
-            scene_path = None
-            try:  # the scene is a bonus artifact; don't fail the fit figure on it
-                scene_path = scene.scene_from_store(
-                    store,
-                    r["matchup_id"],
-                    opener=opener,
-                    outfile=figdir / f"{r['matchup_id']}_scene.png",
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        todo.append((r["fit_id"], r["matchup_id"]))
+
+    def _record(fit_id: str, matchup_id: str, paths) -> None:
+        fpath, scene_path = paths
+        store.execute(
+            "UPDATE fits SET figure_path = ? WHERE fit_id = ?", (str(fpath), fit_id)
+        )
+        if scene_path is not None:
             store.execute(
-                "UPDATE fits SET figure_path = ? WHERE fit_id = ?",
-                (str(fpath), r["fit_id"]),
+                "UPDATE matchups SET scene_path = ? WHERE matchup_id = ?",
+                (str(scene_path), matchup_id),
             )
-            if scene_path is not None:
-                store.execute(
-                    "UPDATE matchups SET scene_path = ? WHERE matchup_id = ?",
-                    (str(scene_path), r["matchup_id"]),
-                )
-            written.append(r["fit_id"])
+        written.append(fit_id)
+
+    db_path = _store_path(store)
+    if int(config.jobs) > 1 and todo and db_path and picklable(opener):
+        _figures_parallel(
+            config, todo, figdir, opener, int(config.jobs), _record, failed, db_path
+        )
+        return {"written": written, "skipped": skipped, "failed": failed}
+
+    for fit_id, matchup_id in todo:
+        try:
+            _record(
+                fit_id,
+                matchup_id,
+                _render_figure(None, fit_id, matchup_id, figdir, opener, store=store),
+            )
         except Exception:  # noqa: BLE001 — one bad render must not abort the batch
-            failed.append(r["fit_id"])
+            _log.exception("figure failed for %s", fit_id)
+            failed.append(fit_id)
     return {"written": written, "skipped": skipped, "failed": failed}
+
+
+def _store_path(store) -> str | None:
+    """Filesystem path behind ``store``, or ``None`` for an in-memory DB.
+
+    Workers open their own connection to the same file, so a ``:memory:`` store
+    (the test/offline case) cannot be shared and must render serially.
+    """
+    try:
+        for row in store.query("PRAGMA database_list"):
+            if row.get("name") == "main":
+                return row.get("file") or None
+    except Exception:  # noqa: BLE001 — treat any oddity as "not shareable"
+        return None
+    return None
+
+
+def _render_figure(db_path, fit_id, matchup_id, figdir, opener, *, store=None):
+    """Render one fit figure (+ its scene); return ``(fig_path, scene_path)``.
+
+    Runs in a worker process when ``db_path`` is given: it opens its **own**
+    connection with ``create=False`` — no schema migration, hence no write — so
+    the parent remains the single writer while N workers read concurrently.
+    ``store`` is the parent's connection for the serial path.
+    """
+    from pathlib import Path as _Path
+
+    from pab.plotting import fit_fig, scene
+
+    figdir = _Path(figdir)
+    own = store is None
+    if own:
+        from pab.db import Store
+
+        store = Store.open(db_path, create=False)
+    try:
+        fpath = figdir / f"{fit_id}_fit.png"
+        fit_fig.fit_figure(store, fit_id, outfile=fpath)
+        scene_path = None
+        try:  # the scene is a bonus artifact; don't fail the fit figure on it
+            scene_path = scene.scene_from_store(
+                store,
+                matchup_id,
+                opener=opener,
+                outfile=figdir / f"{matchup_id}_scene.png",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return str(fpath), (str(scene_path) if scene_path is not None else None)
+    finally:
+        if own:
+            store.close()
+
+
+def _figures_parallel(
+    config, todo, figdir, opener, jobs, record, failed, db_path
+) -> None:
+    """Render ``todo`` across worker processes; ``record`` writes in the parent."""
+    import multiprocessing as mp
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+
+    fut_row: dict = {}
+    pending: set = set()
+    _log.info("figure: rendering %d fits over %d processes", len(todo), jobs)
+
+    def _drain(fut):
+        fit_id, matchup_id = fut_row.pop(fut)
+        try:
+            record(fit_id, matchup_id, fut.result())
+        except Exception:  # noqa: BLE001 — one bad render must not abort the batch
+            _log.exception("figure failed for %s", fit_id)
+            failed.append(fit_id)
+
+    with ProcessPoolExecutor(
+        max_workers=jobs, mp_context=mp.get_context("spawn"), initializer=init_worker
+    ) as ex:
+        for i, (fit_id, matchup_id) in enumerate(todo, start=1):
+            fut = ex.submit(
+                _render_figure, db_path, fit_id, matchup_id, str(figdir), opener
+            )
+            fut_row[fut] = (fit_id, matchup_id)
+            pending.add(fut)
+            if len(pending) >= 2 * jobs:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for f in done:
+                    _drain(f)
+            if i % PROGRESS_EVERY == 0:
+                _log.info("figure progress: %d/%d submitted", i, len(todo))
+        for f in wait(pending).done:
+            _drain(f)
 
 
 def report(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:

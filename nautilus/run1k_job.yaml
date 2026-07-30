@@ -15,8 +15,13 @@
 #   kubectl -n sea-meets-the-stars logs -f job/pab-run1k        # or tail /data/run1k/run.log
 #
 # Expect (see run_full_pipeline.md → Reports → 1000-profile plan):
-#   ingest ~20 min (16 processes) · discover ~15 min · match ~20-40 min
-#   fit ~10-20 min · figure+report minutes · ~250 matchups, ~3-4 GB of chains.
+# Expected, from attempt 1's measured rates (see the report in the prompt doc):
+#   ingest ~35 min (32 procs; R5 — in-pod fetches are latency-bound, 4.2 s/profile
+#     at 16, so this should roughly halve) · discover ~15 min · match ~20-40 min
+#   fit ~1 h (11.6 s/matchup / 50) · figure ~5 min (was 42 s/matchup SERIAL, now
+#     parallel per R6) · report ~1 min · ~250 matchups, ~3-4 GB of chains.
+# NOTE chains land in $PAB_DATA_DIR/fit_chains (=/data/fit_chains), NOT under
+# /data/run1k — check both when sizing the PVC or backing up.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -52,7 +57,7 @@ spec:
               # right move is to stop, fix, and re-apply.
               if ! pab --db $RUN/pab.db --outdir $RUN/pipeline \
                 --profiles-csv /cfg/profiles.csv --stage $1 \
-                --jobs 50 --ingest-jobs 16 2>&1 \
+                --jobs 50 --ingest-jobs 32 2>&1 \
                 | tee -a $RUN/run.log; then
                 log "STAGE $1 FAILED — stopping (resume by re-applying the Job)"
                 counts
@@ -64,7 +69,7 @@ spec:
             log "RUN start (1000 profiles, jobs=50)"
             for s in ingest discover match fit figure report; do stage $s; done
             log "disk"
-            du -sh $RUN $RUN/pipeline/* 2>/dev/null | tee -a $RUN/run.log
+            du -sh $RUN $RUN/pipeline/* /data/fit_chains 2>/dev/null | tee -a $RUN/run.log
             log "RUN1K_DONE"
         resources:
           requests: {cpu: "50", memory: "100Gi", ephemeral-storage: "20Gi"}

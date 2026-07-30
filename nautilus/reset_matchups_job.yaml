@@ -1,0 +1,46 @@
+# One-shot cleanup before the corrected 1k re-run.
+#
+# Attempt 1's `discover` aborted after ~23 profiles (an unclamped CMR bounding
+# box), so `match` ran against 130 of the ~5,000 granules it should have had and
+# wrote 14 matchups chosen from a truncated candidate set. Those must go: the
+# "best granule" for those profiles may differ once the full candidate set is
+# present, and `build_matchups` keys its skip on `matchup_id`
+# (wmo_cycle_granule) while the table's UNIQUE key is (profile_id, granule_id) —
+# so a re-run would ADD a second matchup for the same profile rather than
+# replace the stale one.
+#
+# What is KEPT: the 972 ingested profiles/summaries (67 min of argopy) and the
+# 130 granules (a valid, if partial, granule set — discover will add the rest).
+#
+#   kubectl -n sea-meets-the-stars delete job pab-reset --ignore-not-found
+#   kubectl apply -f nautilus/reset_matchups_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-reset
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-reset
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: reset
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.2
+        imagePullPolicy: Always
+        env:
+        - {name: RUN, value: /data/run1k}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            python -c "import os,sqlite3; db=os.environ['RUN']+'/pab.db'; c=sqlite3.connect(db); t=('profiles','granules','matchups','matchup_pixels','fits','fit_results'); print('before:', {x: c.execute('SELECT COUNT(*) FROM '+x).fetchone()[0] for x in t}); [c.execute(s) for s in ('DELETE FROM fit_results','DELETE FROM fits','DELETE FROM matchup_pixels','DELETE FROM matchups')]; c.commit(); print('after: ', {x: c.execute('SELECT COUNT(*) FROM '+x).fetchone()[0] for x in t})"
+            echo RESET_DONE
+        resources:
+          requests: {cpu: "1", memory: "2Gi", ephemeral-storage: "2Gi"}
+          limits: {cpu: "1", memory: "2Gi", ephemeral-storage: "4Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
