@@ -85,6 +85,7 @@ Read these before running — plus the **hard-won operational lessons** below.
 7. Execute the 7th task in Tasks below
 8. Execute the 8th task in Tasks below
 9. Execute the 9th task in Tasks below
+10. Execute the 10th task in Tasks below
 
 ## Tasks
 
@@ -144,24 +145,26 @@ Read these before running — plus the **hard-won operational lessons** below.
 
 11. **More QA.** I have answered the R1-R4 questions.  Please read the answers and proceed accordingly. Log your work.
 
-12. **Ingest + discover (full).** Run `pab --stage ingest` (argopy fetch, MLD
+12. **More conversation.**  I have answered the R5 and R6 questions.  Please read the answers and proceed accordingly. Log your work.  You may need to modify the tasks that follow this one to reflect the changes.  If so, do so.
+
+13. **Ingest + discover (full).** Run `pab --stage ingest` (argopy fetch, MLD
    summaries, Argo Q&A figures) then `--stage discover` (CMR granule search). Expect
    argopy slowness / transient CMR 500s; both stages resume on re-run. Log counts
    (`profiles`, `granules`) and any failures.
 
-13. **Match + fit (the heavy stages).** Run `pab --stage match --download` to build
+14. **Match + fit (the heavy stages).** Run `pab --stage match --download` to build
    matchups (**monitor disk; warn near ~9.8 TB; no eviction** per Q9), then
    `--stage fit` with the parallel fitter. Spot-check convergence (`diagnose-mcmc`).
    Log matchups written, fits written/failed, wall-clock, and peak disk.
 
-14. **Figure + report + publish.** Run `--stage figure` then `--stage report`;
+15. **Figure + report + publish.** Run `--stage figure` then `--stage report`;
    `pab --emit-site report_site`; preview locally (`sphinx-build`), then commit
    `report_site/` and push so RTD rebuilds. Keep bulky artifacts **local** (Q5);
    publish the report + summary tables only. Confirm the summary coverage counts,
    the scatters/map, and that the galleries N-guard sensibly at scale. Log the
    published counts + the RTD build.
 
-15. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
+16. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
    quality, scene), confirm every record carries `pab_version = 1.0`, update
    `docs/design/PAB_implementation.md`, and write the full-run report (coverage,
    timings, failures, follow-ups — incl. the deferred Nautilus namespace/bucket
@@ -182,7 +185,7 @@ Read these before running — plus the **hard-won operational lessons** below.
   whether it actually scales and whether GDAC starts erroring; decide the
   full-run value from that. The failure handling now absorbs throttling.)*
 
->A. 
+>A. Go to 32 for the 1k re-run
 
 - **R6 — parallelise `figure`?** It is now the **dominant** stage: 42.1 s/matchup
   **serial** (fit figure + scene, each re-opening the granule) → ~3 h for the 1k
@@ -194,7 +197,7 @@ Read these before running — plus the **hard-won operational lessons** below.
   it is the same pattern as the other two stages, and at 6.6 days it blocks the
   full run regardless.)*
 
->A. 
+>A. Yes, do it now
 
 **Questions for the 1000-profile run (Task 10) — answer inline.**
 
