@@ -23,7 +23,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: pab
-        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.2
         imagePullPolicy: Always
         env:
         - {name: HOME, value: /root}

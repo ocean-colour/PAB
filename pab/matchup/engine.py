@@ -43,6 +43,7 @@ from pab.config import pab_version
 from pab.pace import cloud
 from pab.pace import extract as _extract
 from pab.pace import flags as _flags
+from pab.parallel import init_worker, picklable
 
 _log = logging.getLogger("pab.match")
 
@@ -493,21 +494,6 @@ def candidate_granules(
     )
 
 
-def _worker_init():  # pragma: no cover - runs in worker processes
-    """Cap BLAS/OpenMP threads per worker so N match processes don't oversubscribe
-    the cores (profile-level parallelism is the outer loop)."""
-    import os
-
-    for var in (
-        "OMP_NUM_THREADS",
-        "OPENBLAS_NUM_THREADS",
-        "MKL_NUM_THREADS",
-        "NUMEXPR_NUM_THREADS",
-        "VECLIB_MAXIMUM_THREADS",
-    ):
-        os.environ.setdefault(var, "1")
-
-
 def build_matchups(
     store,
     *,
@@ -573,7 +559,7 @@ def build_matchups(
             continue
         inputs.append((profile, candidates))
 
-    if jobs and int(jobs) > 1 and inputs and _picklable(opener):
+    if jobs and int(jobs) > 1 and inputs and picklable(opener):
         return _build_matchups_parallel(
             store, inputs, config, created, int(jobs), replace,
             written, skipped, unmatched, opener=opener,
@@ -596,24 +582,6 @@ def build_matchups(
     return {"written": written, "skipped": skipped, "unmatched": unmatched}
 
 
-def _picklable(obj) -> bool:
-    """Whether ``obj`` survives a pickle round-trip to a spawned worker.
-
-    ``None`` (the live cloud read) trivially does; a module-level opener does; a
-    lambda/closure/local function does not — so the caller can fall back to the
-    serial path instead of failing every profile in the pool.
-    """
-    if obj is None:
-        return True
-    import pickle
-
-    try:
-        pickle.dumps(obj)
-    except Exception:  # noqa: BLE001 — any pickling failure means "serial"
-        return False
-    return True
-
-
 def _build_matchups_parallel(
     store, inputs, config, created, jobs, replace, written, skipped, unmatched,
     *, opener=None,
@@ -624,7 +592,7 @@ def _build_matchups_parallel(
     parent drains completed futures and performs every DB write. In-flight futures
     are bounded (~2×``jobs``) so results are persisted promptly and memory stays
     bounded over a large profile set. ``opener`` is forwarded to the workers and
-    must be picklable (see :func:`_picklable`).
+    must be picklable (see :func:`pab.parallel.picklable`).
     """
     import multiprocessing as mp
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -657,7 +625,7 @@ def _build_matchups_parallel(
         written.append(result.matchup_id)
 
     with ProcessPoolExecutor(
-        max_workers=jobs, mp_context=ctx, initializer=_worker_init
+        max_workers=jobs, mp_context=ctx, initializer=init_worker
     ) as ex:
         for profile, candidates in inputs:
             fut = ex.submit(

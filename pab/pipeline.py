@@ -17,15 +17,24 @@ from __future__ import annotations
 
 import argparse
 import inspect
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from pab.config import DATA_DIR
 from pab.config import pab_version as _pab_version
 from pab.fit.models import FitConfig
 from pab.matchup.engine import MatchupConfig
+from pab.parallel import init_worker, picklable
+
+_log = logging.getLogger("pab.pipeline")
+
+#: How often the long stages emit a progress line (records). A 54k-profile
+#: ingest is otherwise silent for hours, which makes a stalled run
+#: indistinguishable from a slow one.
+PROGRESS_EVERY: int = 50
 
 #: The pipeline stages, in run order.
 STAGES: tuple[str, ...] = ("ingest", "discover", "match", "fit", "figure", "report")
@@ -51,6 +60,9 @@ class PipelineConfig:
         download: pre-download granules to ``cache_dir`` and read them locally
             (the reliable off-cloud path) instead of lazy out-of-region S3/HTTPS.
         cache_dir: where downloaded granules live (defaults to ``DATA_DIR/granules``).
+        jobs: worker processes for the ``match`` and ``fit`` stages.
+        ingest_jobs: concurrent argopy fetches in ``ingest``. ``None`` derives it
+            from ``jobs`` — see :meth:`ingest_workers`.
     """
 
     profiles: list[dict[str, Any]] | None = None
@@ -69,6 +81,12 @@ class PipelineConfig:
     download: bool = False
     cache_dir: str | Path | None = None
     jobs: int = 1  # parallel processes for the match + fit stages (1 = serial)
+    ingest_jobs: int | None = None  # concurrent argopy fetches (None → derived)
+
+    #: Ceiling on concurrent argopy fetches when ``ingest_jobs`` is derived from
+    #: ``jobs``. The Argo GDAC/ERDDAP servers are shared infrastructure, so a
+    #: 50-core run must not open 50 simultaneous fetches.
+    INGEST_JOBS_CAP: ClassVar[int] = 16
 
     def out(self) -> Path:
         """The resolved base output directory."""
@@ -77,6 +95,18 @@ class PipelineConfig:
     def cache(self) -> Path:
         """The resolved granule download cache directory."""
         return Path(self.cache_dir) if self.cache_dir else Path(DATA_DIR) / "granules"
+
+    def ingest_workers(self) -> int:
+        """Concurrent argopy fetches for ``ingest``.
+
+        ``ingest_jobs`` when set, else ``jobs`` capped at
+        :attr:`INGEST_JOBS_CAP` — so ``--jobs 50`` (sized for the CPU-bound
+        ``match``/``fit`` stages) does not translate into 50 simultaneous
+        requests to the shared Argo servers.
+        """
+        if self.ingest_jobs is not None:
+            return max(1, int(self.ingest_jobs))
+        return max(1, min(int(self.jobs), self.INGEST_JOBS_CAP))
 
     def profile_rows(self) -> list[dict[str, Any]]:
         """The profile selection — inline ``profiles`` or the dev-set CSV rows."""
@@ -102,10 +132,18 @@ def ingest(store, config: PipelineConfig, *, fetcher=None) -> dict[str, Any]:
     ``replace``), skip. Otherwise persist a precomputed ``summary`` (offline) or
     fetch + summarize via argopy (``fetcher`` overrides the live fetch — it takes
     ``(wmo, cycle, argo_src, argo_mode)`` and returns an argopy dataset).
-    """
-    from pab.argo import fetch, summary
 
+    The live fetch dominates the stage (~6 s/profile serial — days over the full
+    selection), so with :meth:`PipelineConfig.ingest_workers` > 1 the
+    fetch+summarize step fans out (:func:`_ingest_executor`) while **every DB
+    write and Q&A plot stays in the parent** — one SQLite writer, matplotlib off
+    the workers. Failures stay per-profile: a bad profile is recorded under
+    ``"failed"`` (with a traceback in the ``pab.pipeline`` log) and the stage
+    carries on, so a resume retries only what is missing.
+    """
     written, skipped, failed = [], [], []
+
+    todo: list[tuple[int, int, dict[str, Any]]] = []
     for row in config.profile_rows():
         wmo, cycle = int(row["wmo"]), int(row["cycle"])
         have = store.query(
@@ -116,63 +154,187 @@ def ingest(store, config: PipelineConfig, *, fetcher=None) -> dict[str, Any]:
         if have and not config.replace:
             skipped.append(f"{wmo}_{cycle}")
             continue
+        todo.append((wmo, cycle, row))
+
+    workers = config.ingest_workers()
+    n_fetch = sum(1 for _, _, row in todo if "summary" not in row)
+    if workers > 1 and n_fetch > 1:
+        _ingest_concurrent(
+            store, config, todo, fetcher, workers, written, failed
+        )
+        return {"written": written, "skipped": skipped, "failed": failed}
+
+    for wmo, cycle, row in todo:
         # A single bad profile (odd argopy return, a 0-d array, a fetch error) must
         # not abort a 50k-profile ingest — record it and resume, like build_fits.
         try:
-            if "summary" in row:  # offline: a precomputed summary
-                summary.persist_summary(
-                    store,
-                    wmo=wmo,
-                    cycle=cycle,
-                    summary=row["summary"],
-                    latitude=row.get("latitude"),
-                    longitude=row.get("longitude"),
-                    time=row.get("time"),
-                )
-            else:
-                ds = (
-                    fetcher(wmo, cycle, config.argo_src, config.argo_mode)
-                    if fetcher is not None
-                    else fetch.fetch_profile(
-                        wmo, cycle, src=config.argo_src, mode=config.argo_mode
-                    )
-                )
-                meta, v = next(fetch.iter_profiles(ds))
-                summ = summary.summarize_profile(
-                    v["PRES"],
-                    bbp700=v.get("BBP700"),
-                    chla=v.get("CHLA"),
-                    psal=v.get("PSAL"),
-                    temp=v.get("TEMP"),
-                    lon=meta["longitude"],
-                    lat=meta["latitude"],
-                )
-                pid = summary.persist_summary(
-                    store,
-                    wmo=wmo,
-                    cycle=cycle,
-                    summary=summ,
-                    latitude=meta["latitude"],
-                    longitude=meta["longitude"],
-                    time=meta["time"],
-                )
-                # Q&A figure: only the live fetch carries the full profile arrays
-                # the plot needs (the precomputed-summary path has scalars only).
-                _emit_profile_qa(
-                    store,
-                    pid,
-                    wmo,
-                    cycle,
-                    config,
-                    pres=v["PRES"],
-                    bbp700=v.get("BBP700"),
-                    chla=v.get("CHLA"),
-                    mld=summ.get("mld"),
-                )
+            _persist_profile(store, config, wmo, cycle, row, _fetch_profile_payload(
+                config, wmo, cycle, row, fetcher
+            ))
             written.append(f"{wmo}_{cycle}")
         except Exception:  # noqa: BLE001 — one bad profile must not abort the batch
             failed.append(f"{wmo}_{cycle}")
     return {"written": written, "skipped": skipped, "failed": failed}
+
+
+def _fetch_profile_payload(
+    config: PipelineConfig, wmo: int, cycle: int, row: dict[str, Any], fetcher
+) -> dict[str, Any] | None:
+    """Fetch + summarize one profile — **no DB access** (safe off-thread).
+
+    Returns ``None`` for the offline path (``row`` already carries a
+    precomputed ``summary``), else the ``meta``/``summary``/profile arrays that
+    :func:`_persist_profile` writes.
+    """
+    if "summary" in row:
+        return None
+    from pab.argo import fetch, summary
+
+    ds = (
+        fetcher(wmo, cycle, config.argo_src, config.argo_mode)
+        if fetcher is not None
+        else fetch.fetch_profile(wmo, cycle, src=config.argo_src, mode=config.argo_mode)
+    )
+    meta, v = next(fetch.iter_profiles(ds))
+    summ = summary.summarize_profile(
+        v["PRES"],
+        bbp700=v.get("BBP700"),
+        chla=v.get("CHLA"),
+        psal=v.get("PSAL"),
+        temp=v.get("TEMP"),
+        lon=meta["longitude"],
+        lat=meta["latitude"],
+    )
+    return {"meta": meta, "summary": summ, "v": v}
+
+
+def _persist_profile(
+    store,
+    config: PipelineConfig,
+    wmo: int,
+    cycle: int,
+    row: dict[str, Any],
+    payload: dict[str, Any] | None,
+) -> None:
+    """Write one profile's summary (+ Q&A figure). Caller's thread only."""
+    from pab.argo import summary
+
+    if payload is None:  # offline: a precomputed summary
+        summary.persist_summary(
+            store,
+            wmo=wmo,
+            cycle=cycle,
+            summary=row["summary"],
+            latitude=row.get("latitude"),
+            longitude=row.get("longitude"),
+            time=row.get("time"),
+        )
+        return
+
+    meta, summ, v = payload["meta"], payload["summary"], payload["v"]
+    pid = summary.persist_summary(
+        store,
+        wmo=wmo,
+        cycle=cycle,
+        summary=summ,
+        latitude=meta["latitude"],
+        longitude=meta["longitude"],
+        time=meta["time"],
+    )
+    # Q&A figure: only the live fetch carries the full profile arrays the plot
+    # needs (the precomputed-summary path has scalars only).
+    _emit_profile_qa(
+        store,
+        pid,
+        wmo,
+        cycle,
+        config,
+        pres=v["PRES"],
+        bbp700=v.get("BBP700"),
+        chla=v.get("CHLA"),
+        mld=summ.get("mld"),
+    )
+
+
+def _ingest_executor(fetcher, workers: int):
+    """The pool :func:`_ingest_concurrent` should use, and a label for logs.
+
+    **Processes** for the live path. Measured on real GDAC profiles: serial
+    6.2 s/profile, 12 threads 2.75, **12 processes 0.97** — the fetch is not
+    network-bound but bound by argopy's Python-side parsing, so the GIL, not the
+    servers, is the ceiling. Processes need a picklable ``fetcher``
+    (``None`` = the live fetch, or a module-level seam); anything else (a
+    lambda/closure test seam) falls back to **threads**, which still concurrent
+    the I/O and keeps the datasets in-process.
+    """
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+
+    if picklable(fetcher):
+        return (
+            ProcessPoolExecutor(
+                max_workers=workers,
+                mp_context=mp.get_context("spawn"),
+                initializer=init_worker,
+            ),
+            "processes",
+        )
+    return ThreadPoolExecutor(max_workers=workers), "threads"
+
+
+def _ingest_concurrent(
+    store, config: PipelineConfig, todo, fetcher, workers: int, written, failed
+) -> None:
+    """Concurrent backend for :func:`ingest`; appends to ``written``/``failed``.
+
+    Fetch + summarize fan out (see :func:`_ingest_executor` for process vs
+    thread); **every DB write and Q&A plot happens here in the parent** — one
+    SQLite writer, matplotlib off the workers. In-flight fetches are bounded at
+    ~2×``workers``, so a 54k-profile ingest holds only a handful of profiles in
+    memory and persists results as they arrive (an interrupted run keeps
+    everything already written; a resume re-fetches only what is missing).
+    """
+    from concurrent.futures import FIRST_COMPLETED, wait
+
+    # Workers only need the argopy source/mode; don't ship an inline profile
+    # list (offline seam) to every task.
+    task_config = replace(config, profiles=None)
+
+    def _drain(fut, pending_map):
+        wmo, cycle, row = pending_map.pop(fut)
+        try:
+            _persist_profile(store, config, wmo, cycle, row, fut.result())
+            written.append(f"{wmo}_{cycle}")
+        except Exception:  # noqa: BLE001 — one bad profile must not abort the batch
+            _log.exception("ingest failed for %s_%s", wmo, cycle)
+            failed.append(f"{wmo}_{cycle}")
+        done = len(written) + len(failed)
+        if done % PROGRESS_EVERY == 0:
+            _log.info(
+                "ingest progress: %d/%d (%d written, %d failed)",
+                done,
+                len(todo),
+                len(written),
+                len(failed),
+            )
+
+    fut_row: dict = {}
+    pending: set = set()
+    executor, kind = _ingest_executor(fetcher, workers)
+    _log.info("ingest: %d profiles over %d %s", len(todo), workers, kind)
+    with executor as ex:
+        for wmo, cycle, row in todo:
+            fut = ex.submit(
+                _fetch_profile_payload, task_config, wmo, cycle, row, fetcher
+            )
+            fut_row[fut] = (wmo, cycle, row)
+            pending.add(fut)
+            if len(pending) >= 2 * workers:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for f in done:
+                    _drain(f, fut_row)
+        for f in wait(pending).done:
+            _drain(f, fut_row)
 
 
 def _emit_profile_qa(
@@ -221,6 +383,11 @@ def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
     on the other side of the planet share its time window but say nothing about
     this profile's coverage (skipping on time alone silently starved most
     profiles of granules once the table held many).
+
+    Per-profile failures are **contained**: a search that still fails after
+    :func:`_search_with_retry`'s attempts is recorded under ``"failed"`` and the
+    stage carries on (a single unhandled CMR error used to abort the whole
+    stage — it truncated the 1000-profile run at 130 granules).
     """
     from pab.matchup.engine import GranuleIndex, candidate_granules
     from pab.pace import discover as disc
@@ -229,7 +396,7 @@ def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
         "SELECT wmo, cycle, latitude, longitude, time FROM profiles "
         "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
     )
-    n, skipped = 0, []
+    n, skipped, failed, searched = 0, [], [], 0
     dtime_hours = config.dtime_days * 24.0
     # Snapshot the granule table once: granules persisted during this pass are
     # not in the index, so at worst a shared granule is re-queried (an idempotent
@@ -251,25 +418,94 @@ def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
         ):
             skipped.append(f"{p['wmo']}_{p['cycle']}")
             continue
-        t = datetime.fromisoformat(str(p["time"]))
-        win = (
-            t - timedelta(days=config.dtime_days),
-            t + timedelta(days=config.dtime_days),
-        )
-        lon, lat, pad = p["longitude"], p["latitude"], config.bbox_pad_deg
-        if searcher is not None:
-            table = searcher(lat, lon, win[0], win[1], config)
-        else:
-            res = disc.search_granules(
-                short_name=config.short_name,
-                temporal=(win[0].isoformat(), win[1].isoformat()),
-                bounding_box=(lon - pad, lat - pad, lon + pad, lat + pad),
-                cloud_cover=config.cloud_cover,
+        try:
+            t = datetime.fromisoformat(str(p["time"]))
+            win = (
+                t - timedelta(days=config.dtime_days),
+                t + timedelta(days=config.dtime_days),
             )
-            table = disc.granule_table(res)
+            lon, lat = p["longitude"], p["latitude"]
+            if searcher is not None:
+                table = _search_with_retry(
+                    searcher, lat, lon, win[0], win[1], config
+                )
+            else:
+
+                def _live(lat, lon, t0, t1, cfg, _disc=disc):
+                    return _disc.granule_table(
+                        _disc.search_granules(
+                            short_name=cfg.short_name,
+                            temporal=(t0.isoformat(), t1.isoformat()),
+                            bounding_box=search_bbox(lon, lat, cfg.bbox_pad_deg),
+                            cloud_cover=cfg.cloud_cover,
+                        )
+                    )
+
+                table = _search_with_retry(_live, lat, lon, win[0], win[1], config)
+        except Exception:  # noqa: BLE001 — one bad search must not abort the stage
+            _log.exception("discover failed for %s_%s", p["wmo"], p["cycle"])
+            failed.append(f"{p['wmo']}_{p['cycle']}")
+            continue
         if table is not None and len(table):
             n += disc.persist_granules(store, table, short_name=config.short_name)
-    return {"granules_upserted": n, "skipped": skipped}
+        searched += 1
+        if searched % PROGRESS_EVERY == 0:
+            _log.info(
+                "discover progress: %d searched, %d granules, %d skipped, %d failed",
+                searched,
+                n,
+                len(skipped),
+                len(failed),
+            )
+    _log.info(
+        "discover done: %d granules from %d searches (%d skipped, %d failed)",
+        n,
+        searched,
+        len(skipped),
+        len(failed),
+    )
+    return {"granules_upserted": n, "skipped": skipped, "failed": failed}
+
+
+def search_bbox(
+    longitude: float, latitude: float, pad_deg: float
+) -> tuple[float, float, float, float]:
+    """A CMR-legal ``(west, south, east, north)`` box around a float position.
+
+    CMR **rejects** a box outside ``[-180, 180] × [-90, 90]``
+    (``"West must be within [-180.0] and [180.0] but was [-180.2566]"`` — a float
+    at lon −179.86 with the default 0.4° pad, which aborted the 1000-profile
+    run's ``discover`` stage). Clamping is safe rather than lossy: the box still
+    contains the float, so any granule whose swath covers the float still
+    intersects it.
+    """
+    return (
+        max(-180.0, float(longitude) - pad_deg),
+        max(-90.0, float(latitude) - pad_deg),
+        min(180.0, float(longitude) + pad_deg),
+        min(90.0, float(latitude) + pad_deg),
+    )
+
+
+def _search_with_retry(searcher, lat, lon, t0, t1, config, *, attempts: int = 3):
+    """Call ``searcher`` with retries for transient CMR failures.
+
+    CMR returns intermittent 5xx/timeouts at scale (the full-selection
+    discover-count saw ~1.7 % fail). Retrying a couple of times with a short
+    backoff converts most of those into successes; the caller records whatever
+    still fails.
+    """
+    import time
+
+    last: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return searcher(lat, lon, t0, t1, config)
+        except Exception as exc:  # noqa: BLE001 — retry any search failure
+            last = exc
+            if attempt < attempts - 1:
+                time.sleep(2**attempt)
+    raise last  # type: ignore[misc]
 
 
 def match(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
@@ -475,6 +711,14 @@ def build_parser() -> argparse.ArgumentParser:
         "level; 1 = serial).",
     )
     p.add_argument(
+        "--ingest-jobs",
+        type=int,
+        default=None,
+        help="Concurrent argopy fetches in the ingest stage (worker processes). "
+        f"Default: --jobs capped at {PipelineConfig.INGEST_JOBS_CAP} (the Argo "
+        "servers are shared).",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the stage plan and exit without touching anything.",
@@ -495,6 +739,12 @@ def main(argv=None) -> int:
     from pab.db import Store
 
     args = build_parser().parse_args(argv)
+    # Without a handler the stages' progress/failure logs vanish (only WARNING+
+    # reached stderr via logging's last-resort handler during the 1k run).
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     config = PipelineConfig(
         profiles_csv=args.profiles_csv,
         outdir=args.outdir,
@@ -503,6 +753,7 @@ def main(argv=None) -> int:
         download=args.download,
         cache_dir=args.cache_dir,
         jobs=args.jobs,
+        ingest_jobs=args.ingest_jobs,
     )
     stages = args.stages or list(STAGES)
     if args.dry_run:

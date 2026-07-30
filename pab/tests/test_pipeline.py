@@ -439,3 +439,208 @@ def test_discover_searches_a_distant_profile_in_the_same_time_window():
         again = pipeline.run(store, cfg, stages=("discover",), searcher=searcher)
         assert len(again["discover"]["skipped"]) == 3
         assert len(calls) == 3  # no re-query
+
+
+# -- parallel ingest --------------------------------------------------------
+def _live_profiles(n):
+    """n profiles with no precomputed summary -> they take the live-fetch path."""
+    return [
+        {
+            "wmo": 7900000 + i,
+            "cycle": 1,
+            "latitude": 10.0 + i,
+            "longitude": -40.0 - i,
+            "time": "2025-05-01T12:00:00",
+        }
+        for i in range(n)
+    ]
+
+
+def _dataset_fetcher(record=None, fail_on=()):
+    """A fetcher seam standing in for argopy.
+
+    argopy is not a test dependency (``iter_profiles`` needs its ``.argo``
+    accessor), so the fetcher returns a marker dict and ``_stub_iter_profiles``
+    below turns it into the ``(meta, variables)`` pair the stage consumes.
+    """
+
+    def fetcher(wmo, cycle, src, mode):
+        if record is not None:
+            record.append(wmo)
+        if wmo in fail_on:
+            raise RuntimeError("argopy fetch failed")
+        return {"wmo": wmo, "cycle": cycle}
+
+    return fetcher
+
+
+def _stub_iter_profiles(ds):
+    import numpy as np
+
+    meta = {
+        "wmo": ds["wmo"],
+        "cycle": ds["cycle"],
+        "latitude": 10.0,
+        "longitude": -40.0,
+        "time": "2025-05-01T12:00:00",
+    }
+    variables = {
+        "PRES": np.linspace(0.0, 100.0, 12),
+        "BBP700": np.full(12, 2e-3),
+        "CHLA": np.full(12, 0.2),
+        "TEMP": np.linspace(20.0, 10.0, 12),
+        "PSAL": np.full(12, 35.0),
+    }
+    yield meta, variables
+
+
+@pytest.fixture
+def stub_iter_profiles(monkeypatch):
+    # the live-fetch path summarizes a real profile -> needs gsw for sigma0
+    pytest.importorskip("gsw")
+    from pab.argo import fetch as argo_fetch
+
+    monkeypatch.setattr(argo_fetch, "iter_profiles", _stub_iter_profiles)
+
+
+def test_ingest_parallel_matches_serial(stub_iter_profiles):
+    """The thread pool must persist exactly what the serial path does."""
+    profiles = _live_profiles(6)
+    cfg_par = pipeline.PipelineConfig(profiles=profiles, ingest_jobs=4, make_figures=False)
+    cfg_ser = pipeline.PipelineConfig(profiles=profiles, make_figures=False)
+
+    with Store.open(":memory:") as store:
+        out = pipeline.ingest(store, cfg_par, fetcher=_dataset_fetcher())
+        rows = store.query(
+            "SELECT p.wmo, m.mld, m.bbp700 FROM mld_summary m "
+            "JOIN profiles p ON p.profile_id = m.profile_id ORDER BY p.wmo"
+        )
+    with Store.open(":memory:") as store:
+        ser = pipeline.ingest(store, cfg_ser, fetcher=_dataset_fetcher())
+        rows_ser = store.query(
+            "SELECT p.wmo, m.mld, m.bbp700 FROM mld_summary m "
+            "JOIN profiles p ON p.profile_id = m.profile_id ORDER BY p.wmo"
+        )
+
+    assert set(out["written"]) == set(ser["written"]) and len(out["written"]) == 6
+    assert out["failed"] == [] and rows == rows_ser
+
+
+def test_ingest_parallel_is_resumable_and_survives_failures(stub_iter_profiles):
+    profiles = _live_profiles(5)
+    cfg = pipeline.PipelineConfig(profiles=profiles, ingest_jobs=3, make_figures=False)
+    bad = profiles[2]["wmo"]
+    with Store.open(":memory:") as store:
+        out = pipeline.ingest(store, cfg, fetcher=_dataset_fetcher(fail_on=(bad,)))
+        assert out["failed"] == [f"{bad}_1"]
+        assert len(out["written"]) == 4
+        assert store.count("mld_summary") == 4
+
+        # resume: the four good ones are skipped, only the failure is retried
+        tried = []
+        again = pipeline.ingest(store, cfg, fetcher=_dataset_fetcher(record=tried))
+        assert len(again["skipped"]) == 4
+        assert tried == [bad]  # no re-fetch of the profiles already stored
+        assert again["written"] == [f"{bad}_1"]
+        assert store.count("mld_summary") == 5
+
+
+def test_ingest_workers_caps_derived_concurrency():
+    # --jobs is sized for the CPU-bound stages; ingest must not open 50 fetches
+    assert pipeline.PipelineConfig(jobs=50).ingest_workers() == 16
+    assert pipeline.PipelineConfig(jobs=4).ingest_workers() == 4
+    assert pipeline.PipelineConfig(jobs=50, ingest_jobs=24).ingest_workers() == 24
+    assert pipeline.PipelineConfig().ingest_workers() == 1
+
+
+def test_cli_parser_ingest_jobs():
+    args = pipeline.build_parser().parse_args(["--jobs", "50", "--ingest-jobs", "8"])
+    assert (args.jobs, args.ingest_jobs) == (50, 8)
+    assert pipeline.build_parser().parse_args([]).ingest_jobs is None
+
+
+def _module_level_fetcher(wmo, cycle, src, mode):  # picklable -> process pool
+    return {"wmo": wmo, "cycle": cycle}
+
+
+def test_ingest_executor_prefers_processes_when_picklable():
+    """The live fetch is GIL-bound, not network-bound (measured: 12 threads
+    2.75 s/profile vs 12 processes 0.97), so the pool must be processes whenever
+    the fetcher can cross a spawn boundary — and threads when it cannot."""
+    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+
+    ex, kind = pipeline._ingest_executor(None, 2)  # live fetch
+    with ex:
+        assert kind == "processes" and isinstance(ex, ProcessPoolExecutor)
+    ex, kind = pipeline._ingest_executor(_module_level_fetcher, 2)
+    with ex:
+        assert kind == "processes"
+    ex, kind = pipeline._ingest_executor(lambda *a: None, 2)  # closure seam
+    with ex:
+        assert kind == "threads" and isinstance(ex, ThreadPoolExecutor)
+
+
+# -- discover robustness (the 1k-run abort) ---------------------------------
+def test_search_bbox_is_clamped_to_cmr_limits():
+    """CMR rejects a box outside [-180,180]x[-90,90].
+
+    A float at lon -179.86 with the default 0.4 deg pad produced
+    west = -180.2566, and CMR's 400 aborted the whole discover stage 23 profiles
+    into the 1000-profile run.
+    """
+    w, s, e, n = pipeline.search_bbox(-179.8566, -45.0, 0.4)
+    assert w == -180.0 and e == pytest.approx(-179.4566)
+    w, s, e, n = pipeline.search_bbox(179.9, 89.8, 0.4)
+    assert e == 180.0 and n == 90.0
+    # the box must still contain the float, or the search is meaningless
+    for lon, lat in ((-179.99, 0.0), (179.99, 0.0), (0.0, 89.99), (0.0, -89.99)):
+        w, s, e, n = pipeline.search_bbox(lon, lat, 0.4)
+        assert w <= lon <= e and s <= lat <= n
+        assert -180.0 <= w and e <= 180.0 and -90.0 <= s and n <= 90.0
+
+
+def test_discover_survives_a_failing_search():
+    """One bad CMR query must not abort the stage (it truncated the 1k run)."""
+    summary = {"mld": 30.0, "mld_method": "x", "n_points": 5}
+    profiles = [
+        {"wmo": 1111, "cycle": 1, "latitude": 30.0, "longitude": -140.0,
+         "time": "2024-06-01T02:00:00", "summary": summary},
+        {"wmo": 2222, "cycle": 1, "latitude": -45.0, "longitude": 20.0,
+         "time": "2024-09-01T10:00:00", "summary": summary},
+    ]
+
+    def searcher(lat, lon, t0, t1, config):
+        if lat == 30.0:
+            raise RuntimeError('{"errors":["West must be within [-180.0]..."]}')
+        return _searcher(lat, lon, t0, t1, config)
+
+    cfg = pipeline.PipelineConfig(profiles=profiles)
+    with Store.open(":memory:") as store:
+        pipeline.run(store, cfg, stages=("ingest",))
+        out = pipeline.discover(store, cfg, searcher=searcher)
+        assert out["failed"] == ["1111_1"]          # recorded, not raised
+        assert out["granules_upserted"] == 1        # the good profile still ran
+        assert store.count("granules") == 1
+
+
+def test_search_with_retry_recovers_from_a_transient_failure(monkeypatch):
+    """CMR 5xx are routine at scale (~1.7% of the 54k discover-count)."""
+    import time as _time
+
+    monkeypatch.setattr(_time, "sleep", lambda *_: None)  # no real backoff in tests
+    calls = []
+
+    def flaky(lat, lon, t0, t1, config):
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("CMR 500")
+        return "table"
+
+    assert pipeline._search_with_retry(flaky, 0.0, 0.0, None, None, None) == "table"
+    assert len(calls) == 3
+
+    def always_bad(lat, lon, t0, t1, config):
+        raise RuntimeError("permanent")
+
+    with pytest.raises(RuntimeError, match="permanent"):
+        pipeline._search_with_retry(always_bad, 0.0, 0.0, None, None, None)

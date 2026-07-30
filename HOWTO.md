@@ -7,8 +7,9 @@ stage runner driven off a SQLite store. Re-runs skip work already done, so it is
 safe to interrupt and resume.
 
 > **Scope.** This documents the pipeline **as it exists today**. A few agreed
-> enhancements (single-matchup targeting, parallel fitting, a config file) are
-> not implemented yet — see [Planned enhancements](#planned-enhancements).
+> enhancements (single-matchup targeting, a config file) are not implemented
+> yet — see [Planned enhancements](#planned-enhancements). Parallelism *is*
+> implemented for `ingest`, `match` and `fit` (`--jobs`, `--ingest-jobs`).
 
 
 ## 1. Prerequisites
@@ -79,7 +80,7 @@ override it with the `PAB_DATA_DIR` environment variable.
 pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
     [--outdir OUTDIR] [--profiles-csv PROFILES_CSV] [--replace]
     [--no-figures] [--download] [--cache-dir CACHE_DIR] [--jobs JOBS]
-    [--dry-run] [--emit-site DIR]
+    [--ingest-jobs N] [--dry-run] [--emit-site DIR]
 ```
 
 | Flag | Meaning |
@@ -91,6 +92,7 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
 | `--replace` | Re-do completed work instead of skipping it. |
 | `--no-figures` | Skip the `figure` stage. |
 | `--jobs JOBS` | Parallel processes for the `match` and `fit` stages (profile-/matchup-level; default `1` = serial). In `fit`, granules are opened and pixels extracted in the parent and only the MCMC runs in workers; in `match`, the granule open + pixel extraction themselves run in workers. Either way **all DB writes stay in the parent** (no SQLite contention). An injected `opener` must be picklable (module-level) to be used in parallel; otherwise `match` falls back to serial. |
+| `--ingest-jobs N` | Concurrent argopy fetches in the `ingest` stage. Default: `--jobs` capped at 16 (the Argo GDAC/ERDDAP servers are shared). Fetch+summarize runs in worker **processes** — measured 6.2 s/profile serial, 2.75 s with 12 threads, **0.97 s with 12 processes** (argopy's parsing is GIL-bound, not network-bound) — while DB writes and Q&A plots stay in the parent. |
 | `--download` | Pre-download each granule to a local cache and read it locally (the reliable **off-cloud** path). Use this whenever you are **not** running in-region (`us-west-2`). |
 | `--cache-dir CACHE_DIR` | Where downloaded granules live. Default: `DATA_DIR/granules`. |
 | `--dry-run` | Print the stage plan and exit without touching anything. |
@@ -121,7 +123,7 @@ pab --db data/pab.db --download
 
 | Stage | What it does | Reads / writes |
 | --- | --- | --- |
-| `ingest` | Persist BGC-Argo profiles + mixed-layer summaries. | → `mld_summary` |
+| `ingest` | Persist BGC-Argo profiles + mixed-layer summaries (parallel fetch — see `--ingest-jobs`). | → `mld_summary` |
 | `discover` | Find in-window PACE granules per profile (earthaccess). A profile is skipped only if the store already holds a granule **whose footprint covers that profile's own position** in its time window. | → `granules` |
 | `match` | Build PACE↔Argo matchups (Stage 4 spatial/temporal gate). Candidates come from an in-memory `GranuleIndex` (time window **+** footprint bounding box padded by `MatchupConfig.footprint_pad_deg`), so only granules that plausibly cover the float are opened. | → `matchups` |
 | `fit` | Run BING spectral fits per matchup (needs BING + emcee). | → `fit_results` |
@@ -251,4 +253,5 @@ Agreed but **not yet implemented** — don't expect these flags to work yet:
   one profile/matchup instead of the whole selection.
 - **Config file** — load run configuration from a file (TOML) instead of flags.
 
-*(Matchup-level parallel fitting is now implemented — see `--jobs`.)*
+*(Parallel `ingest`, `match` and `fit` are all implemented — see `--jobs` and
+`--ingest-jobs`.)*

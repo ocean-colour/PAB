@@ -15,7 +15,7 @@
 #   kubectl -n sea-meets-the-stars logs -f job/pab-run1k        # or tail /data/run1k/run.log
 #
 # Expect (see run_full_pipeline.md → Reports → 1000-profile plan):
-#   ingest ~2 h (serial argopy) · discover ~15 min · match ~20-40 min (50 cores)
+#   ingest ~20 min (16 processes) · discover ~15 min · match ~20-40 min
 #   fit ~10-20 min · figure+report minutes · ~250 matchups, ~3-4 GB of chains.
 apiVersion: batch/v1
 kind: Job
@@ -29,7 +29,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: pab
-        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.2
         imagePullPolicy: Always
         env:
         - {name: HOME, value: /root}
@@ -46,9 +46,18 @@ spec:
             counts() { python -c "import os,sqlite3; db=os.environ['RUN']+'/pab.db'; c=sqlite3.connect(db); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('profiles','granules','matchups','matchup_pixels','fits','fit_results')})" 2>&1 | tee -a $RUN/run.log; }
             stage() {
               log "STAGE $1 start"
-              pab --db $RUN/pab.db --outdir $RUN/pipeline \
-                --profiles-csv /cfg/profiles.csv --stage $1 --jobs 50 2>&1 \
-                | tee -a $RUN/run.log
+              # Stop the run if a stage fails. The first attempt built a report
+              # from a discover stage that had aborted at 130 of ~5,000 granules,
+              # because the loop just carried on. Stages are resumable, so the
+              # right move is to stop, fix, and re-apply.
+              if ! pab --db $RUN/pab.db --outdir $RUN/pipeline \
+                --profiles-csv /cfg/profiles.csv --stage $1 \
+                --jobs 50 --ingest-jobs 16 2>&1 \
+                | tee -a $RUN/run.log; then
+                log "STAGE $1 FAILED — stopping (resume by re-applying the Job)"
+                counts
+                exit 1
+              fi
               log "STAGE $1 end"
               counts
             }
