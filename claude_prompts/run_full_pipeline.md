@@ -86,6 +86,8 @@ Read these before running — plus the **hard-won operational lessons** below.
 8. Execute the 8th task in Tasks below
 9. Execute the 9th task in Tasks below
 10. Execute the 10th task in Tasks below
+11. Execute the 11th task in Tasks below
+12. Execute the 12th task in Tasks below
 
 ## Tasks
 
