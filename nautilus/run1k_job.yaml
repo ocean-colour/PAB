@@ -33,11 +33,17 @@ spec:
       restartPolicy: Never
       containers:
       - name: pab
-        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.3
+        # :1.0.3 could not be pushed — the NRP registry accepted every layer
+        # but hung on the manifest write four times (10+ min each). So we run
+        # the :1.0.2 image and shadow its installed `pab` with the fixed source
+        # staged on the PVC at /data/src (see PYTHONPATH below). Revert both
+        # lines to a plain :1.0.3 image once the registry accepts the push.
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.2
         imagePullPolicy: Always
         env:
         - {name: HOME, value: /root}
         - {name: PAB_DATA_DIR, value: /data}
+        - {name: PYTHONPATH, value: /data/src}   # fixed pab package (see above)
         - {name: RUN, value: /data/run1k}
         command: ["/bin/bash", "-lc"]
         args:

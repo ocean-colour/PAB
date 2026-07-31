@@ -85,10 +85,16 @@ class MatchupConfig:
             true edge by tens of km; the exact test is still the
             nearest-unflagged-pixel distance in :func:`find_matchup`.
         stall_timeout_s: In the parallel path, how long a chunk of profiles may
-            go with **no** completed result before its workers are declared
-            wedged and killed (see :func:`_build_matchups_parallel`). Generous —
-            a healthy chunk produces results every few seconds, so 10 min only
-            ever fires on a genuine hang.
+            go with **no** completed result at all before its workers are declared
+            wedged and killed (see :func:`_build_matchups_parallel`). A healthy
+            chunk completes something every few seconds, so 2 min is already very
+            conservative — and the cost matters: each firing waits out the whole
+            timeout, so 10 min would add ~36 h of pure waiting over the full
+            selection at the observed wedge rate.
+        open_timeout_s: Per-granule read timeout (:func:`_open_with_timeout`).
+            The backstop above only fires when a whole chunk goes quiet; this
+            catches the actual culprit — one granule read that never returns —
+            and lets the profile try its other candidates.
     """
 
     dtime_max_hours: float = 24.0
@@ -96,7 +102,8 @@ class MatchupConfig:
     max_distance_km: float = 5.0
     mask_flags: tuple[str, ...] = field(default=_flags.STANDARD_OCEAN_MASK)
     footprint_pad_deg: float = 1.0
-    stall_timeout_s: float = 600.0
+    stall_timeout_s: float = 120.0
+    open_timeout_s: float = 120.0
 
 
 @dataclass
@@ -297,6 +304,38 @@ class GranuleIndex:
         return out
 
 
+def _open_with_timeout(source, *, opener=None, timeout_s: float = 0.0):
+    """Open a granule, raising :class:`TimeoutError` if it takes too long.
+
+    Uses ``SIGALRM``, which interrupts the calling thread even when it is parked
+    in a C-level lock — the state real wedged workers were found in (sockets no
+    longer established, every thread in ``futex_wait``, 0 % CPU, no progress for
+    40 min). ``fsspec``/``aiohttp`` provide no read timeout on this path, so this
+    is the only reliable way to bound it.
+
+    Falls back to a plain open when ``timeout_s`` is not positive, or when the
+    caller is not the main thread (``signal.alarm`` is main-thread only) — the
+    chunk-level guard in :func:`_build_matchups_parallel` remains the backstop
+    for those cases.
+    """
+    import signal
+    import threading
+
+    if timeout_s and timeout_s > 0 and threading.current_thread() is threading.main_thread():
+
+        def _timed_out(signum, frame):  # pragma: no cover - signal path
+            raise TimeoutError(f"granule read exceeded {timeout_s:.0f}s: {source}")
+
+        previous = signal.signal(signal.SIGALRM, _timed_out)
+        signal.setitimer(signal.ITIMER_REAL, float(timeout_s))
+        try:
+            return cloud.open_granule(source, opener=opener)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            signal.signal(signal.SIGALRM, previous)
+    return cloud.open_granule(source, opener=opener)
+
+
 def find_matchup(
     profile: dict[str, Any],
     candidates: list[dict[str, Any]],
@@ -339,7 +378,21 @@ def find_matchup(
         dtime_hours = time_offset_hours(p_time, g["time"])
         if dtime_hours > config.dtime_max_hours:
             continue
-        ds = cloud.open_granule(g["source"], opener=opener)
+        try:
+            ds = _open_with_timeout(
+                g["source"], opener=opener, timeout_s=config.open_timeout_s
+            )
+        except TimeoutError:
+            # A dropped HTTPS connection can leave the read waiting forever (no
+            # timeout in fsspec/aiohttp): observed as a worker with unestablished
+            # sockets and every thread in futex_wait. Skip this granule and try
+            # the profile's other candidates rather than losing the profile.
+            _log.warning(
+                "granule read timed out after %.0fs: %s",
+                config.open_timeout_s,
+                g["granule_id"],
+            )
+            continue
         pixels = _extract.extract_matchup_spectra(
             ds, lat, lon, n=config.n_spectra, mask_flags=config.mask_flags
         )
@@ -639,16 +692,28 @@ def _build_matchups_parallel(
         config.stall_timeout_s,
     )
 
-    def _progress(done: int) -> None:
-        if done % PROGRESS_EVERY == 0:
+    # Count only what this pool actually processes. Summing the result lists
+    # would also count the profiles excluded before the pool ran (already
+    # matched, or no candidate granules), which pushed the log to nonsense like
+    # "900/589".
+    done_count = 0
+
+    def _progress() -> None:
+        if done_count % PROGRESS_EVERY == 0:
             _log.info(
-                "match progress: %d/%d (%d written, %d skipped, %d unmatched)",
-                done,
+                "match progress: %d/%d processed (%d written, %d unmatched; "
+                "%d pre-skipped)",
+                done_count,
                 total,
                 len(written),
+                done_count - len(written),
                 len(skipped),
-                len(unmatched),
             )
+
+    def _bump() -> None:
+        nonlocal done_count
+        done_count += 1
+        _progress()
 
     def _drain(fut):
         profile = fut_prof.pop(fut)
@@ -658,11 +723,11 @@ def _build_matchups_parallel(
         except Exception:  # noqa: BLE001 — one bad profile must not abort the batch
             _log.exception("match failed for %s", pid)
             unmatched.append(pid)
-            _progress(len(written) + len(skipped) + len(unmatched))
+            _bump()
             return
         if result is None:
             unmatched.append(pid)
-            _progress(len(written) + len(skipped) + len(unmatched))
+            _bump()
             return
         exists = store.query(
             "SELECT 1 FROM matchups WHERE matchup_id = ?", (result.matchup_id,)
@@ -672,7 +737,7 @@ def _build_matchups_parallel(
         else:
             write_matchup(store, result, created=created)
             written.append(result.matchup_id)
-        _progress(len(written) + len(skipped) + len(unmatched))
+        _bump()
 
     for start in range(0, total, chunk_size):
         chunk = inputs[start : start + chunk_size]

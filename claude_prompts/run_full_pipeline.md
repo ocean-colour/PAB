@@ -760,6 +760,69 @@ Image `:1.0.3` carries all of it. **The 1k pilot has still never completed
 end-to-end**, so no extrapolation to 54,506 is trustworthy yet — that is the gate
 before Task 14.
 
+#### 1000-profile run, attempt 4 (2026-07-30) — `match` COMPLETED (27.8 %); `fit` wedged; PVC then unmountable
+
+Ran on `:1.0.2` + the fixed `pab` staged on the PVC (`PYTHONPATH=/data/src`), with
+per-stage workers (match/figure 16, fit 50) and `--ingest-jobs 32`.
+
+| stage | wall | outcome |
+| --- | --- | --- |
+| ingest | 4.1 min | resume; 986 profiles, 14 `DataNotFound`, no other failures |
+| discover | **84 s** | resume; 102 re-searches, 863 skipped, **0 new granules, 0 failed** |
+| match | **2 h 54.6 m** | **274 matchups**, 2,730 pixels, 18 profiles stalled over **10 stall events** |
+| fit | — | **wedged 8.6 h, 0 fits**, killed manually |
+
+**Gates.**
+
+| gate | result | |
+| --- | --- | --- |
+| discover failures | **0** | PASS |
+| granules/profile | 2,734 / 986 = **2.8** | PASS (the "≥4,000 total" gate was mis-derived; 2.8 matches the CMR truth) |
+| **match rate** | **274 / 986 = 27.8 %** | **PASS** (pilot: 25 %) |
+| resume cost | 93 profiles skipped with **zero** granule reads | PASS |
+| memory | 16–21 GB of 100Gi at 16 workers | PASS |
+| fit / figure / report at N | **never reached** | **not measured** |
+
+**All three `match` fixes verified in production:** the pre-filter excluded the 93
+already-matched profiles before any read (`match: 770 profiles`, not 986); memory
+stayed far under the cap; and the stall guard fired **10 times and recovered every
+time** — the stage completed instead of hanging, which it had never done before.
+
+**But the guard exposed the real problem.** 10 stalls in 863 profiles ≈ **1 wedged
+granule read per 86 profiles**, each costing the full 600 s: of match's 175 min,
+**~100 were pure stall-waiting** and only ~75 were work (863 profiles ÷ 75 min =
+**11.5 profiles/min** at 16 workers).
+
+**`fit` had the same exposure, unprotected.** It opens granules **in the parent**
+(by design — workers only run MCMC), so one wedged read stops the whole stage:
+8.6 h at 0 % CPU, 0 fits. Only `match` had been protected.
+
+**Provisional extrapolation to 54,506 profiles** — explicitly partial, since the
+pilot never finished:
+
+| | measured basis | ×54.5 |
+| --- | --- | --- |
+| match, real work | 11.5 profiles/min @16 | **~79 h (3.3 days)** |
+| match, stall tax @600 s | 1 per 86 profiles | ~105 h — **untenable** |
+| match, stall tax @120 s | (new default) | ~21 h |
+| match, stall tax with per-granule timeout | (new) | should mostly vanish |
+| ingest @32 procs | **not measured** (attempt 4 was a resume) | ~64 h @16 known |
+| fit / figure / report | **not measured at N** | — |
+
+**Fixes written and tested (173 pass) but NOT yet deployed** — they ship via
+`/data/src`, which needs the PVC:
+`_open_with_timeout` (SIGALRM, so it interrupts a thread parked in a C-level lock
+— the state wedged workers were actually in) on **all three** of `fit`'s open
+sites and in `match`'s candidate loop, where a timed-out granule is skipped so the
+profile can still match on its others; and `stall_timeout_s` 600 s → **120 s**.
+
+**Then the PVC became unmountable.** After force-deleting the wedged `fit` pod,
+every subsequent pod failed with `Aborted: an operation with the given Volume ID
+… already exists` (first `DeadlineExceeded`) — **~75 min across four different
+nodes**, so held at the Ceph/CSI provisioner, not a kubelet. We lack rights to
+`rook-ceph` to clear it; escalated to NRP. The PVC is still `Bound` — the data
+(986 profiles, 2,734 granules, 274 matchups) is intact, just unreachable.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -1316,3 +1379,88 @@ all of it. **The 1k pilot has still not completed end-to-end, so there is no
 trustworthy ×54.5 extrapolation yet** — that remains the gate before Task 14.
 Code changed: `pab/matchup/engine.py`, `pab/tests/test_matchup.py`,
 `nautilus/{run1k_job.yaml,build_image.sh,validate_job.yaml,reset_matchups_job.yaml}`.
+
+### 2026-07-30 (Task 13 cont. — registry wedge and a Ceph CSI lock; attempt 4 launched)
+
+Two infrastructure problems, neither in PAB, both worth writing down because they
+cost ~2 h and will recur on the full run.
+
+**1. The NRP registry would not accept `:1.0.3`.** `docker push` uploaded every
+layer ("Layer already exists" / "Pushed") and then hung on the **manifest write** —
+four times, 10+ min each, including the kill-and-retry cycle that had rescued
+`:1.0.2` earlier that day. `:1.0.2` and `:latest` are present; `:1.0.3` is not.
+Workaround, since the fixes were needed to run at all: staged the fixed **`pab`
+package on the PVC** at `/data/src` (helper pod + `kubectl cp`) and set
+`PYTHONPATH=/data/src` in the Job on top of the `:1.0.2` image. Verified in-pod
+before relaunching — `pab.__file__` resolves to `/data/src/...`, `stall_timeout_s`
+and `_kill_pool` present, `search_bbox` clamping, and the `pab` **console script**
+picking it up. `pab` is pure Python so shadowing is safe; the manifest carries a
+comment to revert both lines once a push succeeds.
+
+**2. A stuck Ceph CSI operation blocked the PVC mount for 40 min.**
+`MountVolume.MountDevice failed … an operation with the given Volume ID already
+exists` (×27). Cause: the pod from the **deadlocked** attempt was still
+`Terminating` on another node, holding a pending volume operation. Force-deleting
+it (`--force --grace-period=0`) released the lock and the new pod started
+immediately. **This also explains attempt 2's replacement pod sitting in
+`ContainerCreating` for 90 min** — same lock, not a slow image pull as I first
+assumed. Operational rule for the full run: **after killing a wedged job,
+force-delete its pods before relaunching**; hours-long `Terminating` is the tell.
+
+Self-inflicted footgun also worth noting: my push-watchdog ran
+`pkill -f "docker push"`, which matched the watchdog's *own* command line and
+killed it (exit 144). Anchor such patterns (`^docker push`) or target by PID.
+
+Attempt 4 launched 07:59:43 with all four fixes (bbox clamp, per-stage workers,
+resume pre-filter, stall guard) plus match/ingest/discover/figure progress
+logging. `ingest`/`discover` skip from the DB; `match` resumes past the 93
+existing matchups without re-reading their granules.
+
+### 2026-07-31 (Task 13 — `match` completed at 27.8 %; `fit` wedge fixed; Ceph outage; attempt 5)
+
+**Attempt 4 got `match` across the line.** 274 matchups / 986 profiles = **27.8 %**
+(pilot said 25 %), 2,730 pixels, in 2 h 55 m. All three match fixes did their job:
+the resume pre-filter skipped the 93 done profiles with **zero** granule reads
+(the stage reported `match: 770 profiles`, not 986), memory held at 16–21 GB of
+100Gi, and the stall guard **fired 10 times and recovered every time** — the first
+time this stage has ever finished. Numbers and gates in the attempt-4 report above.
+
+**What the guard exposed:** ~**1 wedged granule read per 86 profiles**, each
+costing the full 600 s, so ~100 of match's 175 min was pure waiting (real rate:
+11.5 profiles/min at 16 workers). And `fit` — which opens granules **in the
+parent**, so a single bad read stops everything — had no protection at all and
+sat wedged for **8.6 h with 0 fits**. I had hardened `match` and not looked at its
+sibling; the same omission as `discover` vs `ingest` earlier in this task. The
+lesson is now explicit: **when a failure mode is found in one stage, fix it in
+every stage that does the same thing** — that is twice this exact oversight has
+cost a run.
+
+**Fix:** `_open_with_timeout` — SIGALRM-based, because it interrupts a thread
+parked in a C-level lock, which is where wedged workers actually were (sockets no
+longer established, every thread in `futex_wait`, 0 % CPU). Applied to all three
+of `fit`'s open sites and to `match`'s candidate loop, where a timed-out granule
+is *skipped* so the profile can still match on its remaining candidates.
+`stall_timeout_s` cut 600 s → 120 s: the chunk guard only fires when nothing at
+all completes, so 2 min is ample, and at the observed wedge rate 600 s would have
+added ~105 h of pure waiting to the full run.
+
+**Then Ceph blocked everything for ~12 h.** Force-deleting the wedged `fit` pod
+left a stuck CSI operation: `Aborted: an operation with the given Volume ID …
+already exists` on **four different nodes** over 75 min, so held at the
+provisioner, not a kubelet. No rights to `rook-ceph` to clear it; escalated to
+NRP via the user. Cleared overnight. **`PRAGMA integrity_check` on the DB returned
+`ok`** afterwards — worth checking, since the file had been open in a
+force-killed process — and all counts survived (986 / 2,734 / 274).
+
+**Attempt 5 launched 03:59:31** with the fixes finally *deployed* (they had only
+existed in the working tree; verified in-pod: `stall_timeout_s 120`,
+`open_timeout_s 120`, `fit OPEN_TIMEOUT_S 120`, 4 bounded open sites). It resumes:
+ingest/discover skip, `match` retries only the ~18 stalled profiles, then `fit`
+runs bounded. The number to watch is the **granule-read timeout rate** — that,
+not CPU or memory, decides whether the 54,506-profile run is feasible.
+
+Operational rules earned here, for Task 14: (a) after killing a wedged job,
+force-delete its pods — but expect a stuck CSI mount as the price, so prefer
+fixing the hang over killing; (b) the NRP registry hangs on manifest writes
+(`:1.0.3` never landed after five attempts) — the PVC + `PYTHONPATH=/data/src`
+route is the workaround, and it works.
