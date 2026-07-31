@@ -163,14 +163,25 @@ Read these before running — plus the **hard-won operational lessons** below.
    stage ×54.5 and re-check the `--ingest-jobs`/`--jobs` choices before the full
    send. Log the measured rates + the extrapolation.
 
-14. **Full-run ingest + discover (54,506 profiles, on Nautilus).** Same pod shape,
+(ocean14) profx> claude --continue
+backgrounded · 238fda7f
+  claude agents             list sessions
+  claude attach 238fda7f    open in this terminal
+  claude logs 238fda7f      show recent output
+  claude stop 238fda7f      stop this session
+
+claude --resume 51d317af-e9c7-46d6-8f0e-a549a03cd419
+
+14. **s3** Please push the outputs from the 1k pilot onto my s3 bucket named `s3://pab`.  If you need my help, tell me.  Log your work.
+
+15. **Full-run ingest + discover (54,506 profiles, on Nautilus).** Same pod shape,
    `--profiles-csv` = the full selection (`$PAB_DATA_DIR/full_profiles.csv`, copied
    into a ConfigMap or the PVC — 2.5 MB exceeds the 1 MiB ConfigMap limit, so stage
    it on the PVC). Run `--stage ingest` then `--stage discover`; both resume, both
    now contain per-profile failures. Expect ~1.7 % CMR and ~2–3 % argopy transient
    failures. Log counts (`profiles`, `granules`), failure rates, and wall-clock.
 
-15. **Full-run match + fit.** `--stage match` (lazy S3 reads — **no** `--download`;
+16. **Full-run match + fit.** `--stage match` (lazy S3 reads — **no** `--download`;
    the footprint pre-filter keeps this at ~0.3–0.6 M granule opens rather than
    15.9 M) then `--stage fit` with `--jobs 50`. Spot-check convergence
    (`diagnose-mcmc`). Watch the PVC: chains at ~13 MB × ~13.6 k ≈ 180 GB against
@@ -178,7 +189,7 @@ Read these before running — plus the **hard-won operational lessons** below.
    implement the deferred upload-to-`s3://pab`-and-evict (R4) first. Log matchups
    written, fits written/failed, wall-clock, peak PVC use.
 
-16. **Figure + report + publish.** `--stage figure` (parallel) then `--stage
+17. **Figure + report + publish.** `--stage figure` (parallel) then `--stage
    report`; `pab --emit-site report_site`; preview with `sphinx-build`, then the
    **user** commits `report_site/` and pushes so RTD rebuilds. Publish the report +
    summary tables; bulky artifacts go to **`s3://pab`** and are backed up to
@@ -186,7 +197,7 @@ Read these before running — plus the **hard-won operational lessons** below.
    coverage counts, the scatters/map, and that the galleries N-guard at scale. Log
    the published counts + the RTD build.
 
-17. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
+18. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
    quality, scene), confirm every record carries `pab_version = 1.0`, update
    `docs/design/PAB_implementation.md` + `HOWTO.md`, and write the full-run report
    (coverage, timings, failure rates, follow-ups). Log your work.
