@@ -27,6 +27,23 @@ from pab.fit.models import FitConfig, build_models, model_param_names
 
 _log = logging.getLogger("pab.fit")
 
+#: Per-granule read timeout (seconds) for this stage's opens. A read that never
+#: returned wedged `fit` for **8.6 h** on a real run — the open happens in the
+#: parent here, so one bad granule stops everything, and neither fsspec nor HDF5
+#: imposes a timeout of its own.
+OPEN_TIMEOUT_S: float = 120.0
+
+
+def _open_bounded(source, *, opener=None):
+    """:func:`pab.pace.cloud.open_granule` with a hard timeout.
+
+    Shares :func:`pab.matchup.engine._open_with_timeout` (SIGALRM-based, so it
+    interrupts a thread parked in a C-level lock).
+    """
+    from pab.matchup.engine import _open_with_timeout
+
+    return _open_with_timeout(source, opener=opener, timeout_s=OPEN_TIMEOUT_S)
+
 
 @contextlib.contextmanager
 def _quiet():
@@ -462,7 +479,6 @@ def fit_matchup(
     Raises:
         ValueError: if the matchup, pixel, or granule URL is missing.
     """
-    from pab.pace import cloud
     from pab.pace import extract as _extract
 
     config = config or FitConfig()
@@ -472,7 +488,7 @@ def fit_matchup(
     if inp is None:
         raise ValueError(f"matchup {matchup_id!r} has no pixel with rank {rank}")
 
-    ds = cloud.open_granule(inp["source"], opener=opener)
+    ds = _open_bounded(inp["source"], opener=opener)
     wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
     result = _fit_only(wave, rrs, unc, inp["chl"], config)
     if not persist:
@@ -529,12 +545,11 @@ def build_fits(
         )
         return {"written": written, "skipped": skipped, "failed": failed}
 
-    from pab.pace import cloud
     from pab.pace import extract as _extract
 
     for inp in inputs:
         try:
-            ds = cloud.open_granule(inp["source"], opener=opener)
+            ds = _open_bounded(inp["source"], opener=opener)
             wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
             result = _fit_only(wave, rrs, unc, inp["chl"], config)
             _persist_result(store, inp, result, config, created)
@@ -556,7 +571,6 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
     from collections import defaultdict
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
-    from pab.pace import cloud
     from pab.pace import extract as _extract
 
     # 'spawn' avoids fork-in-a-multithreaded-parent deadlocks (Py3.13 warns on
@@ -584,7 +598,7 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
     ) as ex:
         for source, group in by_source.items():
             try:
-                ds = cloud.open_granule(source, opener=opener)
+                ds = _open_bounded(source, opener=opener)
             except Exception:  # noqa: BLE001 — a bad granule fails its whole group
                 _log.exception("open_granule failed for %s (%d fits)", source, len(group))
                 failed.extend(inp["fit_id"] for inp in group)

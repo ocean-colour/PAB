@@ -709,6 +709,131 @@ was silent for 67 min before — `logging.basicConfig` is now set in the CLI, so
 INFO lines actually appear), `granules` climbing past ~4,000, and
 `discover done: … 0 failed`.
 
+#### 1000-profile run, attempts 2 & 3 (2026-07-30) — discover FIXED; `match` failed twice more
+
+Image `:1.0.2` (built + pushed from the working tree; the first push wedged for
+30 min with every layer already uploaded — killed and retried, which completed in
+seconds). Reset job cleared the 14 stale matchups and kept the 972 profiles +
+130 granules.
+
+**The two fixes from attempt 1 are proven at 1k scale:**
+
+| stage | result | rate |
+| --- | --- | --- |
+| ingest | 972 → **986 profiles** — exactly the 14 `IndexError` profiles recovered | 4.6 min (32 procs) |
+| discover | **2,671 granules from 910 searches, 55 skipped, 0 failed** | 26.6 min, 1.75 s/search |
+
+`discover` previously died 82 s in; it now completes cleanly over a global
+selection. Final granule count **2,734 ≈ 2.8/profile**, which matches the CMR
+truth (5.67 refs/profile ÷ 2.45× sharing ≈ 2.3 unique) — so the "≥ 4,000" gate I
+wrote was simply mis-derived, not a miss. The skip rate settled at **5.7 %**, not
+the ~50 % an early progress line suggested.
+
+**Attempt 2 — OOMKilled (exit 137) 5 min into `match` at `--jobs 50`.** Measured
+in attempt 3: 16 workers hold **41 GB** (2.6 GB each — an open PACE granule means
+full lat/lon grids plus s3fs read-ahead). 50 × 2.6 ≈ 130 GB against a 100Gi
+limit, so the kill was arithmetic, not bad luck. Fix: per-stage worker counts in
+the Job — **match/figure 16, fit 50** (MCMC workers are ~0.5 GB).
+
+**Attempt 3 — `match` DEADLOCKED.** After ~11 min of healthy work (22 MB/s
+inbound, 93 matchups) it went to **0 KB/s, zero established sockets, all 16
+workers in `futex_wait` at 0 % CPU, 52 GB held**, and stayed there 40 min until
+killed. Zero sockets rules out a slow network read: the S3 connections had gone
+and the workers were blocked on an in-process lock (HDF5's global lock is the
+likely holder). Nothing in fsspec/HDF5 timed out.
+
+**Two code fixes came out of it:**
+
+1. **Resume re-did completed work.** `find_matchup` opened every candidate granule
+   *before* the code checked whether the matchup already existed, so attempt 3
+   spent ~20 min re-deriving attempt 2's 92 matchups — which is also why the count
+   sat at 93 while data streamed in. Profiles with an existing matchup are now
+   skipped **before** any granule is opened (test asserts *zero* opener calls on
+   resume). This also closes the duplicate-matchup hazard the reset job existed
+   for.
+2. **`match` can no longer hang forever.** Work goes out in **chunks with a fresh
+   pool each**; a chunk producing no result within `MatchupConfig.stall_timeout_s`
+   (default 600 s) has its workers **killed** — `shutdown(cancel_futures=True)`
+   cannot help, since a worker stuck in a C-level lock keeps its interpreter
+   alive — its profiles recorded under a new `"stalled"` key, and the run
+   continues. Stalled profiles keep no matchup, so a resume retries them. Test
+   wedges a real spawned worker and asserts the stage still returns.
+
+Plus `match progress:` logging (its absence made both the OOM and the hang look
+like silence) and `logging.basicConfig` in the CLI.
+
+**Diagnostic worth keeping:** `match` ran at **265m CPU of 50 requested**, workers
+parked in `futex_wait`, 22 MB/s in. It is **bandwidth- and memory-bound, not
+CPU-bound** — the full run should request far fewer cores for match and spend the
+budget on memory headroom.
+
+Image `:1.0.3` carries all of it. **The 1k pilot has still never completed
+end-to-end**, so no extrapolation to 54,506 is trustworthy yet — that is the gate
+before Task 14.
+
+#### 1000-profile run, attempt 4 (2026-07-30) — `match` COMPLETED (27.8 %); `fit` wedged; PVC then unmountable
+
+Ran on `:1.0.2` + the fixed `pab` staged on the PVC (`PYTHONPATH=/data/src`), with
+per-stage workers (match/figure 16, fit 50) and `--ingest-jobs 32`.
+
+| stage | wall | outcome |
+| --- | --- | --- |
+| ingest | 4.1 min | resume; 986 profiles, 14 `DataNotFound`, no other failures |
+| discover | **84 s** | resume; 102 re-searches, 863 skipped, **0 new granules, 0 failed** |
+| match | **2 h 54.6 m** | **274 matchups**, 2,730 pixels, 18 profiles stalled over **10 stall events** |
+| fit | — | **wedged 8.6 h, 0 fits**, killed manually |
+
+**Gates.**
+
+| gate | result | |
+| --- | --- | --- |
+| discover failures | **0** | PASS |
+| granules/profile | 2,734 / 986 = **2.8** | PASS (the "≥4,000 total" gate was mis-derived; 2.8 matches the CMR truth) |
+| **match rate** | **274 / 986 = 27.8 %** | **PASS** (pilot: 25 %) |
+| resume cost | 93 profiles skipped with **zero** granule reads | PASS |
+| memory | 16–21 GB of 100Gi at 16 workers | PASS |
+| fit / figure / report at N | **never reached** | **not measured** |
+
+**All three `match` fixes verified in production:** the pre-filter excluded the 93
+already-matched profiles before any read (`match: 770 profiles`, not 986); memory
+stayed far under the cap; and the stall guard fired **10 times and recovered every
+time** — the stage completed instead of hanging, which it had never done before.
+
+**But the guard exposed the real problem.** 10 stalls in 863 profiles ≈ **1 wedged
+granule read per 86 profiles**, each costing the full 600 s: of match's 175 min,
+**~100 were pure stall-waiting** and only ~75 were work (863 profiles ÷ 75 min =
+**11.5 profiles/min** at 16 workers).
+
+**`fit` had the same exposure, unprotected.** It opens granules **in the parent**
+(by design — workers only run MCMC), so one wedged read stops the whole stage:
+8.6 h at 0 % CPU, 0 fits. Only `match` had been protected.
+
+**Provisional extrapolation to 54,506 profiles** — explicitly partial, since the
+pilot never finished:
+
+| | measured basis | ×54.5 |
+| --- | --- | --- |
+| match, real work | 11.5 profiles/min @16 | **~79 h (3.3 days)** |
+| match, stall tax @600 s | 1 per 86 profiles | ~105 h — **untenable** |
+| match, stall tax @120 s | (new default) | ~21 h |
+| match, stall tax with per-granule timeout | (new) | should mostly vanish |
+| ingest @32 procs | **not measured** (attempt 4 was a resume) | ~64 h @16 known |
+| fit / figure / report | **not measured at N** | — |
+
+**Fixes written and tested (173 pass) but NOT yet deployed** — they ship via
+`/data/src`, which needs the PVC:
+`_open_with_timeout` (SIGALRM, so it interrupts a thread parked in a C-level lock
+— the state wedged workers were actually in) on **all three** of `fit`'s open
+sites and in `match`'s candidate loop, where a timed-out granule is skipped so the
+profile can still match on its others; and `stall_timeout_s` 600 s → **120 s**.
+
+**Then the PVC became unmountable.** After force-deleting the wedged `fit` pod,
+every subsequent pod failed with `Aborted: an operation with the given Volume ID
+… already exists` (first `DeadlineExceeded`) — **~75 min across four different
+nodes**, so held at the Ceph/CSI provisioner, not a kubelet. We lack rights to
+`rook-ceph` to clear it; escalated to NRP. The PVC is still `Bound` — the data
+(986 profiles, 2,734 granules, 274 matchups) is intact, just unreachable.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -1211,3 +1336,142 @@ Tests: 3 new (`figure` parallel records paths + contains a failing render + is
 resumable; serial fallback for `:memory:`; `_store_path`) → **171 passed** in
 `os_313`. Code changed: `pab/pipeline.py`, `pab/tests/test_pipeline.py`,
 `HOWTO.md`, `nautilus/run1k_job.yaml`, `claude_prompts/run_full_pipeline.md`.
+
+### 2026-07-30 (Task 13 — 1k re-run: discover fixed and proven; `match` OOMed then deadlocked)
+
+Executed Task 13. Built and pushed `:1.0.2` myself (the registry lacked it; the
+first `docker push` wedged 30 min with all layers already uploaded — killed and
+retried, done in seconds; worth remembering, the NRP registry does this).
+Applied `reset_matchups_job.yaml` (14 stale matchups gone, 972 profiles + 130
+granules kept), then the run Job.
+
+**The good half — attempt 1's fixes hold at 1k.** `ingest` recovered exactly the
+14 profiles the `mixed_layer_mean` alignment fix targeted (972 → 986), and
+`discover` — dead 82 s in on the previous attempt — completed with **2,671
+granules from 910 searches, 0 failed** in 26.6 min. Those two stages are now
+demonstrated at scale, and the granule total (2,734 ≈ 2.8/profile) matches the
+independent CMR discover-count, so the "≥4,000" gate I wrote was mis-derived
+rather than missed. I also over-read an early progress line as a ~50 % skip rate;
+it settled at 5.7 %.
+
+**The bad half — `match` failed twice more, differently each time.** Attempt 2 was
+**OOMKilled** five minutes in at `--jobs 50`; attempt 3 **deadlocked**. The
+deadlock diagnosis is the part worth recording: after 11 healthy minutes (22 MB/s,
+93 matchups) the pod went to **0 KB/s, zero established TCP sockets, all 16
+workers in `futex_wait` at 0 % CPU, 52 GB resident** and sat there 40 minutes.
+Zero sockets is what rules out "slow read" — the connections were gone and the
+workers were blocked on an in-process lock (HDF5's global lock being the likely
+holder), with nothing in fsspec or HDF5 timing out. I only found it by checking
+CPU and `/proc/net/dev` inside the pod; the DB counts alone looked like slow
+progress.
+
+**Three fixes, each derived from evidence rather than guessed:**
+(a) per-stage workers — match/figure **16**, fit **50** — because 16 workers
+measurably hold 41 GB, so 50 × 2.6 GB overruns 100Gi by arithmetic;
+(b) resume now skips matched profiles **before** opening granules (attempt 3 burned
+~20 min re-deriving attempt 2's matchups, which is also why its count looked
+frozen at 93 — and this closes the duplicate-matchup hazard);
+(c) `match` is stall-proofed — chunked pools, and a chunk with no result inside
+`stall_timeout_s` gets its workers **killed** (cancel_futures cannot free a
+C-level lock), profiles recorded as `stalled`, run continues.
+
+**Process lessons.** (1) I twice reported progress from a number that didn't mean
+what I assumed — `matchups` counted attempt 2's rows, and `MAX(profile_id)` was
+its high-water mark, not attempt 3's cursor; the `created` timestamps settled it.
+Check *when* a row was written before treating a count as progress. (2) Every one
+of these three failures was invisible at the log level and obvious at the
+CPU/socket level. (3) A batch stage needs a timeout for the same reason it needs a
+try/except — "it will finish eventually" is not a property I can assume of a
+network read.
+
+Tests: 3 new (resume opens zero granules, wedged worker cannot stall the stage,
+plus the earlier figure ones) → **173 passed** in `os_313`. `:1.0.3` building with
+all of it. **The 1k pilot has still not completed end-to-end, so there is no
+trustworthy ×54.5 extrapolation yet** — that remains the gate before Task 14.
+Code changed: `pab/matchup/engine.py`, `pab/tests/test_matchup.py`,
+`nautilus/{run1k_job.yaml,build_image.sh,validate_job.yaml,reset_matchups_job.yaml}`.
+
+### 2026-07-30 (Task 13 cont. — registry wedge and a Ceph CSI lock; attempt 4 launched)
+
+Two infrastructure problems, neither in PAB, both worth writing down because they
+cost ~2 h and will recur on the full run.
+
+**1. The NRP registry would not accept `:1.0.3`.** `docker push` uploaded every
+layer ("Layer already exists" / "Pushed") and then hung on the **manifest write** —
+four times, 10+ min each, including the kill-and-retry cycle that had rescued
+`:1.0.2` earlier that day. `:1.0.2` and `:latest` are present; `:1.0.3` is not.
+Workaround, since the fixes were needed to run at all: staged the fixed **`pab`
+package on the PVC** at `/data/src` (helper pod + `kubectl cp`) and set
+`PYTHONPATH=/data/src` in the Job on top of the `:1.0.2` image. Verified in-pod
+before relaunching — `pab.__file__` resolves to `/data/src/...`, `stall_timeout_s`
+and `_kill_pool` present, `search_bbox` clamping, and the `pab` **console script**
+picking it up. `pab` is pure Python so shadowing is safe; the manifest carries a
+comment to revert both lines once a push succeeds.
+
+**2. A stuck Ceph CSI operation blocked the PVC mount for 40 min.**
+`MountVolume.MountDevice failed … an operation with the given Volume ID already
+exists` (×27). Cause: the pod from the **deadlocked** attempt was still
+`Terminating` on another node, holding a pending volume operation. Force-deleting
+it (`--force --grace-period=0`) released the lock and the new pod started
+immediately. **This also explains attempt 2's replacement pod sitting in
+`ContainerCreating` for 90 min** — same lock, not a slow image pull as I first
+assumed. Operational rule for the full run: **after killing a wedged job,
+force-delete its pods before relaunching**; hours-long `Terminating` is the tell.
+
+Self-inflicted footgun also worth noting: my push-watchdog ran
+`pkill -f "docker push"`, which matched the watchdog's *own* command line and
+killed it (exit 144). Anchor such patterns (`^docker push`) or target by PID.
+
+Attempt 4 launched 07:59:43 with all four fixes (bbox clamp, per-stage workers,
+resume pre-filter, stall guard) plus match/ingest/discover/figure progress
+logging. `ingest`/`discover` skip from the DB; `match` resumes past the 93
+existing matchups without re-reading their granules.
+
+### 2026-07-31 (Task 13 — `match` completed at 27.8 %; `fit` wedge fixed; Ceph outage; attempt 5)
+
+**Attempt 4 got `match` across the line.** 274 matchups / 986 profiles = **27.8 %**
+(pilot said 25 %), 2,730 pixels, in 2 h 55 m. All three match fixes did their job:
+the resume pre-filter skipped the 93 done profiles with **zero** granule reads
+(the stage reported `match: 770 profiles`, not 986), memory held at 16–21 GB of
+100Gi, and the stall guard **fired 10 times and recovered every time** — the first
+time this stage has ever finished. Numbers and gates in the attempt-4 report above.
+
+**What the guard exposed:** ~**1 wedged granule read per 86 profiles**, each
+costing the full 600 s, so ~100 of match's 175 min was pure waiting (real rate:
+11.5 profiles/min at 16 workers). And `fit` — which opens granules **in the
+parent**, so a single bad read stops everything — had no protection at all and
+sat wedged for **8.6 h with 0 fits**. I had hardened `match` and not looked at its
+sibling; the same omission as `discover` vs `ingest` earlier in this task. The
+lesson is now explicit: **when a failure mode is found in one stage, fix it in
+every stage that does the same thing** — that is twice this exact oversight has
+cost a run.
+
+**Fix:** `_open_with_timeout` — SIGALRM-based, because it interrupts a thread
+parked in a C-level lock, which is where wedged workers actually were (sockets no
+longer established, every thread in `futex_wait`, 0 % CPU). Applied to all three
+of `fit`'s open sites and to `match`'s candidate loop, where a timed-out granule
+is *skipped* so the profile can still match on its remaining candidates.
+`stall_timeout_s` cut 600 s → 120 s: the chunk guard only fires when nothing at
+all completes, so 2 min is ample, and at the observed wedge rate 600 s would have
+added ~105 h of pure waiting to the full run.
+
+**Then Ceph blocked everything for ~12 h.** Force-deleting the wedged `fit` pod
+left a stuck CSI operation: `Aborted: an operation with the given Volume ID …
+already exists` on **four different nodes** over 75 min, so held at the
+provisioner, not a kubelet. No rights to `rook-ceph` to clear it; escalated to
+NRP via the user. Cleared overnight. **`PRAGMA integrity_check` on the DB returned
+`ok`** afterwards — worth checking, since the file had been open in a
+force-killed process — and all counts survived (986 / 2,734 / 274).
+
+**Attempt 5 launched 03:59:31** with the fixes finally *deployed* (they had only
+existed in the working tree; verified in-pod: `stall_timeout_s 120`,
+`open_timeout_s 120`, `fit OPEN_TIMEOUT_S 120`, 4 bounded open sites). It resumes:
+ingest/discover skip, `match` retries only the ~18 stalled profiles, then `fit`
+runs bounded. The number to watch is the **granule-read timeout rate** — that,
+not CPU or memory, decides whether the 54,506-profile run is feasible.
+
+Operational rules earned here, for Task 14: (a) after killing a wedged job,
+force-delete its pods — but expect a stuck CSI mount as the price, so prefer
+fixing the hang over killing; (b) the NRP registry hangs on manifest writes
+(`:1.0.3` never landed after five attempts) — the PVC + `PYTHONPATH=/data/src`
+route is the workaround, and it works.

@@ -8,7 +8,13 @@ are what they share.
 
 from __future__ import annotations
 
-__all__ = ["picklable", "init_worker"]
+__all__ = ["picklable", "init_worker", "PROGRESS_EVERY"]
+
+#: How often a long stage emits a progress line (records). A stage that runs for
+#: tens of minutes in silence is indistinguishable from a hung one — `match` was
+#: exactly that when a 1000-profile run was OOM-killed five minutes into it with
+#: nothing logged.
+PROGRESS_EVERY: int = 50
 
 
 def picklable(obj) -> bool:
