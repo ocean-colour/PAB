@@ -54,7 +54,7 @@ leaving n = 264 for all figures.
 
 **File:** `bbp700_reldiff_histogram.png`
 
-![Relative difference histogram]({{artifact:39bac237-55a9-4101-9036-9c3cfc5ab4c6}})
+![Relative difference histogram](bbp700_reldiff_histogram.png)
 
 The histogram shows the full distribution of (PACE − Argo)/PACE across all 264 valid
 matchups, binned at width 0.1. The dashed vertical line marks zero (perfect agreement)
@@ -76,7 +76,7 @@ and the solid red line marks the overall median (+0.35).
 
 **File:** `bbp700_pace_vs_argo_scatter.png`
 
-![PACE vs Argo 1:1 scatter]({{artifact:0abc3590-ea4d-4621-9a5a-13b1a95184be}})
+![PACE vs Argo 1:1 scatter](bbp700_pace_vs_argo_scatter.png)
 
 Log-log scatter of PACE bbp700 (y-axis) against Argo bbp700 (x-axis) for all 264
 valid matchups. The dashed line is the 1:1 reference. Points are coloured by relative
@@ -101,7 +101,7 @@ difference using the RdBu_r colormap (red = PACE > Argo, blue = Argo > PACE).
 
 **File:** `bbp700_reldiff_vs_dtime.png`
 
-![Relative difference vs time separation]({{artifact:fc7d7f3a-76b9-4c75-b760-fc07f02049dc}})
+![Relative difference vs time separation](bbp700_reldiff_vs_dtime.png)
 
 Scatter of relative difference against the time separation (Δt, in hours) between
 the PACE overpass and the Argo float surfacing. Points are coloured by relative
@@ -126,7 +126,7 @@ number of matchups.
 
 **File:** `bbp700_reldiff_vs_dist.png`
 
-![Relative difference vs spatial separation]({{artifact:5b023629-068d-4b90-88d1-40cc2970c28d}})
+![Relative difference vs spatial separation](bbp700_reldiff_vs_dist.png)
 
 Scatter of relative difference against the distance in km between the PACE pixel
 centroid and the Argo float position. Points are coloured as in Fig. 3. The black
