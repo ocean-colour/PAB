@@ -18,15 +18,23 @@ from pathlib import Path
 
 
 def skipped_ids(log_path: Path) -> list[str]:
-    """``wmo_cycle`` ids from the discover summary's ``'skipped': [...]`` array.
+    """``wmo_cycle`` ids from the **discover** summary's ``'skipped': [...]`` array.
+
+    Scoped to lines carrying ``discover: {`` on purpose: ``ingest`` prints a
+    ``'skipped'`` array too (the already-summarized profiles), and a bare search
+    for ``'skipped'`` pulled in its 986 entries as well.
 
     Parsed with a regex rather than ``eval`` — the line is megabytes of
     machine-written text and there is no reason to execute it.
     """
-    text = log_path.read_text(errors="replace")
     ids: list[str] = []
-    for m in re.finditer(r"'skipped': \[(.*?)\]", text, re.S):
-        ids.extend(re.findall(r"'(\d+_\d+)'", m.group(1)))
+    with log_path.open(errors="replace") as fh:
+        for line in fh:
+            if "discover: {" not in line:
+                continue
+            m = re.search(r"'skipped': \[(.*?)\]", line, re.S)
+            if m:
+                ids.extend(re.findall(r"'(\d+_\d+)'", m.group(1)))
     return ids
 
 

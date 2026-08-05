@@ -204,10 +204,19 @@ Read these before running — plus the **hard-won operational lessons** below.
    profiles, and it would skip them again — more so now that the table holds 60,601
    granules rather than 2,734.
 
-   **Gates:** searches run ≈ 10,101 with 0 failures; granules climb from 60,601
-   toward the ~124k the count predicted; **re-check that the skip count is now ~0**
-   for a subsequent plain `discover`. Log the granule delta, wall-clock, and
-   failure rate.
+   **Gates:** searches run ≈ 10,101 with 0 failures; the granule delta; and
+   **candidate coverage** — for every positioned profile, how many granules pass
+   the time+footprint test (`nautilus/coverage_check.py`, DB-only, no CMR). Compare
+   the mean against the independent count's **5.67 candidate refs/profile**: that is
+   what says the pool is properly searched.
+
+   *(Two gates I originally wrote here were wrong and are corrected above: "granules
+   climb toward ~124k" — that figure came from unioning candidates over all 54,506
+   profiles, so it is not the target for a store holding 53,618 searched ones; and
+   "skip count ~0 on a subsequent plain `discover`" — a plain `discover` skips
+   profiles that **have** coverage, so after a complete search the skip count is
+   necessarily **large**, and it cannot distinguish "covered and searched" from
+   "covered but never searched" because nothing records that a search happened.)*
 
 17. **Full-run match + fit** (*after Task 16 — match is only as good as the
    candidate pool*)**.** `--stage match` (lazy S3 reads — **no** `--download`;
@@ -1606,3 +1615,54 @@ the *default* dev CSV can never silently narrow a production run — a bare
 `selection_keys()` itself; **180 passed**. HOWTO's `--profiles-csv` row now spells
 out which stages honour it (`ingest`, `discover`) and which always work from the
 store (`match`/`fit`/`figure`).
+
+### 2026-08-05 (Task 16 — re-searched the 10,101 skipped profiles; candidate pool verified)
+
+Ran the targeted re-search. **2 h 16 min, 10,101 searches, 0 skipped, 0 failed**;
+granules **60,601 → 67,435** (+6,834 unique from 35,250 refs).
+
+Setup: re-synced `/data/src` (the selection-aware `discover` existed only in the
+working tree), added `nautilus/rediscover_csv.py` to derive the subset CSV from the
+run log and `nautilus/rediscover_job.yaml` to run it. `--replace` was essential —
+`0 skipped` in the result is the proof it worked, since the coverage test would
+otherwise have skipped all 10,101 again, more surely than before.
+
+Caught a bug in my own extraction script before it mattered: the first version
+searched the log for any `'skipped': [...]` array and returned **10,224** ids,
+having also swallowed `ingest`'s 986-entry list (863 overlapping). Effect would have
+been benign, but the script would not have matched its docstring; scoped it to the
+`discover: {` line and it returns exactly 10,101.
+
+**The 80 % duplication is the expected signature, not a problem:** 35,250 refs →
+6,834 unique, versus ~2.2× duplication in Task 15. These profiles were skipped
+*precisely because* they sit in regions/windows already densely covered, so most of
+their candidates were already stored. The 6,834 new granules are the ones only
+their own search would ever surface.
+
+**Verification (`nautilus/coverage_check.py`, DB-only):**
+
+| | |
+| --- | --- |
+| granules indexed | 67,435 |
+| positioned profiles with a summary | 53,618 |
+| **profiles with ≥1 candidate** | **50,292 (93.8 %)** |
+| profiles with 0 candidates | 3,326 (6.2 %) — no PACE coverage within ±24 h, can never match |
+| **mean candidates/profile** | **6.35** vs the independent count's **5.67 refs/profile** |
+
+That mean is the real verdict: the pool now matches the independent measurement, so
+the candidate-starvation defect is repaired. Only 408 profiles have exactly one
+candidate; 13,794 have ten or more.
+
+**Two gates I had written for this task were wrong**, and I corrected them in the
+task text rather than quietly passing them. (a) "granules climb toward ~124k" — that
+figure came from unioning candidates across all 54,506 profiles and is not the
+target for a store of 53,618 searched ones. (b) "skip count ~0 on a subsequent plain
+`discover`" — backwards: a plain `discover` skips profiles that *have* coverage, so
+after a complete search the skip count is necessarily **large**, and it cannot
+distinguish "covered and searched" from "covered but never searched" since nothing
+records that a search happened. Running it would have re-issued thousands of CMR
+queries to learn nothing. The coverage check answers the actual question offline.
+
+**Task 17 projection:** up to 50,292 profiles for match → ~14,100 matchups at the
+pilot's 28 %; match ≈ 42 h, fit ≈ 52 h (~4 days); chains ~1.27 MB × 14.1k ≈ **18 GB**
+against the 500 Gi PVC, which retires the R4 chain-eviction question.
