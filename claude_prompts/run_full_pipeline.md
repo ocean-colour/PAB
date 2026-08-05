@@ -194,6 +194,8 @@ Read these before running — plus the **hard-won operational lessons** below.
    targeted re-run — **preferred**), or (b) fall back to `--stage discover
    --replace` over all 53,618 (~8 h instead of ~2 h, same end state).
 
+>A. Please do (a) now and modify this task if needed.  Log your work.
+
    Steps: extract the skipped `wmo_cycle` ids from `/data/full/run.log`
    (the `discover: {... 'skipped': [...]}` array), join them against
    `/data/full_profiles.csv` to build the subset CSV, stage it on the PVC, then run
