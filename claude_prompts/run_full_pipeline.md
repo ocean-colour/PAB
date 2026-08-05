@@ -188,19 +188,21 @@ Read these before running — plus the **hard-won operational lessons** below.
    Fix it **before** the ~40 h match stage, since match's selection is only as good
    as its candidate pool.
 
-   *Blocker to handle first:* `discover` iterates the **`profiles` table**, not
-   `--profiles-csv`, so a subset CSV does not currently limit it. Either (a) teach
-   `discover` to honour the CSV selection (small, and useful for any future
-   targeted re-run — **preferred**), or (b) fall back to `--stage discover
-   --replace` over all 53,618 (~8 h instead of ~2 h, same end state).
-
->A. Please do (a) now and modify this task if needed.  Log your work.
+   *Blocker — RESOLVED (option a, 2026-08-05).* `discover` used to iterate the
+   whole **`profiles` table**, ignoring `--profiles-csv`, so a subset CSV could not
+   limit it. It now honours an **explicitly given** selection
+   (`PipelineConfig.selection_keys()`): pass `--profiles-csv` and only those
+   profiles are searched. A bare `pab --stage discover` (no CSV, no inline
+   profiles) still sweeps the whole store — the distinction is deliberate, so the
+   default dev CSV can never silently narrow a production run. Tested both ways.
 
    Steps: extract the skipped `wmo_cycle` ids from `/data/full/run.log`
    (the `discover: {... 'skipped': [...]}` array), join them against
    `/data/full_profiles.csv` to build the subset CSV, stage it on the PVC, then run
-   `discover` over just those profiles with `--replace` (the coverage test must be
-   bypassed — that test is exactly what skipped them) at `--discover-jobs 8`.
+   `--stage discover --profiles-csv <subset> --replace --discover-jobs 8`.
+   **`--replace` is required**: the coverage test is exactly what skipped these
+   profiles, and it would skip them again — more so now that the table holds 60,601
+   granules rather than 2,734.
 
    **Gates:** searches run ≈ 10,101 with 0 failures; granules climb from 60,601
    toward the ~124k the count predicted; **re-check that the skip count is now ~0**
@@ -1556,3 +1558,51 @@ profiles / 2,734 granules / 278 matchups / 273 fits are reused. Caveat recorded
 for Task 16: those 278 keep their pilot-era granule choice, which after full
 discovery may not be the closest available — 0.5 % of profiles, fixable with
 `--replace` on match if strict uniformity matters.
+
+### 2026-08-05 (Task 15 verified complete; Task 16 added; `discover` now honours a subset selection)
+
+**Task 15 finished 2026-08-03 06:50:13** — confirmed from the durable
+`/data/full/run.log`, since the Job itself had been garbage-collected off the
+cluster by the time I looked (a good argument for the `tee` to the PVC).
+
+| stage | wall | outcome |
+| --- | --- | --- |
+| ingest | 49.4 h | 53,025 written, **475 failed (0.89 %)** → 54,031 / 54,506 profiles (99.1 %) |
+| discover | 8.05 h | 43,517 searches, **0 failed**, 130,455 upserts → **60,601 unique granules** |
+
+`PRAGMA integrity_check` = ok. Both failure rates beat expectations (argopy 0.89 %
+vs 2–3 % predicted; CMR **0** vs ~1.7 %) — the retry logic added after the
+attempt-1 abort is absorbing the transients.
+
+**Correction to a mid-run report:** I told the user ingest was running at
+1.71 s/profile and would land near 25 h. The true figure is **3.32 s/profile over
+49.4 h** — I had computed the rate against a stale start time. The sublinear
+scaling conclusion (16→32 workers buys only ~1.3×) stands; the duration I quoted
+was wrong by 2×.
+
+**The real finding: `discover` skipped 10,101 of 53,618 positioned profiles
+(18.8 %).** The coverage test only needs *some* stored granule covering the
+profile in space and time — and ±24 h windows around 986 scattered pilot profiles
+effectively span the whole calendar, so only the ~2 %-of-globe footprint test was
+deciding. Those profiles never got their own CMR search, so their candidate pool
+is whatever a neighbour incidentally found: they may match a granule that is not
+the closest available, and some that *would* match may not match at all. This also
+explains the granule shortfall (60,601 vs the 124,218 the independent count
+predicted) — about a fifth of the searches never ran. I had earlier estimated this
+exposure at 0.5 % from the pilot's 278 matchups; the true figure is 18.8 %, and I
+should have derived it from the skip count rather than the matchup count.
+
+Added **Task 16** to re-search those profiles *before* the ~40 h match stage,
+since match's selection is only as good as its candidate pool.
+
+**Code (the task's blocker, user chose option a):** `discover` iterated the whole
+`profiles` table and ignored `--profiles-csv`, so a subset CSV could not limit it —
+a targeted re-search would have meant re-doing all 53,618 (~8 h rather than ~2 h).
+It now restricts to an **explicitly given** selection via new
+`PipelineConfig.selection_keys()`. The deliberate subtlety: `None` (no CSV, no
+inline profiles) means "no selection given" and still sweeps the whole store, so
+the *default* dev CSV can never silently narrow a production run — a bare
+`pab --stage discover` behaves exactly as before. Tested both directions plus
+`selection_keys()` itself; **180 passed**. HOWTO's `--profiles-csv` row now spells
+out which stages honour it (`ingest`, `discover`) and which always work from the
+store (`match`/`fit`/`figure`).

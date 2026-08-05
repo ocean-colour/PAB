@@ -118,6 +118,17 @@ class PipelineConfig:
             return max(1, int(self.discover_jobs))
         return max(1, min(int(self.jobs), self.DISCOVER_JOBS_CAP))
 
+    def selection_keys(self) -> set[tuple[int, int]] | None:
+        """``{(wmo, cycle)}`` of an **explicitly requested** selection, else ``None``.
+
+        ``None`` means "no selection was given" — distinct from an empty one — so a
+        bare ``pab --stage discover`` keeps working over every profile in the store
+        rather than silently narrowing to the default dev CSV.
+        """
+        if self.profiles is None and self.profiles_csv is None:
+            return None
+        return {(int(r["wmo"]), int(r["cycle"])) for r in self.profile_rows()}
+
     def profile_rows(self) -> list[dict[str, Any]]:
         """The profile selection — inline ``profiles`` or the dev-set CSV rows."""
         if self.profiles is not None:
@@ -394,6 +405,11 @@ def _emit_profile_qa(
 def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
     """Discover + persist PACE granules around each profile (idempotent upsert).
 
+    Operates on the profiles in the store, narrowed to ``profiles``/
+    ``profiles_csv`` when one is given explicitly (see
+    :meth:`PipelineConfig.selection_keys`) — that is what makes a targeted
+    re-search of a subset possible without re-doing the whole selection.
+
     ``searcher(lat, lon, t0, t1, config)`` overrides the live earthaccess search
     (it returns a granule ``DataFrame``); otherwise ``pab.pace.discover`` is used.
     A profile that already has granules **over its own position** in its time
@@ -415,6 +431,19 @@ def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
         "SELECT wmo, cycle, latitude, longitude, time FROM profiles "
         "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
     )
+    # Restrict to the requested selection when one was given explicitly. Without
+    # this the stage always swept the whole store, so a targeted re-search (e.g.
+    # the 10,101 profiles the coverage test skipped in the full run) meant
+    # re-doing all 53,618.
+    selection = config.selection_keys()
+    if selection is not None:
+        profiles = [
+            p for p in profiles if (int(p["wmo"]), int(p["cycle"])) in selection
+        ]
+        _log.info(
+            "discover: selection restricts to %d of the store's profiles",
+            len(profiles),
+        )
     n, skipped, failed, searched = 0, [], [], 0
     dtime_hours = config.dtime_days * 24.0
     # Snapshot the granule table once: granules persisted during this pass are

@@ -88,7 +88,7 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
 | `--db DB` | SQLite store path (created if absent; parent dirs are made). Default: `DATA_DIR/pab.db`. |
 | `--stage STAGE` | Run only this stage. **Repeatable** — e.g. `--stage match --stage fit`. Default: all stages, in order. |
 | `--outdir OUTDIR` | Base output directory. Default: `DATA_DIR/pipeline`. |
-| `--profiles-csv PROFILES_CSV` | Profile-selection CSV. Default: `data/dev_profiles.csv`. |
+| `--profiles-csv PROFILES_CSV` | Profile-selection CSV. Default: `data/dev_profiles.csv`. `ingest` fetches these profiles; **`discover` also restricts to them when the flag is given explicitly**, which is what makes a targeted re-search of a subset possible. Omit it and `discover` sweeps every profile in the store (so the dev default can never silently narrow a production run). `match`/`fit`/`figure` always work from the store. |
 | `--replace` | Re-do completed work instead of skipping it. |
 | `--no-figures` | Skip the `figure` stage. |
 | `--jobs JOBS` | Parallel processes for the `match`, `fit` and `figure` stages (profile-/matchup-level; default `1` = serial). In `fit`, granules are opened and pixels extracted in the parent and only the MCMC runs in workers; in `match`, the granule open + pixel extraction themselves run in workers. In `figure`, workers render (each opening its own read-only connection to the same DB file) and the parent records the paths. Either way **all DB writes stay in the parent** (no SQLite contention). An injected `opener` must be picklable (module-level) to be used in parallel; otherwise `match` falls back to serial. |

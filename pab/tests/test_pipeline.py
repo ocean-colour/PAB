@@ -830,3 +830,71 @@ def test_cli_parser_discover_jobs():
     args = pipeline.build_parser().parse_args(["--discover-jobs", "8"])
     assert args.discover_jobs == 8
     assert pipeline.build_parser().parse_args([]).discover_jobs is None
+
+
+# -- discover honours an explicit selection ---------------------------------
+def test_discover_restricts_to_an_explicit_selection():
+    """A subset CSV/list must limit discover to those profiles.
+
+    Without this the stage always swept the whole store, so re-searching the
+    10,101 profiles the coverage test skipped in the full run would have meant
+    re-doing all 53,618 (~8 h instead of ~2 h).
+    """
+    summary = {"mld": 30.0, "mld_method": "x", "n_points": 5}
+    everyone = [
+        {"wmo": 5920000 + i, "cycle": 1, "latitude": -60.0 + 24.0 * i,
+         "longitude": -160.0 + 55.0 * i, "time": f"2024-0{1 + i}-12T12:00:00",
+         "summary": summary}
+        for i in range(5)
+    ]
+    subset = [everyone[1], everyone[3]]
+
+    with Store.open(":memory:") as store:
+        pipeline.run(store, pipeline.PipelineConfig(profiles=everyone), stages=("ingest",))
+        assert store.count("profiles") == 5
+
+        calls = []
+
+        def searcher(lat, lon, t0, t1, config):
+            calls.append(round(lat, 1))
+            return _searcher(lat, lon, t0, t1, config)
+
+        out = pipeline.discover(
+            store, pipeline.PipelineConfig(profiles=subset), searcher=searcher
+        )
+        assert sorted(calls) == sorted(round(p["latitude"], 1) for p in subset)
+        assert out["granules_upserted"] == 2
+
+
+def test_discover_without_a_selection_covers_the_whole_store():
+    """A bare `--stage discover` must not narrow to the default dev CSV."""
+    summary = {"mld": 30.0, "mld_method": "x", "n_points": 5}
+    everyone = [
+        {"wmo": 5930000 + i, "cycle": 1, "latitude": -40.0 + 30.0 * i,
+         "longitude": -150.0 + 70.0 * i, "time": f"2024-0{1 + i}-08T12:00:00",
+         "summary": summary}
+        for i in range(3)
+    ]
+    with Store.open(":memory:") as store:
+        pipeline.run(store, pipeline.PipelineConfig(profiles=everyone), stages=("ingest",))
+        calls = []
+
+        def searcher(lat, lon, t0, t1, config):
+            calls.append(round(lat, 1))
+            return _searcher(lat, lon, t0, t1, config)
+
+        cfg = pipeline.PipelineConfig()          # no profiles, no CSV
+        assert cfg.selection_keys() is None
+        out = pipeline.discover(store, cfg, searcher=searcher)
+        assert len(calls) == 3                    # every stored profile searched
+        assert out["granules_upserted"] == 3
+
+
+def test_selection_keys_reports_explicit_selection_only(tmp_path):
+    assert pipeline.PipelineConfig().selection_keys() is None
+    csv = tmp_path / "sel.csv"
+    csv.write_text("wmo,cycle,date,latitude,longitude\n7902226,5,2025-02-18T20:00:00Z,20.0,-50.0\n")
+    assert pipeline.PipelineConfig(profiles_csv=csv).selection_keys() == {(7902226, 5)}
+    assert pipeline.PipelineConfig(profiles=_profiles()).selection_keys() == {
+        (7902226, 5), (7902136, 8)
+    }
