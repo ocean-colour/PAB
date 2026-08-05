@@ -163,15 +163,6 @@ Read these before running — plus the **hard-won operational lessons** below.
    stage ×54.5 and re-check the `--ingest-jobs`/`--jobs` choices before the full
    send. Log the measured rates + the extrapolation.
 
-(ocean14) profx> claude --continue
-backgrounded · 238fda7f
-  claude agents             list sessions
-  claude attach 238fda7f    open in this terminal
-  claude logs 238fda7f      show recent output
-  claude stop 238fda7f      stop this session
-
-claude --resume 51d317af-e9c7-46d6-8f0e-a549a03cd419
-
 14. **s3** Please push the outputs from the 1k pilot onto my s3 bucket named `s3://pab`.  If you need my help, tell me.  Log your work.
 
 15. **Full-run ingest + discover (54,506 profiles, on Nautilus).** Same pod shape,
