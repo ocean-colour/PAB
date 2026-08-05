@@ -526,15 +526,18 @@ def build_fits(
     skipped: list[str] = []
     failed: list[str] = []
 
+    # Existing fit_ids in one query rather than one per matchup (SQLite on CephFS
+    # costs ~200 ms a round trip, so per-record checks dominate a resume).
+    done_fits: set[str] = set()
+    if not replace:
+        done_fits = {r["fit_id"] for r in store.query("SELECT fit_id FROM fits")}
+
     inputs: list[dict] = []
     for m in store.query("SELECT matchup_id FROM matchups ORDER BY matchup_id"):
         inp = _gather_fit_input(store, m["matchup_id"], config)
         if inp is None:
             continue
-        if (
-            store.query("SELECT 1 FROM fits WHERE fit_id = ?", (inp["fit_id"],))
-            and not replace
-        ):
+        if inp["fit_id"] in done_fits:
             skipped.append(inp["fit_id"])
             continue
         inputs.append(inp)

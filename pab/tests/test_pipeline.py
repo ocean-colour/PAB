@@ -746,3 +746,87 @@ def test_store_path_reports_the_file(tmp_path):
     db = tmp_path / "p.db"
     with Store.open(db) as store:
         assert pipeline._store_path(store) == str(db)
+
+
+def test_discover_concurrent_matches_serial(monkeypatch):
+    """Threaded discover must persist exactly what the serial path does.
+
+    CMR queries are pure latency: 1.75 s each serially is 26 h over the full
+    selection, versus ~2 h at 8 threads (measured by the one-off count script).
+    """
+    summary = {"mld": 30.0, "mld_method": "x", "n_points": 5}
+    profiles = [
+        {
+            "wmo": 5900000 + i,
+            "cycle": 1,
+            "latitude": -60.0 + 12.0 * i,      # far apart, so none covers another
+            "longitude": -150.0 + 40.0 * i,
+            "time": f"2024-0{1 + i}-15T12:00:00",
+            "summary": summary,
+        }
+        for i in range(6)
+    ]
+
+    def run(jobs):
+        calls = []
+
+        def searcher(lat, lon, t0, t1, config):
+            calls.append((round(lat, 1), round(lon, 1)))
+            return _searcher(lat, lon, t0, t1, config)
+
+        cfg = pipeline.PipelineConfig(profiles=profiles, discover_jobs=jobs)
+        with Store.open(":memory:") as store:
+            pipeline.run(store, cfg, stages=("ingest",))
+            out = pipeline.discover(store, cfg, searcher=searcher)
+            rows = sorted(r["granule_id"] for r in store.query("SELECT granule_id FROM granules"))
+        return out, rows, sorted(calls)
+
+    par, par_rows, par_calls = run(4)
+    ser, ser_rows, ser_calls = run(1)
+    assert par["granules_upserted"] == ser["granules_upserted"] == 6
+    assert par_rows == ser_rows
+    assert par_calls == ser_calls          # every profile searched exactly once
+    assert par["failed"] == [] and par["skipped"] == []
+
+
+def test_discover_concurrent_contains_a_failing_search():
+    summary = {"mld": 30.0, "mld_method": "x", "n_points": 5}
+    profiles = [
+        {"wmo": 5910000 + i, "cycle": 1, "latitude": -50.0 + 25.0 * i,
+         "longitude": -120.0 + 60.0 * i, "time": f"2024-0{1 + i}-10T12:00:00",
+         "summary": summary}
+        for i in range(4)
+    ]
+
+    def searcher(lat, lon, t0, t1, config):
+        if round(lat) == -25:
+            raise RuntimeError("CMR exploded")
+        return _searcher(lat, lon, t0, t1, config)
+
+    cfg = pipeline.PipelineConfig(profiles=profiles, discover_jobs=3)
+    with Store.open(":memory:") as store:
+        pipeline.run(store, cfg, stages=("ingest",))
+        import time as _time
+
+        orig = _time.sleep
+        _time.sleep = lambda *_: None  # skip retry backoff
+        try:
+            out = pipeline.discover(store, cfg, searcher=searcher)
+        finally:
+            _time.sleep = orig
+        assert len(out["failed"]) == 1
+        assert out["granules_upserted"] == 3       # the others still landed
+        assert store.count("granules") == 3
+
+
+def test_discover_workers_caps_derived_concurrency():
+    assert pipeline.PipelineConfig(jobs=50).discover_workers() == 8
+    assert pipeline.PipelineConfig(jobs=4).discover_workers() == 4
+    assert pipeline.PipelineConfig(jobs=50, discover_jobs=16).discover_workers() == 16
+    assert pipeline.PipelineConfig().discover_workers() == 1
+
+
+def test_cli_parser_discover_jobs():
+    args = pipeline.build_parser().parse_args(["--discover-jobs", "8"])
+    assert args.discover_jobs == 8
+    assert pipeline.build_parser().parse_args([]).discover_jobs is None

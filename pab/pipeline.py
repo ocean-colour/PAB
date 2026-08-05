@@ -77,11 +77,16 @@ class PipelineConfig:
     cache_dir: str | Path | None = None
     jobs: int = 1  # parallel processes for the match + fit stages (1 = serial)
     ingest_jobs: int | None = None  # concurrent argopy fetches (None → derived)
+    discover_jobs: int | None = None  # concurrent CMR searches (None → derived)
 
     #: Ceiling on concurrent argopy fetches when ``ingest_jobs`` is derived from
     #: ``jobs``. The Argo GDAC/ERDDAP servers are shared infrastructure, so a
     #: 50-core run must not open 50 simultaneous fetches.
     INGEST_JOBS_CAP: ClassVar[int] = 16
+
+    #: Ceiling on concurrent CMR searches. NASA's CMR is shared too, and 8 threads
+    #: already turned a 26 h serial stage into ~2 h in the one-off count script.
+    DISCOVER_JOBS_CAP: ClassVar[int] = 8
 
     def out(self) -> Path:
         """The resolved base output directory."""
@@ -102,6 +107,16 @@ class PipelineConfig:
         if self.ingest_jobs is not None:
             return max(1, int(self.ingest_jobs))
         return max(1, min(int(self.jobs), self.INGEST_JOBS_CAP))
+
+    def discover_workers(self) -> int:
+        """Concurrent CMR searches for ``discover`` (threads).
+
+        ``discover_jobs`` when set, else ``jobs`` capped at
+        :attr:`DISCOVER_JOBS_CAP` — CMR is shared NASA infrastructure.
+        """
+        if self.discover_jobs is not None:
+            return max(1, int(self.discover_jobs))
+        return max(1, min(int(self.jobs), self.DISCOVER_JOBS_CAP))
 
     def profile_rows(self) -> list[dict[str, Any]]:
         """The profile selection — inline ``profiles`` or the dev-set CSV rows."""
@@ -138,15 +153,24 @@ def ingest(store, config: PipelineConfig, *, fetcher=None) -> dict[str, Any]:
     """
     written, skipped, failed = [], [], []
 
+    # One query for every already-summarized (wmo, cycle), not one per CSV row.
+    # SQLite on CephFS costs ~200 ms per round trip, so the per-row version spent
+    # ~3 h building this list for the 54,506-profile selection before fetching a
+    # single profile — and paid it again on every resume.
+    have: set[tuple[int, int]] = set()
+    if not config.replace:
+        have = {
+            (int(r["wmo"]), int(r["cycle"]))
+            for r in store.query(
+                "SELECT p.wmo, p.cycle FROM mld_summary ms "
+                "JOIN profiles p ON p.profile_id = ms.profile_id"
+            )
+        }
+
     todo: list[tuple[int, int, dict[str, Any]]] = []
     for row in config.profile_rows():
         wmo, cycle = int(row["wmo"]), int(row["cycle"])
-        have = store.query(
-            "SELECT 1 FROM mld_summary ms JOIN profiles p "
-            "ON p.profile_id = ms.profile_id WHERE p.wmo = ? AND p.cycle = ?",
-            (wmo, cycle),
-        )
-        if have and not config.replace:
+        if (wmo, cycle) in have:
             skipped.append(f"{wmo}_{cycle}")
             continue
         todo.append((wmo, cycle, row))
@@ -397,6 +421,7 @@ def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
     # not in the index, so at worst a shared granule is re-queried (an idempotent
     # upsert) — never a missed search.
     index = GranuleIndex.load(store)
+    todo: list[dict[str, Any]] = []
     for p in profiles:
         if not config.replace and candidate_granules(
             store,
@@ -413,34 +438,11 @@ def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
         ):
             skipped.append(f"{p['wmo']}_{p['cycle']}")
             continue
-        try:
-            t = datetime.fromisoformat(str(p["time"]))
-            win = (
-                t - timedelta(days=config.dtime_days),
-                t + timedelta(days=config.dtime_days),
-            )
-            lon, lat = p["longitude"], p["latitude"]
-            if searcher is not None:
-                table = _search_with_retry(
-                    searcher, lat, lon, win[0], win[1], config
-                )
-            else:
+        todo.append(p)
 
-                def _live(lat, lon, t0, t1, cfg, _disc=disc):
-                    return _disc.granule_table(
-                        _disc.search_granules(
-                            short_name=cfg.short_name,
-                            temporal=(t0.isoformat(), t1.isoformat()),
-                            bounding_box=search_bbox(lon, lat, cfg.bbox_pad_deg),
-                            cloud_cover=cfg.cloud_cover,
-                        )
-                    )
-
-                table = _search_with_retry(_live, lat, lon, win[0], win[1], config)
-        except Exception:  # noqa: BLE001 — one bad search must not abort the stage
-            _log.exception("discover failed for %s_%s", p["wmo"], p["cycle"])
-            failed.append(f"{p['wmo']}_{p['cycle']}")
-            continue
+    def _persist(p, table) -> None:
+        """Parent-side: record a completed search. Returns nothing."""
+        nonlocal n, searched
         if table is not None and len(table):
             n += disc.persist_granules(store, table, short_name=config.short_name)
         searched += 1
@@ -452,6 +454,19 @@ def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
                 len(skipped),
                 len(failed),
             )
+
+    workers = config.discover_workers()
+    if workers > 1 and len(todo) > 1:
+        _discover_concurrent(config, todo, searcher, workers, _persist, failed)
+    else:
+        for p in todo:
+            try:
+                table = _search_profile(config, p, searcher)
+            except Exception:  # noqa: BLE001 — one bad search must not abort the stage
+                _log.exception("discover failed for %s_%s", p["wmo"], p["cycle"])
+                failed.append(f"{p['wmo']}_{p['cycle']}")
+                continue
+            _persist(p, table)
     _log.info(
         "discover done: %d granules from %d searches (%d skipped, %d failed)",
         n,
@@ -460,6 +475,72 @@ def discover(store, config: PipelineConfig, *, searcher=None) -> dict[str, Any]:
         len(failed),
     )
     return {"granules_upserted": n, "skipped": skipped, "failed": failed}
+
+
+def _search_profile(config: PipelineConfig, profile, searcher):
+    """One profile's granule search (CMR or the injected seam). No DB access.
+
+    Safe to call from a worker thread: it only computes the window/bbox and issues
+    the query, so the parent keeps sole ownership of the store.
+    """
+    from pab.pace import discover as disc
+
+    t = datetime.fromisoformat(str(profile["time"]))
+    t0 = t - timedelta(days=config.dtime_days)
+    t1 = t + timedelta(days=config.dtime_days)
+    lat, lon = profile["latitude"], profile["longitude"]
+    if searcher is not None:
+        return _search_with_retry(searcher, lat, lon, t0, t1, config)
+
+    def _live(lat, lon, t0, t1, cfg, _disc=disc):
+        return _disc.granule_table(
+            _disc.search_granules(
+                short_name=cfg.short_name,
+                temporal=(t0.isoformat(), t1.isoformat()),
+                bounding_box=search_bbox(lon, lat, cfg.bbox_pad_deg),
+                cloud_cover=cfg.cloud_cover,
+            )
+        )
+
+    return _search_with_retry(_live, lat, lon, t0, t1, config)
+
+
+def _discover_concurrent(config, todo, searcher, workers, persist, failed) -> None:
+    """Run the granule searches concurrently; ``persist`` runs in this thread.
+
+    CMR queries are pure network latency — the one-off full-selection count did
+    54.5k of them in 1.7 h with 8 threads, against ~1.75 s each serially (26 h for
+    the full run). Threads (not processes) because nothing needs to be picklable
+    and the GIL is irrelevant while waiting on HTTP. Every DB write stays here in
+    the parent; in-flight searches are bounded at ~4x workers.
+    """
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+    fut_prof: dict = {}
+    pending: set = set()
+    _log.info("discover: %d searches over %d threads", len(todo), workers)
+
+    def _drain(fut):
+        profile = fut_prof.pop(fut)
+        try:
+            persist(profile, fut.result())
+        except Exception:  # noqa: BLE001 — one bad search must not abort the stage
+            _log.exception(
+                "discover failed for %s_%s", profile["wmo"], profile["cycle"]
+            )
+            failed.append(f"{profile['wmo']}_{profile['cycle']}")
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for profile in todo:
+            fut = ex.submit(_search_profile, config, profile, searcher)
+            fut_prof[fut] = profile
+            pending.add(fut)
+            if len(pending) >= 4 * workers:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for f in done:
+                    _drain(f)
+        for f in wait(pending).done:
+            _drain(f)
 
 
 def search_bbox(
@@ -815,6 +896,13 @@ def build_parser() -> argparse.ArgumentParser:
         "servers are shared).",
     )
     p.add_argument(
+        "--discover-jobs",
+        type=int,
+        default=None,
+        help="Concurrent CMR searches in the discover stage (threads). Default: "
+        f"--jobs capped at {PipelineConfig.DISCOVER_JOBS_CAP} (CMR is shared).",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the stage plan and exit without touching anything.",
@@ -850,6 +938,7 @@ def main(argv=None) -> int:
         cache_dir=args.cache_dir,
         jobs=args.jobs,
         ingest_jobs=args.ingest_jobs,
+        discover_jobs=args.discover_jobs,
     )
     stages = args.stages or list(STAGES)
     if args.dry_run:

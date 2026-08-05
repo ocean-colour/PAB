@@ -93,6 +93,8 @@ Read these before running — plus the **hard-won operational lessons** below.
 15. Execute the 15th task in Tasks below
 16. Execute the 16th task in Tasks below
 17. Execute the 17th task in Tasks below
+18. Execute the 18th task in Tasks below
+19. Execute the 19th task in Tasks below
 
 ## Tasks
 
@@ -181,7 +183,39 @@ claude --resume 51d317af-e9c7-46d6-8f0e-a549a03cd419
    now contain per-profile failures. Expect ~1.7 % CMR and ~2–3 % argopy transient
    failures. Log counts (`profiles`, `granules`), failure rates, and wall-clock.
 
-16. **Full-run match + fit.** `--stage match` (lazy S3 reads — **no** `--download`;
+16. **Re-discover the 10,101 skipped profiles (before match).** Task 15's
+   `discover` **skipped 10,101 of 53,618 positioned profiles (18.8 %)** because a
+   granule already in the table happened to cover them in space *and* time — mostly
+   pilot-era granules, since ±24 h windows around 986 scattered pilot profiles
+   effectively span the whole calendar, leaving only the ~2 %-of-globe footprint
+   test to decide. Those profiles never got their own CMR search, so their
+   candidate pool is whatever a neighbour incidentally found: they may match a
+   granule that is not the closest available, and some that *would* match after a
+   proper search may not match at all. It also explains the granule shortfall —
+   **60,601 unique** against the 124,218 the independent CMR count predicted.
+
+   Fix it **before** the ~40 h match stage, since match's selection is only as good
+   as its candidate pool.
+
+   *Blocker to handle first:* `discover` iterates the **`profiles` table**, not
+   `--profiles-csv`, so a subset CSV does not currently limit it. Either (a) teach
+   `discover` to honour the CSV selection (small, and useful for any future
+   targeted re-run — **preferred**), or (b) fall back to `--stage discover
+   --replace` over all 53,618 (~8 h instead of ~2 h, same end state).
+
+   Steps: extract the skipped `wmo_cycle` ids from `/data/full/run.log`
+   (the `discover: {... 'skipped': [...]}` array), join them against
+   `/data/full_profiles.csv` to build the subset CSV, stage it on the PVC, then run
+   `discover` over just those profiles with `--replace` (the coverage test must be
+   bypassed — that test is exactly what skipped them) at `--discover-jobs 8`.
+
+   **Gates:** searches run ≈ 10,101 with 0 failures; granules climb from 60,601
+   toward the ~124k the count predicted; **re-check that the skip count is now ~0**
+   for a subsequent plain `discover`. Log the granule delta, wall-clock, and
+   failure rate.
+
+17. **Full-run match + fit** (*after Task 16 — match is only as good as the
+   candidate pool*)**.** `--stage match` (lazy S3 reads — **no** `--download`;
    the footprint pre-filter keeps this at ~0.3–0.6 M granule opens rather than
    15.9 M) then `--stage fit` with `--jobs 50`. Spot-check convergence
    (`diagnose-mcmc`). Watch the PVC: chains at ~13 MB × ~13.6 k ≈ 180 GB against
@@ -189,7 +223,7 @@ claude --resume 51d317af-e9c7-46d6-8f0e-a549a03cd419
    implement the deferred upload-to-`s3://pab`-and-evict (R4) first. Log matchups
    written, fits written/failed, wall-clock, peak PVC use.
 
-17. **Figure + report + publish.** `--stage figure` (parallel) then `--stage
+18. **Figure + report + publish.** `--stage figure` (parallel) then `--stage
    report`; `pab --emit-site report_site`; preview with `sphinx-build`, then the
    **user** commits `report_site/` and pushes so RTD rebuilds. Publish the report +
    summary tables; bulky artifacts go to **`s3://pab`** and are backed up to
@@ -197,7 +231,7 @@ claude --resume 51d317af-e9c7-46d6-8f0e-a549a03cd419
    coverage counts, the scatters/map, and that the galleries N-guard at scale. Log
    the published counts + the RTD build.
 
-18. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
+19. **Verify & close out.** Spot-check a handful of matchups (distance/Δt, fit
    quality, scene), confirm every record carries `pab_version = 1.0`, update
    `docs/design/PAB_implementation.md` + `HOWTO.md`, and write the full-run report
    (coverage, timings, failure rates, follow-ups). Log your work.
@@ -1475,3 +1509,57 @@ force-delete its pods — but expect a stuck CSI mount as the price, so prefer
 fixing the hang over killing; (b) the NRP registry hangs on manifest writes
 (`:1.0.3` never landed after five attempts) — the PVC + `PYTHONPATH=/data/src`
 route is the workaround, and it works.
+
+### 2026-07-31 (Task 14 — pilot pushed to `s3://pab`; Task 15 — full ingest+discover launched)
+
+**Task 14 (S3).** Pushed the whole 1k pilot to `s3://pab/run1k/`: **3,857 objects,
+894.5 MB, 0 failures, 75 s**. Verified from outside the cluster with no
+credentials — `https://s3-west.nrp-nautilus.io/pab/run1k/pab.db` returns HTTP 200
+at exactly 3,284,992 bytes. The image ships no `aws`/`rclone`, so I added
+**`nautilus/s3_push.py`** (boto3, threaded, idempotent — skips objects already
+present at the same size) and `nautilus/s3_push_job.yaml`, and dry-ran it first so
+the key layout was reviewable *before* writing to a public bucket. Chains went to
+`run1k/fit_chains/` so one prefix holds the entire pilot even though they live
+outside `/data/run1k` on the PVC. Still open (not this task): the `AIOcean:`
+rclone backup N5 asks for, and wiring `NautilusS3Backend.upload()` so
+`manifest.json` carries real URLs.
+
+**Task 15 (full ingest+discover).** Before launching I parallelised **`discover`**:
+it was still serial at ~1.75 s/search — ~26 h over the selection — while the
+one-off count script had done 54.5k CMR queries in 1.7 h with 8 threads. Now
+threaded via `--discover-jobs` (default `--jobs` capped at **8**, CMR being shared
+NASA infrastructure), DB writes in the parent, tested for equivalence with the
+serial path.
+
+**Then the launch exposed a much bigger problem: SQLite on CephFS costs ~200 ms
+per round trip.** `ingest` was issuing one `SELECT` per CSV row for its skip
+check, so it sat at 1m CPU / 106 MB for **32 min without spawning a worker**.
+Measured in-pod: `200 skip-check queries: 40.00 s → 200 ms each`, i.e.
+**~182 min** to build the to-do list — and that cost would recur on *every*
+resume. Replaced with a single bulk key load: **0.13 s**. Audited the siblings and
+found `fit` doing the same per-matchup (~15k round trips at full scale); fixed
+identically. `discover`/`figure` were already bulk.
+
+> **Rule for this codebase:** the store lives on a network filesystem. **Never do
+> per-record existence queries** — load the keys once into a set. A loop of cheap
+> queries is not cheap here.
+
+**Measured ingest scaling — and R5's premise was wrong.** 16 workers gave
+4.20 s/profile; 32 give **~3.3 s/profile** — only **1.34× for 2× the workers**. I
+had argued from "67 s per fetch in-pod vs 12 s locally" that the stage was
+latency-bound and would scale nearly linearly; it is only partly latency-bound,
+with GDAC (or its rate limiting) as the real ceiling. So **ingest ≈ 47–49 h**,
+which now dominates the whole pipeline — more than match+fit+figure+report
+combined. Not raising concurrency further: little expected gain, and it leans
+harder on shared Argo infrastructure.
+
+Also stopped the first job with a plain `kubectl delete job` rather than
+`--force`; the graceful path released the CephFS mount cleanly, where
+force-deleting a mount-holding pod previously cost a 12 h CSI lock.
+
+Job `pab-full-ingest`, 34 CPU / 64Gi (neither stage is CPU-bound, and a smaller
+request schedules faster), DB `/data/full/pab.db` seeded from the pilot so its 986
+profiles / 2,734 granules / 278 matchups / 273 fits are reused. Caveat recorded
+for Task 16: those 278 keep their pilot-era granule choice, which after full
+discovery may not be the closest available — 0.5 % of profiles, fixable with
+`--replace` on match if strict uniformity matters.
