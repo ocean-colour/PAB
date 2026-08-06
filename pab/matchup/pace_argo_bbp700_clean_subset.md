@@ -46,9 +46,9 @@ retrieval-level quality criteria:
 | Criterion | Threshold | Rationale |
 |---|---|---|
 | Granule cloud cover | < 50 % | The broader scene was at least half cloud-free — the pixel is not an isolated clear gap |
-| BING reduced χ²ᵣ | < 1.0 | The spectral fit explains the observed Rrs within measurement uncertainties |
+| BING reduced χ²ᵣ | < 1.2 | The spectral fit explains the observed Rrs within a modest margin of measurement uncertainties; slightly more permissive than the strict χ²ᵣ < 1.0 criterion |
 
-Applying both filters together selects **38 of 264** valid matchups (14%),
+Applying both filters together selects **39 of 264** valid matchups (15%),
 distributed across multiple ocean basins.
 
 ### Why make this subset?
@@ -135,7 +135,7 @@ good = (
     np.isfinite(rel_diff) &      # valid Argo bbp700
     np.isfinite(bbp_argo) &
     (cloud_cover < 50) &          # clear scene
-    (chisq < 1.0)                 # well-converged BING fit
+    (chisq < 1.2)                 # well-converged BING fit
 )
 ```
 
@@ -145,16 +145,16 @@ good = (
 
 ## Results
 
-| Metric | Full set (n = 264) | Clean subset (n = 38) |
+| Metric | Full set (n = 264) | Clean subset (n = 39) |
 |---|---|---|
-| Median rel. diff | +0.350 | +0.491 |
+| Median rel. diff | +0.350 | +0.507 |
 | % positive (PACE > Argo) | 84% | 82% |
 | Cloud cover range | 21.8–97.3% | 21.8–49.9% |
-| BING χ²ᵣ range | 0.09–3.30 | 0.11–0.93 |
+| BING χ²ᵣ range | 0.09–3.30 | 0.11–1.16 |
 | Median Δt (hours) | 10.2 | 13.1 |
 | Median distance (km) | 0.60 | 0.62 |
 
-**Key finding:** the bias strengthens in the clean subset (+0.49 vs +0.35).
+**Key finding:** the bias strengthens in the clean subset (+0.51 vs +0.35).
 This is the *opposite* of what data-quality contamination would produce.
 The cleanest PACE spectra show the largest positive difference from Argo,
 pointing to a real physical cause — most likely a depth-sampling mismatch
@@ -177,7 +177,7 @@ particular ocean basin or water type?
 
 *Mollweide projection. Each point is one matchup. Color = (PACE − Argo) / PACE,
 clipped to ±1. Red = PACE exceeds Argo; blue = Argo exceeds PACE; white = agreement.
-Filter: cloud cover < 50% & BING χ²ᵣ < 1.0 (n = 38 of 264 valid matchups).*
+Filter: cloud cover < 50% & BING χ²ᵣ < 1.2 (n = 39 of 264 valid matchups).*
 
 The 38 clean matchups span the North Atlantic, North Pacific, Indian Ocean,
 and Southern Ocean. Nearly all points are red — PACE exceeds Argo — across
@@ -209,7 +209,7 @@ cc  = np.asarray(df["cloud_cover"], dtype=float)
 chi = np.asarray(df["chisq"],       dtype=float)
 
 # quality filter
-good = np.isfinite(rd) & np.isfinite(bbp_argo) & (cc < 50) & (chi < 1.0)
+good = np.isfinite(rd) & np.isfinite(bbp_argo) & (cc < 50) & (chi < 1.2)
 
 proj = ccrs.Mollweide()
 fig  = plt.figure(figsize=(12, 6))
@@ -272,11 +272,12 @@ point at a different file.
   well-fit spectrum could come from a statistically unusual clear gap. Together
   they enforce both scene-level and retrieval-level confidence.
 
-- **Why 50% and 1.0?** At < 30% cloud cover only 1 matchup survives. At
+- **Why 50% and 1.2?** At < 30% cloud cover only 1 matchup survives. At
   < 50% we retain 42 before the χ² cut — enough geographic spread to be
-  meaningful. χ²ᵣ < 1.0 is the standard "fits within measurement uncertainty"
-  criterion in Bayesian spectral inversion.
+  meaningful. χ²ᵣ < 1.2 is slightly more permissive than the strict
+  "fits within measurement uncertainty" criterion (< 1.0), retaining one
+  additional matchup while still excluding the tail of poorly-converged fits.
 
-- **The bias strengthens in the clean subset (+0.49 vs +0.35).** This is the
+- **The bias strengthens in the clean subset (+0.51 vs +0.35).** This is the
   key result: restricting to the highest-quality PACE spectra does not weaken
   the bias, it strengthens it. The offset is real, not a data-quality artifact.
