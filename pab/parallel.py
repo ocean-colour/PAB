@@ -8,7 +8,13 @@ are what they share.
 
 from __future__ import annotations
 
-__all__ = ["picklable", "init_worker", "PROGRESS_EVERY"]
+__all__ = [
+    "picklable",
+    "init_worker",
+    "PROGRESS_EVERY",
+    "cgroup_mem_gb",
+    "mem_breakdown",
+]
 
 #: How often a long stage emits a progress line (records). A stage that runs for
 #: tens of minutes in silence is indistinguishable from a hung one — `match` was
@@ -51,3 +57,65 @@ def init_worker() -> None:  # pragma: no cover - runs in worker processes
         "VECLIB_MAXIMUM_THREADS",
     ):
         os.environ.setdefault(var, "1")
+
+
+def cgroup_mem_gb() -> float | None:
+    """Current memory charged to this container, in GB, or ``None`` off-cgroup.
+
+    This is the number the OOM killer watches — RSS summed over the parent and
+    every worker, plus page cache. Logging it alongside stage progress turns "the
+    pod died at 15 min" into "memory climbed 3 GB/min from the third chunk", which
+    is the difference between diagnosing a leak in one run and in five.
+    """
+    for path in ("/sys/fs/cgroup/memory.current",  # cgroup v2
+                 "/sys/fs/cgroup/memory/memory.usage_in_bytes"):  # v1
+        try:
+            with open(path) as fh:
+                return int(fh.read().strip()) / 1024**3
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def mem_breakdown() -> str:
+    """``"cgroup X.X | parent Y.Y + N kids Z.Z GB"`` — who is holding the memory.
+
+    The cgroup total alone says a pod is dying but not why. Splitting parent from
+    children is what distinguishes "the driver is accumulating state" from "the
+    workers are leaking", and those have completely different fixes. Three
+    consecutive OOM investigations guessed at this instead of measuring it.
+    """
+    import os
+
+    def _rss_gb(pid: str | int) -> float:
+        try:
+            with open(f"/proc/{pid}/status") as fh:
+                for line in fh:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1]) / 1024**2
+        except OSError:
+            pass
+        return 0.0
+
+    me = os.getpid()
+    parent = _rss_gb(me)
+    kids, kid_rss = 0, 0.0
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit() or int(entry) == me:
+                continue
+            try:
+                with open(f"/proc/{entry}/status") as fh:
+                    ppid = next(
+                        (ln.split()[1] for ln in fh if ln.startswith("PPid:")), None
+                    )
+            except OSError:
+                continue
+            if ppid == str(me):
+                kids += 1
+                kid_rss += _rss_gb(entry)
+    except OSError:
+        pass
+    total = cgroup_mem_gb()
+    head = "cgroup ?" if total is None else f"cgroup {total:.1f}"
+    return f"{head} | parent {parent:.1f} + {kids} kids {kid_rss:.1f} GB"

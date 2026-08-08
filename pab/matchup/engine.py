@@ -19,9 +19,15 @@ Bisson et al. recipe in ``docs/context.md`` §3):
   covers the float, not merely a temporal coincidence). The ~10 nearest
   unflagged pixels are selected via :mod:`pab.pace.extract`, approximating the
   small (5×5) unflagged box Bisson et al. use.
-* **Selection rule** — when several granules qualify, pick the closest in space
-  (nearest-pixel ``distance_km``), breaking ties by smallest ``dtime_hours``,
-  then by more spectra, then by ``granule_id`` (deterministic).
+* **Selection rule** — candidates are tried in order of **temporal** proximity
+  and the first that passes the spatial gate wins; ``granule_id`` breaks ties
+  deterministically. Time leads because the spatial differences being traded
+  away are sub-pixel: over the 1k pilot the chosen granules had a *median
+  distance of 0.65 km* — inside one ~1.2 km OCI pixel — while **72 % sat more
+  than 6 h from the float** (median 11.6 h). Optimising distance first was
+  discriminating below the instrument's resolution and paying for it in hours of
+  advection. Stopping at the first qualifying granule also cuts granule opens
+  from ~6 per profile to ~1–2, which is most of the stage's cost.
 * **Deterministic ``matchup_id``** — ``"{wmo}_{cycle}_{granule_id}"`` so re-runs
   upsert idempotently.
 
@@ -43,9 +49,25 @@ from pab.config import pab_version
 from pab.pace import cloud
 from pab.pace import extract as _extract
 from pab.pace import flags as _flags
-from pab.parallel import PROGRESS_EVERY, init_worker, picklable
+from pab.parallel import (
+    PROGRESS_EVERY,
+    init_worker,
+    mem_breakdown,
+    picklable,
+)
 
 _log = logging.getLogger("pab.match")
+
+#: Profiles a match worker handles before it is recycled.
+#:
+#: Sized from measurement, not taste. Instrumenting parent-vs-worker RSS showed
+#: each profile leaves ~0.45 GB behind in its worker (fsspec/HDF5 buffers that
+#: survive `ds.close()`), so peak-per-worker ~= 0.5 GB base + N x 0.45 GB. At
+#: N=15 and 16 workers that is ~108 GB against a 100Gi limit — which is precisely
+#: how the pod died. N=5 gives ~2.8 GB/worker, ~44 GB total, comfortable headroom.
+#: The cost is a re-spawn (~10-15 s of imports) every 5 profiles, ~2 h added over
+#: the full selection: cheap next to an OOM at hour 20.
+MAX_TASKS_PER_CHILD: int = 5
 
 __all__ = [
     "MatchupConfig",
@@ -336,6 +358,19 @@ def _open_with_timeout(source, *, opener=None, timeout_s: float = 0.0):
     return cloud.open_granule(source, opener=opener)
 
 
+def _close_quietly(ds) -> None:
+    """Close a granule dataset, ignoring anything it complains about.
+
+    A dataset whose read was interrupted can raise from ``close()`` (h5netcdf's
+    finaliser trips over a half-built ``File``), and a failure to close must never
+    lose an otherwise good matchup.
+    """
+    try:
+        ds.close()
+    except Exception:  # noqa: BLE001 — best effort; see docstring
+        pass
+
+
 def find_matchup(
     profile: dict[str, Any],
     candidates: list[dict[str, Any]],
@@ -373,11 +408,20 @@ def find_matchup(
     lon = float(profile["longitude"])
     p_time = profile["time"]
 
-    qualifying: list[dict[str, Any]] = []
-    for g in candidates:
-        dtime_hours = time_offset_hours(p_time, g["time"])
+    # Candidates in order of TEMPORAL proximity; the first that passes the
+    # spatial gate wins. See the module docstring for why time now leads.
+    ordered = sorted(
+        (
+            (time_offset_hours(p_time, g["time"]), str(g["granule_id"]), g)
+            for g in candidates
+        ),
+        key=lambda t: (t[0], t[1]),  # granule_id breaks ties deterministically
+    )
+
+    best = None
+    for dtime_hours, _gid, g in ordered:
         if dtime_hours > config.dtime_max_hours:
-            continue
+            break  # sorted, so everything after is further out in time too
         try:
             ds = _open_with_timeout(
                 g["source"], opener=opener, timeout_s=config.open_timeout_s
@@ -393,9 +437,15 @@ def find_matchup(
                 g["granule_id"],
             )
             continue
-        pixels = _extract.extract_matchup_spectra(
-            ds, lat, lon, n=config.n_spectra, mask_flags=config.mask_flags
-        )
+        try:
+            pixels = _extract.extract_matchup_spectra(
+                ds, lat, lon, n=config.n_spectra, mask_flags=config.mask_flags
+            )
+        finally:
+            # Release the granule immediately. `extract_matchup_spectra` returns
+            # materialised numpy (every read goes through `.values`), so nothing
+            # downstream needs the handle.
+            _close_quietly(ds)
         if not pixels:
             continue  # no unflagged Rrs near the float in this granule
         distance_km = float(pixels[0]["distance_km"])
@@ -406,28 +456,18 @@ def find_matchup(
             px["flagged"] = int(
                 bool(_flags.flagged_mask(np.array([px["flag"]]), config.mask_flags)[0])
             )
-        qualifying.append(
-            {
-                "granule": g,
-                "pixels": pixels,
-                "distance_km": distance_km,
-                "dtime_hours": dtime_hours,
-                "n_spectra": len(pixels),
-            }
-        )
+        best = {
+            "granule": g,
+            "pixels": pixels,
+            "distance_km": distance_km,
+            "dtime_hours": dtime_hours,
+            "n_spectra": len(pixels),
+        }
+        break  # temporally closest granule that covers the float — done
 
-    if not qualifying:
+    if best is None:
         return None
 
-    best = min(
-        qualifying,
-        key=lambda q: (
-            q["distance_km"],
-            q["dtime_hours"],
-            -q["n_spectra"],
-            str(q["granule"]["granule_id"]),
-        ),
-    )
     gid = str(best["granule"]["granule_id"])
     return Matchup(
         matchup_id=make_matchup_id(int(profile["wmo"]), int(profile["cycle"]), gid),
@@ -702,12 +742,13 @@ def _build_matchups_parallel(
         if done_count % PROGRESS_EVERY == 0:
             _log.info(
                 "match progress: %d/%d processed (%d written, %d unmatched; "
-                "%d pre-skipped)",
+                "%d pre-skipped) [%s]",
                 done_count,
                 total,
                 len(written),
                 done_count - len(written),
                 len(skipped),
+                mem_breakdown(),
             )
 
     def _bump() -> None:
@@ -739,11 +780,24 @@ def _build_matchups_parallel(
             written.append(result.matchup_id)
         _bump()
 
+    def _new_pool():
+        # max_tasks_per_child recycles a worker after N profiles, which bounds any
+        # per-worker growth (fsspec/HDF5 caches) without tearing down the pool.
+        return ProcessPoolExecutor(
+            max_workers=jobs,
+            mp_context=ctx,
+            initializer=init_worker,
+            max_tasks_per_child=MAX_TASKS_PER_CHILD,
+        )
+
+    # ONE pool for the whole stage, replaced only when a stall forces a kill.
+    # Creating a pool per chunk and calling shutdown(wait=False) let generation N
+    # keep tearing down (~1 GB of imported numpy/xarray/bing each) while N+1
+    # spawned: at 393 chunks x 32 workers that overran 80Gi in 15 min, five times
+    # in a row. It also re-paid the interpreter+import cost on every chunk.
+    ex = _new_pool()
     for start in range(0, total, chunk_size):
         chunk = inputs[start : start + chunk_size]
-        ex = ProcessPoolExecutor(
-            max_workers=jobs, mp_context=ctx, initializer=init_worker
-        )
         pending = set()
         for profile, candidates in chunk:
             fut = ex.submit(
@@ -769,11 +823,13 @@ def _build_matchups_parallel(
                     len(pending),
                 )
                 _kill_pool(ex)
+                ex.shutdown(wait=False, cancel_futures=True)
+                ex = _new_pool()  # the killed pool cannot be reused
                 pending = set()
                 break
             for f in done:
                 _drain(f)
-        ex.shutdown(wait=False, cancel_futures=True)
+    ex.shutdown(wait=True)
 
     if stalled:
         _log.error("match: %d profiles stalled in total", len(stalled))

@@ -439,3 +439,122 @@ def test_build_matchups_survives_a_wedged_worker(tmp_path):
         assert out["stalled"] == ["7902226_5"]
         assert out["written"] == []
         assert store.count("matchups") == 0  # retried on the next run
+
+
+def test_find_matchup_closes_the_granule_it_opened():
+    """Each candidate granule must be released after its pixels are extracted.
+
+    An unclosed dataset keeps an fsspec handle plus its read-ahead cache, so a
+    worker chewing through ~6 candidates per profile grew without bound — it
+    OOM-killed a 32-worker pod on 80Gi inside 8 minutes.
+    """
+    closed = []
+
+    class TrackingDataset:
+        """Wraps a real granule and records close() calls."""
+
+        def __init__(self, ds):
+            self._ds = ds
+
+        def __getitem__(self, key):
+            return self._ds[key]
+
+        def __contains__(self, key):
+            return key in self._ds
+
+        def close(self):
+            closed.append(True)
+
+    near = make_granule(center=(20.0, -50.0))
+    far = make_granule(center=(30.0, -50.0))  # ~1100 km away: fails the gate
+    opened = {"far": far, "near": near}
+    prof = _profile(20.0, -50.0, "2025-05-01T12:00:00")
+    # far is temporally closest, so it is opened first, rejected on distance,
+    # and near is opened next -> two opens, two closes
+    cands = [
+        {"granule_id": "GFAR", "time": "2025-05-01T12:00:00", "source": "far"},
+        {"granule_id": "GNEAR", "time": "2025-05-01T13:00:00", "source": "near"},
+    ]
+    m = engine.find_matchup(
+        prof, cands, opener=lambda s: TrackingDataset(opened[s])
+    )
+    assert m is not None and m.granule_id == "GNEAR"
+    assert len(closed) == 2  # rejected and accepted granules are both released
+
+
+def test_build_matchups_reuses_one_pool_across_chunks(tmp_path, monkeypatch):
+    """The parallel path must not spawn a fresh pool per chunk.
+
+    It used to, with shutdown(wait=False), so generation N kept tearing down
+    (~1 GB of imported numpy/xarray/bing per worker) while N+1 spawned. Over 393
+    chunks x 32 workers that OOM-killed an 80Gi pod five times running.
+    """
+    import concurrent.futures as cf
+
+    import pab.matchup.engine as eng
+
+    created = []
+    orig = cf.ProcessPoolExecutor  # engine imports it inside the function
+
+    class CountingPool(orig):
+        def __init__(self, *a, **kw):
+            created.append(kw.get("max_tasks_per_child"))
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(cf, "ProcessPoolExecutor", CountingPool)
+
+    with Store.open(tmp_path / "pool.db") as store:
+        # enough profiles to span several chunks (chunk_size = 4 * jobs = 8)
+        for i in range(20):
+            wmo = 7903000 + i
+            persist_summary(
+                store,
+                wmo=wmo,
+                cycle=1,
+                summary={"mld": 30.0, "mld_method": "x", "n_points": 5},
+                latitude=20.0,
+                longitude=-50.0,
+                time="2025-05-01T12:00:00",
+            )
+        store.upsert(
+            "granules",
+            {
+                "granule_id": "G1",
+                "time_start": "2025-05-01T11:30:00",
+                "data_url": "s3://b/G1.nc",
+            },
+        )
+        out = engine.build_matchups(store, opener=_stub_opener, jobs=2)
+
+    assert len(out["written"]) == 20          # all chunks ran
+    assert len(created) == 1, f"one pool expected, got {len(created)}"
+    assert created[0] == eng.MAX_TASKS_PER_CHILD   # workers are recycled
+
+
+def test_find_matchup_prefers_the_temporally_closest_covering_granule():
+    """Time leads, distance is only a gate — and we stop at the first qualifier.
+
+    Both granules cover the float. The old rule picked whichever had the nearer
+    pixel (sub-pixel differences: median 0.65 km in the pilot) even when it sat
+    hours further away; 72% of pilot matchups ended up >6 h from the float. Now
+    the temporally closest *covering* granule wins.
+    """
+    opens = []
+    centred = make_granule(center=(20.0, -50.0), span=0.04)   # distance ~0, 4 h away
+    offset = make_granule(center=(20.01, -50.0), span=0.04)   # ~1.1 km, 1 h away
+
+    def opener(source):
+        opens.append(source)
+        return {"centred": centred, "offset": offset}[source]
+
+    prof = _profile(20.0, -50.0, "2025-05-01T12:00:00")
+    cands = [
+        {"granule_id": "GCENTRED", "time": "2025-05-01T16:00:00", "source": "centred"},
+        {"granule_id": "GOFFSET", "time": "2025-05-01T11:00:00", "source": "offset"},
+    ]
+    m = engine.find_matchup(prof, cands, opener=opener)
+    assert m is not None
+    assert m.granule_id == "GOFFSET"          # 1 h beats 4 h; both cover the float
+    assert m.dtime_hours == pytest.approx(1.0)
+    assert 0.0 < m.distance_km <= 5.0         # inside the gate, not the minimum
+    assert opens == ["offset"]                # early stop: the 4 h granule is unread

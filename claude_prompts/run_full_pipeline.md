@@ -1666,3 +1666,107 @@ queries to learn nothing. The coverage check answers the actual question offline
 **Task 17 projection:** up to 50,292 profiles for match → ~14,100 matchups at the
 pilot's 28 %; match ≈ 42 h, fit ≈ 52 h (~4 days); chains ~1.27 MB × 14.1k ≈ **18 GB**
 against the 500 Gi PVC, which retires the R4 chain-eviction question.
+
+### 2026-08-05 (Task 17a — full `match`: six OOM kills, two wrong diagnoses, then a stable 16-worker run)
+
+Dropped the 278 pilot-era matchups first (`nautilus/reset_full_matchups_job.yaml`):
+they were selected from a 2,734-granule pool against today's 67,435, and
+`--replace` cannot repair that — a different best-granule yields a *second* row,
+since `matchups` is unique on `(profile_id, granule_id)`. Uniform criteria matter
+more than 1.25 h of recompute; the pilot snapshot survives at `/data/run1k` and on
+`s3://pab`.
+
+Then `match` was OOM-killed **six times**. Two of my diagnoses were wrong, and both
+"fixes" were real improvements that did not address the cause:
+
+1. **Unclosed granule datasets** — `find_matchup` never called `ds.close()`, so each
+   worker held fsspec handles + read-ahead caches. Genuinely a leak; fixed (also in
+   both of `fit`'s open paths, with a test asserting one close per candidate). It
+   did **not** stop the OOM.
+2. **A pool per chunk** — the loop built a new `ProcessPoolExecutor` per chunk and
+   called `shutdown(wait=False)`, so generation N was still tearing down while N+1
+   spawned (393 chunks × 32 workers). Genuinely wasteful; fixed with one pool for
+   the stage plus `max_tasks_per_child` recycling, which also removed 393 rounds of
+   interpreter+import cost. It did **not** stop the OOM either.
+3. **A third hypothesis I checked before acting and found FALSE**: that
+   wrapping/polar footprints (12,656 granules get a full-longitude bbox) gave some
+   profiles thousands of candidates. Measured over 3,000 profiles: mean 6.1,
+   p99 23, **max 42**. My earlier coverage histogram capped the bin at "10 or more",
+   which hid the tail — so I re-measured uncapped rather than trusting it.
+
+**The actual cause was sizing, and the arithmetic was available the whole time.**
+Each worker materialises a granule's nav arrays (lat/lon/l2_flags ≈ 43 MB) plus
+fsspec read-ahead per open, ~2.5 GB resident in practice. 32 × 2.5 GB > 80Gi. The
+pilot's *working* configuration was 16 workers on 100Gi — 6 GB/worker of headroom —
+and I had talked myself out of it by reading "0.8 GB/worker" off a snapshot taken
+3 minutes into a run, before the workers had touched many granules.
+
+**What finally made this diagnosable:** logging the container's own
+`memory.current` — the number the OOM killer watches — in every progress line
+(`pab.parallel.cgroup_mem_gb`). The 16-worker run shows a clear **sawtooth**:
+36.3 → 64.7 → 26.4 → 43 GB, climbing then dropping as workers recycle. Bounded,
+not leaking; peak 65 % of the limit. The same sawtooth at 32 workers simply crested
+past 80Gi. One measurement would have replaced three guesses.
+
+**Lesson (a repeat, in a new costume):** I twice inferred a mechanism from
+first principles and shipped a fix without first measuring the quantity that was
+actually failing. The cheap instrument — print the number the killer looks at —
+should come *before* the clever fix, not after the sixth kill.
+
+Running now: 16 workers / 16 CPU / 100Gi, `MALLOC_ARENA_MAX=2`, all the pilot's
+protections active (per-granule 120 s timeout, chunked stall guard, resume
+pre-filter, footprint pre-filter). Rate ~8.8 s/profile ⇒ **~5 days** for the
+remaining 50,187 profiles. Slower than the 42 h I projected, but it survives, and
+it resumes cheaply if preempted. `0 written` in the first 150 is expected: those
+are profiles earlier passes already determined cannot match, retried because
+nothing records a negative result (the `granule_search`-style marker remains a
+known follow-up).
+
+### 2026-08-06 (Task 17a — selection rule changed to time-first; memory finally instrumented)
+
+**Rule change (user chose option 1).** `find_matchup` now tries candidates in
+order of **temporal** proximity and takes the first that passes the 5 km spatial
+gate, instead of opening every candidate and minimising `distance_km`. The
+evidence that prompted it, from 278 pilot + 113 full matchups:
+
+| | median | p90 | max | >6 h |
+| --- | --- | --- | --- | --- |
+| `dtime_hours` | 11.6 | 22.3 | 23.9 | **72 %** |
+| `distance_km` | 0.65 | 3.43 | 4.95 | — |
+
+The old rule optimised distance to a median of **0.65 km — inside one ~1.2 km OCI
+pixel** — while letting 72 % of matchups sit more than 6 h from the float. It was
+discriminating below the instrument's resolution and paying in hours of advection.
+Time-first is better science *and* cuts granule opens from ~6.1/profile to ~1–2,
+which is most of the stage's cost. Early results: match rate **34 %** (was 28 %)
+and **4.9 s/profile** (was 8.8). The 120 existing matchups were reset so the whole
+dataset uses one rule.
+
+**The OOM hunt, and the instrument that ended it.** `match` was OOM-killed **seven**
+times. My diagnoses in order — unclosed datasets, a pool per chunk, pathological
+candidate counts, per-worker steady state — were respectively: a real leak (fixed,
+not the cause), real waste (fixed, not the cause), **false** (measured: max 42
+candidates, not thousands), and **misleading** (an isolated single-process test
+showed memory plateauing at 0.75 GB/worker, so I concluded 16 workers ≈ 12 GB and
+was wrong).
+
+Then I added `pab.parallel.mem_breakdown()` — parent RSS vs summed child RSS vs the
+cgroup total — to the progress line. The **first** line of the next run said it:
+
+    [cgroup 30.7 | parent 0.3 + 17 kids 32.7 GB]
+
+**Parent 0.3 GB.** Not the materialised `inputs` list, which was my leading
+suspicion and which I had been about to rewrite as a streaming generator. The
+workers hold ~1.9 GB each under real concurrency — 2.5× what the isolated test
+showed — and the kills happened when that grew past ~6 GB each.
+
+**The lesson, stated plainly because it cost seven kills and ~20 h of cluster
+time:** when a process dies of resource exhaustion, the *first* action is to
+instrument the resource, not to theorise about which code path consumes it. Four
+plausible mechanisms, each with a tidy fix, and the one-line measurement would have
+discriminated between them immediately. An isolated micro-benchmark is not a
+substitute — it missed the real per-worker figure by 2.5×.
+
+Now running: 16 workers / 100Gi, time-first selection, per-line memory breakdown.
+Projected ~68 h at the current rate. Watching whether per-worker RSS stays near
+1.9 GB (fine) or climbs toward 6 GB (the failure mode, now visible in advance).

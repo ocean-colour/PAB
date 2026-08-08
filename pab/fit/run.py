@@ -24,6 +24,7 @@ import numpy as np
 
 from pab.fit import artifacts as _artifacts
 from pab.fit.models import FitConfig, build_models, model_param_names
+from pab.matchup.engine import _close_quietly
 
 _log = logging.getLogger("pab.fit")
 
@@ -553,7 +554,10 @@ def build_fits(
     for inp in inputs:
         try:
             ds = _open_bounded(inp["source"], opener=opener)
-            wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
+            try:
+                wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
+            finally:
+                _close_quietly(ds)
             result = _fit_only(wave, rrs, unc, inp["chl"], config)
             _persist_result(store, inp, result, config, created)
             written.append(inp["fit_id"])
@@ -606,13 +610,25 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
                 _log.exception("open_granule failed for %s (%d fits)", source, len(group))
                 failed.extend(inp["fit_id"] for inp in group)
                 continue
+            # One open per source shared across its group, then released: an
+            # unclosed dataset keeps an fsspec handle plus its read-ahead cache,
+            # which is what OOM-killed a 32-worker match pod inside 8 min.
+            try:
+                spectra = {}
+                for inp in group:
+                    try:
+                        spectra[inp["fit_id"]] = _extract.extract_spectrum(
+                            ds, inp["ix"], inp["iy"]
+                        )
+                    except Exception:  # noqa: BLE001
+                        _log.exception("extract_spectrum failed for %s", inp["fit_id"])
+                        failed.append(inp["fit_id"])
+            finally:
+                _close_quietly(ds)
             for inp in group:
-                try:
-                    wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
-                except Exception:  # noqa: BLE001
-                    _log.exception("extract_spectrum failed for %s", inp["fit_id"])
-                    failed.append(inp["fit_id"])
+                if inp["fit_id"] not in spectra:
                     continue
+                wave, rrs, unc = spectra[inp["fit_id"]]
                 fut = ex.submit(_fit_only, wave, rrs, unc, inp["chl"], config)
                 fut_inp[fut] = inp
                 pending.add(fut)
