@@ -491,3 +491,33 @@ profiles processed).
   depend on the `/data/src` PVC checkout. Optional hardening: close the executor
   pipes *directly* instead of via `shutdown(wait=True)` (deterministic FD release
   without relying on GC) — not required, since the monitor shows FDs bounded.
+
+### 2026-08-10 (canonical image `pab:1.0.3` + `fit` Job manifest — prep for the fit run)
+
+Match at ~24 h post-resume was healthy (6,620 matchups, 7,850/44,033 processed,
+FDs 353 — a small residual GC-misses leak, trivially within the 65,536 budget),
+so I prepped the next stage while it runs.
+
+- **Rebuilt the image as `pab:1.0.3`** via `nautilus/build_image.sh --push`
+  (TAG defaults to 1.0.3) from the local working trees + the one Loisel
+  `Hydrolight400.nc`. It folds the repo's current code into a canonical image:
+  the `match` FD-leak fix (`_reclaim_pool` in `pab/matchup/engine.py`), the
+  `fit`-stage traceback logging, and the six Task-5 packaging fixes. Build guards
+  passed (`FIT DEPS OK`, `LOISEL OK (81,)`), smoke test OK, pushed `:1.0.3` +
+  `:latest` (image id `2c53824189ab`). **This retires the `/data/src` PVC-checkout
+  hack** for new jobs — the running match (`1.0.2` + `PYTHONPATH=/data/src`) is
+  unaffected; 1.0.3 is for `fit` and everything after.
+- **Wrote `nautilus/full_fit_job.yaml`** (none existed). Runs *after* match:
+  `--stage fit --jobs 50` on `pab:1.0.3` (no `/data/src` override), chains →
+  `/data/fit_chains` (~13 MB × ~13.6k ≈ **180 GB**, fits the 500 GB PVC / 498 GB
+  free), resumable (`backoffLimit: 4`, no `rm -rf` — `build_fits` skips existing
+  `fit_id`s), `ulimit -n 65536` insurance, one pod = one SQLite writer. CPU-bound
+  MCMC so it packs more workers than match; header documents a `--jobs 32 / 64Gi`
+  fallback if a 50-core pod won't schedule. Verified with `yaml.safe_load` +
+  `bash -n` (Task-6 rule: literal `|` block, one-line `python -c`, no here-docs).
+- **Why `fit` is safe from the match failure class:** its opens use
+  `_open_bounded` (the same SIGALRM read timeout), it runs a *single* stable
+  `ProcessPoolExecutor` (no per-stall pool churn → no FD leak), and fit workers
+  are pure emcee compute (no I/O to wedge on).
+- **Next:** launch `fit` when match completes (~4–5 days), then `figure` →
+  `report` → publish + back up (Task 8: upload the site + `rclone` to `AIOcean:`).

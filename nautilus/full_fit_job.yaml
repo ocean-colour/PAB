@@ -1,0 +1,83 @@
+# Task 17b — full-selection `fit` (BING MCMC for every matchup without a fit).
+#
+# Runs AFTER pab-full-match completes. Fits the nearest pixel of each matchup
+# (model_pair ExpBPow, nsteps=10000) and writes a ~13 MB chains NPZ per fit to
+# /data/fit_chains. At ~13.6k matchups that is ~180 GB — the pab-data PVC is
+# 500 GB (498 GB free), so it fits with margin. This is the run's compute
+# bottleneck (~52 h per the pilot extrapolation).
+#
+# Differences from full_match_job.yaml:
+#  * CPU-bound (pure emcee per matchup), not memory/latency-bound like match, so
+#    it packs more workers: --jobs 50. Fit workers hold only a spectrum + their
+#    chain (~50-100 MB each); the parent opens one granule at a time to extract
+#    the pixel (bounded by the same SIGALRM read timeout match uses) and closes
+#    it immediately. A 50-core / 80Gi pod is a large ask — if it will not
+#    schedule, drop to --jobs 32 + 64Gi (near-linear, just slower).
+#  * Runs on the IMAGE code (pab:1.0.3), NOT the /data/src PVC checkout — 1.0.3
+#    carries the match FD-leak fix + fit-stage traceback logging, so there is no
+#    reason to keep the PYTHONPATH=/data/src override here.
+#
+# Safety carried over from match: one pod = one SQLite writer; the fit path uses
+# a single stable ProcessPoolExecutor (no per-stall pool churn, so no FD leak);
+# per-matchup failures are caught + logged (`pab.fit` logger) and recorded under
+# "failed" without aborting the batch; `backoffLimit` + no `rm -rf` so an evicted
+# pod RESUMES (build_fits skips any fit_id already present).
+#
+# Usage (only after match is done):
+#   kubectl -n sea-meets-the-stars delete job pab-full-fit --ignore-not-found
+#   kubectl apply -f nautilus/full_fit_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-full-fit
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-full-fit
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4          # preemption-tolerant; resume skips finished fits
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.3
+        imagePullPolicy: IfNotPresent
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data}   # chains -> /data/fit_chains
+        - {name: RUN, value: /data/full}
+          # curb glibc arena fragmentation: the parent frees tens of MB of nav
+          # arrays per granule open; per-thread arenas otherwise inflate RSS
+        - {name: MALLOC_ARENA_MAX, value: "2"}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            # No pool churn in fit (single stable pool), so no FD leak — but the
+            # parent opens many granules; a high soft limit is cheap insurance.
+            ulimit -n 65536 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
+            echo "=== FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn) ===" | tee -a $RUN/run.log
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/run.log; }
+            counts() { python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('matchups','matchup_pixels','fits','fit_results')})" 2>&1 | tee -a $RUN/run.log; }
+            log "FIT start (full selection, jobs=50)"
+            counts
+            if ! pab --db $RUN/pab.db --outdir $RUN/pipeline \
+              --stage fit --jobs 50 2>&1 | tee -a $RUN/run.log; then
+              log "FIT FAILED — stopping (re-apply the Job to resume)"
+              counts
+              exit 1
+            fi
+            log "FIT end"
+            counts
+            du -sh $RUN /data/fit_chains 2>/dev/null | tee -a $RUN/run.log
+            log "FIT_DONE"
+        resources:
+          requests: {cpu: "50", memory: "80Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "50", memory: "80Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}
