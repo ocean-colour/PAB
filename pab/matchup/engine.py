@@ -822,8 +822,7 @@ def _build_matchups_parallel(
                     config.stall_timeout_s,
                     len(pending),
                 )
-                _kill_pool(ex)
-                ex.shutdown(wait=False, cancel_futures=True)
+                _reclaim_pool(ex)  # kill workers AND release parent-side FDs
                 ex = _new_pool()  # the killed pool cannot be reused
                 pending = set()
                 break
@@ -858,3 +857,51 @@ def _kill_pool(ex) -> None:
             proc.kill()
         except Exception:  # noqa: BLE001 — best effort; already-dead is fine
             pass
+    # Reap them so the kernel releases each worker's process-table slot and file
+    # descriptors promptly (a killed-but-unjoined child lingers as a zombie).
+    for proc in procs:
+        try:
+            proc.join(timeout=5)
+        except Exception:  # noqa: BLE001 — best effort
+            pass
+
+
+def _reclaim_pool(ex, timeout_s: float = 30.0) -> None:
+    """Kill a wedged pool's workers **and** release the executor's own resources.
+
+    ``_kill_pool`` frees the *workers'* file descriptors when the processes die,
+    but the parent-side executor still owns the call/result-queue pipes and the
+    manager-thread wakeup pipe (~5 FDs). ``shutdown(wait=False)`` returns before
+    the manager thread closes those, and on a real run its manager thread stayed
+    alive holding them, so recreating a pool on every stall leaked ~5 pipe FDs
+    each — after 192 stalls the parent's FD table filled (1009 open pipes vs a
+    1024 ``ulimit -n``) and the next ``os.pipe()`` failed with ``OSError:
+    [Errno 24]``, wedging the whole stage. Killing + reaping the workers first
+    and *then* ``shutdown(wait=True)`` lets the manager thread drain the
+    now-dead pool and close those pipes before the next pool is built.
+
+    The teardown is bounded by ``timeout_s`` in a watchdog thread: this recovery
+    path exists precisely because workers wedge, so it must never be able to wedge
+    itself. In the common case (workers interruptible by ``SIGKILL``) it returns
+    in well under a second; if a worker is stuck uninterruptibly the shutdown is
+    abandoned and its pipes are reclaimed when the object is garbage-collected.
+    """
+    import threading
+
+    _kill_pool(ex)
+
+    def _shut() -> None:
+        try:
+            ex.shutdown(wait=True, cancel_futures=True)
+        except Exception:  # noqa: BLE001 — a broken pool may raise; pipes still close
+            _log.exception("error tearing down a killed match pool")
+
+    t = threading.Thread(target=_shut, name="match-pool-reclaim", daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        _log.error(
+            "killed match pool did not shut down within %.0fs; abandoning it "
+            "(its pipes are reclaimed when it is garbage-collected)",
+            timeout_s,
+        )

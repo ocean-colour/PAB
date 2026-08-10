@@ -52,6 +52,11 @@ spec:
         args:
           - |
             set -o pipefail
+            # Headroom + tripwire for the parallel-match pool churn. The FD leak
+            # that wedged the first attempt (192 killed pools left ~1009 pipes vs a
+            # 1024 soft limit) is fixed in code (_reclaim_pool); this is insurance.
+            ulimit -n 65536 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
+            echo "=== FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn) ===" | tee -a $RUN/run.log
             log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/run.log; }
             counts() { python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('profiles','granules','matchups','matchup_pixels','fits','fit_results')})" 2>&1 | tee -a $RUN/run.log; }
             log "MATCH start (full selection, jobs=16)"

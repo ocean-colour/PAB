@@ -451,3 +451,43 @@ surfaced three problems, all now fixed; **full write-up + the run plan live in
   was opening every granule in the ±24 h window *globally* (291/profile at full
   scale → 15.9 M opens ≈ 388 h on 50 cores). With the footprint pre-filter it is
   ~0.3–0.6 M opens ≈ 8–14 h, which is what makes the full run schedulable here.
+
+### 2026-08-09 (full `match` wedged on an FD leak — diagnosed, fixed, resumed)
+
+`pab-full-match` (the 50,292-profile `match` stage, `--jobs 16`, code from
+`/data/src` via `PYTHONPATH`, image `pab:1.0.2`) ran ~2.4 days then sat dead for
+~4 h. It was **alive but wedged**, not crashed, so `backoffLimit` never fired and
+the log/DB just stopped at **6,259 matchups / 62,590 pixels** (20,200/50,231
+profiles processed).
+
+- **Root cause — file-descriptor leak.** The wedged process held **1,010 FDs,
+  1,009 of them pipes**, against `ulimit -n = 1024`. The parallel path kills +
+  recreates its worker pool on every stall (**192 times** over the run, a steady
+  ~3.5/h). The old teardown — `_kill_pool(ex)` (SIGKILL, no reap) then
+  `ex.shutdown(wait=False)` — returns before the manager thread closes the pool's
+  call/result-queue + wakeup pipes, and that thread stayed alive holding them, so
+  each kill leaked ~5 pipes. 192 × ~5 ≈ 1,000 pipes → the next `os.pipe()` in
+  `_spawn_process` raised `OSError: [Errno 24]` → hard wedge.
+- **The 192 stalls are not a bug.** Steady ~3.5/h (not hourly bursts), from
+  **1,283 granule-read timeouts across 1,228 *unique* granules** — transient S3
+  jitter (~2 % of reads exceed 120 s), not credential expiry or bad objects. The
+  leak, not the stalls, is what turned a survivable rate into a fatal wedge.
+- **Fix (`pab/matchup/engine.py`).** `_kill_pool` now reaps the killed workers
+  (`proc.join`). New `_reclaim_pool` does kill → reap → `shutdown(wait=True)` so
+  the pipes close before the next pool is built, **bounded by a 30 s watchdog
+  thread** so this recovery path can never itself hang (SIGKILLing a worker
+  mid-queue-write can corrupt the queue lock and block `shutdown(wait=True)`
+  forever — observed in production; the watchdog abandons the pool and lets GC
+  reclaim it). Also added `_log.exception` on the swallowed fit-stage `except`s.
+- **Ops.** `ulimit -n 65536` (+ FD-limit logging) added to
+  `nautilus/full_match_job.yaml` as headroom/tripwire. Fix synced to
+  `/data/src/pab/matchup/engine.py` on the PVC (diff vs the live copy = only these
+  edits), bytecode cache cleared, wedged Job deleted, Job re-applied.
+- **Verified after resume:** pre-skips the 6,259 done matchups, climbs again
+  (→ 6,265), and **FDs stay bounded 23–51 across 4 stalls** (no growth with stall
+  count — GC reclaims the abandoned pools). ETA ~4–5 days for the remaining ~44 k.
+- **Still owed (git is the user's):** commit the `engine.py` fix + this manifest
+  change to the repo, and fold the fix into `pab:1.0.x` so future runs don't
+  depend on the `/data/src` PVC checkout. Optional hardening: close the executor
+  pipes *directly* instead of via `shutdown(wait=True)` (deterministic FD release
+  without relying on GC) — not required, since the monitor shows FDs bounded.
