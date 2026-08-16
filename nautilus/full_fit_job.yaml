@@ -58,10 +58,10 @@ spec:
             echo "=== FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn) ===" | tee -a $RUN/run.log
             log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/run.log; }
             counts() { python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('matchups','matchup_pixels','fits','fit_results')})" 2>&1 | tee -a $RUN/run.log; }
-            log "FIT start (full selection, jobs=50)"
+            log "FIT start (full selection, jobs=32)"
             counts
             if ! pab --db $RUN/pab.db --outdir $RUN/pipeline \
-              --stage fit --jobs 50 2>&1 | tee -a $RUN/run.log; then
+              --stage fit --jobs 32 2>&1 | tee -a $RUN/run.log; then
               log "FIT FAILED — stopping (re-apply the Job to resume)"
               counts
               exit 1
@@ -71,8 +71,8 @@ spec:
             du -sh $RUN /data/fit_chains 2>/dev/null | tee -a $RUN/run.log
             log "FIT_DONE"
         resources:
-          requests: {cpu: "50", memory: "80Gi", ephemeral-storage: "20Gi"}
-          limits: {cpu: "50", memory: "80Gi", ephemeral-storage: "40Gi"}
+          requests: {cpu: "32", memory: "64Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "32", memory: "64Gi", ephemeral-storage: "40Gi"}
         volumeMounts:
         - {name: data, mountPath: /data}
         - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}

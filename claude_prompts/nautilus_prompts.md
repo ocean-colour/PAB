@@ -521,3 +521,67 @@ so I prepped the next stage while it runs.
   are pure emcee compute (no I/O to wedge on).
 - **Next:** launch `fit` when match completes (~4–5 days), then `figure` →
   `report` → publish + back up (Task 8: upload the site + `rclone` to `AIOcean:`).
+
+### 2026-08-14 (match plateaued → `fit` launched; worked around a CephFS node hang)
+
+- **Called the match harvest done at 14,610 matchups** (~29 % of 50,292 —
+  squarely the expected ~28 % rate) and stopped it. It had plateaued: after a
+  preemption (`8mgrs`→`fc4jj`, 1/4 backoff retries), each resume re-processes the
+  ~35,701 not-yet-matched profiles and adds <1 %/pass (the remainder are
+  genuinely unmatchable — no coincident cloud-free granule — retried every run).
+  Matchups are durable in `/data/full/pab.db`; a later straggler pass can be fit
+  incrementally (`fit` is idempotent), so stopping now costs nothing.
+- **Launched `fit`** via `nautilus/full_fit_job.yaml` on `pab:1.0.3`
+  (`--stage fit --jobs 50`, chains → `/data/fit_chains`). Baseline 14,610
+  matchups → 0 fits.
+- **CephFS incident (Nautilus infra, not PAB).** First pod (`svdsp` on
+  `nautilus-it-gpu08`) hung hard: the main process sat uninterruptibly in state
+  `D` on `ceph_mdsc_wait_request` (CephFS **metadata**-server stall) — 0 fits in
+  17 min, workers never spawned. Log was clean and match had used the same PVC
+  for days, so it was a bad Ceph client on that node. Force-deleted
+  (`--grace-period=0 --force`); the Job respawned `9zbd8` on
+  `proc-01.ts.fresnostate.edu`.
+- **The replacement progresses, but Ceph is degraded right now:** the main proc
+  periodically blocks in `D` on `folio_wait_bit_common` (CephFS **data**-path
+  page waits — the many small chain writes + DB I/O), so fits advance in bursts
+  with multi-minute stalls. Effective **~5–10 fits/min → ETA ~1.5–2 days** for
+  14,610 fits (≈ the original ~52 h estimate). Fully resumable, so a force-restart
+  on any hard-hang loses nothing.
+- **Playbook:** if a pod hard-hangs (state `D` on ceph, no progress for a long
+  stretch) → force-delete, Job reschedules to a healthier node. Longer-term
+  optimization if Ceph stays slow: write chains to **local ephemeral disk** then
+  bulk-upload, decoupling the fit from MDS/data-path latency.
+- **Next:** when `fit` completes → `figure` → `report` → publish + backup.
+
+### 2026-08-16 (fit paused — cluster-wide CephFS stalls; waiting on Nautilus)
+
+`fit` got to **5,187 / 14,610** then repeatedly wedged on CephFS. Paused it
+(job deleted, resources freed) pending Nautilus Ceph recovery. The 5,187 fits
+are durable; `fit` resumes from there with `kubectl apply -f
+nautilus/full_fit_job.yaml` (idempotent — skips existing `fit_id`s).
+
+- **Two failure modes, same root (CephFS):**
+  1. *Metadata hang* — main process stuck uninterruptibly (state `D`) on
+     `ceph_mdsc_wait_request`, seen on **3 different nodes** (`nautilus-it-gpu08`,
+     `node-2-9.sdsc`, and at startup elsewhere). Hangs in the **gather phase**
+     (the ~50k-query loop over 14,610 matchups) before workers even spawn.
+  2. *Result-queue deadlock* — on `proc-01.fresnostate` it ran to 5,187 then
+     deadlocked: main + all ~27 workers parked in `futex_wait_queue`, 1 mCPU, 22
+     GB/80 (no OOM), no errors. Fit workers return the ~13–19 MB chain array
+     *through* the mp result queue; when the parent's `_persist_result` stalls on
+     a slow CephFS chain write, the queue's pipe buffer fills, a worker blocks
+     holding the queue lock, and the pool deadlocks. Fit has no stall watchdog
+     (unlike match), so it can't self-recover.
+- **Why it's CephFS, not PAB:** lightweight one-shot `sqlite` reads keep working
+  throughout; only the fit's *sustained* heavy I/O wedges. Match used the same
+  PVC for days — but its writes were slow/spread out, not a tight metadata-heavy
+  loop. Restarting to new nodes doesn't help (same volume, same degraded MDS).
+- **Decision (user):** check the Nautilus Matrix/status for a Ceph incident and
+  **wait** for recovery, then resume. Reducing `--jobs` (50→32) did not help — the
+  hang is in the gather phase, not worker concurrency.
+- **If Ceph stays flaky → the durable fix:** decouple fit from CephFS — copy the
+  DB to local ephemeral disk, run against it, **stream chains to S3** (`s3://pab`,
+  which also feeds the eventual publish) instead of `/data/fit_chains`, bulk-sync
+  the DB back at the end. Also worth adding a **no-progress watchdog** to the fit
+  pool (mirror match's `_reclaim_pool`) so a result-queue deadlock self-recovers.
+  Deferred unless waiting fails.
