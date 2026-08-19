@@ -1,0 +1,89 @@
+# Task 17c — `figure` + `report` for the full run (after pab-full-fit completes).
+#
+# figure (Stage 6): per-matchup fit figure (reconstructs the posterior from the
+#   fit's chains NPZ in /data/fit_chains) + a PACE scene (re-opens the granule
+#   from S3), parallel across --jobs; records figure_path/scene_path in the DB.
+# report (Stage 7): builds the 7-page RST site under /data/full/pipeline/site
+#   and the release manifest. Single pass, DB-read-heavy.
+#
+# *** DB-LOCAL (same reason as full_fit_job.yaml): both stages do sustained
+# locked SQLite access, which hard-hangs on CephFS (ceph_mdsc_wait_request). So
+# run against a LOCAL copy of the DB and checkpoint it back to CephFS by plain
+# file-copy (NOT sqlite-backup-to-CephFS, which re-hits the hang). figure also
+# WRITES figure_path/scene_path, so the checkpoint matters for resume. ***
+#
+# Outputs (figures, scenes, site) go to /data/full/pipeline on CephFS — many
+# small PNGs, like the chains (bulk writes, no SQLite locking; those worked).
+# figure reads chains from /data/fit_chains (PAB_DATA_DIR=/data). Opens PACE
+# granules for scenes → needs netrc + awscreds like match/fit.
+#
+# `--stage figure --stage report` runs figure then report (STAGES order) in one
+# pass. Idempotent/resumable: figure skips already-rendered matchups; a re-apply
+# restores the checkpointed DB and continues.
+#
+# Usage (after fit is done):
+#   kubectl -n sea-meets-the-stars delete job pab-full-figrep --ignore-not-found
+#   kubectl apply -f nautilus/full_figrep_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-full-figrep
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-full-figrep
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.3
+        imagePullPolicy: IfNotPresent
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data}   # chains read from /data/fit_chains
+        - {name: RUN, value: /data/full}
+        - {name: MALLOC_ARENA_MAX, value: "2"}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            ulimit -n 65536 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
+            echo "=== FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn) ===" | tee -a $RUN/run.log
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/run.log; }
+            LOCAL=/scratch/pab.db
+            BKUP="import sqlite3,os,shutil; s=sqlite3.connect('/scratch/pab.db'); d=sqlite3.connect('/scratch/pab.bak'); s.backup(d); d.close(); s.close(); shutil.copy('/scratch/pab.bak','/data/full/pab.db.tmp'); os.replace('/data/full/pab.db.tmp','/data/full/pab.db')"
+            counts() { python -c "import sqlite3; c=sqlite3.connect('$LOCAL'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('matchups','fits','fit_results')})" 2>&1 | tee -a $RUN/run.log; }
+            log "DB-local: copy $RUN/pab.db -> $LOCAL"
+            cp $RUN/pab.db $LOCAL
+            ( while true; do sleep 120; python -c "$BKUP" 2>>$RUN/run.log && echo "=== DB backup $(date -Is) ===" >>$RUN/run.log || true; done ) &
+            BGPID=$!
+            log "FIGREP start (figure+report, jobs=32)"
+            counts
+            if ! pab --db $LOCAL --outdir $RUN/pipeline --stage figure --stage report --jobs 32 2>&1 | tee -a $RUN/run.log; then
+              log "FIGREP FAILED — final DB sync + stopping (re-apply to resume)"
+              python -c "$BKUP" 2>>$RUN/run.log || true
+              kill $BGPID 2>/dev/null || true
+              counts
+              exit 1
+            fi
+            log "FIGREP end — final DB sync to CephFS"
+            python -c "$BKUP" 2>>$RUN/run.log || true
+            kill $BGPID 2>/dev/null || true
+            counts
+            echo "figures: $(ls $RUN/pipeline/site/_static/figures/*.png 2>/dev/null | wc -l) | scenes: $(ls $RUN/pipeline/site/_static/scenes/*.png 2>/dev/null | wc -l)" | tee -a $RUN/run.log
+            du -sh $RUN/pipeline 2>/dev/null | tee -a $RUN/run.log
+            log "FIGREP_DONE"
+        resources:
+          requests: {cpu: "32", memory: "64Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "32", memory: "64Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: scratch, mountPath: /scratch}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: scratch, emptyDir: {sizeLimit: 5Gi}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}

@@ -585,3 +585,34 @@ nautilus/full_fit_job.yaml` (idempotent — skips existing `fit_id`s).
   the DB back at the end. Also worth adding a **no-progress watchdog** to the fit
   pool (mirror match's `_reclaim_pool`) so a result-queue deadlock self-recovers.
   Deferred unless waiting fails.
+
+### 2026-08-18 (fit unblocked — DB-local wrapper; CephFS-SQLite was the culprit)
+
+Waiting on Ceph did **not** help: raw CephFS recovered (file-write probe back to
+thousands/s) but the fit still hard-hung on `ceph_mdsc_wait_request` in the gather
+phase — because the killer is **SQLite's sustained *locked* access to the DB on
+CephFS**, not raw throughput. Proof: the exact gather (14,610 matchups × 4
+queries) hangs 12+ min on the CephFS DB but runs in **0.6 s** on a local copy
+(copy of the 96 MB DB = ~12 s).
+
+- **Fix (no code change / no image rebuild — all in the Job wrapper):** copy
+  `/data/full/pab.db` → `/scratch/pab.db` (`emptyDir`) at start, run
+  `pab --db /scratch/pab.db --stage fit --jobs 32`, chains still → `/data/fit_chains`
+  (CephFS — bulk 13 MB writes were never the problem). See
+  `nautilus/full_fit_job.yaml`.
+- **Follow-on bug caught + fixed:** the first checkpoint version ran
+  `sqlite3.backup()` straight to CephFS — same SQLite-on-CephFS hang, so the
+  backup loop wedged (no `DB backup` markers, CephFS DB stuck). Fixed: backup
+  LOCAL→local, then a plain **file-copy** of the result to CephFS (bulk write +
+  one atomic rename — no SQLite locking). Restarted (only ~50 fits lost).
+- **Confirmed working:** fits climbing past 5,187 (→5,246 and counting), `DB
+  backup` markers firing every ~2 min (CephFS checkpoint current), main proc
+  never in sustained `D/ceph_mdsc`. ~4–5 fits/min → ~1.3 days for the remaining
+  ~9,400. Resumable: an evicted pod restores the checkpointed DB and idempotently
+  re-fits only the gap.
+- **Also (local hygiene):** reclaimed ~19 GB of Docker cruft on the workstation
+  (52 GB build cache, 3 old `pab` tags) and removed two *leaked* `docker run`
+  containers — earlier in-image pytest runs that hit the 2-min tool timeout,
+  detached, and idled for 8–10 days. Lesson: `docker run` for a smoke test must
+  use `--rm` and a bounded command, else a timed-out client leaves it running.
+- **Next:** when fit completes → `figure` → `report` → publish + backup (Task 8).
