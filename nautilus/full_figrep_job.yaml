@@ -58,9 +58,9 @@ spec:
             cp $RUN/pab.db $LOCAL
             ( while true; do sleep 120; python -c "$BKUP" 2>>$RUN/run.log && echo "=== DB backup $(date -Is) ===" >>$RUN/run.log || true; done ) &
             BGPID=$!
-            log "FIGREP start (figure+report, jobs=32)"
+            log "FIGREP start (figure+report, jobs=16)"
             counts
-            if ! pab --db $LOCAL --outdir $RUN/pipeline --stage figure --stage report --jobs 32 2>&1 | tee -a $RUN/run.log; then
+            if ! pab --db $LOCAL --outdir $RUN/pipeline --stage figure --stage report --jobs 16 2>&1 | tee -a $RUN/run.log; then
               log "FIGREP FAILED — final DB sync + stopping (re-apply to resume)"
               python -c "$BKUP" 2>>$RUN/run.log || true
               kill $BGPID 2>/dev/null || true
@@ -75,8 +75,8 @@ spec:
             du -sh $RUN/pipeline 2>/dev/null | tee -a $RUN/run.log
             log "FIGREP_DONE"
         resources:
-          requests: {cpu: "32", memory: "64Gi", ephemeral-storage: "20Gi"}
-          limits: {cpu: "32", memory: "64Gi", ephemeral-storage: "40Gi"}
+          requests: {cpu: "16", memory: "100Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "16", memory: "100Gi", ephemeral-storage: "40Gi"}
         volumeMounts:
         - {name: data, mountPath: /data}
         - {name: scratch, mountPath: /scratch}

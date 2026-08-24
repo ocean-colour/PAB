@@ -1,7 +1,7 @@
 # PAB Implementation Record
 
-**Version:** 0.7.1
-**Date:** 2026-06-26
+**Version:** 1.0
+**Date:** 2026-08-21
 **Authors:** JXP and Claude
 
 **Status:** living document — updated as each stage is implemented.
@@ -34,6 +34,7 @@ every bump.
 | 7 | Reporting | ✅ done | `pab.report.{aggregate,rst,interactive,publish}` |
 | 8 | End-to-end pipeline & CLI | ✅ done | `pab.pipeline` + ``pab`` CLI |
 | 9 | Extensibility & options | ⬜ future | — |
+| — | **Full-mission production run (Nautilus)** | ✅ done | `pab_version = 1.0` over the PACE mission — see §10 |
 
 **Environment notes.** Workstation Python is 3.14.5 (plan floor 3.12);
 `bing`, `ocpy`, `remote_sensing`, `argopy`, `earthaccess`, `gsw`, `pandas`,
@@ -48,6 +49,11 @@ BING Loisel aph-basis data file is absent (the `b_bp`-recovery and fit-figure
 smoke skip, e.g. on lean CI / when the data mount is down), 117 passed when it is
 present; `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
 -W` → build succeeded.
+
+**Production run.** The full-mission run over the entire PACE mission completed
+2026-08-20 on NSF/Nautilus (`pab_version = 1.0`): 54,031 profiles ingested,
+14,610 matchups, 14,609 fits. See §10 and the full-run report
+[`PAB_full_run_report.md`](PAB_full_run_report.md).
 
 ---
 
@@ -753,5 +759,75 @@ bloating git or breaking the no-per-matchup-pages rule.
   `--download` it uses the local granule cache so the OC4 cross-check can run
   network-free. Published on Read the Docs from `report_site/.readthedocs.yaml`
   (a second project; see `HOWTO.md` §7a).
+
+---
+
+## 10. Full-mission production run (Nautilus)
+
+The first production run of the whole `pab` pipeline
+(ingest→discover→match→fit→figure→report) over the **entire PACE mission**,
+completed 2026-08-20 under `pab_version = "1.0"`.
+
+### 10.1 What ran
+
+The pipeline was containerized and run on **NSF/Nautilus** (Kubernetes + Ceph +
+S3), namespace `sea-meets-the-stars`, image
+`gitlab-registry.nrp-nautilus.io/profx/pab:1.0.3`. One pod = one SQLite writer;
+the heavy stages parallelize *in-process* via `--jobs`. PACE granules are read
+**lazily** from NASA's `us-west-2` S3 — only the ~MB of pixels each matchup
+needs ever moves; the ~18.55 TB of mission granules were never downloaded.
+
+### 10.2 Results
+
+| Stage | Result |
+|---|---|
+| `ingest` | 54,031 profiles (881 floats) |
+| `discover` | 67,435 granules |
+| `match` | 14,610 matchups / 146,100 pixels |
+| `fit` | 14,609 fits / 146,090 `fit_results` rows (1 fit failed) |
+| `figure` | 14,609 fit figures + 14,586 scenes |
+| `report` | 7-page RST site + release manifest |
+
+### 10.3 Provenance
+
+`pab_version = "1.0"` is stamped on 100% of `matchups`/`fits`/`mld_summary`
+rows, and every fit records a `pkg_versions` JSON (pab 1.0, argopy 1.4.0,
+numpy 2.4.6, scipy 1.18.0, xarray 2025.9.0, earthaccess 0.17.0, …). Fit
+outputs are 10 IOP quantities per matchup
+(`BING_ExpBPow_{Adg,Aph,Bnw,Sdg,anw440,anw700,bbp440,bbp700,beta,chl}`). MCMC
+chains are ~1.3 MB each, ~18.1 GiB total.
+
+### 10.4 Production-hardening fixes (implementation decisions)
+
+Three fixes made during the run, recorded here as implementation decisions:
+
+1. **`pab/matchup/engine.py` — file-descriptor leak wedged `match`.** Transient
+   S3-read stalls triggered ~192 worker-pool recreations, each leaking ~5 pipes
+   → the pod hit `ulimit -n`. Fixed with `_reclaim_pool`
+   (kill→reap→`shutdown(wait=True)`, guarded by a 30 s watchdog thread), plus
+   `ulimit -n 65536` headroom in the Job.
+2. **`fit` on CephFS — SQLite locking, not throughput.** The killer was
+   SQLite's sustained locked access to the DB on CephFS (the gather phase hung
+   12+ min on the CephFS DB vs 0.6 s on a local copy). Fixed via a
+   **Job-wrapper** (no code change): run `fit` against a node-local
+   (`emptyDir`) copy of `pab.db`, keep the bulk chain writes on CephFS, and
+   checkpoint the DB back by local-backup→file-copy (never `sqlite3.backup()`
+   to CephFS).
+3. **`figure` is memory-bound**, not CPU-bound like `fit` — it re-opens PACE
+   granules for scenes, and running it with fit's worker shape OOM-killed
+   pods. Retuned to match's 16-worker / 100 GiB ratio.
+
+### 10.5 Publishing & backup status
+
+The `report` release backend is still `LocalStubBackend`;
+`NautilusS3Backend`/`ZenodoBackend` remain `NotImplementedError` stubs — the
+real `s3://pab`/RTD/Zenodo publish is **deferred**. The full dataset (DB +
+chains + site) is backed up off-site to the Google shared drive `AIOcean:PAB/`
+(Nautilus PVCs are not backed up).
+
+See the standalone [`PAB_full_run_report.md`](PAB_full_run_report.md) for the
+full narrative of the run.
+
+---
 
 *Living document; updated at the close of each stage.*

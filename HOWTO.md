@@ -231,18 +231,27 @@ building the developer docs from the root `.readthedocs.yaml`.
 > CDN list is baked into the generated `conf.py`), and the thumbnails are served
 > as static files — both render on RTD with no Bokeh install at build time.
 
-### 7b. Bulk artifacts & DOI snapshots — set up later, NOT yet
+### 7b. Bulk artifacts & DOI snapshots — full run done via local stub; S3/Zenodo still deferred
 
 The `report` stage also writes a release **manifest** and uploads artifacts
-through a pluggable backend. Today only the **local stub** backend is active; the
-real **Nautilus S3** (bulk figures/chains) and **Zenodo** (citable DOI snapshots)
-backends are stubbed and **must not be wired up yet**.
+through a pluggable backend. Only the **local stub** (`LocalStubBackend`) backend
+is active; the real **Nautilus S3** (bulk figures/chains) and **Zenodo** (citable
+DOI snapshots) backends are still explicit `NotImplementedError` stubs.
 
-> **TODO (do not do now):** when we're ready to publish to the community, set up
-> the Nautilus S3 and/or Zenodo publishing backends (credentials + the
-> `publish` configuration) and switch `report` over from the local stub. Until
-> then, releases stay local under `outdir/release/`. Once S3 is live, the
-> reporting site will reference figures by their S3 URL instead of committing
+**Full-mission run (2026-08-20, `pab_version = 1.0`).** The complete PACE-mission
+run finished on NSF/Nautilus (54,031 profiles → 14,610 matchups → 14,609 fits; see
+[`docs/design/PAB_full_run_report.md`](docs/design/PAB_full_run_report.md)). Its
+`report` release therefore used the **local stub** — the manifest's `n_uploaded`
+counts files copied into `outdir/release/store/` on the Nautilus PVC, **not** an S3
+upload. Because Nautilus PVCs are not backed up, the full dataset (`pab.db`,
+`fit_chains/` = 18.09 GiB, `site/`) was rcloned off-site to the Google shared drive
+**`AIOcean:PAB/`**. That is the interim, verified home of the outputs.
+
+> **Remaining follow-on (not yet done):** to publish to the community, implement
+> the `NautilusS3Backend` (and optionally `ZenodoBackend`) — credentials + the
+> `publish` configuration — switch `report` off the local stub, upload to the
+> public `s3://pab`, and push the report site to Read the Docs. Once S3 is live,
+> the reporting site will reference figures by their S3 URL instead of committing
 > thumbnails (the Phase 2 enhancement), so `report_site/` stays bounded at scale.
 
 

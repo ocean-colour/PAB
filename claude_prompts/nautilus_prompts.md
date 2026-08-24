@@ -70,6 +70,10 @@ once** and read locally? Task 1 measures this before we commit to either.
 5. Execute the 5th task in Tasks below
 6. Execute the 6th task in Tasks below
 7. Execute the 7th task in Tasks below
+8. Execute the 8th task in Tasks below
+9. Execute the 9th task in Tasks below
+
+10. Execute the 1st task in "Pull Request" below
 
 ## Tasks
 
@@ -120,7 +124,9 @@ Modify the file in `nautilus/inspect_pod.yaml` to fix the syntax error and I wil
 
 9. **Verify & close out.** Spot-check matchups, confirm `pab_version = 1.0` on every
    record, update `docs/design/PAB_implementation.md` + `HOWTO.md` (§7b → activated),
-   and write the full-run report. Log your work.
+   and write the full-run report. Log your work.  Confirm there is a backup on Google Drive.
+
+## Pull Request
 
 ## Q&A
 
@@ -616,3 +622,105 @@ queries) hangs 12+ min on the CephFS DB but runs in **0.6 s** on a local copy
   detached, and idled for 8–10 days. Lesson: `docker run` for a smoke test must
   use `--rm` and a bounded command, else a timed-out client leaves it running.
 - **Next:** when fit completes → `figure` → `report` → publish + backup (Task 8).
+
+### 2026-08-20 (FULL RUN COMPLETE — figure+report done; pab_version 1.0)
+
+`pab-full-figrep` completed (18 h). The full-mission pipeline is now end-to-end
+done and durable on the `pab-data` PVC (`/data/full/pab.db` + `/data/fit_chains`
++ `/data/full/pipeline/site`):
+
+| stage | result |
+|---|---|
+| ingest | 54,031 profiles |
+| discover | 67,435 granules |
+| match | 14,610 matchups / 146,100 pixels |
+| fit | 14,609 fits / 146,090 fit_results (1 matchup's fit failed) |
+| figure | 14,609 fit figures + 14,586 scenes (23 scenes hit granule edge cases) |
+| report | 7-page RST site + release manifest (n_uploaded=29,218) |
+
+- **figrep sizing lesson:** first launch used fit's 32 workers / 64 Gi and
+  OOMKilled 4 pods — `figure` re-opens PACE granules for the scene images, so it's
+  **memory-bound like `match`, not CPU-bound like `fit`**. Retuned to **16
+  workers / 100 Gi** (match's proven ratio) → stable to completion at ~14/min.
+- **DB-local + file-copy checkpoint** (from the fit fix) carried figure/report
+  through with no CephFS-SQLite hang.
+- **chains total ~19 GB** (not the ~180 GB estimated from the pilot's per-fit
+  size — ~1.3 MB/chain, not 13 MB).
+- **Next — Task 8 (publish + backup):** verify what `n_uploaded=29,218` actually
+  wrote (real `s3://pab` upload vs stub); publish the report site (RTD); and
+  `rclone` everything (DB, chains, site) to `AIOcean:PAB/` since Nautilus is not
+  backed up.
+
+### 2026-08-20 (Task 8 partial — verified the "upload" was a stub; off-site backup done)
+
+Did Task-8 items (1) verify + (2) backup; real publish (s3://pab public + RTD)
+stays deferred for the prompt-doc work that follows.
+
+- **(1) `n_uploaded=29,218` was a LOCAL STUB, not S3.** `pab/report/publish.py`:
+  `NautilusS3Backend` and `ZenodoBackend` both raise `NotImplementedError`
+  (deferred); the release defaults to `LocalStubBackend`, which "uploads" by
+  copying files into `/data/full/pipeline/release/store/` on the *same* PVC
+  (~19 GB of duplicated figures/scenes). **Nothing reached S3** — the full
+  dataset was single-copy on the `pab-data` PVC, so the off-site backup mattered.
+- **(2) Backed up to `AIOcean:PAB/`** (Google shared drive; Nautilus PVCs are not
+  backed up). Set = DB + chains + site (**skipped** the redundant 19 GB
+  `release/store` stub):
+  - **DB** (133 MB) via the workstation — `kubectl cp` off a read-only helper pod,
+    then `rclone copy … AIOcean:PAB/` — so the Google token stayed on the
+    workstation. Also kept a local copy at `PAB/data/backup/pab.db` (row counts
+    verified: 54,031 / 67,435 / 14,610 / 14,609 / 146,090).
+  - **chains** (18.09 GiB, 14,654 objs) + **site** (3.67 GiB) via an in-cluster
+    rclone Job (PVC mounted read-only) pushing straight to Drive through a
+    **temporary, AIOcean-only** rclone-config secret — **deleted after** the copy.
+  - **Reordered chains-before-site mid-run:** Drive rate-limits per-file API calls
+    (~5 small files/s), and the site is ~34k tiny PNGs (the 4.5 h long tail);
+    chains are 1.3 MB files (bandwidth-bound, fast), so they went first to protect
+    the expensive, days-of-compute output soonest. rclone is resumable so the
+    reorder skipped the already-uploaded site files.
+  - Cleanup: token secret + helper/backup pods all deleted.
+- **Still deferred (prompt-doc work):** real `s3://pab` public publish
+  (implement `NautilusS3Backend`) and the report site to RTD.
+
+### 2026-08-21 (Task 9 — verify & close out; docs updated, run report written)
+
+Closed out the full run. Verified the production DB (used the local backup
+`PAB/data/backup/pab.db`, so no Nautilus pod needed), updated the docs, wrote a
+standalone full-run report, and confirmed the off-site backup.
+
+- **Verification (all clean).** Counts match the run log exactly — 881 floats /
+  54,031 profiles / 67,435 granules / 14,610 matchups / 146,100 pixels / 14,609
+  fits / 146,090 fit_results. **`pab_version = "1.0"` on 100%** of the three
+  stamped tables (`matchups` 14,610, `fits` 14,609, `mld_summary` 54,031) — no
+  stragglers. Referential integrity: **0 orphans** (no matchup without pixels, no
+  fit without a matchup, no fit_result without a fit). Matchup spot-checks are
+  clean 10 px → 1 fit → 10 results. All 10 `BING_ExpBPow_*` IOP quantities are
+  non-null across every fit; ranges physically plausible. The single fit-less
+  matchup is `5906568_97_PACE_OCI.20250809T225220…` (the "1 fit failed" from
+  2026-08-20). Every fit's `pkg_versions` records the env (pab 1.0, argopy 1.4.0,
+  numpy 2.4.6, scipy 1.18.0, xarray 2025.9.0, earthaccess 0.17.0, …).
+- **Google Drive backup confirmed.** `rclone` shows `AIOcean:PAB/` holds `pab.db`
+  (132 MB), `fit_chains/` (18.09 GiB, 14,654 objects), and `site/` — the full
+  dataset is off-site (`rclone lsd` only lists dirs, so the DB *file* needed
+  `rclone ls` to see). Backup is present and complete.
+- **Docs updated.** `docs/design/PAB_implementation.md` → bumped to **v1.0
+  (2026-08-21)**, added a production-run row + note to §1 Status, and a new **§10
+  Full-mission production run (Nautilus)** (stage results, provenance, the three
+  production-hardening fixes, honest publish/backup status). `HOWTO.md` **§7b**
+  updated to the *true* state — **not** blindly "activated": the full run's
+  `report` used the `LocalStubBackend` (so `n_uploaded=29,218` was a local copy,
+  not S3), the artifacts are backed up to `AIOcean:PAB/`, and the real
+  `NautilusS3Backend`/`ZenodoBackend` (+ RTD) remain `NotImplementedError`
+  follow-ons. (The prompt said "§7b → activated," but activating it would
+  misreport reality — S3/Zenodo are genuinely still stubbed, confirmed in
+  `pab/report/publish.py` — so I recorded the honest state instead.)
+- **New: `docs/design/PAB_full_run_report.md`** — the standalone full-run report
+  (headline numbers, selection/environment, per-stage results, fit outputs +
+  provenance, integrity verification, the four operational incidents, and the
+  honest publish/backup status). Drafted by a **Fable** subagent from the
+  verified numbers (per the user's "use Fable if you can"); the implementation-doc
+  §10 edit was also Fable. Both reviewed against the DB — numbers correct, no
+  fabrication.
+- **Not done (git is the user's):** committing these doc changes + the earlier
+  `engine.py` FD-leak fix. **Remaining follow-on:** the real `s3://pab` public
+  publish + RTD + Zenodo DOI (implement `NautilusS3Backend`) — the one open item
+  from the Nautilus plan. Task 9 (verify & close out) is otherwise **done**.
