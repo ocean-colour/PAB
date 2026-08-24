@@ -196,14 +196,19 @@ fit figures and 14,586 scenes (23 granule edge cases); report produced the
 
 To be precise about what is and is not published:
 
-- **Release backend is a local stub.** The `report` stage's release backend
-  is currently the `LocalStubBackend`, which "uploads" by copying artifacts
-  into `outdir/release/store/` on the same PVC. The report manifest's
-  `n_uploaded = 29,218` reflects that **local** copy, not an S3 upload. The
-  real `NautilusS3Backend` and `ZenodoBackend` are explicit
-  `NotImplementedError` stubs. The public `s3://pab` publish, the
-  Read-the-Docs report site, and a citable Zenodo DOI are **not yet done**
-  and remain a deferred follow-on task.
+- **The run itself used a local stub; the DB is now published to S3.** During
+  the run the `report` stage's release backend was the `LocalStubBackend`,
+  which "uploads" by copying artifacts into `outdir/release/store/` on the same
+  PVC — so the run's manifest `n_uploaded = 29,218` reflects that **local**
+  copy, not an S3 upload. Since then, **`NautilusS3Backend` has been
+  implemented** (live Ceph-RGW S3, path-style, public-read) and the full
+  production DB is published at
+  **`https://s3-west.nrp-nautilus.io/pab/full/pab.db`** (public-read; size +
+  row counts verified against the local copy). **Still pending:** publishing
+  the **bulk artifacts** (chains + figures) to `s3://pab` via
+  `publish_release(..., backend=NautilusS3Backend(...))` so the manifest
+  carries real S3 URLs, the Read-the-Docs report site, and (if wanted) a
+  citable Zenodo DOI (`ZenodoBackend` is still a `NotImplementedError` stub).
 - **Off-site backup is complete and verified.** Nautilus PVCs are not backed
   up, so the full dataset was rcloned to the Google shared drive
   **`AIOcean:PAB/`**: `pab.db` (132 MB), `fit_chains/` (18.09 GiB, 14,654
@@ -221,6 +226,7 @@ To be precise about what is and is not published:
 | Report site | Nautilus PVC `pab-data`: `/data/full/pipeline/site` |
 | Container image | `gitlab-registry.nrp-nautilus.io/profx/pab:1.0.3` |
 | Local DB backup | `PAB/data/backup/pab.db` |
+| Published DB (public) | `https://s3-west.nrp-nautilus.io/pab/full/pab.db` |
 | Off-site backup | Google shared drive `AIOcean:PAB/` (`pab.db`, `fit_chains/`, `site/`) |
 
 The namespace is `sea-meets-the-stars`. Every fit's `pkg_versions` JSON

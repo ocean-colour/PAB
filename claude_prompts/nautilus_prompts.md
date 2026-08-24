@@ -727,3 +727,41 @@ standalone full-run report, and confirmed the off-site backup.
   `engine.py` FD-leak fix. **Remaining follow-on:** the real `s3://pab` public
   publish + RTD + Zenodo DOI (implement `NautilusS3Backend`) — the one open item
   from the Nautilus plan. Task 9 (verify & close out) is otherwise **done**.
+
+### 2026-08-24 (implemented `NautilusS3Backend`; published the full DB to `s3://pab`)
+
+The user couldn't find the full DB on S3 (or where they looked on the
+workstation). Clarified + fixed: the full-run DB was on the workstation
+(`PAB/data/backup/pab.db`, 133 MB), the Nautilus PVC (`/data/full/pab.db`), and
+Google Drive (`AIOcean:PAB/pab.db`) — but **not** on S3, because the run's
+`report` used `LocalStubBackend` and `NautilusS3Backend` was a
+`NotImplementedError` stub. (`s3://pab` only held `run1k/pab.db`, the 3.3 MB
+1k pilot.)
+
+- **Implemented `NautilusS3Backend` properly** (`pab/report/publish.py`): live
+  Ceph-RGW S3, **path-style** addressing (Ceph RGW needs it), public-read
+  `s3://pab`; `boto3` imported **lazily** (offline CI unaffected); mirrors
+  `LocalStubBackend` (`.upload(local, key)`, `.uploaded`, `.base_url`) so it
+  drops into `publish_release` unchanged; creds via the standard boto3 chain
+  (env/profile) or explicit; an injectable `client` makes it unit-testable with
+  no network. Updated the module docstring (only `ZenodoBackend` is stubbed now).
+- **Tests** (`pab/tests/test_report.py`): replaced `test_real_backends_are_deferred`
+  with `test_zenodo_backend_is_deferred` + two new tests — a fake-S3-client upload
+  (asserts `upload_file(path, "pab", "full/M1.npz")` + the public URL, explicit-key
+  override, leading-slash tolerance) and a `publish_release`-with-S3-backend test
+  (manifest carries real S3 URLs). `pytest pab/tests/test_report.py` → 30 passed;
+  report+pipeline → 67 passed; `ruff check`/`format` clean.
+- **Published the DB:** `NautilusS3Backend(bucket="pab").upload("data/backup/pab.db",
+  key="full/pab.db")` (Nautilus keys pulled from the `nautilus_s3` rclone remote
+  into env, never printed) → **`https://s3-west.nrp-nautilus.io/pab/full/pab.db`**.
+  Verified: public `HTTP 200`, `content-length` == local size (138,854,400 B), and
+  re-downloading + querying the S3 copy returns 14,610 matchups / 14,609 fits.
+- **Docs updated** to the new reality (were stale/`NotImplementedError`): `HOWTO.md`
+  §7b (S3 backend live + usage snippet + published DB URL), `PAB_full_run_report.md`
+  (publish status + reproducibility table row), `PAB_implementation.md` (§5e module
+  notes, §5e.5 key decisions, §7 module index, §10.5).
+- **Still pending (offered to the user):** publish the **bulk artifacts** (chains
+  18 GB + figures) to `s3://pab` via `publish_release(..., backend=NautilusS3Backend(...))`
+  so the manifest carries real S3 URLs — deferred pending the user's go-ahead
+  (18 GB+, shared NRP quota). RTD + Zenodo DOI also still open. Git commit is the
+  user's.

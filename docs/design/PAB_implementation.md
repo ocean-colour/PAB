@@ -573,10 +573,12 @@ are lazily-imported seams; the aggregation math and manifest are pure.
 - `export_tables` (summary CSV/Parquet; the raw SQLite file is **not** a
   published download), `file_checksum` (SHA-256), `build_manifest` (one row per
   per-matchup artifact: `matchup_id`→URL+checksum, stamped `pab_version`), and
-  `publish_release` (exports + manifest + stub "uploads", writes `manifest.json`
-  with `pkg_versions`). `LocalStubBackend` copies to the filesystem (no network);
-  `NautilusS3Backend`/`ZenodoBackend` are explicit `NotImplementedError` stubs
-  (deferred, config-gated).
+  `publish_release` (exports + manifest + "uploads", writes `manifest.json`
+  with `pkg_versions`). `LocalStubBackend` copies to the filesystem (no network,
+  the offline default); **`NautilusS3Backend` is the live NSF/Nautilus Ceph-RGW
+  S3 backend** (path-style, public-read `s3://pab`; lazy `boto3` import; injectable
+  `client` for offline tests); `ZenodoBackend` remains an explicit
+  `NotImplementedError` stub.
 
 ### 5e.5 Key decisions
 
@@ -601,8 +603,9 @@ lean-CI regression); the **generated site builds** under `sphinx-build`;
 `stats_table` columns are sortable; `rst_table` rendering;
 Bokeh `comparison_scatter`/`embed`; `export_tables` round-trip; `build_manifest`
 id↔URL+checksum+`pab_version` and `LocalStubBackend` copies-not-network;
-`publish_release` writes the manifest; the real S3/Zenodo backends raise
-`NotImplementedError`.
+`publish_release` writes the manifest; `NautilusS3Backend` uploads via an
+injected fake S3 client (no network) and returns the public path-style URL; the
+`ZenodoBackend` still raises `NotImplementedError`.
 
 **Docs page** — `reporting.rst` (aggregate-not-per-matchup rationale, HEALPix,
 interactive embed, downloads/manifest, stubbed publish + config gate, how to
@@ -725,7 +728,7 @@ pab/
     aggregate.py       ✅ region/season + HEALPix aggregation
     rst.py             ✅ aggregate .rst pages (no per-matchup pages)
     interactive.py     ✅ standalone Bokeh scatter/map (embed)
-    publish.py         ✅ exports + download manifest + stubbed backends
+    publish.py         ✅ exports + download manifest + live Nautilus-S3 backend (Zenodo stubbed)
   pipeline.py          ✅ stage runner (ingest→…→report) + ``pab`` CLI
   tests/               test_smoke, test_db, test_argo, test_pace, test_matchup, test_fit, test_metrics, test_report, test_pipeline
 ```
@@ -819,11 +822,13 @@ Three fixes made during the run, recorded here as implementation decisions:
 
 ### 10.5 Publishing & backup status
 
-The `report` release backend is still `LocalStubBackend`;
-`NautilusS3Backend`/`ZenodoBackend` remain `NotImplementedError` stubs — the
-real `s3://pab`/RTD/Zenodo publish is **deferred**. The full dataset (DB +
-chains + site) is backed up off-site to the Google shared drive `AIOcean:PAB/`
-(Nautilus PVCs are not backed up).
+The run's `report` used the `LocalStubBackend`. Since then **`NautilusS3Backend`
+is implemented** (live Ceph-RGW S3) and the full production DB is published to
+`https://s3-west.nrp-nautilus.io/pab/full/pab.db` (public-read, verified). The
+whole dataset (DB + chains + site) is also backed up off-site to the Google shared
+drive `AIOcean:PAB/` (Nautilus PVCs are not backed up). **Still pending:** the bulk
+artifact publish (chains/figures → `s3://pab` with real manifest URLs), RTD, and a
+Zenodo DOI (`ZenodoBackend` still a `NotImplementedError` stub).
 
 See the standalone [`PAB_full_run_report.md`](PAB_full_run_report.md) for the
 full narrative of the run.

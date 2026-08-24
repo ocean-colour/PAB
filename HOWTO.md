@@ -231,28 +231,39 @@ building the developer docs from the root `.readthedocs.yaml`.
 > CDN list is baked into the generated `conf.py`), and the thumbnails are served
 > as static files — both render on RTD with no Bokeh install at build time.
 
-### 7b. Bulk artifacts & DOI snapshots — full run done via local stub; S3/Zenodo still deferred
+### 7b. Bulk artifacts & DOI snapshots — S3 backend live (DB published); full artifact publish + Zenodo pending
 
-The `report` stage also writes a release **manifest** and uploads artifacts
-through a pluggable backend. Only the **local stub** (`LocalStubBackend`) backend
-is active; the real **Nautilus S3** (bulk figures/chains) and **Zenodo** (citable
-DOI snapshots) backends are still explicit `NotImplementedError` stubs.
+The `report` stage writes a release **manifest** and uploads artifacts through a
+pluggable backend. **`NautilusS3Backend` is now implemented** (live NSF/Nautilus
+Ceph-RGW S3, path-style, public-read `s3://pab`); the **local stub**
+(`LocalStubBackend`) remains the offline default, and **`ZenodoBackend`** (citable
+DOI snapshots) is still an explicit `NotImplementedError` stub.
+
+```python
+from pab.report.publish import NautilusS3Backend, publish_release
+# creds via the standard boto3 chain (env AWS_ACCESS_KEY_ID/SECRET or a profile);
+# the pab bucket is public-read, so returned URLs need no auth to fetch.
+backend = NautilusS3Backend(bucket="pab", prefix="full")
+url = backend.upload("pab.db")                       # -> https://s3-west.nrp-nautilus.io/pab/full/pab.db
+publish_release(store, outdir, backend=backend,      # bulk chains/figures + manifest with real S3 URLs
+                base_url="https://s3-west.nrp-nautilus.io/pab/full")
+```
 
 **Full-mission run (2026-08-20, `pab_version = 1.0`).** The complete PACE-mission
 run finished on NSF/Nautilus (54,031 profiles → 14,610 matchups → 14,609 fits; see
 [`docs/design/PAB_full_run_report.md`](docs/design/PAB_full_run_report.md)). Its
-`report` release therefore used the **local stub** — the manifest's `n_uploaded`
-counts files copied into `outdir/release/store/` on the Nautilus PVC, **not** an S3
-upload. Because Nautilus PVCs are not backed up, the full dataset (`pab.db`,
-`fit_chains/` = 18.09 GiB, `site/`) was rcloned off-site to the Google shared drive
-**`AIOcean:PAB/`**. That is the interim, verified home of the outputs.
+`report` release ran against the **local stub**, so the run's own manifest URLs are
+local. The full DB is now **published** at
+`https://s3-west.nrp-nautilus.io/pab/full/pab.db` (public-read), and the whole
+dataset (`pab.db`, `fit_chains/` = 18.09 GiB, `site/`) is also backed up off-site to
+the Google shared drive **`AIOcean:PAB/`** (Nautilus PVCs are not backed up).
 
-> **Remaining follow-on (not yet done):** to publish to the community, implement
-> the `NautilusS3Backend` (and optionally `ZenodoBackend`) — credentials + the
-> `publish` configuration — switch `report` off the local stub, upload to the
-> public `s3://pab`, and push the report site to Read the Docs. Once S3 is live,
-> the reporting site will reference figures by their S3 URL instead of committing
-> thumbnails (the Phase 2 enhancement), so `report_site/` stays bounded at scale.
+> **Remaining follow-on:** publish the **bulk artifacts** (chains + figures) to
+> `s3://pab` via `publish_release(..., backend=NautilusS3Backend(...))` so the
+> manifest carries real S3 URLs (the reporting site can then reference figures by
+> S3 URL instead of committing thumbnails — the Phase 2 enhancement, keeping
+> `report_site/` bounded at scale); push the report site to Read the Docs; and, if
+> a citable DOI is wanted, implement `ZenodoBackend`.
 
 
 ## Planned enhancements
