@@ -128,6 +128,9 @@ Modify the file in `nautilus/inspect_pod.yaml` to fix the syntax error and I wil
 
 ## Pull Request
 
+1. **Initial.** I have submitted the pull request and `cursor` has reviewed it.  Please review their comments 
+   and make the necessary changes.  Log your work. Use Fable if you can.
+
 ## Q&A
 
 **M1 — Namespace & quota.** Do you already have a Nautilus/NRP namespace for this
