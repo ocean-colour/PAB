@@ -367,6 +367,34 @@ def test_downloads_page_stages_tables(tmp_path):
         assert "Nautilus S3" in out  # bulky artifacts noted as deferred
 
 
+def test_downloads_page_links_s3_and_stages_nothing(tmp_path):
+    # At scale: link the tables at an S3 URL prefix instead of committing them.
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        site = tmp_path / "site"
+        base = "https://s3-west.nrp-nautilus.io/pab/full"
+        out = rst.downloads_page(store, site, downloads_base_url=base)
+        assert f'href="{base}/matchup_summary.csv"' in out
+        assert f'href="{base}/matchup_summary.parquet"' in out
+        # nothing staged into the committed tree
+        assert not (site / "_static" / "downloads").exists()
+        assert "_static/downloads/" not in out
+
+
+def test_comparisons_page_static_figures_at_scale(tmp_path):
+    # Above max_interactive the page renders static PNGs, not a giant Bokeh embed.
+    from pab.metrics import compare
+
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        df = compare.gather_matchups(store)
+        out = rst.comparisons_page(df, outdir=tmp_path, max_interactive=1)
+        assert ".. figure:: _static/comparisons/bbp_scatter.png" in out
+        assert (tmp_path / "_static" / "comparisons" / "bbp_scatter.png").is_file()
+        assert "suppressed at this scale" in out
+        assert ".. raw:: html" not in out  # no multi-MB inline Bokeh embed
+
+
 def test_provenance_block_lists_versions():
     out = rst.provenance_block(pab_version="9.9.test")
     assert "Provenance" in out

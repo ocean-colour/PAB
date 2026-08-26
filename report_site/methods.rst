@@ -52,7 +52,7 @@ Provenance
 ----------
 
 
-Built from ``pab_version`` ``0.0.dev0`` on 2026-07-01. Installed package versions:
+Built from ``pab_version`` ``1.0`` on 2026-08-26. Installed package versions:
 
 .. list-table::
    :header-rows: 1
@@ -60,20 +60,20 @@ Built from ``pab_version`` ``0.0.dev0`` on 2026-07-01. Installed package version
    * - package
      - version
    * - pab
-     - 0.0.dev0
+     - 1.0
    * - bing
-     - not installed
+     - 0.0.dev0
    * - ocpy
-     - not installed
+     - 0.1.dev0
    * - argopy
-     - not installed
+     - 1.4.0
    * - remote_sensing
-     - not installed
+     - 0.0.dev0
    * - earthaccess
-     - not installed
+     - 0.13.0
    * - numpy
      - 2.2.5
    * - scipy
-     - 1.15.2
+     - 1.17.0
    * - xarray
-     - 2025.3.1
+     - 2025.9.0

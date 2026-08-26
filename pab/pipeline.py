@@ -189,18 +189,21 @@ def ingest(store, config: PipelineConfig, *, fetcher=None) -> dict[str, Any]:
     workers = config.ingest_workers()
     n_fetch = sum(1 for _, _, row in todo if "summary" not in row)
     if workers > 1 and n_fetch > 1:
-        _ingest_concurrent(
-            store, config, todo, fetcher, workers, written, failed
-        )
+        _ingest_concurrent(store, config, todo, fetcher, workers, written, failed)
         return {"written": written, "skipped": skipped, "failed": failed}
 
     for wmo, cycle, row in todo:
         # A single bad profile (odd argopy return, a 0-d array, a fetch error) must
         # not abort a 50k-profile ingest — record it and resume, like build_fits.
         try:
-            _persist_profile(store, config, wmo, cycle, row, _fetch_profile_payload(
-                config, wmo, cycle, row, fetcher
-            ))
+            _persist_profile(
+                store,
+                config,
+                wmo,
+                cycle,
+                row,
+                _fetch_profile_payload(config, wmo, cycle, row, fetcher),
+            )
             written.append(f"{wmo}_{cycle}")
         except Exception:  # noqa: BLE001 — one bad profile must not abort the batch
             failed.append(f"{wmo}_{cycle}")
@@ -944,6 +947,14 @@ def build_parser() -> argparse.ArgumentParser:
         "the --db store and exit. Use to (re)generate an in-repo report_site/ for "
         "Read the Docs to build (see HOWTO §7).",
     )
+    p.add_argument(
+        "--downloads-base-url",
+        default=None,
+        metavar="URL",
+        help="With --emit-site: link the summary tables at this URL prefix (e.g. "
+        "the s3://pab public URL) instead of staging multi-MB CSV/Parquet into the "
+        "committed site. Keeps report_site/ bounded at scale (HOWTO §7b).",
+    )
     return p
 
 
@@ -989,7 +1000,12 @@ def main(argv=None) -> int:
 
             opener = cached_opener(config.cache())
         with Store.open(Path(args.db)) as store:
-            written = rst.build_site(store, args.emit_site, opener=opener)
+            written = rst.build_site(
+                store,
+                args.emit_site,
+                opener=opener,
+                downloads_base_url=args.downloads_base_url,
+            )
         print(f"emitted reporting site → {args.emit_site}")
         for name, path in sorted(written.items()):
             print(f"  {name}: {path}")
