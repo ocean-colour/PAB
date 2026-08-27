@@ -12,6 +12,12 @@ cp ../../../ulmo/nautilus/s3_viirs_policy.json s3_pab_policy.json
 
 ### Edit Resource to point to pab instead of viirs
 
+**Public read only.** `s3_pab_policy.json` grants `Principal: "*"` **`s3:GetObject`
+only** (per N6) — anyone can read `s3://pab`, but writes/deletes go through the
+bucket owner's authenticated credentials, which need no policy grant. The earlier
+example also granted `PutObject`/`DeleteObject` to `*`; those were removed so that
+re-applying this file can never re-open the bucket to public overwrite/wipe.
+
 ## Add policy
 
 aws --endpoint-url https://s3-west.nrp-nautilus.io s3api put-bucket-policy --bucket pab --policy file://s3_pab_policy.json
