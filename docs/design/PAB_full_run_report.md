@@ -235,5 +235,66 @@ mld_summary row is stamped `pab_version = "1.0"`.
 
 ---
 
+## 9. Timings and failure rates
+
+Wall-clock for the full run on NSF/Nautilus (one pod; heavy stages
+parallelised in-process via `--jobs`). The `match` and `fit` stages spanned
+several days across restarts because of two infrastructure incidents (a
+file-descriptor leak in `match`; CephFS-SQLite hangs in `fit`), both diagnosed
+and worked around — see §6.
+
+| Stage | Wall-clock | Notes |
+|---|---|---|
+| ingest | 49.4 h | 32 concurrent argopy fetches; 3.32 s/profile (latency-bound to the GDAC servers) |
+| discover | 8.05 h (+ 2 h 16 m re-search) | the re-search re-covered 10,101 profiles a coverage-test gap had skipped |
+| match | ~several days (across restarts) | FD-leak wedge + resume; harvested to a plateau at 14,610 matchups |
+| fit | ~1.5–2 days (effective) | CephFS-SQLite hangs worked around with a node-local DB copy; ~5–10 fits/min |
+| figure + report | 18 h | `figure` is memory-bound (re-opens granules for scenes); retuned to 16 workers / 100 GiB |
+
+Throughput/scale facts worth recording: match candidate coverage came to a
+**mean 6.35 candidate granules/profile** (vs the independent CMR count's
+5.67); **50,292 of 53,618** positioned profiles (93.8%) had ≥1 candidate, and
+**3,326 (6.2%)** had no PACE coverage within ±24 h (they can never match).
+
+### Failure rates (all well within expectations)
+
+| Stage | Failures | Rate | Detail |
+|---|---|---|---|
+| ingest | 475 / 54,506 | **0.89%** | argopy `DataNotFound` + a fixed shape-mismatch bug; beat the 2–3% predicted (retry logic) |
+| discover | 0 | **0%** | CMR bounding-box clamp + retry; beat the ~1.7% predicted |
+| match | — | — | not a failure mode: 14,610 matchups formed; the 27% "miss" rate is genuine lack of a coincident cloud-free PACE pixel. Transient S3-read stalls (~2% of reads > 120 s) were absorbed by the stall watchdog |
+| fit | 1 / 14,610 | **0.007%** | one matchup's MCMC fit failed (`5906568_97_…`) |
+| figure | 24 / 14,610 scenes | **0.16%** | 24 scenes hit PACE-granule edge cases; 14,586 rendered |
+
+**Verification (close-out).** DB spot-check on the production DB: matchup
+separation median **0.80 km** (≤ 5 km cap), Δtime median **10.2 h** (≤ 24 h
+window), fit `chisq` median **0.47** (good fits, max 33.5); referential
+integrity clean (0 orphans; `PRAGMA integrity_check = ok`); and
+**`pab_version = "1.0"` on 100%** of `matchups` (14,610), `fits` (14,609),
+and `mld_summary` (54,031) rows.
+
+---
+
+## 10. Follow-ups
+
+- **Report site → Read the Docs.** `report_site/` has been regenerated from
+  the full DB (14,610 matchups, scale-aware static comparison figures) and
+  pushed on branch `first-full-run`. The public report at
+  `pab-report.readthedocs.io` (built from `develop`) still shows the
+  4-matchup dev sample until `first-full-run` is merged into the branch RTD
+  builds.
+- **Bulk artifacts → `s3://pab`.** The DB and summary tables (CSV/Parquet)
+  are published under `s3://pab/full/`; the per-matchup MCMC chains
+  (~18 GiB) and fit/scene figures are **not** yet on S3 (they are backed up
+  to `AIOcean:PAB/`). Publishing them + wiring the release manifest to real
+  S3 URLs is the remaining publish step.
+- **Zenodo DOI.** `ZenodoBackend` is still a `NotImplementedError` stub; a
+  citable snapshot is optional future work.
+- **Straggler matchups.** `match` was stopped at a plateau; a later pass over
+  the not-yet-matched profiles could be fit incrementally (`fit` is
+  idempotent).
+
+---
+
 *This is a living record; it will be updated as the release backends (S3,
 Read the Docs, Zenodo) are completed.*

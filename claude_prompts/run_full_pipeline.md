@@ -95,6 +95,7 @@ Read these before running — plus the **hard-won operational lessons** below.
 17. Execute the 17th task in Tasks below
 18. Execute the 18th task in Tasks below
 19. Execute the 19th task in Tasks below
+20. Execute the 20th task in Tasks below
 
 ## Tasks
 
@@ -239,6 +240,10 @@ Read these before running — plus the **hard-won operational lessons** below.
    quality, scene), confirm every record carries `pab_version = 1.0`, update
    `docs/design/PAB_implementation.md` + `HOWTO.md`, and write the full-run report
    (coverage, timings, failure rates, follow-ups). Log your work.
+
+20. **PR.**  Address the few comments in the PR on GitHub.  Examine the docs on RTD:
+   `https://pab.readthedocs.io/en/first-full-run/index.html` and make any necessary changes.
+   Log your work.  Use Fable if you can.
 
 ## Q&A
 
@@ -1783,3 +1788,13 @@ The `figure` and `report` *stages* had already run on Nautilus (2026-08-20; 14,6
 - **Backup.** The full dataset (DB + chains + site) was already backed up off-site to `AIOcean:PAB/` (2026-08-20); `report_site/` is the git-tracked RTD source, reproducible from the DB.
 - **Left to the user (git is theirs) / still open.** (1) Commit `report_site/` + push so Read the Docs rebuilds with the real findings (currently RTD still serves the 4-matchup dev sample). (2) The **bulk per-matchup artifacts** (chains ~18 GB + figures) are not yet on `s3://pab` — a large op, already safe on `AIOcean:`; deferred pending go-ahead. (3) A citable Zenodo DOI (`ZenodoBackend` still a `NotImplementedError` stub).
 - **Files changed:** `pab/report/rst.py` (static-comparisons + `downloads_base_url`), `pab/pipeline.py` (`--downloads-base-url`), `pab/tests/test_report.py` (2 new tests), `report_site/*` (regenerated).
+
+### 2026-08-27 (Task 19 — verify & close out)
+
+Final verification and close-out of the full run. Most of Task 19 was already done under the branched `nautilus_prompts.md` (Task 9, 2026-08-21: counts, `pab_version`, integrity, docs, the standalone report, Drive backup) and Task 18 (publish); this pass did a thorough verification and filled the Task-19-specific gaps.
+
+- **Matchup spot-check (production DB `data/backup/pab.db`).** Separation median **0.80 km** (min 0.01, max 5.00 — the ≤ 5 km cap), Δtime median **10.2 h** (≤ 24 h window), fit `chisq` median **0.47** (max 33.5 — good fits); 5 sampled matchups all sensible; scenes **14,586 / 14,610**.
+- **`pab_version = 1.0` on every record.** 0 non-`1.0` rows across `matchups` (14,610), `fits` (14,609), `mld_summary` (54,031). Referential integrity clean (0 orphans).
+- **Full-run report completed.** Added **§9 Timings and failure rates** and **§10 Follow-ups** to `docs/design/PAB_full_run_report.md`: per-stage wall-clock (ingest 49.4 h, discover 8.05 h + 2 h 16 m re-search, match ~several days across the FD-leak restart, fit ~1.5–2 days around the CephFS-SQLite workaround, figure+report 18 h) and failure rates (ingest **0.89 %**, discover **0 %**, fit **1/14,610 = 0.007 %**, figure 24 scene edge-cases). The report now covers coverage + timings + failure rates + follow-ups as Task 19 requires.
+- **Docs updated.** `docs/design/PAB_implementation.md` gained a **§10.6 Verification & close-out**; `HOWTO.md` §7b was already current from Task 18 (S3 backend live, published DB URL). Design docs build clean under `sphinx-build -W`.
+- **Follow-ups (unchanged from Task 18, restated in the report §10).** Merge `first-full-run` → `develop` so `pab-report.readthedocs.io` shows the real findings (still the 4-matchup dev sample); publish the bulk chains/figures to `s3://pab` (DB + summary tables already there; chains safe on `AIOcean:`); optional Zenodo DOI. Git commits remain the user's. **Task 19 done — the full-run pipeline (Tasks 15–19) is closed out.**

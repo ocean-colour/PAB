@@ -830,8 +830,16 @@ drive `AIOcean:PAB/` (Nautilus PVCs are not backed up). **Still pending:** the b
 artifact publish (chains/figures → `s3://pab` with real manifest URLs), RTD, and a
 Zenodo DOI (`ZenodoBackend` still a `NotImplementedError` stub).
 
-See the standalone [`PAB_full_run_report.md`](PAB_full_run_report.md) for the
-full narrative of the run.
+### 10.6 Verification & close-out
+
+Close-out checks on the production DB: **`pab_version = "1.0"` on 100%** of
+`matchups`/`fits`/`mld_summary`; referential integrity clean (0 orphans,
+`PRAGMA integrity_check = ok`); matchup spot-check sensible (separation median
+0.80 km ≤ 5 km cap, Δtime median 10.2 h ≤ 24 h window, fit `chisq` median 0.47);
+14,586/14,610 scenes rendered. Full-run timings + failure rates (ingest 0.89%,
+discover 0%, fit 1/14,610) are tabulated in
+[`PAB_full_run_report.md`](PAB_full_run_report.md), the standalone narrative of
+the run.
 
 ---
 
