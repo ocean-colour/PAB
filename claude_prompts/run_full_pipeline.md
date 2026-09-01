@@ -97,6 +97,7 @@ Read these before running — plus the **hard-won operational lessons** below.
 19. Execute the 19th task in Tasks below
 20. Execute the 20th task in Tasks below
 21. Execute the 21st task in Tasks below
+22. Execute the 22nd task in Tasks below
 
 ## Tasks
 
@@ -247,6 +248,8 @@ Read these before running — plus the **hard-won operational lessons** below.
    Log your work.  Use Fable if you can.
 
 21. **PR CI**.  The PR CI is failing.  Please examine the logs and fix the issues.  Log your work.  Use Fable if you can.
+
+22. **More PR CI**.  The CI is timing out in 15min.  Please modify the tests to avoid this.  Log your work.  Use Fable if you can.
 
 ## Q&A
 
@@ -1824,3 +1827,14 @@ PR #8's `pytest` job had gone red on **every single run for over a week** (check
 - **Verified locally (`ocean14` env, Python 3.14):** `pytest pab/tests/test_matchup.py` — 24 passed; full offline suite `pytest` — **186 passed, 1 skipped** (only `argopy`, matching CI's optional-dep skip list), in 21.8 s. YAML validated with `yaml.safe_load`.
 - **Not fixed / flagged for later, not this task.** The underlying stall itself (why a recycled worker doesn't come back within 120 s on a 2-vCPU GitHub runner) is still unexplained — the fixes above make it non-fatal to CI rather than root-causing it. The same `atexit`-join-hang mechanism is a **latent production risk**: a genuinely wedged worker on a real Nautilus run could, in principle, hang the `pab` CLI process itself at final interpreter shutdown the same way, past the `_reclaim_pool` 30 s giveup. Worth a follow-up if it's ever observed in production (e.g. an explicit `os._exit()` after the pipeline's own cleanup, to sidestep the unconditional `atexit` join) — not done here to keep this fix scoped to "make CI green," per the task.
 - **Left to the user (git is theirs).** Commit `.github/workflows/ci.yml` and `pab/tests/test_matchup.py`, push, and confirm the next PR run finishes (green or a clear, fast failure) instead of hanging. **Task 21 done.**
+
+### 2026-09-01 (Task 22 — Task 21's `timeout-minutes: 15` safety net was itself the new CI failure; fixed the test at the root)
+
+The user committed and pushed Task 21's two fixes (`aa9742a "CI"`). The next PR run confirmed the timeout net worked exactly as designed — the job no longer burned 6 hours — but it still couldn't finish: `pytest` was `CANCELLED` at **15m18s**, hitting the new `timeout-minutes: 15` ceiling.
+
+- **Pulled the new job log (`gh run view --job=<id> --log`).** `pytest` itself printed its summary at ~2m47s into the run, same as before — the interpreter-exit hang from Task 21 is still happening, just now bounded to 15 min instead of 6 h, exactly as the safety net was supposed to do. But the test *result* changed: Task 21's relaxed assertion (`written + stalled == 20`) fixed the `19 == 20` failure, but exposed the **next** assertion in the same test — `AssertionError: one pool expected, got 2`. The captured log confirmed why: `match stalled after 120s with 1 profiles in flight` fired again, and `_build_matchups_parallel`'s stall recovery does exactly what it's designed to do on a real stall — kill the wedged pool and build a **second** one (`ex = _new_pool()`) to keep going. `test_build_matchups_reuses_one_pool_across_chunks`'s `len(created) == 1` check had baked in "no stall ever happens" just as much as the count it already relaxed.
+- **Root fix this time: stop the test from ever exercising real worker recycling, since recycling isn't this test's job to verify.** `max_tasks_per_child` is CPython's own `ProcessPoolExecutor` machinery — `pab/matchup/engine.py` only chooses the threshold (`MAX_TASKS_PER_CHILD = 5`) and passes it through; the recycle-and-respawn behavior itself is entirely stdlib. What *is* ours to test is "one pool is reused across chunks, and the configured threshold is passed through" — both checkable without a worker ever actually being recycled. Added `monkeypatch.setattr(eng, "MAX_TASKS_PER_CHILD", 1000)` before building the 20-profile fixture, so no worker in the 2-worker pool can reach the (now 1000-task) recycle threshold during the test's 20 tasks. `created[0] == eng.MAX_TASKS_PER_CHILD` still checks the live (patched) value, so the "threshold is passed through" assertion is unweakened.
+- **Why this should actually hold in CI where two prior attempts didn't.** Every failure mode seen so far — the `19 == 20` failure, the `one pool expected, got 2` failure, and the interpreter-exit hang itself — traces to the *same* trigger: a worker recycle not completing within `stall_timeout_s` on GitHub's 2-vCPU runner. Removing the recycle from this test's execution path (rather than further relaxing assertions around its consequences) removes the trigger itself, not just its symptoms.
+- **Verified locally (`ocean14`, Python 3.14):** `pytest pab/tests/test_matchup.py` — 24 passed in 5.0 s; full suite — 186 passed, 1 skipped, in 13.6 s. Can't reproduce the CI stall locally either way (unchanged from Task 21), so this can only be confirmed once it runs on GitHub.
+- **Left open.** If this *still* stalls in CI, the trigger isn't `max_tasks_per_child` recycling specifically, and the next step would be to drop `jobs` to 1 in this test (losing multi-worker coverage) or accept the `timeout-minutes: 15` net as the permanent backstop and mark this test `xfail`/skip on CI. Left as a fallback, not applied, since the recycling theory fit every observed symptom.
+- **Left to the user (git is theirs).** Commit `pab/tests/test_matchup.py` and push to see whether the PR run goes green. **Task 22 done.**

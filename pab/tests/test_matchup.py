@@ -488,10 +488,19 @@ def test_build_matchups_reuses_one_pool_across_chunks(tmp_path, monkeypatch):
     It used to, with shutdown(wait=False), so generation N kept tearing down
     (~1 GB of imported numpy/xarray/bing per worker) while N+1 spawned. Over 393
     chunks x 32 workers that OOM-killed an 80Gi pod five times running.
+
+    Recycling itself (``max_tasks_per_child``) is CPython's own machinery, not
+    ours — this test only owns "don't build a fresh pool per chunk", so the
+    recycle threshold is patched far above the task count. At the real default
+    (5), recycling a worker mid-run reliably stalled one profile past
+    ``stall_timeout_s`` on GitHub's 2-core CI runners (never locally), turning
+    this from a sub-second check into a multi-minute hang.
     """
     import concurrent.futures as cf
 
     import pab.matchup.engine as eng
+
+    monkeypatch.setattr(eng, "MAX_TASKS_PER_CHILD", 1000)
 
     created = []
     orig = cf.ProcessPoolExecutor  # engine imports it inside the function
