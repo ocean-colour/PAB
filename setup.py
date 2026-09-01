@@ -12,7 +12,7 @@ setup_keywords['author'] = 'J. Xavier Prochaska and Allie James'
 setup_keywords['author_email'] = 'jxp@ucsc.edu'
 setup_keywords['license'] = 'BSD'
 setup_keywords['url'] = 'https://github.com/ocean-colour/PAB'
-setup_keywords['version'] = '0.0.dev0'
+setup_keywords['version'] = '1.0'
 # Use README.md as long_description.
 setup_keywords['long_description'] = ''
 if os.path.exists('README.md'):

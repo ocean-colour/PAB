@@ -7,8 +7,9 @@ stage runner driven off a SQLite store. Re-runs skip work already done, so it is
 safe to interrupt and resume.
 
 > **Scope.** This documents the pipeline **as it exists today**. A few agreed
-> enhancements (single-matchup targeting, parallel fitting, a config file) are
-> not implemented yet — see [Planned enhancements](#planned-enhancements).
+> enhancements (single-matchup targeting, a config file) are not implemented
+> yet — see [Planned enhancements](#planned-enhancements). Parallelism *is*
+> implemented for `ingest`, `match` and `fit` (`--jobs`, `--ingest-jobs`).
 
 
 ## 1. Prerequisites
@@ -78,8 +79,8 @@ override it with the `PAB_DATA_DIR` environment variable.
 ```
 pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
     [--outdir OUTDIR] [--profiles-csv PROFILES_CSV] [--replace]
-    [--no-figures] [--download] [--cache-dir CACHE_DIR] [--dry-run]
-    [--emit-site DIR]
+    [--no-figures] [--download] [--cache-dir CACHE_DIR] [--jobs JOBS]
+    [--ingest-jobs N] [--discover-jobs N] [--dry-run] [--emit-site DIR]
 ```
 
 | Flag | Meaning |
@@ -87,9 +88,12 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
 | `--db DB` | SQLite store path (created if absent; parent dirs are made). Default: `DATA_DIR/pab.db`. |
 | `--stage STAGE` | Run only this stage. **Repeatable** — e.g. `--stage match --stage fit`. Default: all stages, in order. |
 | `--outdir OUTDIR` | Base output directory. Default: `DATA_DIR/pipeline`. |
-| `--profiles-csv PROFILES_CSV` | Profile-selection CSV. Default: `data/dev_profiles.csv`. |
+| `--profiles-csv PROFILES_CSV` | Profile-selection CSV. Default: `data/dev_profiles.csv`. `ingest` fetches these profiles; **`discover` also restricts to them when the flag is given explicitly**, which is what makes a targeted re-search of a subset possible. Omit it and `discover` sweeps every profile in the store (so the dev default can never silently narrow a production run). `match`/`fit`/`figure` always work from the store. |
 | `--replace` | Re-do completed work instead of skipping it. |
 | `--no-figures` | Skip the `figure` stage. |
+| `--jobs JOBS` | Parallel processes for the `match`, `fit` and `figure` stages (profile-/matchup-level; default `1` = serial). In `fit`, granules are opened and pixels extracted in the parent and only the MCMC runs in workers; in `match`, the granule open + pixel extraction themselves run in workers. In `figure`, workers render (each opening its own read-only connection to the same DB file) and the parent records the paths. Either way **all DB writes stay in the parent** (no SQLite contention). An injected `opener` must be picklable (module-level) to be used in parallel; otherwise `match` falls back to serial. |
+| `--discover-jobs N` | Concurrent CMR searches in the `discover` stage (threads). Default: `--jobs` capped at 8 (CMR is shared NASA infrastructure). Searches are pure network latency — ~1.75 s each serially, so the full selection is ~26 h at 1 thread versus ~2-3 h at 8. DB writes stay in the parent. |
+| `--ingest-jobs N` | Concurrent argopy fetches in the `ingest` stage. Default: `--jobs` capped at 16 (the Argo GDAC/ERDDAP servers are shared). Fetch+summarize runs in worker **processes** — measured 6.2 s/profile serial, 2.75 s with 12 threads, **0.97 s with 12 processes** (argopy's parsing is GIL-bound, not network-bound) — while DB writes and Q&A plots stay in the parent. |
 | `--download` | Pre-download each granule to a local cache and read it locally (the reliable **off-cloud** path). Use this whenever you are **not** running in-region (`us-west-2`). |
 | `--cache-dir CACHE_DIR` | Where downloaded granules live. Default: `DATA_DIR/granules`. |
 | `--dry-run` | Print the stage plan and exit without touching anything. |
@@ -120,11 +124,11 @@ pab --db data/pab.db --download
 
 | Stage | What it does | Reads / writes |
 | --- | --- | --- |
-| `ingest` | Persist BGC-Argo profiles + mixed-layer summaries. | → `mld_summary` |
-| `discover` | Find in-window PACE granules per profile (earthaccess). | → `granules` |
-| `match` | Build PACE↔Argo matchups (Stage 4 spatial/temporal gate). | → `matchups` |
+| `ingest` | Persist BGC-Argo profiles + mixed-layer summaries (parallel fetch — see `--ingest-jobs`). | → `mld_summary` |
+| `discover` | Find in-window PACE granules per profile (earthaccess; parallel via `--discover-jobs`). A profile is skipped only if the store already holds a granule **whose footprint covers that profile's own position** in its time window. | → `granules` |
+| `match` | Build PACE↔Argo matchups (Stage 4 spatial/temporal gate). Candidates come from an in-memory `GranuleIndex` (time window **+** footprint bounding box padded by `MatchupConfig.footprint_pad_deg`), so only granules that plausibly cover the float are opened. | → `matchups` |
 | `fit` | Run BING spectral fits per matchup (needs BING + emcee). | → `fit_results` |
-| `figure` | Render per-matchup figures (best-effort; needs Loisel data). | → `outdir/figures` |
+| `figure` | Render per-matchup fit + scene figures (best-effort; needs Loisel data; parallel via `--jobs` — the costliest stage per matchup at ~42 s serial). | → `outdir/figures` |
 | `report` | Build the static site + a release manifest (Stage 7). | → `outdir/site`, `outdir/release` |
 
 **Idempotent & resumable.** Each stage skips records that already exist (keyed on
@@ -227,19 +231,39 @@ building the developer docs from the root `.readthedocs.yaml`.
 > CDN list is baked into the generated `conf.py`), and the thumbnails are served
 > as static files — both render on RTD with no Bokeh install at build time.
 
-### 7b. Bulk artifacts & DOI snapshots — set up later, NOT yet
+### 7b. Bulk artifacts & DOI snapshots — S3 backend live (DB published); full artifact publish + Zenodo pending
 
-The `report` stage also writes a release **manifest** and uploads artifacts
-through a pluggable backend. Today only the **local stub** backend is active; the
-real **Nautilus S3** (bulk figures/chains) and **Zenodo** (citable DOI snapshots)
-backends are stubbed and **must not be wired up yet**.
+The `report` stage writes a release **manifest** and uploads artifacts through a
+pluggable backend. **`NautilusS3Backend` is now implemented** (live NSF/Nautilus
+Ceph-RGW S3, path-style, public-read `s3://pab`); the **local stub**
+(`LocalStubBackend`) remains the offline default, and **`ZenodoBackend`** (citable
+DOI snapshots) is still an explicit `NotImplementedError` stub.
 
-> **TODO (do not do now):** when we're ready to publish to the community, set up
-> the Nautilus S3 and/or Zenodo publishing backends (credentials + the
-> `publish` configuration) and switch `report` over from the local stub. Until
-> then, releases stay local under `outdir/release/`. Once S3 is live, the
-> reporting site will reference figures by their S3 URL instead of committing
-> thumbnails (the Phase 2 enhancement), so `report_site/` stays bounded at scale.
+```python
+from pab.report.publish import NautilusS3Backend, publish_release
+# creds via the standard boto3 chain (env AWS_ACCESS_KEY_ID/SECRET or a profile);
+# the pab bucket is public-read, so returned URLs need no auth to fetch.
+backend = NautilusS3Backend(bucket="pab", prefix="full")
+url = backend.upload("pab.db")                       # -> https://s3-west.nrp-nautilus.io/pab/full/pab.db
+publish_release(store, outdir, backend=backend,      # bulk chains/figures + manifest with real S3 URLs
+                base_url="https://s3-west.nrp-nautilus.io/pab/full")
+```
+
+**Full-mission run (2026-08-20, `pab_version = 1.0`).** The complete PACE-mission
+run finished on NSF/Nautilus (54,031 profiles → 14,610 matchups → 14,609 fits; see
+[`docs/design/PAB_full_run_report.md`](docs/design/PAB_full_run_report.md)). Its
+`report` release ran against the **local stub**, so the run's own manifest URLs are
+local. The full DB is now **published** at
+`https://s3-west.nrp-nautilus.io/pab/full/pab.db` (public-read), and the whole
+dataset (`pab.db`, `fit_chains/` = 18.09 GiB, `site/`) is also backed up off-site to
+the Google shared drive **`AIOcean:PAB/`** (Nautilus PVCs are not backed up).
+
+> **Remaining follow-on:** publish the **bulk artifacts** (chains + figures) to
+> `s3://pab` via `publish_release(..., backend=NautilusS3Backend(...))` so the
+> manifest carries real S3 URLs (the reporting site can then reference figures by
+> S3 URL instead of committing thumbnails — the Phase 2 enhancement, keeping
+> `report_site/` bounded at scale); push the report site to Read the Docs; and, if
+> a citable DOI is wanted, implement `ZenodoBackend`.
 
 
 ## Planned enhancements
@@ -248,5 +272,7 @@ Agreed but **not yet implemented** — don't expect these flags to work yet:
 
 - **Single-matchup targeting** (e.g. `--matchup` / `--wmo` / `--cycle`) to run
   one profile/matchup instead of the whole selection.
-- **Parallel fitting** — matchup-level parallelism in the `fit` stage.
 - **Config file** — load run configuration from a file (TOML) instead of flags.
+
+*(Parallel `ingest`, `match` and `fit` are all implemented — see `--jobs` and
+`--ingest-jobs`.)*

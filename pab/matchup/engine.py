@@ -19,9 +19,15 @@ Bisson et al. recipe in ``docs/context.md`` §3):
   covers the float, not merely a temporal coincidence). The ~10 nearest
   unflagged pixels are selected via :mod:`pab.pace.extract`, approximating the
   small (5×5) unflagged box Bisson et al. use.
-* **Selection rule** — when several granules qualify, pick the closest in space
-  (nearest-pixel ``distance_km``), breaking ties by smallest ``dtime_hours``,
-  then by more spectra, then by ``granule_id`` (deterministic).
+* **Selection rule** — candidates are tried in order of **temporal** proximity
+  and the first that passes the spatial gate wins; ``granule_id`` breaks ties
+  deterministically. Time leads because the spatial differences being traded
+  away are sub-pixel: over the 1k pilot the chosen granules had a *median
+  distance of 0.65 km* — inside one ~1.2 km OCI pixel — while **72 % sat more
+  than 6 h from the float** (median 11.6 h). Optimising distance first was
+  discriminating below the instrument's resolution and paying for it in hours of
+  advection. Stopping at the first qualifying granule also cuts granule opens
+  from ~6 per profile to ~1–2, which is most of the stage's cost.
 * **Deterministic ``matchup_id``** — ``"{wmo}_{cycle}_{granule_id}"`` so re-runs
   upsert idempotently.
 
@@ -32,6 +38,7 @@ seam (``opener=`` injects synthetic granules in tests — no network/S3).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -42,6 +49,25 @@ from pab.config import pab_version
 from pab.pace import cloud
 from pab.pace import extract as _extract
 from pab.pace import flags as _flags
+from pab.parallel import (
+    PROGRESS_EVERY,
+    init_worker,
+    mem_breakdown,
+    picklable,
+)
+
+_log = logging.getLogger("pab.match")
+
+#: Profiles a match worker handles before it is recycled.
+#:
+#: Sized from measurement, not taste. Instrumenting parent-vs-worker RSS showed
+#: each profile leaves ~0.45 GB behind in its worker (fsspec/HDF5 buffers that
+#: survive `ds.close()`), so peak-per-worker ~= 0.5 GB base + N x 0.45 GB. At
+#: N=15 and 16 workers that is ~108 GB against a 100Gi limit — which is precisely
+#: how the pod died. N=5 gives ~2.8 GB/worker, ~44 GB total, comfortable headroom.
+#: The cost is a re-spawn (~10-15 s of imports) every 5 profiles, ~2 h added over
+#: the full selection: cheap next to an OOM at hour 20.
+MAX_TASKS_PER_CHILD: int = 5
 
 __all__ = [
     "MatchupConfig",
@@ -49,6 +75,9 @@ __all__ = [
     "make_matchup_id",
     "parse_time",
     "time_offset_hours",
+    "footprint_bbox",
+    "footprint_covers",
+    "GranuleIndex",
     "find_matchup",
     "write_matchup",
     "qualifying_profiles",
@@ -71,12 +100,32 @@ class MatchupConfig:
             to count as spatially covering the float.
         mask_flags: ``l2_flags`` names that reject a pixel (the standard ocean
             screen by default).
+        footprint_pad_deg: Slack (degrees) added to a granule's footprint
+            bounding box in the cheap spatial pre-filter
+            (:class:`GranuleIndex`). Generous by design — CMR footprints are
+            4-corner approximations of a curved swath, so the box can cut the
+            true edge by tens of km; the exact test is still the
+            nearest-unflagged-pixel distance in :func:`find_matchup`.
+        stall_timeout_s: In the parallel path, how long a chunk of profiles may
+            go with **no** completed result at all before its workers are declared
+            wedged and killed (see :func:`_build_matchups_parallel`). A healthy
+            chunk completes something every few seconds, so 2 min is already very
+            conservative — and the cost matters: each firing waits out the whole
+            timeout, so 10 min would add ~36 h of pure waiting over the full
+            selection at the observed wedge rate.
+        open_timeout_s: Per-granule read timeout (:func:`_open_with_timeout`).
+            The backstop above only fires when a whole chunk goes quiet; this
+            catches the actual culprit — one granule read that never returns —
+            and lets the profile try its other candidates.
     """
 
     dtime_max_hours: float = 24.0
     n_spectra: int = 10
     max_distance_km: float = 5.0
     mask_flags: tuple[str, ...] = field(default=_flags.STANDARD_OCEAN_MASK)
+    footprint_pad_deg: float = 1.0
+    stall_timeout_s: float = 120.0
+    open_timeout_s: float = 120.0
 
 
 @dataclass
@@ -137,6 +186,191 @@ def time_offset_hours(profile_time: Any, granule_time: Any) -> float:
     return abs(delta.total_seconds()) / 3600.0
 
 
+def footprint_bbox(wkt: Any) -> tuple[float, float, float, float] | None:
+    """Bounding box ``(lon_min, lat_min, lon_max, lat_max)`` of a WKT footprint.
+
+    A deliberately tolerant parser: it pulls the coordinate pairs out of any
+    ``POLYGON``/``MULTIPOLYGON`` text (CMR gives simple swath quadrilaterals) and
+    returns their extent.
+
+    A footprint spanning more than 180° of longitude either crosses the
+    antimeridian or is a high-latitude swath sweeping many meridians; for those
+    the longitude bounds are widened to the full ``(-180, 180)`` and only the
+    **latitude** band constrains the box — conservative, but still a real filter
+    (a polar granule is never offered to a tropical float).
+
+    Returns:
+        The bounding box, or ``None`` when the footprint is missing or
+        unparseable — which every caller reads as *"unknown, don't exclude"*.
+    """
+    if wkt is None:
+        return None
+    import re
+
+    _num = r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
+    nums = [float(m) for m in re.findall(_num, str(wkt))]
+    if len(nums) < 6 or len(nums) % 2:
+        return None
+    lons = np.asarray(nums[0::2], dtype=float)
+    lats = np.asarray(nums[1::2], dtype=float)
+    if np.any(np.abs(lats) > 90.0) or np.any(np.abs(lons) > 180.0):
+        return None  # not a lon/lat pair list after all
+    if float(lons.max() - lons.min()) > 180.0:
+        # wraps the antimeridian (or sweeps meridians near a pole): keep the
+        # latitude band, drop the longitude constraint
+        return (-180.0, float(lats.min()), 180.0, float(lats.max()))
+    return (float(lons.min()), float(lats.min()), float(lons.max()), float(lats.max()))
+
+
+def footprint_covers(
+    bbox: tuple[float, float, float, float] | None,
+    latitude: float,
+    longitude: float,
+    *,
+    pad_deg: float = 0.0,
+) -> bool:
+    """Whether ``(latitude, longitude)`` falls in ``bbox`` padded by ``pad_deg``.
+
+    An unknown ``bbox`` (``None``) returns ``True`` — the pre-filter never drops
+    a granule it cannot place.
+    """
+    if bbox is None:
+        return True
+    lon_min, lat_min, lon_max, lat_max = bbox
+    return (
+        lat_min - pad_deg <= float(latitude) <= lat_max + pad_deg
+        and lon_min - pad_deg <= float(longitude) <= lon_max + pad_deg
+    )
+
+
+class GranuleIndex:
+    """In-memory time+footprint index over the ``granules`` table.
+
+    Built **once per stage** and queried per profile, so candidate selection is
+    ``O(log M)`` per profile instead of a full table scan (which, with the whole
+    global granule set in the DB, made ``match`` quadratic in the run size).
+
+    Times are parsed once; footprints are parsed once into bounding boxes
+    (:func:`footprint_bbox`). :meth:`candidates` applies the temporal window
+    **and** — when given a position — the spatial box, so a profile is only ever
+    offered granules whose swath plausibly covers it (opening a granule is the
+    expensive step: ~4.4 s in-cloud).
+    """
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        recs = []
+        for row in rows:
+            gtime = row.get("time_start")
+            if gtime is None:
+                continue
+            try:
+                t = parse_time(gtime)
+            except ValueError:
+                continue
+            recs.append(
+                (
+                    t.timestamp(),
+                    str(row["granule_id"]),
+                    gtime,
+                    row.get("data_url") or row["granule_id"],
+                    footprint_bbox(row.get("footprint")),
+                )
+            )
+        recs.sort(key=lambda r: r[0])
+        self._epoch = np.array([r[0] for r in recs], dtype=float)
+        self._recs = recs
+
+    @classmethod
+    def load(cls, store) -> GranuleIndex:
+        """Build the index from every granule in ``store``."""
+        return cls(
+            store.query(
+                "SELECT granule_id, time_start, footprint, data_url FROM granules"
+            )
+        )
+
+    def __len__(self) -> int:
+        return len(self._recs)
+
+    def candidates(
+        self,
+        profile_time: Any,
+        *,
+        dtime_max_hours: float,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        pad_deg: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """Granules within the time window (and, if given, over the position).
+
+        Returns:
+            Candidate dicts with ``granule_id``, ``time`` (``time_start``), and
+            ``source`` (``data_url`` if present, else ``granule_id``) — the
+            input :func:`find_matchup` expects.
+        """
+        if not self._recs:
+            return []
+        try:
+            t0 = parse_time(profile_time).timestamp()
+        except ValueError:
+            return []
+        half = float(dtime_max_hours) * 3600.0
+        lo = int(np.searchsorted(self._epoch, t0 - half, side="left"))
+        hi = int(np.searchsorted(self._epoch, t0 + half, side="right"))
+        out: list[dict[str, Any]] = []
+        for _, gid, gtime, source, bbox in self._recs[lo:hi]:
+            if latitude is not None and longitude is not None:
+                if not footprint_covers(bbox, latitude, longitude, pad_deg=pad_deg):
+                    continue
+            out.append({"granule_id": gid, "time": gtime, "source": source})
+        return out
+
+
+def _open_with_timeout(source, *, opener=None, timeout_s: float = 0.0):
+    """Open a granule, raising :class:`TimeoutError` if it takes too long.
+
+    Uses ``SIGALRM``, which interrupts the calling thread even when it is parked
+    in a C-level lock — the state real wedged workers were found in (sockets no
+    longer established, every thread in ``futex_wait``, 0 % CPU, no progress for
+    40 min). ``fsspec``/``aiohttp`` provide no read timeout on this path, so this
+    is the only reliable way to bound it.
+
+    Falls back to a plain open when ``timeout_s`` is not positive, or when the
+    caller is not the main thread (``signal.alarm`` is main-thread only) — the
+    chunk-level guard in :func:`_build_matchups_parallel` remains the backstop
+    for those cases.
+    """
+    import signal
+    import threading
+
+    if timeout_s and timeout_s > 0 and threading.current_thread() is threading.main_thread():
+
+        def _timed_out(signum, frame):  # pragma: no cover - signal path
+            raise TimeoutError(f"granule read exceeded {timeout_s:.0f}s: {source}")
+
+        previous = signal.signal(signal.SIGALRM, _timed_out)
+        signal.setitimer(signal.ITIMER_REAL, float(timeout_s))
+        try:
+            return cloud.open_granule(source, opener=opener)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            signal.signal(signal.SIGALRM, previous)
+    return cloud.open_granule(source, opener=opener)
+
+
+def _close_quietly(ds) -> None:
+    """Close a granule dataset, ignoring anything it complains about.
+
+    A dataset whose read was interrupted can raise from ``close()`` (h5netcdf's
+    finaliser trips over a half-built ``File``), and a failure to close must never
+    lose an otherwise good matchup.
+    """
+    try:
+        ds.close()
+    except Exception:  # noqa: BLE001 — best effort; see docstring
+        pass
+
+
 def find_matchup(
     profile: dict[str, Any],
     candidates: list[dict[str, Any]],
@@ -174,15 +408,44 @@ def find_matchup(
     lon = float(profile["longitude"])
     p_time = profile["time"]
 
-    qualifying: list[dict[str, Any]] = []
-    for g in candidates:
-        dtime_hours = time_offset_hours(p_time, g["time"])
+    # Candidates in order of TEMPORAL proximity; the first that passes the
+    # spatial gate wins. See the module docstring for why time now leads.
+    ordered = sorted(
+        (
+            (time_offset_hours(p_time, g["time"]), str(g["granule_id"]), g)
+            for g in candidates
+        ),
+        key=lambda t: (t[0], t[1]),  # granule_id breaks ties deterministically
+    )
+
+    best = None
+    for dtime_hours, _gid, g in ordered:
         if dtime_hours > config.dtime_max_hours:
+            break  # sorted, so everything after is further out in time too
+        try:
+            ds = _open_with_timeout(
+                g["source"], opener=opener, timeout_s=config.open_timeout_s
+            )
+        except TimeoutError:
+            # A dropped HTTPS connection can leave the read waiting forever (no
+            # timeout in fsspec/aiohttp): observed as a worker with unestablished
+            # sockets and every thread in futex_wait. Skip this granule and try
+            # the profile's other candidates rather than losing the profile.
+            _log.warning(
+                "granule read timed out after %.0fs: %s",
+                config.open_timeout_s,
+                g["granule_id"],
+            )
             continue
-        ds = cloud.open_granule(g["source"], opener=opener)
-        pixels = _extract.extract_matchup_spectra(
-            ds, lat, lon, n=config.n_spectra, mask_flags=config.mask_flags
-        )
+        try:
+            pixels = _extract.extract_matchup_spectra(
+                ds, lat, lon, n=config.n_spectra, mask_flags=config.mask_flags
+            )
+        finally:
+            # Release the granule immediately. `extract_matchup_spectra` returns
+            # materialised numpy (every read goes through `.values`), so nothing
+            # downstream needs the handle.
+            _close_quietly(ds)
         if not pixels:
             continue  # no unflagged Rrs near the float in this granule
         distance_km = float(pixels[0]["distance_km"])
@@ -193,28 +456,18 @@ def find_matchup(
             px["flagged"] = int(
                 bool(_flags.flagged_mask(np.array([px["flag"]]), config.mask_flags)[0])
             )
-        qualifying.append(
-            {
-                "granule": g,
-                "pixels": pixels,
-                "distance_km": distance_km,
-                "dtime_hours": dtime_hours,
-                "n_spectra": len(pixels),
-            }
-        )
+        best = {
+            "granule": g,
+            "pixels": pixels,
+            "distance_km": distance_km,
+            "dtime_hours": dtime_hours,
+            "n_spectra": len(pixels),
+        }
+        break  # temporally closest granule that covers the float — done
 
-    if not qualifying:
+    if best is None:
         return None
 
-    best = min(
-        qualifying,
-        key=lambda q: (
-            q["distance_km"],
-            q["dtime_hours"],
-            -q["n_spectra"],
-            str(q["granule"]["granule_id"]),
-        ),
-    )
     gid = str(best["granule"]["granule_id"])
     return Matchup(
         matchup_id=make_matchup_id(int(profile["wmo"]), int(profile["cycle"]), gid),
@@ -297,36 +550,47 @@ def qualifying_profiles(store) -> list[dict[str, Any]]:
 
 
 def candidate_granules(
-    store, profile_time: Any, *, dtime_max_hours: float
+    store,
+    profile_time: Any,
+    *,
+    dtime_max_hours: float,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    pad_deg: float = 0.0,
+    index: GranuleIndex | None = None,
 ) -> list[dict[str, Any]]:
-    """Granules whose start time is within ``dtime_max_hours`` of the profile.
+    """Candidate granules for a profile: temporal window + optional footprint.
 
-    A cheap temporal pre-filter over the ``granules`` table; the spatial test
-    (the float falls within the footprint) is applied in :func:`find_matchup`
-    after the granule is opened. Granules with an unparseable time are skipped.
+    Granules whose start time is within ``dtime_max_hours`` of the profile and —
+    when ``latitude``/``longitude`` are given — whose footprint bounding box
+    (padded by ``pad_deg``) contains the float. The exact spatial test (the
+    nearest unflagged pixel is within ``max_distance_km``) still happens in
+    :func:`find_matchup` after the granule is opened; this only avoids opening
+    granules that cannot possibly cover the float. Granules with an unparseable
+    time, or a footprint that cannot be placed, are respectively skipped and
+    kept.
+
+    Args:
+        store: An open store (ignored when ``index`` is supplied).
+        profile_time: The profile timestamp.
+        dtime_max_hours: Temporal half-window.
+        latitude, longitude: Float position; omit for a time-only filter.
+        pad_deg: Slack added to the footprint box.
+        index: A prebuilt :class:`GranuleIndex` — pass one when querying many
+            profiles (a stage), so the table is read and parsed **once**.
 
     Returns:
         Candidate dicts with ``granule_id``, ``time`` (``time_start``), and
         ``source`` (``data_url`` if present, else ``granule_id``).
     """
-    out: list[dict[str, Any]] = []
-    for row in store.query("SELECT granule_id, time_start, data_url FROM granules"):
-        gtime = row["time_start"]
-        if gtime is None:
-            continue
-        try:
-            if time_offset_hours(profile_time, gtime) > dtime_max_hours:
-                continue
-        except ValueError:
-            continue
-        out.append(
-            {
-                "granule_id": row["granule_id"],
-                "time": gtime,
-                "source": row["data_url"] or row["granule_id"],
-            }
-        )
-    return out
+    idx = index if index is not None else GranuleIndex.load(store)
+    return idx.candidates(
+        profile_time,
+        dtime_max_hours=dtime_max_hours,
+        latitude=latitude,
+        longitude=longitude,
+        pad_deg=pad_deg,
+    )
 
 
 def build_matchups(
@@ -336,11 +600,20 @@ def build_matchups(
     config: MatchupConfig | None = None,
     replace: bool = False,
     created: str | None = None,
+    jobs: int = 1,
 ) -> dict[str, list[str]]:
     """Match every qualifying profile against the stored granules and persist.
 
     Idempotent and resumable: a matchup already in the DB (by ``matchup_id``) is
     skipped unless ``replace=True``.
+
+    ``jobs > 1`` matches profiles **in parallel across processes** — each profile's
+    granule opens + nearest-pixel extraction (the I/O- and CPU-heavy
+    :func:`find_matchup`) run in a :class:`ProcessPoolExecutor`, while candidate
+    lookups and **all DB writes stay in the parent** (single SQLite writer, no lock
+    contention — the same design as the parallel ``fit`` stage). Workers are
+    spawned, so an injected ``opener`` must be picklable (a module-level
+    function); a closure/lambda opener silently runs the serial path instead.
 
     Args:
         store: An open :class:`pab.db.store.Store` (must already hold profiles +
@@ -349,6 +622,7 @@ def build_matchups(
         config: Matching criteria (defaults to :class:`MatchupConfig`).
         replace: Re-write matchups that already exist.
         created: Timestamp to stamp on written rows.
+        jobs: Profile-level parallel processes (1 = serial).
 
     Returns:
         ``{"written": [...], "skipped": [...], "unmatched": [...]}`` — matchup
@@ -361,14 +635,48 @@ def build_matchups(
     skipped: list[str] = []
     unmatched: list[str] = []
 
+    # Gather per-profile inputs in the parent (DB reads only); the heavy
+    # open+extract in find_matchup is what fans out.
+    inputs: list[tuple[dict, list[dict]]] = []
+    index = GranuleIndex.load(store)  # read + parse the granule table once
+    # Profiles already matched are skipped *before* any granule is opened. The
+    # existence test used to happen only after find_matchup had done the work, so
+    # a resumed match re-read every granule it had already processed (a restarted
+    # 1000-profile run spent 15 min re-deriving matchups it already had; at 54k
+    # that would dominate every restart).
+    done: dict[int, str] = {}
+    if not replace:
+        for row in store.query("SELECT profile_id, matchup_id FROM matchups"):
+            done.setdefault(row["profile_id"], row["matchup_id"])
     for profile in qualifying_profiles(store):
+        if profile["profile_id"] in done:
+            skipped.append(done[profile["profile_id"]])
+            continue
         if profile["latitude"] is None or profile["longitude"] is None:
             # no position to match against — skip rather than raise mid-run
             unmatched.append(f"{profile['wmo']}_{profile['cycle']}")
             continue
         candidates = candidate_granules(
-            store, profile["time"], dtime_max_hours=config.dtime_max_hours
+            store,
+            profile["time"],
+            dtime_max_hours=config.dtime_max_hours,
+            latitude=profile["latitude"],
+            longitude=profile["longitude"],
+            pad_deg=config.footprint_pad_deg,
+            index=index,
         )
+        if not candidates:
+            unmatched.append(f"{profile['wmo']}_{profile['cycle']}")
+            continue
+        inputs.append((profile, candidates))
+
+    if jobs and int(jobs) > 1 and inputs and picklable(opener):
+        return _build_matchups_parallel(
+            store, inputs, config, created, int(jobs), replace,
+            written, skipped, unmatched, opener=opener,
+        )
+
+    for profile, candidates in inputs:
         result = find_matchup(profile, candidates, opener=opener, config=config)
         if result is None:
             unmatched.append(f"{profile['wmo']}_{profile['cycle']}")
@@ -383,3 +691,217 @@ def build_matchups(
         written.append(result.matchup_id)
 
     return {"written": written, "skipped": skipped, "unmatched": unmatched}
+
+
+def _build_matchups_parallel(
+    store, inputs, config, created, jobs, replace, written, skipped, unmatched,
+    *, opener=None,
+):
+    """Parallel backend for :func:`build_matchups`. Mutates the result lists.
+
+    ``find_matchup`` (open + extract + select) runs in worker processes; the
+    parent drains completed futures and performs every DB write. ``opener`` is
+    forwarded to the workers and must be picklable
+    (see :func:`pab.parallel.picklable`).
+
+    **Stall-proofed.** A granule read can wedge with no way back: on a real run
+    every one of 16 workers ended up blocked on an in-process lock with *zero*
+    open sockets and 0 % CPU after their S3 connections dropped, and the stage sat
+    dead for 40 minutes. Neither ``fsspec`` nor HDF5 offers a timeout we can rely
+    on there, so the parent enforces one: work goes out in **chunks with a fresh
+    pool each**, and if a chunk produces no result at all within
+    ``config.stall_timeout_s`` its remaining workers are killed, its profiles are
+    recorded under ``"stalled"``, and the run moves to the next chunk. Stalled
+    profiles keep no matchup, so a later resume simply retries them.
+    """
+    import multiprocessing as mp
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+
+    # 'spawn' avoids fork-in-a-multithreaded-parent hazards; workers re-import
+    # cleanly and find_matchup pickles by qualname.
+    ctx = mp.get_context("spawn")
+    fut_prof: dict = {}
+    total = len(inputs)
+    stalled: list[str] = []
+    chunk_size = max(1, 4 * jobs)
+    _log.info(
+        "match: %d profiles over %d processes (chunks of %d, stall timeout %.0fs)",
+        total,
+        jobs,
+        chunk_size,
+        config.stall_timeout_s,
+    )
+
+    # Count only what this pool actually processes. Summing the result lists
+    # would also count the profiles excluded before the pool ran (already
+    # matched, or no candidate granules), which pushed the log to nonsense like
+    # "900/589".
+    done_count = 0
+
+    def _progress() -> None:
+        if done_count % PROGRESS_EVERY == 0:
+            _log.info(
+                "match progress: %d/%d processed (%d written, %d unmatched; "
+                "%d pre-skipped) [%s]",
+                done_count,
+                total,
+                len(written),
+                done_count - len(written),
+                len(skipped),
+                mem_breakdown(),
+            )
+
+    def _bump() -> None:
+        nonlocal done_count
+        done_count += 1
+        _progress()
+
+    def _drain(fut):
+        profile = fut_prof.pop(fut)
+        pid = f"{profile['wmo']}_{profile['cycle']}"
+        try:
+            result = fut.result()
+        except Exception:  # noqa: BLE001 — one bad profile must not abort the batch
+            _log.exception("match failed for %s", pid)
+            unmatched.append(pid)
+            _bump()
+            return
+        if result is None:
+            unmatched.append(pid)
+            _bump()
+            return
+        exists = store.query(
+            "SELECT 1 FROM matchups WHERE matchup_id = ?", (result.matchup_id,)
+        )
+        if exists and not replace:
+            skipped.append(result.matchup_id)
+        else:
+            write_matchup(store, result, created=created)
+            written.append(result.matchup_id)
+        _bump()
+
+    def _new_pool():
+        # max_tasks_per_child recycles a worker after N profiles, which bounds any
+        # per-worker growth (fsspec/HDF5 caches) without tearing down the pool.
+        return ProcessPoolExecutor(
+            max_workers=jobs,
+            mp_context=ctx,
+            initializer=init_worker,
+            max_tasks_per_child=MAX_TASKS_PER_CHILD,
+        )
+
+    # ONE pool for the whole stage, replaced only when a stall forces a kill.
+    # Creating a pool per chunk and calling shutdown(wait=False) let generation N
+    # keep tearing down (~1 GB of imported numpy/xarray/bing each) while N+1
+    # spawned: at 393 chunks x 32 workers that overran 80Gi in 15 min, five times
+    # in a row. It also re-paid the interpreter+import cost on every chunk.
+    ex = _new_pool()
+    for start in range(0, total, chunk_size):
+        chunk = inputs[start : start + chunk_size]
+        pending = set()
+        for profile, candidates in chunk:
+            fut = ex.submit(
+                find_matchup, profile, candidates, opener=opener, config=config
+            )
+            fut_prof[fut] = profile
+            pending.add(fut)
+        while pending:
+            done, pending = wait(
+                pending,
+                timeout=config.stall_timeout_s,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:  # nothing at all finished in the window -> wedged
+                for fut in pending:
+                    profile = fut_prof.pop(fut)
+                    stalled.append(f"{profile['wmo']}_{profile['cycle']}")
+                _log.error(
+                    "match stalled after %.0fs with %d profiles in flight; "
+                    "killing the pool and continuing (they stay unmatched and are "
+                    "retried on the next run)",
+                    config.stall_timeout_s,
+                    len(pending),
+                )
+                _reclaim_pool(ex)  # kill workers AND release parent-side FDs
+                ex = _new_pool()  # the killed pool cannot be reused
+                pending = set()
+                break
+            for f in done:
+                _drain(f)
+    ex.shutdown(wait=True)
+
+    if stalled:
+        _log.error("match: %d profiles stalled in total", len(stalled))
+    return {
+        "written": written,
+        "skipped": skipped,
+        "unmatched": unmatched,
+        "stalled": stalled,
+    }
+
+
+def _kill_pool(ex) -> None:
+    """Hard-stop a wedged :class:`ProcessPoolExecutor`'s workers.
+
+    ``shutdown(cancel_futures=True)`` only drops *queued* work — a worker already
+    blocked inside a C-level lock keeps the interpreter alive, so the processes
+    have to be killed outright. Uses the executor's process map when available
+    (private, but there is no public equivalent) and falls back to this process's
+    children.
+    """
+    import multiprocessing as mp
+
+    procs = list(getattr(ex, "_processes", {}).values()) or mp.active_children()
+    for proc in procs:
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001 — best effort; already-dead is fine
+            pass
+    # Reap them so the kernel releases each worker's process-table slot and file
+    # descriptors promptly (a killed-but-unjoined child lingers as a zombie).
+    for proc in procs:
+        try:
+            proc.join(timeout=5)
+        except Exception:  # noqa: BLE001 — best effort
+            pass
+
+
+def _reclaim_pool(ex, timeout_s: float = 30.0) -> None:
+    """Kill a wedged pool's workers **and** release the executor's own resources.
+
+    ``_kill_pool`` frees the *workers'* file descriptors when the processes die,
+    but the parent-side executor still owns the call/result-queue pipes and the
+    manager-thread wakeup pipe (~5 FDs). ``shutdown(wait=False)`` returns before
+    the manager thread closes those, and on a real run its manager thread stayed
+    alive holding them, so recreating a pool on every stall leaked ~5 pipe FDs
+    each — after 192 stalls the parent's FD table filled (1009 open pipes vs a
+    1024 ``ulimit -n``) and the next ``os.pipe()`` failed with ``OSError:
+    [Errno 24]``, wedging the whole stage. Killing + reaping the workers first
+    and *then* ``shutdown(wait=True)`` lets the manager thread drain the
+    now-dead pool and close those pipes before the next pool is built.
+
+    The teardown is bounded by ``timeout_s`` in a watchdog thread: this recovery
+    path exists precisely because workers wedge, so it must never be able to wedge
+    itself. In the common case (workers interruptible by ``SIGKILL``) it returns
+    in well under a second; if a worker is stuck uninterruptibly the shutdown is
+    abandoned and its pipes are reclaimed when the object is garbage-collected.
+    """
+    import threading
+
+    _kill_pool(ex)
+
+    def _shut() -> None:
+        try:
+            ex.shutdown(wait=True, cancel_futures=True)
+        except Exception:  # noqa: BLE001 — a broken pool may raise; pipes still close
+            _log.exception("error tearing down a killed match pool")
+
+    t = threading.Thread(target=_shut, name="match-pool-reclaim", daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        _log.error(
+            "killed match pool did not shut down within %.0fs; abandoning it "
+            "(its pipes are reclaimed when it is garbage-collected)",
+            timeout_s,
+        )

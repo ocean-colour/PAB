@@ -14,6 +14,9 @@ tests).
 
 from __future__ import annotations
 
+import contextlib
+import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,6 +24,41 @@ import numpy as np
 
 from pab.fit import artifacts as _artifacts
 from pab.fit.models import FitConfig, build_models, model_param_names
+from pab.matchup.engine import _close_quietly
+
+_log = logging.getLogger("pab.fit")
+
+#: Per-granule read timeout (seconds) for this stage's opens. A read that never
+#: returned wedged `fit` for **8.6 h** on a real run — the open happens in the
+#: parent here, so one bad granule stops everything, and neither fsspec nor HDF5
+#: imposes a timeout of its own.
+OPEN_TIMEOUT_S: float = 120.0
+
+
+def _open_bounded(source, *, opener=None):
+    """:func:`pab.pace.cloud.open_granule` with a hard timeout.
+
+    Shares :func:`pab.matchup.engine._open_with_timeout` (SIGALRM-based, so it
+    interrupts a thread parked in a C-level lock).
+    """
+    from pab.matchup.engine import _open_with_timeout
+
+    return _open_with_timeout(source, opener=opener, timeout_s=OPEN_TIMEOUT_S)
+
+
+@contextlib.contextmanager
+def _quiet():
+    """Silence a wrapped call's stdout/stderr.
+
+    BING's ``run_emcee`` hard-codes emcee ``progress=True`` (tqdm bars) and prints
+    status lines; across many parallel workers that floods the console. We can't
+    pass a flag through ``fit_one``, so redirect both streams to ``os.devnull``
+    around the MCMC call. Only *printed* output is dropped — exceptions still
+    propagate, so failures remain diagnosable.
+    """
+    with open(os.devnull, "w") as devnull:
+        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+            yield
 
 #: Reference wavelengths (nm) at which derived IOP scalars are reported. 700 nm
 #: is the BGC-Argo ``BBP700`` band — the primary matchup observable.
@@ -271,13 +309,14 @@ def fit_spectrum(
     pdict = bing_inf.init_mcmc(models, nsteps=config.nsteps, nburn=config.nburn)
     pdict["Chl"] = np.array([chl_val if chl_val is not None else 0.0])
     pdict["Y"] = np.array([Y if Y is not None else 0.0])
-    sampler, _ = bing_inf.fit_one(
-        (Rrs_w, varRrs_w, p_best, 0),
-        models=models,
-        pdict=pdict,
-        chains_only=False,
-        rt_dict=rt_dict,
-    )
+    with _quiet():  # suppress BING's tqdm bars + status prints (see _quiet)
+        sampler, _ = bing_inf.fit_one(
+            (Rrs_w, varRrs_w, p_best, 0),
+            models=models,
+            pdict=pdict,
+            chains_only=False,
+            rt_dict=rt_dict,
+        )
     chains = np.asarray(sampler.get_chain(), dtype=float)
     accept_frac = float(np.mean(sampler.acceptance_fraction))
 
@@ -328,6 +367,86 @@ def _fit_diagnostics(models, chains, rt_dict, Rrs, varRrs, config):
 
 
 # -- matchup wiring ---------------------------------------------------------
+def _gather_fit_input(store, matchup_id: str, config: FitConfig, rank: int = 1):
+    """DB-only inputs for one matchup's fit (no granule I/O, no compute).
+
+    Returns a dict ``{fit_id, matchup_id, pixel_id, source, ix, iy, chl}`` or
+    ``None`` if the matchup has no pixel at ``rank`` (nothing to fit).
+    """
+    px = store.query(
+        "SELECT * FROM matchup_pixels WHERE matchup_id = ? AND rank = ?",
+        (matchup_id, rank),
+    )
+    if not px:
+        return None
+    px = px[0]
+    m = store.query(
+        "SELECT profile_id, granule_id FROM matchups WHERE matchup_id = ?",
+        (matchup_id,),
+    )
+    if not m:
+        return None
+    m = m[0]
+    gran = store.query(
+        "SELECT data_url FROM granules WHERE granule_id = ?", (m["granule_id"],)
+    )
+    source = gran[0]["data_url"] if gran and gran[0]["data_url"] else m["granule_id"]
+    chla = store.query(
+        "SELECT chla FROM mld_summary WHERE profile_id = ?", (m["profile_id"],)
+    )
+    # require a *finite* chla (NaN would poison set_aph -> a NaN fit)
+    chl = finite_or_none(chla[0]["chla"]) if chla else None
+    return {
+        "fit_id": make_fit_id(matchup_id, px["ix"], px["iy"], config.model_pair),
+        "matchup_id": matchup_id,
+        "pixel_id": px["pixel_id"],
+        "source": source,
+        "ix": int(px["ix"]),
+        "iy": int(px["iy"]),
+        "chl": chl,
+    }
+
+
+def _fit_only(wave, Rrs, Rrs_unc, chl, config: FitConfig) -> FitSpectrumResult:
+    """Pure per-spectrum compute (no DB, no I/O) — the unit dispatched to workers.
+
+    Module-level and picklable so it can run in a :class:`ProcessPoolExecutor`.
+    """
+    return fit_spectrum(wave, Rrs, Rrs_unc, Chl=chl, config=config)
+
+
+def _persist_result(store, inp: dict, result: FitSpectrumResult, config, created):
+    """Write the chains NPZ + ``fits``/``fit_results`` for one completed fit."""
+    path = _artifacts.save_chains(inp["fit_id"], result)
+    _artifacts.persist_fit(
+        store,
+        fit_id=inp["fit_id"],
+        matchup_id=inp["matchup_id"],
+        pixel_id=inp["pixel_id"],
+        result=result,
+        config=config,
+        rrs_source="L2_AOP",
+        chains_path=str(path),
+        created=created,
+    )
+    return inp["fit_id"]
+
+
+def _worker_init():  # pragma: no cover - runs in worker processes
+    """Cap BLAS/OpenMP threads in each worker so N processes don't oversubscribe
+    the cores (matchup-level parallelism is the outer loop; each fit is 1 core)."""
+    import os
+
+    for var in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        os.environ.setdefault(var, "1")
+
+
 def fit_matchup(
     store,
     matchup_id: str,
@@ -361,51 +480,21 @@ def fit_matchup(
     Raises:
         ValueError: if the matchup, pixel, or granule URL is missing.
     """
-    from pab.pace import cloud
     from pab.pace import extract as _extract
 
     config = config or FitConfig()
-    m = store.query("SELECT * FROM matchups WHERE matchup_id = ?", (matchup_id,))
-    if not m:
+    if not store.query("SELECT 1 FROM matchups WHERE matchup_id = ?", (matchup_id,)):
         raise ValueError(f"no matchup {matchup_id!r}")
-    m = m[0]
-    px = store.query(
-        "SELECT * FROM matchup_pixels WHERE matchup_id = ? AND rank = ?",
-        (matchup_id, rank),
-    )
-    if not px:
+    inp = _gather_fit_input(store, matchup_id, config, rank=rank)
+    if inp is None:
         raise ValueError(f"matchup {matchup_id!r} has no pixel with rank {rank}")
-    px = px[0]
-    gran = store.query(
-        "SELECT data_url FROM granules WHERE granule_id = ?", (m["granule_id"],)
-    )
-    source = gran[0]["data_url"] if gran and gran[0]["data_url"] else m["granule_id"]
-    chla = store.query(
-        "SELECT chla FROM mld_summary WHERE profile_id = ?", (m["profile_id"],)
-    )
-    # require a *finite* chla (NaN would poison set_aph -> a NaN fit)
-    chl = finite_or_none(chla[0]["chla"]) if chla else None
 
-    ds = cloud.open_granule(source, opener=opener)
-    wave, rrs, unc = _extract.extract_spectrum(ds, int(px["ix"]), int(px["iy"]))
-    result = fit_spectrum(wave, rrs, unc, Chl=chl, config=config)
+    ds = _open_bounded(inp["source"], opener=opener)
+    wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
+    result = _fit_only(wave, rrs, unc, inp["chl"], config)
     if not persist:
         return result
-
-    fit_id = make_fit_id(matchup_id, px["ix"], px["iy"], config.model_pair)
-    path = _artifacts.save_chains(fit_id, result)
-    _artifacts.persist_fit(
-        store,
-        fit_id=fit_id,
-        matchup_id=matchup_id,
-        pixel_id=px["pixel_id"],
-        result=result,
-        config=config,
-        rrs_source="L2_AOP",
-        chains_path=str(path),
-        created=created,
-    )
-    return fit_id
+    return _persist_result(store, inp, result, config, created)
 
 
 def build_fits(
@@ -415,13 +504,20 @@ def build_fits(
     opener=None,
     replace: bool = False,
     created: str | None = None,
+    jobs: int = 1,
 ) -> dict[str, list[str]]:
-    """Fit the nearest pixel of every matchup and persist (idempotent).
+    """Fit the nearest pixel of every matchup and persist (idempotent, resumable).
 
-    Skips a fit already present (by ``fit_id``) unless ``replace=True``. A
-    single matchup that fails to fit (e.g. its granule cannot be opened, or the
-    fit diverges) is recorded under ``"failed"`` and does **not** abort the
-    batch — so a re-run resumes the rest.
+    Skips a fit already present (by ``fit_id``) unless ``replace=True``. A single
+    matchup that fails (granule unavailable, fit diverges) is recorded under
+    ``"failed"`` and does **not** abort the batch, so a re-run resumes the rest.
+
+    ``jobs > 1`` fits matchups **in parallel across processes** (the heavy MCMC is
+    CPU-bound): granules are opened and pixels extracted in the parent (one open
+    per granule; the ``opener`` needn't be picklable), the pure per-spectrum fit
+    (:func:`_fit_only`) runs in a :class:`ProcessPoolExecutor`, and all DB writes
+    happen back in the parent (so there is no SQLite writer contention). Results
+    are persisted as they complete, keeping the run resumable and memory bounded.
 
     Returns:
         ``{"written": [...], "skipped": [...], "failed": [...]}`` of fit ids.
@@ -430,24 +526,116 @@ def build_fits(
     written: list[str] = []
     skipped: list[str] = []
     failed: list[str] = []
+
+    # Existing fit_ids in one query rather than one per matchup (SQLite on CephFS
+    # costs ~200 ms a round trip, so per-record checks dominate a resume).
+    done_fits: set[str] = set()
+    if not replace:
+        done_fits = {r["fit_id"] for r in store.query("SELECT fit_id FROM fits")}
+
+    inputs: list[dict] = []
     for m in store.query("SELECT matchup_id FROM matchups ORDER BY matchup_id"):
-        mid = m["matchup_id"]
-        px = store.query(
-            "SELECT ix, iy FROM matchup_pixels WHERE matchup_id = ? AND rank = 1",
-            (mid,),
+        inp = _gather_fit_input(store, m["matchup_id"], config)
+        if inp is None:
+            continue
+        if inp["fit_id"] in done_fits:
+            skipped.append(inp["fit_id"])
+            continue
+        inputs.append(inp)
+
+    if jobs and jobs > 1 and inputs:
+        _build_fits_parallel(
+            store, inputs, config, opener, created, int(jobs), written, failed
         )
-        if not px:
-            continue
-        fit_id = make_fit_id(mid, px[0]["ix"], px[0]["iy"], config.model_pair)
-        if (
-            store.query("SELECT 1 FROM fits WHERE fit_id = ?", (fit_id,))
-            and not replace
-        ):
-            skipped.append(fit_id)
-            continue
+        return {"written": written, "skipped": skipped, "failed": failed}
+
+    from pab.pace import extract as _extract
+
+    for inp in inputs:
         try:
-            fit_matchup(store, mid, config=config, opener=opener, created=created)
-            written.append(fit_id)
+            ds = _open_bounded(inp["source"], opener=opener)
+            try:
+                wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
+            finally:
+                _close_quietly(ds)
+            result = _fit_only(wave, rrs, unc, inp["chl"], config)
+            _persist_result(store, inp, result, config, created)
+            written.append(inp["fit_id"])
         except Exception:  # noqa: BLE001 — one bad matchup must not abort the batch
-            failed.append(fit_id)
+            _log.exception("fit failed for %s", inp["fit_id"])
+            failed.append(inp["fit_id"])
     return {"written": written, "skipped": skipped, "failed": failed}
+
+
+def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, failed):
+    """Parallel fit backend (see :func:`build_fits`). Mutates ``written``/``failed``.
+
+    Extraction + persistence stay in the parent; only :func:`_fit_only` is farmed
+    out. In-flight futures are bounded (~2×``jobs``) so completed chains are drained
+    and persisted promptly rather than piling up in memory.
+    """
+    import multiprocessing as mp
+    from collections import defaultdict
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+
+    from pab.pace import extract as _extract
+
+    # 'spawn' avoids fork-in-a-multithreaded-parent deadlocks (Py3.13 warns on
+    # fork here); workers re-import cleanly and `_fit_only` pickles by qualname.
+    ctx = mp.get_context("spawn")
+
+    by_source: dict[str, list[dict]] = defaultdict(list)
+    for inp in inputs:
+        by_source[inp["source"]].append(inp)
+
+    fut_inp: dict = {}
+    pending: set = set()
+
+    def _collect(fut):
+        inp = fut_inp.pop(fut)
+        try:
+            _persist_result(store, inp, fut.result(), config, created)
+            written.append(inp["fit_id"])
+        except Exception:  # noqa: BLE001
+            _log.exception("fit failed for %s (worker/persist)", inp["fit_id"])
+            failed.append(inp["fit_id"])
+
+    with ProcessPoolExecutor(
+        max_workers=jobs, mp_context=ctx, initializer=_worker_init
+    ) as ex:
+        for source, group in by_source.items():
+            try:
+                ds = _open_bounded(source, opener=opener)
+            except Exception:  # noqa: BLE001 — a bad granule fails its whole group
+                _log.exception("open_granule failed for %s (%d fits)", source, len(group))
+                failed.extend(inp["fit_id"] for inp in group)
+                continue
+            # One open per source shared across its group, then released: an
+            # unclosed dataset keeps an fsspec handle plus its read-ahead cache,
+            # which is what OOM-killed a 32-worker match pod inside 8 min.
+            try:
+                spectra = {}
+                for inp in group:
+                    try:
+                        spectra[inp["fit_id"]] = _extract.extract_spectrum(
+                            ds, inp["ix"], inp["iy"]
+                        )
+                    except Exception:  # noqa: BLE001
+                        _log.exception("extract_spectrum failed for %s", inp["fit_id"])
+                        failed.append(inp["fit_id"])
+            finally:
+                _close_quietly(ds)
+            for inp in group:
+                if inp["fit_id"] not in spectra:
+                    continue
+                wave, rrs, unc = spectra[inp["fit_id"]]
+                fut = ex.submit(_fit_only, wave, rrs, unc, inp["chl"], config)
+                fut_inp[fut] = inp
+                pending.add(fut)
+                while len(pending) >= 2 * jobs:
+                    done, pending_ = wait(pending, return_when=FIRST_COMPLETED)
+                    pending -= done
+                    for f in done:
+                        _collect(f)
+        for f in list(pending):
+            _collect(f)

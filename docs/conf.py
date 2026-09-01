@@ -40,6 +40,9 @@ exclude_patterns = [
     "PDFs",
     "nb/README.md",
     "nb/05_matchup_7902226_4.ipynb",
+    # repo-facing notes, not built docs pages (would otherwise be orphan-warned)
+    "figures/assets/CREDITS.md",
+    "nautilus/s3_PAB.md",
 ]
 
 # The Markdown design/reference docs are authored as standalone GitHub

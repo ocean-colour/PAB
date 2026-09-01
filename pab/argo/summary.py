@@ -14,6 +14,7 @@ through :class:`pab.db.store.Store`.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,6 +23,8 @@ from numpy.typing import ArrayLike
 
 from pab.argo import mld as _mld
 from pab.config import pab_version
+
+_log = logging.getLogger("pab.argo.summary")
 
 
 def moving_median(values: ArrayLike, window: int = 3) -> np.ndarray:
@@ -39,7 +42,9 @@ def moving_median(values: ArrayLike, window: int = 3) -> np.ndarray:
     """
     if window < 1 or window % 2 == 0:
         raise ValueError("window must be a positive odd integer")
-    x = np.asarray(values, dtype=float)
+    # atleast_1d: a profile with a single BBP700/CHLA sample arrives 0-dimensional,
+    # and slicing a 0-d array raises IndexError (crashed a real ingest run).
+    x = np.atleast_1d(np.asarray(values, dtype=float))
     n = x.size
     half = window // 2
     out = np.full(n, np.nan)
@@ -112,9 +117,22 @@ def mixed_layer_mean(
     Returns:
         ``(mean, std, n_points)`` over the retained mixed-layer samples.
     """
-    pres = np.asarray(pres, dtype=float)
-    vals = np.asarray(values, dtype=float)
+    pres = np.atleast_1d(np.asarray(pres, dtype=float))
+    vals = np.atleast_1d(np.asarray(values, dtype=float))
     if not np.isfinite(mld):
+        return float("nan"), float("nan"), 0
+    if vals.shape != pres.shape:
+        # Some argopy returns carry a variable that is not aligned with the
+        # profile's pressure axis (e.g. a single BBP700 value against 555
+        # pressures). numpy would happily *broadcast* the finite-mask and then
+        # raise on the indexing, killing the profile; there is no honest way to
+        # place those samples in the mixed layer, so report "no data" for this
+        # variable and let the rest of the profile through.
+        _log.warning(
+            "variable/pressure length mismatch (%s vs %s); skipping this variable",
+            vals.shape,
+            pres.shape,
+        )
         return float("nan"), float("nan"), 0
     if despike_values:
         vals = moving_median(vals)

@@ -1,0 +1,95 @@
+# Task 17b — full-selection `fit` (BING MCMC for every matchup without a fit).
+#
+# Runs AFTER pab-full-match. Fits the nearest pixel of each matchup (ExpBPow,
+# nsteps=10000) → ~13 MB chains NPZ per fit in /data/fit_chains (~180 GB total;
+# 500 GB PVC). The run's compute bottleneck (~52 h).
+#
+# *** DB-LOCAL (2026-08-18): SQLite on CephFS is fatal for this stage. ***
+# The fit's gather phase does ~50k small *locked* SQLite reads over the DB; on
+# CephFS that thrashes the metadata server and wedges the process uninterruptibly
+# (state D, ceph_mdsc_wait_request) — hung 4 different pods. Proven: the same
+# gather takes 12+ min (hang) on the CephFS DB vs **0.6 s** on a local copy.
+# So we run against a LOCAL copy of the DB and sidestep CephFS-SQLite entirely:
+#   * copy /data/full/pab.db -> /scratch/pab.db (emptyDir) at start (~12 s),
+#   * run `pab --db /scratch/pab.db` (gather + all DB writes are local & instant),
+#   * a background loop checkpoints every 2 min: sqlite3.backup() LOCAL->local,
+#     then a plain file-copy of that to CephFS (atomic via .tmp+rename) — the copy
+#     is a bulk write, NOT SQLite locking, so it does not re-hit the CephFS-SQLite
+#     hang. An evicted pod RESUMES from near-current state
+#     (fit is idempotent — it re-fits any gap, overwriting those chains),
+#   * final backup on exit.
+# Chains still stream to /data/fit_chains on CephFS — those worked before (5,187
+# written) and raw CephFS metadata/throughput is healthy; only the SQLite locking
+# pattern was the problem. If chain writes ever re-trigger the mp result-queue
+# deadlock, the next step is streaming chains to s3://pab.
+#
+# CPU-bound emcee, --jobs 32 (was 50; lowered as a hedge — the hang was the DB
+# gather, not worker count). Runs on the IMAGE (pab:1.0.3), no /data/src override.
+# Safety: one pod = one SQLite writer; single stable pool; per-matchup failures
+# caught + logged; backoffLimit + no `rm -rf` so eviction resumes.
+#
+# Usage (only after match is done):
+#   kubectl -n sea-meets-the-stars delete job pab-full-fit --ignore-not-found
+#   kubectl apply -f nautilus/full_fit_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-full-fit
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-full-fit
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4          # preemption-tolerant; resume skips finished fits
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.3
+        imagePullPolicy: IfNotPresent
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data}   # chains -> /data/fit_chains (CephFS)
+        - {name: RUN, value: /data/full}
+        - {name: MALLOC_ARENA_MAX, value: "2"}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            ulimit -n 65536 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
+            echo "=== FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn) ===" | tee -a $RUN/run.log
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/run.log; }
+            LOCAL=/scratch/pab.db
+            BKUP="import sqlite3,os,shutil; s=sqlite3.connect('/scratch/pab.db'); d=sqlite3.connect('/scratch/pab.bak'); s.backup(d); d.close(); s.close(); shutil.copy('/scratch/pab.bak','/data/full/pab.db.tmp'); os.replace('/data/full/pab.db.tmp','/data/full/pab.db')"
+            counts() { python -c "import sqlite3; c=sqlite3.connect('$LOCAL'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('matchups','fits','fit_results')})" 2>&1 | tee -a $RUN/run.log; }
+            log "DB-local: copy $RUN/pab.db -> $LOCAL"
+            cp $RUN/pab.db $LOCAL
+            ( while true; do sleep 120; python -c "$BKUP" 2>>$RUN/run.log && echo "=== DB backup $(date -Is) ===" >>$RUN/run.log || true; done ) &
+            BGPID=$!
+            log "FIT start (DB-local scratch, jobs=32)"
+            counts
+            if ! pab --db $LOCAL --outdir $RUN/pipeline --stage fit --jobs 32 2>&1 | tee -a $RUN/run.log; then
+              log "FIT FAILED — final DB sync + stopping (re-apply to resume)"
+              python -c "$BKUP" 2>>$RUN/run.log || true
+              kill $BGPID 2>/dev/null || true
+              counts
+              exit 1
+            fi
+            log "FIT end — final DB sync to CephFS"
+            python -c "$BKUP" 2>>$RUN/run.log || true
+            kill $BGPID 2>/dev/null || true
+            counts
+            du -sh $RUN /data/fit_chains 2>/dev/null | tee -a $RUN/run.log
+            log "FIT_DONE"
+        resources:
+          requests: {cpu: "32", memory: "64Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "32", memory: "64Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: scratch, mountPath: /scratch}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: scratch, emptyDir: {sizeLimit: 5Gi}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}
