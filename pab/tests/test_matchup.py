@@ -251,3 +251,324 @@ def test_write_matchup_requires_profile_id():
     with Store.open(":memory:") as store:
         with pytest.raises(ValueError):
             engine.write_matchup(store, m)
+
+
+# -- candidate pre-filter (footprint) ---------------------------------------
+_POLY = "POLYGON ((-130.06 4.46, -133.13 22.33, -158.25 17.15, -153.79 -0.59, -130.06 4.46))"
+
+
+def test_footprint_bbox_parses_polygon():
+    assert engine.footprint_bbox(_POLY) == pytest.approx(
+        (-158.25, -0.59, -130.06, 22.33)
+    )
+
+
+def test_footprint_bbox_widens_longitude_when_it_wraps():
+    # a polar/antimeridian swath: keep the latitude band, drop the lon bound
+    poly = "POLYGON ((-179 62, 179 65, 170 80, -170 78, -179 62))"
+    lon_min, lat_min, lon_max, lat_max = engine.footprint_bbox(poly)
+    assert (lon_min, lon_max) == (-180.0, 180.0)
+    assert (lat_min, lat_max) == pytest.approx((62.0, 80.0))
+
+
+def test_footprint_bbox_unknown_is_none_and_covers_everything():
+    for bad in (None, "", "POLYGON EMPTY", "POLYGON ((1 2, 3 4))"):
+        assert engine.footprint_bbox(bad) is None
+    assert engine.footprint_covers(None, 0.0, 0.0) is True
+
+
+def test_candidate_granules_filters_on_footprint():
+    """A granule whose swath is elsewhere must not be offered to the profile.
+
+    Opening a granule is the expensive step at scale (~4.4 s in-cloud), so the
+    pre-filter has to exclude same-time granules over a different ocean.
+    """
+    far = "POLYGON ((10 40, 20 40, 20 50, 10 50, 10 40))"
+    with Store.open(":memory:") as store:
+        for gid, poly in (("near", _POLY), ("far", far)):
+            store.upsert(
+                "granules",
+                {
+                    "granule_id": gid,
+                    "time_start": "2025-05-01T11:30:00",
+                    "footprint": poly,
+                    "data_url": f"s3://b/{gid}.nc",
+                },
+            )
+        t = "2025-05-01T12:00:00"
+        # inside the _POLY swath (N Pacific)
+        got = engine.candidate_granules(
+            store, t, dtime_max_hours=24.0, latitude=10.0, longitude=-145.0
+        )
+        assert [c["granule_id"] for c in got] == ["near"]
+        # no position given -> time-only, both offered (back-compatible)
+        assert len(engine.candidate_granules(store, t, dtime_max_hours=24.0)) == 2
+        # outside both swaths -> nothing
+        assert engine.candidate_granules(
+            store, t, dtime_max_hours=24.0, latitude=-40.0, longitude=100.0
+        ) == []
+
+
+def test_granule_index_respects_the_time_window():
+    with Store.open(":memory:") as store:
+        for gid, t in (("g_in", "2025-05-01T11:30:00"), ("g_out", "2025-05-03T11:30:00")):
+            store.upsert("granules", {"granule_id": gid, "time_start": t})
+        idx = engine.GranuleIndex.load(store)
+        assert len(idx) == 2
+        got = idx.candidates("2025-05-01T12:00:00", dtime_max_hours=24.0)
+        assert [c["granule_id"] for c in got] == ["g_in"]
+        # source falls back to the granule id when there is no data_url
+        assert got[0]["source"] == "g_in"
+
+
+# -- parallel matching ------------------------------------------------------
+def _stub_opener(source):  # module-level -> picklable, so spawned workers can use it
+    return make_granule(center=(20.0, -50.0))
+
+
+def test_build_matchups_parallel_matches_serial(tmp_path):
+    """The parallel path must persist exactly what the serial path does.
+
+    Exercises the real ProcessPoolExecutor (spawn) with a picklable opener, so
+    the fan-out used for the production run is actually run in the test suite.
+    """
+    with Store.open(tmp_path / "par.db") as store:
+        _seed_store(store)
+        out = engine.build_matchups(store, opener=_stub_opener, jobs=2)
+        assert out["written"] == ["7902226_5_G1"]
+        assert store.count("matchup_pixels") == 10
+        # resumable: a second parallel pass skips it, no duplicate rows
+        again = engine.build_matchups(store, opener=_stub_opener, jobs=2)
+        assert again["written"] == [] and again["skipped"] == ["7902226_5_G1"]
+        assert store.count("matchups") == 1
+
+    with Store.open(tmp_path / "ser.db") as store:
+        _seed_store(store)
+        serial = engine.build_matchups(store, opener=_stub_opener, jobs=1)
+    assert serial["written"] == out["written"]
+
+
+def test_build_matchups_falls_back_to_serial_for_an_unpicklable_opener():
+    ds = make_granule(center=(20.0, -50.0))
+    with Store.open(":memory:") as store:
+        _seed_store(store)
+        # a lambda cannot cross a spawn boundary -> must still produce the matchup
+        out = engine.build_matchups(store, opener=lambda s: ds, jobs=4)
+        assert out["written"] == ["7902226_5_G1"]
+
+
+def test_build_matchups_resume_skips_before_opening_granules():
+    """A resumed match must not re-open granules for profiles already matched.
+
+    The existence check used to run *after* find_matchup, so a restart paid the
+    full granule-read cost again — 15 min of wasted I/O on a 1000-profile rerun,
+    and the dominant cost of any restart at 54k.
+    """
+    ds = make_granule(center=(20.0, -50.0))
+    opens = []
+
+    def counting_opener(source):
+        opens.append(source)
+        return ds
+
+    with Store.open(":memory:") as store:
+        _seed_store(store)
+        first = engine.build_matchups(store, opener=counting_opener)
+        assert first["written"] == ["7902226_5_G1"]
+        n_first = len(opens)
+        assert n_first > 0  # the first pass must actually read the granule
+
+        opens.clear()
+        again = engine.build_matchups(store, opener=counting_opener)
+        assert again["skipped"] == ["7902226_5_G1"]
+        assert again["written"] == []
+        assert opens == []  # <- the point: zero granule opens on resume
+
+        # --replace still re-does the work
+        opens.clear()
+        forced = engine.build_matchups(store, opener=counting_opener, replace=True)
+        assert forced["written"] == ["7902226_5_G1"]
+        assert len(opens) == n_first
+
+
+def _hanging_opener(source):
+    """Module-level (picklable) opener that never returns for one granule.
+
+    Stands in for the real failure: a granule read that wedges inside a C-level
+    lock with no timeout of its own.
+    """
+    import time
+
+    if source == "s3://b/HANG.nc":
+        time.sleep(3600)
+    return make_granule(center=(20.0, -50.0))
+
+
+def test_build_matchups_survives_a_wedged_worker(tmp_path):
+    """A hung granule read must not hang the stage.
+
+    On a real run all 16 workers ended up blocked with zero sockets and 0% CPU,
+    and match sat dead for 40 min. The parent now kills a chunk that produces no
+    result within stall_timeout_s and carries on.
+    """
+    with Store.open(tmp_path / "hang.db") as store:
+        # one profile whose granule hangs; nothing else in the chunk
+        pid = persist_summary(
+            store,
+            wmo=7902226,
+            cycle=5,
+            summary={"mld": 30.0, "mld_method": "x", "n_points": 5},
+            latitude=20.0,
+            longitude=-50.0,
+            time="2025-05-01T12:00:00",
+        )
+        assert pid
+        store.upsert(
+            "granules",
+            {
+                "granule_id": "HANG",
+                "time_start": "2025-05-01T11:30:00",
+                "data_url": "s3://b/HANG.nc",
+            },
+        )
+        cfg = engine.MatchupConfig(stall_timeout_s=3.0)
+        out = engine.build_matchups(
+            store, opener=_hanging_opener, config=cfg, jobs=2
+        )
+        # returned rather than hanging, and the profile is reported as stalled
+        assert out["stalled"] == ["7902226_5"]
+        assert out["written"] == []
+        assert store.count("matchups") == 0  # retried on the next run
+
+
+def test_find_matchup_closes_the_granule_it_opened():
+    """Each candidate granule must be released after its pixels are extracted.
+
+    An unclosed dataset keeps an fsspec handle plus its read-ahead cache, so a
+    worker chewing through ~6 candidates per profile grew without bound — it
+    OOM-killed a 32-worker pod on 80Gi inside 8 minutes.
+    """
+    closed = []
+
+    class TrackingDataset:
+        """Wraps a real granule and records close() calls."""
+
+        def __init__(self, ds):
+            self._ds = ds
+
+        def __getitem__(self, key):
+            return self._ds[key]
+
+        def __contains__(self, key):
+            return key in self._ds
+
+        def close(self):
+            closed.append(True)
+
+    near = make_granule(center=(20.0, -50.0))
+    far = make_granule(center=(30.0, -50.0))  # ~1100 km away: fails the gate
+    opened = {"far": far, "near": near}
+    prof = _profile(20.0, -50.0, "2025-05-01T12:00:00")
+    # far is temporally closest, so it is opened first, rejected on distance,
+    # and near is opened next -> two opens, two closes
+    cands = [
+        {"granule_id": "GFAR", "time": "2025-05-01T12:00:00", "source": "far"},
+        {"granule_id": "GNEAR", "time": "2025-05-01T13:00:00", "source": "near"},
+    ]
+    m = engine.find_matchup(
+        prof, cands, opener=lambda s: TrackingDataset(opened[s])
+    )
+    assert m is not None and m.granule_id == "GNEAR"
+    assert len(closed) == 2  # rejected and accepted granules are both released
+
+
+def test_build_matchups_reuses_one_pool_across_chunks(tmp_path, monkeypatch):
+    """The parallel path must not spawn a fresh pool per chunk.
+
+    It used to, with shutdown(wait=False), so generation N kept tearing down
+    (~1 GB of imported numpy/xarray/bing per worker) while N+1 spawned. Over 393
+    chunks x 32 workers that OOM-killed an 80Gi pod five times running.
+
+    Recycling itself (``max_tasks_per_child``) is CPython's own machinery, not
+    ours — this test only owns "don't build a fresh pool per chunk", so the
+    recycle threshold is patched far above the task count. At the real default
+    (5), recycling a worker mid-run reliably stalled one profile past
+    ``stall_timeout_s`` on GitHub's 2-core CI runners (never locally), turning
+    this from a sub-second check into a multi-minute hang.
+    """
+    import concurrent.futures as cf
+
+    import pab.matchup.engine as eng
+
+    monkeypatch.setattr(eng, "MAX_TASKS_PER_CHILD", 1000)
+
+    created = []
+    orig = cf.ProcessPoolExecutor  # engine imports it inside the function
+
+    class CountingPool(orig):
+        def __init__(self, *a, **kw):
+            created.append(kw.get("max_tasks_per_child"))
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(cf, "ProcessPoolExecutor", CountingPool)
+
+    with Store.open(tmp_path / "pool.db") as store:
+        # enough profiles to span several chunks (chunk_size = 4 * jobs = 8)
+        for i in range(20):
+            wmo = 7903000 + i
+            persist_summary(
+                store,
+                wmo=wmo,
+                cycle=1,
+                summary={"mld": 30.0, "mld_method": "x", "n_points": 5},
+                latitude=20.0,
+                longitude=-50.0,
+                time="2025-05-01T12:00:00",
+            )
+        store.upsert(
+            "granules",
+            {
+                "granule_id": "G1",
+                "time_start": "2025-05-01T11:30:00",
+                "data_url": "s3://b/G1.nc",
+            },
+        )
+        out = engine.build_matchups(store, opener=_stub_opener, jobs=2)
+
+    # A profile can legitimately land in "stalled" rather than "written" if a
+    # worker recycle (max_tasks_per_child) is slow to come back up under CPU
+    # contention (observed on GitHub's 2-core runners) — that is the stall
+    # detector in _build_matchups_parallel doing exactly its job, not a bug.
+    # What this test actually guards is pool *reuse*, asserted below.
+    assert len(out["written"]) + len(out["stalled"]) == 20   # all chunks ran
+    assert len(created) == 1, f"one pool expected, got {len(created)}"
+    assert created[0] == eng.MAX_TASKS_PER_CHILD   # workers are recycled
+
+
+def test_find_matchup_prefers_the_temporally_closest_covering_granule():
+    """Time leads, distance is only a gate — and we stop at the first qualifier.
+
+    Both granules cover the float. The old rule picked whichever had the nearer
+    pixel (sub-pixel differences: median 0.65 km in the pilot) even when it sat
+    hours further away; 72% of pilot matchups ended up >6 h from the float. Now
+    the temporally closest *covering* granule wins.
+    """
+    opens = []
+    centred = make_granule(center=(20.0, -50.0), span=0.04)   # distance ~0, 4 h away
+    offset = make_granule(center=(20.01, -50.0), span=0.04)   # ~1.1 km, 1 h away
+
+    def opener(source):
+        opens.append(source)
+        return {"centred": centred, "offset": offset}[source]
+
+    prof = _profile(20.0, -50.0, "2025-05-01T12:00:00")
+    cands = [
+        {"granule_id": "GCENTRED", "time": "2025-05-01T16:00:00", "source": "centred"},
+        {"granule_id": "GOFFSET", "time": "2025-05-01T11:00:00", "source": "offset"},
+    ]
+    m = engine.find_matchup(prof, cands, opener=opener)
+    assert m is not None
+    assert m.granule_id == "GOFFSET"          # 1 h beats 4 h; both cover the float
+    assert m.dtime_hours == pytest.approx(1.0)
+    assert 0.0 < m.distance_km <= 5.0         # inside the gate, not the minimum
+    assert opens == ["offset"]                # early stop: the 4 h granule is unread

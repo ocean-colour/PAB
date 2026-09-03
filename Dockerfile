@@ -4,7 +4,7 @@
 #   docker build -f PAB/Dockerfile -t gitlab-registry.nrp-nautilus.io/profx/pab:1.0 <staging>
 FROM python:3.12
 
-ENV MPLBACKEND=Agg PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1
+ENV MPLBACKEND=Agg PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1 OS_COLOR=/opt/os_color
 RUN pip install --upgrade pip
 
 WORKDIR /opt/src
@@ -13,6 +13,10 @@ COPY remote_sensing/ remote_sensing/
 COPY ocpy/ ocpy/
 COPY bing/ bing/
 COPY PAB/ PAB/
+# The BING backscatter models init bb_w from a Loisel+2023 Hydrolight run
+# (ocpy.hydrolight.loisel23.load_ds(4,0) -> $OS_COLOR/Loisel2023/Hydrolight400.nc).
+# Every fit needs it; ship just that one 18 MB file (not the full 19 GB dataset).
+COPY os_color/ /opt/os_color/
 
 RUN pip install \
       ./remote_sensing ./ocpy ./bing ./PAB \
@@ -29,8 +33,9 @@ RUN pip install \
 # Bricaud table at *import* of bing.models.anw — so copy them into the installed
 # packages. Path is discovered from the module (no python-version hardcoding).
 RUN python -c "import shutil, os, bing, ocpy; [shutil.copytree(s, os.path.join(os.path.dirname(p.__file__), 'data'), dirs_exist_ok=True) for p, s in [(bing, '/opt/src/bing/bing/data'), (ocpy, '/opt/src/ocpy/ocpy/data')]]" \
- && python -c "import bing.models.anw; from importlib import resources; import os; \
+ && python -c "import bing.models.anw; import bing.models.bbnw; from importlib import resources; import os; \
 [print('data OK', p) for p in [resources.files('bing').joinpath('data','RT','gordon_coefficients_with_G0.csv'), resources.files('bing').joinpath('data','adg','ADG_part_data_fig2_spec.mat')] if os.path.exists(p)]; \
-assert all(os.path.exists(p) for p in [resources.files('bing').joinpath('data','RT','gordon_coefficients_with_G0.csv'), resources.files('bing').joinpath('data','adg','ADG_part_data_fig2_spec.mat')]); print('FIT DEPS OK')"
+assert all(os.path.exists(p) for p in [resources.files('bing').joinpath('data','RT','gordon_coefficients_with_G0.csv'), resources.files('bing').joinpath('data','adg','ADG_part_data_fig2_spec.mat')]); print('FIT DEPS OK')" \
+ && python -c "from ocpy.hydrolight import loisel23; ds=loisel23.load_ds(4,0); print('LOISEL OK', tuple(ds.Lambda.shape))"
 
 ENTRYPOINT ["pab"]

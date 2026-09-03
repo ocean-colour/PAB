@@ -1,0 +1,80 @@
+# Task 15 — full-selection ingest + discover (54,506 profiles) on Nautilus.
+#
+# Only these two stages: match/fit/figure/report follow in Task 16/17 once the
+# profile and granule tables are complete.
+#
+# DB: /data/full/pab.db, seeded from the 1k pilot (986 profiles, 2,734 granules,
+# 278 matchups, 273 fits) because the pilot's 1,000 profiles are a *subset* of the
+# full selection — so that work is legitimately reusable and ingest/discover skip
+# it. The pilot snapshot is preserved untouched at /data/run1k and on s3://pab.
+#
+# Profile CSV lives on the PVC (2.5 MB — above the 1 MiB ConfigMap limit).
+#
+# Sizing, from the pilot's measured rates:
+#   ingest   ~2.1 s/profile at 32 procs (4.2 s at 16, latency-bound to GDAC)
+#            -> 53,520 remaining ~= 31 h
+#   discover ~1.75 s/search serially, 8 threads -> ~3-4 h (was ~26 h at 1 thread)
+# 34 CPU / 64Gi rather than the run pod's 50/100Gi: neither stage is CPU-bound,
+# and a smaller request schedules faster on a shared cluster.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars delete job pab-full-ingest --ignore-not-found
+#   kubectl apply -f nautilus/full_ingest_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-full-ingest
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-full-ingest
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4          # preemption-tolerant; both stages resume from the DB
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        # :1.0.2 image + the fixed package staged on the PVC (the registry still
+        # will not accept a manifest write; see the Task-13 log).
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.2
+        imagePullPolicy: IfNotPresent
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data}
+        - {name: PYTHONPATH, value: /data/src}
+        - {name: RUN, value: /data/full}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            mkdir -p $RUN
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/run.log; }
+            counts() { python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('profiles','granules','matchups','matchup_pixels','fits','fit_results')})" 2>&1 | tee -a $RUN/run.log; }
+            stage() {
+              log "STAGE $1 start"
+              if ! pab --db $RUN/pab.db --outdir $RUN/pipeline \
+                --profiles-csv /data/full_profiles.csv --stage $1 \
+                --jobs 32 --ingest-jobs 32 --discover-jobs 8 2>&1 \
+                | tee -a $RUN/run.log; then
+                log "STAGE $1 FAILED — stopping (resume by re-applying the Job)"
+                counts
+                exit 1
+              fi
+              log "STAGE $1 end"
+              counts
+            }
+            log "RUN start (54,506 profiles; ingest-jobs=32, discover-jobs=8)"
+            for s in ingest discover; do stage $s; done
+            log "disk"
+            du -sh $RUN /data/fit_chains 2>/dev/null | tee -a $RUN/run.log
+            log "FULL_INGEST_DONE"
+        resources:
+          requests: {cpu: "34", memory: "64Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "34", memory: "64Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}

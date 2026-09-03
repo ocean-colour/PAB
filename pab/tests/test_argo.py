@@ -215,3 +215,35 @@ def test_qa_uses_headless_backend():
 
     assert os.environ.get("MPLBACKEND") == "Agg"
     assert matplotlib.get_backend().lower() == "agg"
+
+
+def test_mixed_layer_mean_handles_length_mismatch():
+    """A variable not aligned with the pressure axis must not kill the profile.
+
+    Real argopy returns did this in the 1000-profile run: one BBP700 value
+    against 555 pressures. numpy broadcasts the finite-mask to 555 and then
+    raises IndexError on the indexing, which failed 14 profiles outright.
+    """
+    pres = np.linspace(0.0, 100.0, 555)
+    mean, std, n = summary.mixed_layer_mean(pres, np.array([2e-3]), 30.0)
+    assert np.isnan(mean) and np.isnan(std) and n == 0
+    # the aligned case is unaffected
+    mean, std, n = summary.mixed_layer_mean(pres, np.full(555, 2e-3), 30.0)
+    assert mean == pytest.approx(2e-3) and n > 0
+
+
+def test_summarize_profile_survives_a_mismatched_variable():
+    pytest.importorskip("gsw")
+    pres = np.linspace(0.0, 200.0, 100)
+    out = summary.summarize_profile(
+        pres,
+        bbp700=np.array([2e-3]),          # mismatched -> skipped
+        chla=np.full(100, 0.2),           # aligned -> still summarized
+        psal=np.full(100, 35.0),
+        temp=np.linspace(20.0, 10.0, 100),
+        lon=-40.0,
+        lat=10.0,
+    )
+    assert np.isnan(out["bbp700"])
+    assert out["chla"] == pytest.approx(0.2)
+    assert np.isfinite(out["mld"])

@@ -24,8 +24,26 @@ import numpy as np
 
 from pab.fit import artifacts as _artifacts
 from pab.fit.models import FitConfig, build_models, model_param_names
+from pab.matchup.engine import _close_quietly
 
 _log = logging.getLogger("pab.fit")
+
+#: Per-granule read timeout (seconds) for this stage's opens. A read that never
+#: returned wedged `fit` for **8.6 h** on a real run — the open happens in the
+#: parent here, so one bad granule stops everything, and neither fsspec nor HDF5
+#: imposes a timeout of its own.
+OPEN_TIMEOUT_S: float = 120.0
+
+
+def _open_bounded(source, *, opener=None):
+    """:func:`pab.pace.cloud.open_granule` with a hard timeout.
+
+    Shares :func:`pab.matchup.engine._open_with_timeout` (SIGALRM-based, so it
+    interrupts a thread parked in a C-level lock).
+    """
+    from pab.matchup.engine import _open_with_timeout
+
+    return _open_with_timeout(source, opener=opener, timeout_s=OPEN_TIMEOUT_S)
 
 
 @contextlib.contextmanager
@@ -462,7 +480,6 @@ def fit_matchup(
     Raises:
         ValueError: if the matchup, pixel, or granule URL is missing.
     """
-    from pab.pace import cloud
     from pab.pace import extract as _extract
 
     config = config or FitConfig()
@@ -472,7 +489,7 @@ def fit_matchup(
     if inp is None:
         raise ValueError(f"matchup {matchup_id!r} has no pixel with rank {rank}")
 
-    ds = cloud.open_granule(inp["source"], opener=opener)
+    ds = _open_bounded(inp["source"], opener=opener)
     wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
     result = _fit_only(wave, rrs, unc, inp["chl"], config)
     if not persist:
@@ -510,15 +527,18 @@ def build_fits(
     skipped: list[str] = []
     failed: list[str] = []
 
+    # Existing fit_ids in one query rather than one per matchup (SQLite on CephFS
+    # costs ~200 ms a round trip, so per-record checks dominate a resume).
+    done_fits: set[str] = set()
+    if not replace:
+        done_fits = {r["fit_id"] for r in store.query("SELECT fit_id FROM fits")}
+
     inputs: list[dict] = []
     for m in store.query("SELECT matchup_id FROM matchups ORDER BY matchup_id"):
         inp = _gather_fit_input(store, m["matchup_id"], config)
         if inp is None:
             continue
-        if (
-            store.query("SELECT 1 FROM fits WHERE fit_id = ?", (inp["fit_id"],))
-            and not replace
-        ):
+        if inp["fit_id"] in done_fits:
             skipped.append(inp["fit_id"])
             continue
         inputs.append(inp)
@@ -529,13 +549,15 @@ def build_fits(
         )
         return {"written": written, "skipped": skipped, "failed": failed}
 
-    from pab.pace import cloud
     from pab.pace import extract as _extract
 
     for inp in inputs:
         try:
-            ds = cloud.open_granule(inp["source"], opener=opener)
-            wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
+            ds = _open_bounded(inp["source"], opener=opener)
+            try:
+                wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
+            finally:
+                _close_quietly(ds)
             result = _fit_only(wave, rrs, unc, inp["chl"], config)
             _persist_result(store, inp, result, config, created)
             written.append(inp["fit_id"])
@@ -556,7 +578,6 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
     from collections import defaultdict
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
-    from pab.pace import cloud
     from pab.pace import extract as _extract
 
     # 'spawn' avoids fork-in-a-multithreaded-parent deadlocks (Py3.13 warns on
@@ -584,18 +605,30 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
     ) as ex:
         for source, group in by_source.items():
             try:
-                ds = cloud.open_granule(source, opener=opener)
+                ds = _open_bounded(source, opener=opener)
             except Exception:  # noqa: BLE001 — a bad granule fails its whole group
                 _log.exception("open_granule failed for %s (%d fits)", source, len(group))
                 failed.extend(inp["fit_id"] for inp in group)
                 continue
+            # One open per source shared across its group, then released: an
+            # unclosed dataset keeps an fsspec handle plus its read-ahead cache,
+            # which is what OOM-killed a 32-worker match pod inside 8 min.
+            try:
+                spectra = {}
+                for inp in group:
+                    try:
+                        spectra[inp["fit_id"]] = _extract.extract_spectrum(
+                            ds, inp["ix"], inp["iy"]
+                        )
+                    except Exception:  # noqa: BLE001
+                        _log.exception("extract_spectrum failed for %s", inp["fit_id"])
+                        failed.append(inp["fit_id"])
+            finally:
+                _close_quietly(ds)
             for inp in group:
-                try:
-                    wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
-                except Exception:  # noqa: BLE001
-                    _log.exception("extract_spectrum failed for %s", inp["fit_id"])
-                    failed.append(inp["fit_id"])
+                if inp["fit_id"] not in spectra:
                     continue
+                wave, rrs, unc = spectra[inp["fit_id"]]
                 fut = ex.submit(_fit_only, wave, rrs, unc, inp["chl"], config)
                 fut_inp[fut] = inp
                 pending.add(fut)

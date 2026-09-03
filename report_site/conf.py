@@ -1,6 +1,6 @@
 """Sphinx config for the PAB reporting site (generated; separate from the developer docs)."""
 project = "PAB matchup results"
-release = version = "0.0.dev0"
+release = version = "1.0"
 extensions = []
 exclude_patterns = ["_build"]
 try:

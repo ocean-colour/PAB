@@ -27,6 +27,13 @@ _STATIC_FIGURES = "_static/figures"
 #: no-page-explosion constraint); detail then comes via tap-to-open + downloads.
 MAX_INLINE_FIGURES = 50
 
+#: Above this matchup count the Comparisons page renders **static** Matplotlib
+#: scatter/map PNGs instead of the interactive Bokeh embed. An all-points Bokeh
+#: embed of ~10⁴ matchups is ~14 MB of inline JSON — too big to commit — so at
+#: scale the committed site keeps small static figures and points per-matchup
+#: detail at the downloadable summary table (the "keep git small" constraint).
+MAX_INTERACTIVE_MATCHUPS = 2000
+
 #: The fixed set of generated page stems (there is no per-matchup page). The
 #: matchup results are split across topical pages so no single page is overloaded.
 PAGE_STEMS = (
@@ -178,10 +185,9 @@ def interactive_figures(df, *, artifact_url_col: str = FIGURE_URL_COL) -> str:
         chl = _chl_scatter(df, interactive, np, url_col)
         dfm = df.copy()
         with np.errstate(divide="ignore", invalid="ignore"):
-            dfm["ratio"] = (
-                dfm["bbp_bing"].to_numpy(dtype=float)
-                / dfm["bbp_argo"].to_numpy(dtype=float)
-            )
+            dfm["ratio"] = dfm["bbp_bing"].to_numpy(dtype=float) / dfm[
+                "bbp_argo"
+            ].to_numpy(dtype=float)
         mp = interactive.matchup_map(dfm, color_col="ratio")
     except ImportError:
         return ""
@@ -224,10 +230,99 @@ def _chl_scatter(df, interactive, np, url_col):
     )
 
 
-def comparisons_page(df, *, sortable: bool = True) -> str:
-    """The **Comparisons** page: interactive satellite-vs-float scatters + map."""
+def _static_comparison_figures(df, outdir) -> str:
+    """Static (Matplotlib) ``b_bp``/Chl scatters + matchup map for the large-N page.
+
+    Renders small PNGs into ``outdir/_static/comparisons`` (reusing
+    :mod:`pab.plotting.population`) and returns the ``.. figure::`` block. Used
+    above :data:`MAX_INTERACTIVE_MATCHUPS`, where an all-points Bokeh embed would
+    bloat the committed site. Best-effort: returns ``""`` if Matplotlib / the
+    population helpers are unavailable or every panel fails.
+    """
+    try:
+        import numpy as np
+
+        from pab.plotting import population
+    except ImportError:
+        return ""
+    dest = Path(outdir) / "_static" / "comparisons"
+    dest.mkdir(parents=True, exist_ok=True)
+    figs: list[tuple[str, str]] = []
+    try:
+        population.comparison_scatter(
+            df,
+            "bbp_bing",
+            "bbp_argo",
+            label="b_bp",
+            unit="m$^{-1}$",
+            outfile=dest / "bbp_scatter.png",
+        )
+        figs.append(
+            ("bbp_scatter.png", "Satellite vs float ``b_bp`` (700 nm), log-log.")
+        )
+    except Exception:  # noqa: BLE001 — a bad panel must not break the build
+        pass
+    if "chl_bing" in df and "chla_argo" in df:
+        try:
+            population.comparison_scatter(
+                df,
+                "chl_bing",
+                "chla_argo",
+                label="chlorophyll",
+                unit="mg m$^{-3}$",
+                outfile=dest / "chl_scatter.png",
+            )
+            figs.append(("chl_scatter.png", "Satellite vs float chlorophyll, log-log."))
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        dfm = df.copy()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dfm["ratio"] = dfm["bbp_bing"].to_numpy(dtype=float) / dfm[
+                "bbp_argo"
+            ].to_numpy(dtype=float)
+        population.matchup_map(dfm, color_col="ratio", outfile=dest / "matchup_map.png")
+        figs.append(
+            (
+                "matchup_map.png",
+                "Matchup locations, coloured by sat/float ``b_bp`` ratio.",
+            )
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    if not figs:
+        return ""
+    out = [
+        f"{len(df):,} matchups — shown as static summary figures (the interactive "
+        "per-point scatter is suppressed at this scale to keep the committed site "
+        "small; per-matchup values are in the downloadable summary table on the "
+        ":doc:`Downloads <downloads>` page).\n"
+    ]
+    for name, cap in figs:
+        out.append(
+            f".. figure:: _static/comparisons/{name}\n   :width: 520px\n\n   {cap}\n"
+        )
+    return "\n".join(out)
+
+
+def comparisons_page(
+    df,
+    *,
+    sortable: bool = True,
+    outdir=None,
+    max_interactive: int = MAX_INTERACTIVE_MATCHUPS,
+) -> str:
+    """The **Comparisons** page: satellite-vs-float scatters + map.
+
+    Interactive Bokeh below ``max_interactive`` matchups; **static** PNGs above it
+    (when ``outdir`` is given) so the committed site stays small at ~10⁴ matchups.
+    """
     out = [_heading("Satellite vs float comparisons"), ""]
-    body = interactive_figures(df) if sortable else ""
+    body = ""
+    if outdir is not None and len(df) > max_interactive:
+        body = _static_comparison_figures(df, outdir)
+    if not body and sortable:
+        body = interactive_figures(df)
     if body:
         out.append(body)
     else:
@@ -556,33 +651,48 @@ def methods_page() -> str:
     return "\n".join(out)
 
 
-def downloads_page(store, outdir) -> str:
-    """The **Downloads** page: links the small summary tables.
+def downloads_page(store, outdir, *, downloads_base_url: str | None = None) -> str:
+    """The **Downloads** page: links the matchup summary tables.
 
-    Stages the matchup summary CSV/Parquet (``publish.export_tables``) into
-    ``outdir/_static/downloads`` and links them (small, committed with the site).
-    The bulky per-matchup MCMC chains and figures live in the object store
-    (Nautilus S3) keyed by matchup id — noted here as available once that backend
-    is wired (``HOWTO.md`` §7b). Best-effort: never breaks the build.
+    Default (``downloads_base_url=None``): stage the summary CSV/Parquet
+    (``publish.export_tables``) into ``outdir/_static/downloads`` and link them
+    page-relative — fine for a small dev set committed with the site. At full
+    scale those tables are multi-MB, so pass ``downloads_base_url`` (e.g. the
+    ``s3://pab`` public URL prefix) and the page links them **there** instead,
+    staging nothing into git — the "reference by S3 URL at scale" path in
+    ``HOWTO.md`` §7b. The bulky per-matchup chains/figures live in the object
+    store keyed by ``matchup_id``. Best-effort: never breaks the build.
     """
     from pab.report import publish
 
-    try:
-        tables = publish.export_tables(store, Path(outdir) / "_static" / "downloads")
-    except Exception:  # noqa: BLE001 — downloads are a bonus, not load-bearing
-        tables = {}
     out = [_heading("Downloads"), ""]
     links = []
-    if "summary_csv" in tables:
+    if downloads_base_url:
+        base = downloads_base_url.rstrip("/")
         links.append(
-            '<li><a href="_static/downloads/matchup_summary.csv">'
-            "Matchup summary (CSV)</a></li>"
+            f'<li><a href="{base}/matchup_summary.csv">Matchup summary (CSV)</a></li>'
         )
-    if "summary_parquet" in tables:
         links.append(
-            '<li><a href="_static/downloads/matchup_summary.parquet">'
+            f'<li><a href="{base}/matchup_summary.parquet">'
             "Matchup summary (Parquet)</a></li>"
         )
+    else:
+        try:
+            tables = publish.export_tables(
+                store, Path(outdir) / "_static" / "downloads"
+            )
+        except Exception:  # noqa: BLE001 — downloads are a bonus, not load-bearing
+            tables = {}
+        if "summary_csv" in tables:
+            links.append(
+                '<li><a href="_static/downloads/matchup_summary.csv">'
+                "Matchup summary (CSV)</a></li>"
+            )
+        if "summary_parquet" in tables:
+            links.append(
+                '<li><a href="_static/downloads/matchup_summary.parquet">'
+                "Matchup summary (Parquet)</a></li>"
+            )
     if links:
         out.append(".. raw:: html\n")
         out.extend("   " + ln for ln in ["<ul>", *links, "</ul>"])
@@ -716,7 +826,7 @@ def reporting_conf(*, pab_version: str | None = None) -> str:
         "except ImportError:\n"
         '    html_theme = "alabaster"\n'
         f"html_js_files = {js_files!r}\n"
-        '# Per-matchup figures are copied under _static/figures and served verbatim.\n'
+        "# Per-matchup figures are copied under _static/figures and served verbatim.\n"
         'html_static_path = ["_static"]\n'
     )
 
@@ -747,7 +857,10 @@ def _gather_with_figures(store, outdir: Path, *, opener=None):
             "SELECT fit_id, figure_path FROM fits WHERE figure_path IS NOT NULL"
         )
     }
-    urls = [_stage_static(fig_paths.get(fit_id), outdir, "figures") for fit_id in df["fit_id"]]
+    urls = [
+        _stage_static(fig_paths.get(fit_id), outdir, "figures")
+        for fit_id in df["fit_id"]
+    ]
     df = df.copy()
     df[FIGURE_URL_COL] = urls
     return df
@@ -760,6 +873,7 @@ def build_site(
     pab_version: str | None = None,
     sortable: bool = True,
     opener=None,
+    downloads_base_url: str | None = None,
 ) -> dict[str, Path]:
     """Write the fixed aggregate ``.rst`` pages **and a Sphinx ``conf.py``** to
     ``outdir`` — a self-contained, buildable reporting-site source tree.
@@ -793,7 +907,7 @@ def build_site(
     pages = {
         "index": index_page(),
         "summary": summary_page(store, pab_version=pab_version),
-        "comparisons": comparisons_page(df, sortable=sortable),
+        "comparisons": comparisons_page(df, sortable=sortable, outdir=outdir),
         "figures": figures_page(store, outdir, df),
         "aggregates": (
             aggregates_page(store, sortable=sortable)
@@ -801,7 +915,9 @@ def build_site(
             + matchup_quality_table(store, sortable=sortable)
         ),
         "methods": methods_page() + "\n" + provenance_block(pab_version=pab_version),
-        "downloads": downloads_page(store, outdir),
+        "downloads": downloads_page(
+            store, outdir, downloads_base_url=downloads_base_url
+        ),
     }
     written = {}
     for stem, text in pages.items():

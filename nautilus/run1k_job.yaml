@@ -1,0 +1,103 @@
+# PAB 1000-profile run on Nautilus: one pod, 50 cores, lazy NASA-S3 reads.
+#
+# The dress rehearsal for the 54,506-profile run: same code path, same image,
+# same PVC, 1/55th of the profiles. Stages run one at a time so each gets its
+# own wall-clock line in the log; everything is idempotent, so a preempted pod
+# resumes where it stopped (NOTE: unlike validate_job.yaml this does NOT wipe
+# /data/run1k — that is what makes a restart a resume).
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars create configmap pab-run1k-csv \
+#     --from-file=profiles.csv=nautilus/run1k_profiles.csv --dry-run=client -o yaml \
+#     | kubectl apply -f -
+#   kubectl -n sea-meets-the-stars delete job pab-run1k --ignore-not-found
+#   kubectl apply -f nautilus/run1k_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-run1k        # or tail /data/run1k/run.log
+#
+# Expect (see run_full_pipeline.md → Reports → 1000-profile plan):
+#   ingest ~35 min (32 procs; R5 — in-pod fetches are latency-bound, 4.2 s/profile
+#     at 16, so this should roughly halve) · discover ~15 min · match ~20-40 min
+#   fit ~1 h (11.6 s/matchup / 50) · figure ~5 min (was 42 s/matchup SERIAL, now
+#     parallel per R6) · report ~1 min · ~250 matchups, ~3-4 GB of chains.
+# NOTE chains land in $PAB_DATA_DIR/fit_chains (=/data/fit_chains), NOT under
+# /data/run1k — check both when sizing the PVC or backing up.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-run1k
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4          # a preempted/evicted pod restarts and resumes
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        # :1.0.3 could not be pushed — the NRP registry accepted every layer
+        # but hung on the manifest write four times (10+ min each). So we run
+        # the :1.0.2 image and shadow its installed `pab` with the fixed source
+        # staged on the PVC at /data/src (see PYTHONPATH below). Revert both
+        # lines to a plain :1.0.3 image once the registry accepts the push.
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.2
+        imagePullPolicy: Always
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data}
+        - {name: PYTHONPATH, value: /data/src}   # fixed pab package (see above)
+        - {name: RUN, value: /data/run1k}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            mkdir -p $RUN
+            # NB (Task-6 lesson): YAML literal block `|` only, and a one-line
+            # `python -c` rather than a here-doc — folded scalars/here-docs break.
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/run.log; }
+            counts() { python -c "import os,sqlite3; db=os.environ['RUN']+'/pab.db'; c=sqlite3.connect(db); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('profiles','granules','matchups','matchup_pixels','fits','fit_results')})" 2>&1 | tee -a $RUN/run.log; }
+            # Per-stage worker counts. attempt 2 was OOMKilled (exit 137) five
+            # minutes into `match` at --jobs 50: each match/figure worker holds an
+            # open PACE granule (lat/lon grids + s3fs read-ahead ~1-2 GB), so 50 of
+            # them blow past 100Gi. fit workers are MCMC-only (~0.5 GB), so they
+            # can still use every core.
+            jobs_for() {
+              case "$1" in
+                match|figure) echo 16 ;;
+                *) echo 50 ;;
+              esac
+            }
+            stage() {
+              J=$(jobs_for $1)
+              log "STAGE $1 start (jobs=$J)"
+              # Stop the run if a stage fails. Attempt 1 built a report from a
+              # discover stage that had aborted at 130 of ~2,700 granules, because
+              # the loop just carried on. Stages are resumable, so the right move
+              # is to stop, fix, and re-apply.
+              if ! pab --db $RUN/pab.db --outdir $RUN/pipeline \
+                --profiles-csv /cfg/profiles.csv --stage $1 \
+                --jobs $J --ingest-jobs 32 2>&1 \
+                | tee -a $RUN/run.log; then
+                log "STAGE $1 FAILED — stopping (resume by re-applying the Job)"
+                counts
+                exit 1
+              fi
+              log "STAGE $1 end"
+              counts
+            }
+            log "RUN start (1000 profiles; match/figure jobs=16, fit jobs=50)"
+            for s in ingest discover match fit figure report; do stage $s; done
+            log "disk"
+            du -sh $RUN $RUN/pipeline/* /data/fit_chains 2>/dev/null | tee -a $RUN/run.log
+            log "RUN1K_DONE"
+        resources:
+          requests: {cpu: "50", memory: "100Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "50", memory: "100Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+        - {name: csv, mountPath: /cfg/profiles.csv, subPath: profiles.csv}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}
+      - {name: csv, configMap: {name: pab-run1k-csv}}

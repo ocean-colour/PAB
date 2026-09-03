@@ -343,8 +343,14 @@ def test_index_page_has_description_and_toctree():
     assert "matchup analyses between PACE" in out  # reader-facing description
     assert "What PAB does" in out and "What's on this site" in out
     # clickable links off the main page to every content sub-page
-    for stem in ("summary", "comparisons", "figures", "aggregates", "methods",
-                 "downloads"):
+    for stem in (
+        "summary",
+        "comparisons",
+        "figures",
+        "aggregates",
+        "methods",
+        "downloads",
+    ):
         assert f"<{stem}>" in out  # :doc:`Title <stem>` link
     assert ".. toctree::" in out
 
@@ -359,6 +365,34 @@ def test_downloads_page_stages_tables(tmp_path):
         assert csv.exists()
         assert "_static/downloads/matchup_summary.csv" in out
         assert "Nautilus S3" in out  # bulky artifacts noted as deferred
+
+
+def test_downloads_page_links_s3_and_stages_nothing(tmp_path):
+    # At scale: link the tables at an S3 URL prefix instead of committing them.
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        site = tmp_path / "site"
+        base = "https://s3-west.nrp-nautilus.io/pab/full"
+        out = rst.downloads_page(store, site, downloads_base_url=base)
+        assert f'href="{base}/matchup_summary.csv"' in out
+        assert f'href="{base}/matchup_summary.parquet"' in out
+        # nothing staged into the committed tree
+        assert not (site / "_static" / "downloads").exists()
+        assert "_static/downloads/" not in out
+
+
+def test_comparisons_page_static_figures_at_scale(tmp_path):
+    # Above max_interactive the page renders static PNGs, not a giant Bokeh embed.
+    from pab.metrics import compare
+
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        df = compare.gather_matchups(store)
+        out = rst.comparisons_page(df, outdir=tmp_path, max_interactive=1)
+        assert ".. figure:: _static/comparisons/bbp_scatter.png" in out
+        assert (tmp_path / "_static" / "comparisons" / "bbp_scatter.png").is_file()
+        assert "suppressed at this scale" in out
+        assert ".. raw:: html" not in out  # no multi-MB inline Bokeh embed
 
 
 def test_provenance_block_lists_versions():
@@ -486,8 +520,57 @@ def test_publish_release_local(tmp_path):
         assert res["pkg_versions"]["pab"]
 
 
-def test_real_backends_are_deferred():
-    with pytest.raises(NotImplementedError):
-        publish.NautilusS3Backend()
+def test_zenodo_backend_is_deferred():
     with pytest.raises(NotImplementedError):
         publish.ZenodoBackend()
+
+
+class _FakeS3Client:
+    """Records upload_file calls so the S3 backend can be tested without a network."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, str, str]] = []
+
+    def upload_file(self, filename, bucket, key):
+        self.calls.append((filename, bucket, key))
+
+
+def test_nautilus_s3_backend_uploads_and_returns_public_url(tmp_path):
+    art = tmp_path / "M1.npz"
+    art.write_bytes(b"fake")
+    fake = _FakeS3Client()
+    backend = publish.NautilusS3Backend(bucket="pab", prefix="full", client=fake)
+
+    url = backend.upload(art)  # key defaults to the file name
+    assert fake.calls == [(str(art), "pab", "full/M1.npz")]
+    assert url == "https://s3-west.nrp-nautilus.io/pab/full/M1.npz"
+    assert backend.uploaded == [(str(art), url)]
+
+    # explicit key overrides the file name (and a leading slash is tolerated)
+    url2 = backend.upload(art, key="/db/pab.db")
+    assert fake.calls[-1] == (str(art), "pab", "full/db/pab.db")
+    assert url2 == "https://s3-west.nrp-nautilus.io/pab/full/db/pab.db"
+
+
+def test_publish_release_with_s3_backend_writes_real_urls(tmp_path):
+    chains = tmp_path / "M1.npz"
+    chains.write_bytes(b"fake")
+    fake = _FakeS3Client()
+    backend = publish.NautilusS3Backend(bucket="pab", prefix="artifacts", client=fake)
+    with Store.open(":memory:") as store:
+        _seed(
+            store,
+            "M1",
+            7902226,
+            5,
+            lat=27.0,
+            lon=-46.0,
+            time="2025-02-18T20:00:00",
+            bbp_argo=1e-3,
+            bbp_bing=2e-3,
+            chains_path=str(chains),
+        )
+        res = publish.publish_release(store, tmp_path / "rel", backend=backend)
+        assert res["n_uploaded"] == 1
+        urls = [r["url"] for r in res["manifest"] if r["kind"] == "chains"]
+        assert urls == ["https://s3-west.nrp-nautilus.io/pab/artifacts/M1.npz"]
