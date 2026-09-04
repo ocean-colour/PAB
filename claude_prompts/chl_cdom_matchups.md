@@ -1,9 +1,9 @@
-# Examining Chl-a Matchups
+# Examining Chl-a and CDOM Matchups
 
 ## Goals
 
-We are going to examine the chl-a matchups for the PAB pipeline.  These have 
-already been measured and are stored in the files in `s3://pab/full/`
+We are going to examine the chl-a and cdom matchups for the PAB pipeline.  These need to be re-measured and measured for BGC-Argo and stored
+stored in the files in `s3://pab/full/`
 
 ## Context
 
@@ -24,7 +24,9 @@ Read these before running — plus the **hard-won operational lessons** below.
 
 1. Execute the 1st task in Tasks below
 2. Execute the 2nd task in Tasks below
+
 3. Execute the 3rd task in Tasks below
+4. Execute the 4th task in Tasks below
 
 ## Tasks
 
@@ -33,7 +35,9 @@ Read these before running — plus the **hard-won operational lessons** below.
 2.  I have answered your questions; please review my answers.  And here is a new item. 
 One of the important aspects of Chl-a from BGC-Argo is that they are now implementing a physiological correction based on satellite data.  Can you check to see whether we can tell if this correction is present in the PAB database?  Add any additional questions to the Q&A section.  Use Fable if you can.  Log your work.  Do not start the analysis or report yet.
 
-3. 
+3. Ok, I have decided to add CDOM to the mix.  Please explore how CDOM is provided for BGC-Argo via `argopy`.  Then ask a new set of questions in Q&A/CDOM section.  It is fine to carry a Plan in this doc, but I am eventually going to request that you update the main PAB design and coding plan docs.  Use Fable if you can.  Log your work.  Do not start the analysis or report yet.
+
+4. I have answered the CDOM questions.  Please review my answers.  And here is a new item:  when we make this new pass, I wish to add to the database where the float was processed.  This will be useful for future work; in particular to determine if it was processed by AOML or another DAC.  Please go forth and modify the PAB design and coding plan docs.  Then create one or more prompt docs for the implementation.  Name them `chl_cdom_prompt_<number>.md`.  These will create the code, perform the analysis, and generate the report. Use Fable if you can.  Log your work. 
 
 ## Plan
 
@@ -52,6 +56,28 @@ One of the important aspects of Chl-a from BGC-Argo is that they are now impleme
 **Net:** `mld_summary.chla` — and therefore `chla_argo` in every matchup and report — is built from raw, uncorrected `CHLA`. Answering "is the satellite-based physiological correction present?" requires either (a) external Argo documentation establishing whether the correction in question is a delayed-mode-only procedure (in which case it plausibly affects some, but likely not most, of the 54,031 ingested profiles, since delayed-mode reprocessing lags real-time data by months to years), or (b) a code/re-ingestion change pulling `CHLA_ADJUSTED` plus its calibration metadata alongside the raw field for direct comparison.
 
 **Why this matters for the deep-dive.** The Scientific framing above already flags one chl-specific confound on the *satellite* side (CDOM/detrital absorption aliasing into the Bricaud term). This is a second, independent confound on the *in-situ* side: if the floats' raw Chl carries a known, correctable calibration bias that PAB is not applying, part of any PACE-vs-Argo bias we report could be an artifact of the reference, not the retrieval. It belongs prominently in the report's interpretation section — parallel in stature to the bbp700 depth-mismatch caveat — not in a footnote. See Q9–Q11.
+
+### Exploration — CDOM via argopy
+
+**How it's fetched.** CDOM is a first-class BGC parameter in argopy, retrieved through the exact same mechanism PAB already uses for CHLA/BBP700: the BGC `DataFetcher` with `params=['CDOM']` (optionally `measured=['CDOM']`), with the same `mode=` tradeoffs between `expert` (raw measured values) and `standard`/`research` (adjusted-field preference). PAB's own `docs/context.md` already lists CDOM among the accessible BGC variables alongside CHLA, BBP700, DOXY, NITRATE, pH, and radiometry, with the helper lists at `argopy.utils.list_bgc_s_parameters`/`list_standard_variables(ds='bgc')`. Mechanically, there is nothing new to learn about the fetch path.
+
+**PAB ingests none of it today.** `pab/argo/fetch.py`'s `DEFAULT_PARAMS = ("CHLA", "BBP700", "PSAL", "TEMP", "PRES")` has no CDOM, and `mld_summary` in `pab/db/schema.py` has no `cdom`/`cdom_std` column. None of the 14,610 full-run matchups carry a CDOM value. Adding CDOM is therefore a three-part scope item — (a) ingestion code change (add the param; decide the same `measured=`/`mode=` handling BBP700 gets, plus de-spike/IQR treatment), (b) schema migration (new columns, `SCHEMA_VERSION` bump), and (c) a re-ingestion/partial re-run to populate values — materially larger than the Chl-a deep-dive, which needs no new data collection at all.
+
+**Fleet coverage is roughly half.** The repo's own `pab/argo/BGC_Argo_Coverage_Report.md` (Allie James, 2026-07-24) found, from the live GDAC BGC index at that time, **687 of 2,924 GDAC BGC floats carrying CDOM, versus 1,490 with CHLA and 1,473 with BBP700** — about 46–47% of the CHLA/BBP700 fleet. Since a CDOM matchup further requires intersection with "has a valid PACE matchup," the eventual CDOM matchup population will be materially smaller than the existing 14,610.
+
+**Units/quantity mismatch — first-order science caveat.** Argo CDOM is a fluorescence proxy reported in **ppb QSDE** (Quinine Sulfate Dihydrate Equivalent, per Argo Reference Table 3). The nearest PAB retrieval is `BING_ExpBPow_Adg` — the amplitude of the `A_dg·exp[−S_dg(λ−400)]` term — which is (i) an **absorption coefficient in m⁻¹** (~400 nm reference), not a fluorescence unit, and (ii) a **combined CDOM + particulate detrital** absorption, not CDOM alone. A ppb→absorption conversion exists only empirically and is instrument/region-dependent, not a fixed universal factor. So a direct 1:1 bias metric of the kind used for bbp700 and Chl is not honestly available for CDOM without either a conversion step or a deliberate downgrade to a qualitative/correlative comparison.
+
+**Mode handling: `expert` remains the right call.** A live argopy discussion (`euroargodev/argopy#280`) proposing standardized per-parameter data-mode/QC-flag handling for BGC variables explicitly covers BBP700, CHLA, DOXY, NITRATE, pH, and radiometry — **CDOM is not mentioned at all**. CDOM's mode handling in argopy is thus less mature/standardized than for the variables PAB already uses, which supports staying with `expert` mode (raw values, PAB's own downstream QC), consistent with current practice.
+
+**Headline caveat — the Sea-Bird calibration bias.** An official Sea-Bird Scientific customer notice dated **December 11, 2024** (SBS makes the CDOM fluorometers on BGC-Argo floats) reports that **all SBS CDOM fluorometers purchased or serviced before January 13, 2023 carry a systemic calibration bias** — i.e., the vast majority of the historical Argo CDOM fleet, given multi-year float deployments. Two distinct problems:
+
+1. The primary reference standard used to scale the sensors to ppb QSDE was improperly prepared. SBS determined a **Reference Adjustment Factor (RAF) of 5.62**: `CDOM_adjusted = 5.62 × CDOM_raw`. Raw pre-cutoff values can read roughly 5.6× too low.
+2. A **second, separate bias** in the reference sensors used as transfer standards (also pre-2023-01-13) requires an additional serial-number/calibration-date-specific correction. SBS said a full correction table would follow "by the end of March 2025"; a web check now (2026-09) found **no confirmation it has been published** — its status is unresolved.
+3. Sensors calibrated/serviced on or after 2023-01-13 are unaffected.
+
+This is a *bigger and more concrete* data-quality risk than the Chl-a physiological-correction question from Task 2: there we had an unconfirmed suspicion with no identified algorithm; here we have a specific, quantified, dated, manufacturer-confirmed correction factor. Unless the GDAC's `CDOM_ADJUSTED` field already bakes this in — unconfirmed either way, and worth spot-checking against a real profile before assuming anything — most historical raw `CDOM` values in the archive are likely biased by a known, large, correctable factor plus a second, still partially unresolved one.
+
+**Same provenance gap as Chl-a, verbatim.** Argo carries the identical per-parameter structure for CDOM — `CDOM`, `CDOM_QC`, `CDOM_ADJUSTED`, `CDOM_ADJUSTED_QC`, `CDOM_ADJUSTED_ERROR`, and per-parameter `PARAMETER_DATA_MODE` — none of which PAB stores (the schema keeps only the coarse whole-profile `data_mode`). The correction-provenance gap flagged in the Chl-a investigation applies here identically. Since Q10 already queues a phase-2 re-ingestion for `CHLA_ADJUSTED` + calibration metadata, and CDOM ingestion needs a schema change and partial re-run of its own, the two could plausibly be unified into one combined pass — surfaced as a question (C1) rather than assumed.
 
 **Data source.** Pull `pab.db` (138 MB) locally and build a single analysis dataframe via `pab.metrics.compare.gather_matchups()` plus joins for `distance_km`, `dtime_hours`, MLD, and `add_strata()` (region/season). The flat `matchup_summary.parquet` lacks all of the geometry/stratification columns, so the DB is needed for most of the figure set anyway; the parquet remains useful for quick scatter/histogram sanity checks.
 
@@ -81,6 +107,35 @@ One of the important aspects of Chl-a from BGC-Argo is that they are now impleme
 5. (Optional phase 2) OC4 cross-check on a subsample, expand if informative.
 
 ## Q&A
+
+### CDOM
+
+**C1 — CDOM ingestion: standalone task, or fold into the queued Chl_ADJUSTED re-ingestion pass?**
+CDOM isn't ingested at all today, so nothing CDOM-related (figures or report) can start until an ingestion + schema + partial-re-run pass happens. Options: **(a)** scope it now as its own dedicated task, or **(b)** fold it into the phase-2 re-ingestion already queued for `CHLA_ADJUSTED` (Q10) — both need a schema migration and a partial re-run, so doing them together (CDOM + Chl adjusted + per-parameter mode/calibration metadata in one pass) avoids paying the re-ingestion cost twice. My lean: (b) for efficiency — but note it ties any CDOM figure to that combined pass's schedule. Which?
+
+>A. (b) fold it in.
+
+**C2 — The SBS 5.62× calibration bias: apply, disclose, or verify first?**
+The single biggest new finding: raw CDOM from sensors calibrated before 2023-01-13 (most of the historical fleet) reads ~5.62× too low per Sea-Bird's Dec 2024 notice, with a second sensor-specific correction still unpublished as of now. Options: **(a)** apply the RAF (×5.62) at ingestion for pre-cutoff sensors; **(b)** ingest fully raw and disclose the caveat prominently; **(c)** first spot-check a real GDAC profile to see whether `CDOM_ADJUSTED` already has the correction baked in, and let that answer drive (a) vs (b). My lean: (c) — it's cheap and answers the question directly instead of guessing. OK?
+
+>A. Let's start with (c).  We will eventually want to analyze values with the correction applied.
+
+**C3 — What comparison is scientifically honest given the units/quantity mismatch?**
+Argo CDOM is fluorescence in ppb QSDE; BING's `Adg` is a combined CDOM+detritus *absorption* coefficient in m⁻¹. Without a conversion, a bias figure analogous to the bbp700 histogram — with a claimed "+X%" number — would be scientifically misleading for CDOM in a way it isn't for bbp700/Chl. Options: **(a)** keep the comparison purely qualitative/correlative (rank correlation, sign/regional agreement, no absolute bias claim); **(b)** pursue a specific ppb→absorption conversion, if you have one in mind or want us to chase one (they exist but are instrument/region-dependent, not a universal factor). Which — and if (b), do you have a preferred reference/approach?
+
+>A.  Good point about detritus.  I think it will generally be much smaller than CDOM, but we need to be clear that the PACE values are the combined coefficient.  Let's keep it qualitative/correlative, but don't hesistate to create scatter plots and the like.  We will just avoid plotting a 1:1 line and the like.
+
+**C4 — Cheap sizing check before committing to C1?**
+With only 687 of 2,924 GDAC BGC floats carrying CDOM (vs 1,490 CHLA / 1,473 BBP700), the eventual CDOM matchup population will be well under the current 14,610. Before committing to the re-ingestion pass, do you want a quick sizing check — how many of the existing 881 matched floats in `pab.db` carry CDOM at all (a GDAC-index lookup, no new ingestion) — to set expectations on N first? My lean: yes, it's cheap and directly informs whether the C1 scope is worth it.
+
+>A. No, we'll just take what there is.
+
+**C5 — Design/coding-plan doc updates: before or after the ingestion work?**
+You've said you'll eventually ask for the main PAB design and coding-plan docs to be updated for CDOM. Do you want that done now, up front (docs drive the implementation), or after the ingestion pass proves out (docs record what was actually built — this project's established pattern, per the implementation record)? My lean: after, consistent with existing practice — but "now" is reasonable if you want the CDOM scope pinned down before any code is touched.
+
+>A. I think we'll do both.  Good to plan first and then implement.  And then go back to record what was actually built.
+
+### Chl-a
 
 **Q1 — Data source: pull the full `pab.db` from S3, or work off the flat parquet export?**
 The parquet is missing `distance_km`, `dtime_hours`, MLD, and region/season strata, so the geometry and stratification figures that mirror bbp700 need the DB regardless. My lean: download `pab.db` locally (138 MB, one-time) and build everything from `gather_matchups()` + joins, keeping the parquet only for quick checks. Any reason to prefer otherwise (e.g., you want the flat export itself extended so others can reproduce without the DB)?
@@ -147,6 +202,24 @@ Given `expert` mode was chosen deliberately (the alternatives return zero data f
 PAB does already store the coarse whole-profile R/A/D flag. It's a blunt instrument (per-parameter modes can differ), but breaking the headline bias stats out by it is free — no re-ingestion — and delayed-mode profiles get more thorough QC than the R stream even before any satellite-specific correction. If the bias differs visibly between R and D subsets, that's an early hint the reference calibration matters and would sharpen the Q10 decision. My lean: include it as one extra panel/table in the quality-stratification figure. OK?
 
 >A.  Yes, include it as one extra panel/table in the quality-stratification figure.
+>
+>**Claude correction (2026-09-03, off-thread question) →** This answer needs to
+>be revisited: `profiles.data_mode` is **NULL for all 54,031 profiles** in the
+>real production `pab.db` — not populated, despite the schema having the
+>column. Traced why: `pab/argo/fetch.py::iter_profiles` does capture
+>`DATA_MODE` into its per-profile `meta` dict when present, but
+>`pab/pipeline.py::ingest()` never forwards it (or `project_name`/`data_center`)
+>to `summary.persist_summary()` at either call site — those three fields are
+>silently dropped on the floor for every ingested profile, live-fetch or
+>precomputed. So the free R/A/D stratification proposed here **cannot be done
+>as-is**; it would need an `ingest` code fix (thread `data_mode` through) plus a
+>re-run, which folds naturally into whatever re-ingestion pass answers C1/Q10.
+>Flagging now rather than letting the report silently omit a panel we'd agreed
+>to include. (Found while answering an unrelated question — see chat: are any
+>floats' `data_center`/`project_name` populated enough to identify the
+>processing DAC, e.g. AOML? Same answer: no, both columns are NULL for all 881
+>floats too. A live GDAC-index join found the DAC externally instead — 617 of
+>881 PAB floats are AOML-processed — but that's not stored in `pab.db`.)
 
 ## Logging
 
@@ -175,3 +248,23 @@ Reviewed JXP's answers to Q1–Q8 (DB as source; OC4 deferred to phase 2; full b
 Investigated the new item — whether a physiological/satellite-based Chl-a correction that BGC-Argo is reportedly now implementing is visible in the PAB database. Traced the ingestion path (`pab/pipeline.py`, `pab/argo/fetch.py`, `pab/db/schema.py`) and found: (1) the full-mission production run used `PipelineConfig.argo_mode = "expert"` (the actual default), which per `fetch.py`'s own docstring returns Argo's **raw, un-adjusted** parameter values — `standard`/`research` mode would prefer the delayed-mode/adjusted fields but return zero data for recent real-time profiles, which is exactly why `expert` was chosen as the pipeline default; (2) this exact raw-vs-adjusted gap for Chl was already flagged once, in `claude_prompts/coding_stage4.md` (2026-06-21) — "no delayed-mode factor-2 / NPQ correction yet" — and never revisited; (3) a repo-wide search confirmed nothing reads or stores `CHLA_ADJUSTED`/`_QC`/`_ERROR`, and the schema's `profiles` table carries only one coarse whole-profile `data_mode` (R/A/D), not Argo's per-parameter `PARAMETER_DATA_MODE` or any `SCIENTIFIC_CALIB_*` provenance field. Conclusion: **no, the PAB database cannot currently tell us whether this (or any) Chl correction was applied** — `mld_summary.chla`/`chla_argo` is built from raw CHLA throughout, and there is no stored metadata that would let us check after the fact even if it weren't. Used a **Fable** subagent to draft the write-up from these verified facts (checked against the codebase before accepting — did not let it name or guess at a specific correction algorithm, since that wasn't independently confirmable), then added it as a new "Investigation" subsection under Plan → Scientific framing, flagging it as a second, independent confound (this one on the in-situ/Argo side) alongside the already-noted CDOM/Bricaud confound on the satellite side — material enough to belong in the eventual report's interpretation section, not a footnote.
 
 Added three follow-up questions (Q9–Q11): asking JXP to point to the specific correction/reference they mean (not found in the codebase or its history); whether the raw-Chl gap should just be disclosed as a caveat in this report or trigger a separate follow-on task to re-ingest the adjusted field + calibration metadata for direct quantification (flagged as a real scope expansion, not another figure); and whether to add a free, no-re-ingestion-needed stratification of the bias by the existing coarse `data_mode` (R/A/D) as an early, cheap signal. Per the task, did not start the analysis or report. No code changed.
+
+### 2026-09-03 (Task 3 — explored CDOM via argopy; added Q&A/CDOM (C1–C5); doc renamed to `chl_cdom_matchups.md`)
+
+Explored how CDOM is provided for BGC-Argo via argopy, combining this project's own history with fresh web research (WebSearch/WebFetch), and added a new "Exploration — CDOM via argopy" write-up to the Plan plus five new questions in a `### CDOM` Q&A subsection. Did not start the analysis or report, per the task.
+
+Found CDOM is fetched exactly like CHLA/BBP700 (`docs/context.md` already lists it as a BGC `DataFetcher` variable), so there is nothing new to learn about the fetch mechanics — but three things make CDOM a materially bigger lift than the Chl-a deep-dive: (1) **PAB ingests none of it today** — absent from `pab/argo/fetch.py`'s `DEFAULT_PARAMS` and from the `mld_summary` schema — so any CDOM work needs an ingestion code change, a schema migration, and a partial re-run before a single figure can be made, unlike the Chl-a work which draws entirely on data already in `pab.db`; (2) **fleet coverage is roughly half** — this repo's own `pab/argo/BGC_Argo_Coverage_Report.md` (Allie James, 2026-07-24) already measured 687 of 2,924 GDAC BGC floats carrying CDOM, versus 1,490 CHLA / 1,473 BBP700, so the eventual matchup population will be well under 14,610; (3) **units/quantity mismatch** — Argo CDOM is a fluorescence proxy in ppb QSDE, while BING's nearest retrieval (`BING_ExpBPow_Adg`) is a combined CDOM+detrital absorption coefficient in m⁻¹, so a direct 1:1 bias metric like the bbp700/Chl histograms is not honestly available without either a conversion or a deliberate downgrade to a qualitative/correlative comparison.
+
+The most consequential finding came from live web research, not the codebase: an official **Sea-Bird Scientific** customer notice (dated 2024-12-11 — SBS makes the CDOM fluorometers used on BGC-Argo floats) confirms **all SBS CDOM fluorometers purchased or serviced before 2023-01-13 carry a systemic calibration bias**, with a determined Reference Adjustment Factor of **5.62** (`CDOM_adjusted = 5.62 × CDOM_raw`) for one part of it, plus a second, separate sensor-reference bias whose correction table (promised "by end of March 2025") has no confirmed publication as of this check. Given most Argo floats have multi-year deployments predating the cutoff, this likely affects the bulk of the historical CDOM archive — a bigger, more concrete data-quality risk than the still-unconfirmed Chl-a "physiological correction" from Task 2, since here the correction factor is specific, quantified, dated, and manufacturer-confirmed. Whether GDAC's `CDOM_ADJUSTED` field already bakes this in is unconfirmed and worth a cheap spot-check before deciding how to handle it (posed as C2). Also found, via a live argopy GitHub discussion (`euroargodev/argopy#280`) proposing standardized per-parameter BGC mode/QC handling, that **CDOM is omitted entirely** from that proposal (unlike BBP700/CHLA/DOXY/NITRATE/pH/radiometry) — supporting sticking with `expert` mode + PAB's own downstream QC for CDOM, consistent with current practice — and confirmed CDOM carries the identical per-parameter `PARAMETER_DATA_MODE`/`CDOM_ADJUSTED`/calibration-metadata structure already flagged as an unstored provenance gap for Chl-a in Task 2, raising the option of unifying both re-ingestion needs into one pass.
+
+Used a **Fable** subagent to draft the write-up and five new questions (C1–C5) from these verified facts, reviewed before accepting (did not let it invent any DOI, algorithm, or number beyond what the web research actually returned). Questions posed: whether CDOM ingestion should be its own task or folded into the already-queued Chl-a `_ADJUSTED` re-ingestion pass (C1); whether to apply the 5.62× RAF, disclose raw values with a caveat, or first spot-check whether `CDOM_ADJUSTED` already corrects it (C2, leaning toward the spot-check); what a scientifically honest CDOM comparison looks like given the units mismatch — qualitative/correlative vs. pursuing a conversion (C3); whether to run a cheap sizing check (how many of the existing 881 matched floats carry CDOM) before committing to the fuller re-ingestion scope (C4); and whether the main PAB design/coding-plan docs should be updated for CDOM now or after the ingestion work proves out, per JXP's stated intent to eventually request that update (C5). Noted in passing that the file itself was renamed `chl_matchups.md` → `chl_cdom_matchups.md` (git shows it staged as a rename) to reflect the broadened scope — a user action, not something done here. No code changed.
+
+### 2026-09-03 (Task 4 — reviewed C1–C5 answers; updated the design/coding-plan docs; created the two implementation prompt docs)
+
+Reviewed JXP's C1–C5 answers: fold CDOM ingestion into the queued Chl-a `_ADJUSTED` re-ingestion pass rather than a separate task (C1); spot-check `CDOM_ADJUSTED` first before deciding whether to apply the Sea-Bird 5.62× RAF, with an explicit intent to eventually analyze the corrected values (C2); keep the CDOM comparison qualitative/correlative — scatter plots fine, no 1:1 line — given BING's `Adg` is a combined CDOM+detritus term while Argo CDOM measures the dissolved fraction alone (C3, JXP's own framing); no separate sizing check, just re-ingest the existing 881 floats as-is (C4); and update the design docs now, implement, then update the implementation record after (C5).
+
+New item: JXP wants float processing-center provenance (e.g., AOML vs. other DACs) added to the database in the same pass — this is exactly the `floats.data_center` gap surfaced answering the earlier off-thread AOML question, so it folds in naturally rather than adding new scope.
+
+Updated `docs/design/PAB_design.md` (v0.4.3 → **v0.5**): extended the BGC-Argo row in *Datasets at a glance* to include `CDOM` (and corrected a stale `src='erddap'` reference to the actual `src='gdac'` default while there); added two new bullets under *Processing* — one documenting the per-parameter provenance gap (`PARAMETER_DATA_MODE`/`_ADJUSTED`/`SCIENTIFIC_CALIB_*` never captured, only a coarse whole-profile `data_mode`) and the DAC/`PROJECT_NAME`/`DATA_CENTRE` capture this pass adds, the other documenting the Sea-Bird calibration-bias finding as a permanent design-level caveat; and added a new bullet under *Comparison & metrics* stating CDOM comparisons are qualitative/correlative only, with no ratio/log-bias claim, given the unit and quantity mismatch. Updated `docs/design/PAB_coding_plan.md` (v0.1.3 → **v0.2**): added **Stage 10 — BGC-Argo provenance & CDOM ingestion**, a retroactive stage (mirroring how Stage 9 extended the report after the full run) with concrete scope (spot-check first, DAC/project-name fix, CDOM ingestion, schema v3→v4 with provisional column names, re-ingest the existing 881 floats only), deliverables, tests, and docs — explicitly deferring the `PAB_implementation.md` update to after the analysis pass, per C5.
+
+Used a **Fable** subagent to draft two new execution prompt docs in this project's established house style (Goals/Claude/Context/Prompts/Tasks/Q&A/Reports/Logging/Logs), briefed with the exact Stage 10 scope and the full C1–C5/Q1–Q11 record so nothing drifts from what's already agreed; reviewed and lightly corrected before writing (fixed a doc-path reference to the real `docs/db_schema.rst`/`docs/argo_ingestion.rst` locations). Wrote `claude_prompts/chl_cdom_prompt_1.md` (the implementation pass: spot-check `CDOM_ADJUSTED`, fix DAC/project-name provenance with a regression test for the exact bug found, add CDOM ingestion + per-parameter provenance + schema v4, run the combined re-ingestion over the 881 existing floats with concrete verification gates — the AOML count should land at 617/881, matching the external GDAC-join answer given earlier — then update the RTD docs) and `claude_prompts/chl_cdom_prompt_2.md` (the analysis pass: build the Chl-a and CDOM figure sets per the already-agreed plan, now including the DAC and adjusted-vs-raw Chl comparisons the new fields enable, draft both reports, then update `PAB_implementation.md` last). Left one open question in doc 2's Q&A (whether the CDOM report is its own file or a section of the Chl-a report — Q5 only named the Chl-a filename) rather than assuming. Neither new doc reopens any already-answered decision. No code changed.

@@ -1,7 +1,7 @@
 # PACE and BGC-Argo Matchup Analysis Design Document
 
-**Version:** 0.4.3
-**Date:** 2026-06-23
+**Version:** 0.5
+**Date:** 2026-09-03
 **Authors:** JXP and Claude
 
 **Versioning convention:** bump the **minor** version for substantive changes
@@ -110,7 +110,7 @@ PAB and those packages.
 
 | Dataset | Role | Type | Key variables | Access path | Loader / API |
 |---|---|---|---|---|---|
-| **BGC-Argo** | Primary (in-situ truth) | Float vertical profiles | `BBP700`, `CHLA`, `PSAL`, `TEMP`, `PRES` | argopy → Ifremer ERDDAP | `argopy.DataFetcher(ds='bgc', src='erddap')`; `argopy.ArgoIndex(index_file='bgc-s')` |
+| **BGC-Argo** | Primary (in-situ truth) | Float vertical profiles | `BBP700`, `CHLA`, `CDOM`, `PSAL`, `TEMP`, `PRES` | argopy → GDAC | `argopy.DataFetcher(ds='bgc', src='gdac')`; `argopy.ArgoIndex(index_file='bgc-s')` |
 | **PACE / OCI L2 AOP** | Primary (satellite) | Hyperspectral L2 granules | `Rrs(λ)`, `Rrs_unc(λ)`, `l2_flags`, `nflh` | NASA Earthdata Cloud (OB.DAAC) | `earthaccess` (search/open) → `ocpy.pace.io.load_oci_l2*` |
 | **PACE / OCI L2 IOP** | Secondary (NASA baseline) | Hyperspectral L2 granules | `a`, `bb`, `aph`, `bbp_442`, `adg_*` | NASA Earthdata Cloud (OB.DAAC) | `ocpy.pace.io.load_iop_l2` |
 | **Future** (other in-situ archives, MODIS/VIIRS/OLCI, other satellites) | Hooks | — | — | TBD | new loader modules |
@@ -178,8 +178,41 @@ The processing each dataset receives before matchup/analysis:
   exceeds its 10 m value by 0.03 kg m⁻³), using `ds.argo.teos10([...,'SIG0'])`
   for density and a per-profile reducer; **de-spike** `BBP700` within the MLD
   with a 3-point moving median (removes bubble spikes); then **average**
-  `BBP700` and `CHLA` and record mean `PSAL`/`TEMP` within the MLD. This yields
-  one summary record per profile.
+  `BBP700`, `CHLA`, and **`CDOM`** and record mean `PSAL`/`TEMP` within the MLD.
+  This yields one summary record per profile. (`CDOM` — added 2026-09, design
+  v0.5 — gets the same plain mixed-layer mean as `CHLA`, no de-spike/IQR filter,
+  since Bisson's despiking recipe was derived for `BBP700` specifically.)
+- **BGC-Argo provenance (added 2026-09, design v0.5).** PAB's production run
+  used `argo_mode='expert'` (raw, un-post-processed measured values — chosen
+  because `standard`/`research` mode return zero data for recent real-time
+  profiles) and recorded only a single, coarse, whole-**profile** `data_mode`
+  (Argo's R/A/D). This is insufficient: Argo's own BGC files carry a
+  per-**parameter** `PARAMETER_DATA_MODE` (e.g. `CHLA` and `PSAL` on the same
+  profile can be in different modes), plus `<PARAM>_ADJUSTED`/`_ADJUSTED_QC`/
+  `_ADJUSTED_ERROR` and `SCIENTIFIC_CALIB_COMMENT`/`_EQUATION`/`_COEFFICIENT`
+  fields documenting exactly which correction/reference a DAC applied — none of
+  which PAB captured. Going forward, ingestion additionally records, per
+  profile and per BGC parameter (starting with `CHLA` and `CDOM`): the
+  parameter-level data mode, the `_ADJUSTED` value when present, and which DAC
+  processed the float (`PROJECT_NAME`/`DATA_CENTRE` — e.g. distinguishing AOML-
+  from Coriolis-processed floats), so a matchup population can be
+  screened/stratified by processing provenance the way it already is by scene
+  quality. This closes a gap first raised while investigating whether a
+  reported Chl-a "physiological, satellite-informed correction" is visible in
+  PAB's data (`claude_prompts/chl_cdom_matchups.md`): under `expert` mode it was
+  not, and there was no stored metadata to check after the fact either way.
+- **Known CDOM sensor calibration issue (documented 2026-09, design v0.5).** Per
+  an official Sea-Bird Scientific customer notice (2024-12-11), **CDOM
+  fluorometers calibrated/serviced before 2023-01-13 — most of the historical
+  BGC-Argo fleet — carry a systemic bias**, with a determined Reference
+  Adjustment Factor of **5.62** (`CDOM_adjusted = 5.62 × CDOM_raw`) for one part
+  of it, plus a second, separate sensor-reference bias whose correction table
+  was still unpublished as of this writing. Whether the GDAC's own
+  `CDOM_ADJUSTED` field already reflects this is unconfirmed pending a direct
+  spot-check (first task of the implementation pass); PAB's ingestion should
+  record enough provenance (the raw value, the DAC's adjusted value if any, and
+  the sensor calibration date when available) to apply or revisit this
+  correction without re-fetching.
 - **PACE AOP:** apply `mask_and_scale` (the stored Rrs are scaled integers);
   screen pixels with the standard ocean `l2_flags` mask (`ATMFAIL`, `LAND`,
   `HIGLINT`, `HILT`, `STRAYLIGHT`, `CLDICE`, `COCCOLITH`, `HISATZEN`,
@@ -481,6 +514,18 @@ satellite vs. float `bbp` in log space:
 - **BING vs. NASA L2 IOP** — the same statistics computed between the two
   satellite retrievals, to separate algorithm differences from
   satellite-vs-float differences.
+- **CDOM — qualitative/correlative only (added 2026-09, design v0.5).** The
+  nearest BING quantity, `Adg` (the amplitude of the exponential CDOM+detritus
+  absorption term), is a **combined CDOM+particulate-detrital absorption
+  coefficient in m⁻¹**, while Argo `CDOM` is a **fluorescence proxy in ppb
+  QSDE** — a different unit and a different (broader) physical quantity. The
+  ratio/log-bias metrics above, which assume a shared quantity and unit, do
+  **not** honestly apply to CDOM without an empirical, instrument/region-
+  dependent ppb→absorption conversion PAB does not have. The CDOM comparison is
+  therefore **qualitative and correlative only** — rank correlation, sign
+  agreement, and regional/seasonal patterns — with scatter plots presented
+  **without** a 1:1 or ratio reference line, and with the combined-quantity
+  caveat stated alongside every such figure.
 
 All metrics are computed across the matchup population and **stratified by
 region, season, and `Rrs` spatial variability** (Bisson's caveat that skill

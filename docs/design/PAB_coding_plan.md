@@ -1,7 +1,7 @@
 # PAB Coding Plan
 
-**Version:** 0.1.3
-**Date:** 2026-06-20
+**Version:** 0.2
+**Date:** 2026-09-03
 **Authors:** JXP and Claude
 
 **Status:** living document — updated as the package is developed.
@@ -233,11 +233,66 @@ are ordered so each builds on the last; the database (Stage 1) is the backbone.
   model pairs; the **L1B → Rrs** algorithm; optional server-backed interactivity.
 - **Deliverables / tests / docs:** per sub-feature, as prioritized.
 
+### Stage 10 — BGC-Argo provenance & CDOM ingestion (added 2026-09, v0.2)
+
+Retroactive stage, in the spirit of Stage 9's post-hoc report close-out:
+extends Stages 1–2 after the full-mission run, driven by the chl-a/CDOM
+deep-dive planning in `claude_prompts/chl_cdom_matchups.md`. Two bugs/gaps
+found while planning that deep-dive motivate it: (1) `floats.project_name`/
+`data_center` and `profiles.data_mode` are columns that exist in the schema but
+are **never populated** — `pab/argo/fetch.py::iter_profiles` doesn't extract
+`PROJECT_NAME`/`DATA_CENTRE` at all, and `pab/pipeline.py::ingest()` doesn't
+forward even the `DATA_MODE` it does extract to `persist_summary()` — so no
+float in the full production run can currently be attributed to a processing
+DAC (e.g. AOML); (2) `CDOM` isn't ingested at all, and Argo's real per-
+**parameter** data-mode/adjustment metadata (`PARAMETER_DATA_MODE`,
+`<PARAM>_ADJUSTED*`, `SCIENTIFIC_CALIB_*`) was never captured for any BGC
+variable, only the coarse whole-profile `data_mode`.
+
+- **Scope:**
+  - **Spot-check first.** Before writing ingestion code, fetch one or two real
+    profiles and determine empirically whether GDAC's `CDOM_ADJUSTED` already
+    reflects the Sea-Bird Scientific calibration fix (RAF = 5.62 for sensors
+    calibrated/serviced before 2023-01-13; see `PAB_design.md` v0.5) — this
+    decides whether ingestion trusts `CDOM_ADJUSTED` as-is or must apply the
+    RAF itself for pre-cutoff sensors lacking an adjusted value.
+  - **DAC/project provenance.** Extract `PROJECT_NAME`/`DATA_CENTRE` per float
+    in `iter_profiles`; thread `project_name`/`data_center` (already accepted
+    by `summary.persist_summary`, just never supplied) through both `ingest()`
+    call sites in `pipeline.py`. No schema change — `floats.project_name`/
+    `data_center` already exist since Stage 1.
+  - **CDOM ingestion.** Add `"CDOM"` to `pab/argo/fetch.py::DEFAULT_PARAMS`;
+    compute its mixed-layer mean like `CHLA` (plain mean, no de-spike/IQR —
+    Bisson's despike recipe is `BBP700`-specific).
+  - **Per-parameter provenance.** Extract, per profile, the parameter-level
+    data mode and `_ADJUSTED` value for `CHLA` and `CDOM` (and `BBP700` for
+    consistency, if cheap); persist alongside the existing raw means.
+  - **Schema migration v3 → v4** (`pab/db/schema.py`): add to `mld_summary` —
+    `cdom`, `cdom_std`, `cdom_adjusted`, `chla_adjusted`, `chla_data_mode`,
+    `cdom_data_mode` (names provisional; finalize during implementation,
+    following the existing `_v2_to_v3`-style forward migration).
+  - **Re-ingestion.** Per JXP (`claude_prompts/chl_cdom_matchups.md`, C1/C4):
+    fold this into one combined pass rather than separate Chl- and CDOM-only
+    re-runs; re-ingest the **existing 881 matched floats only** (no broadened
+    float selection — C4: "we'll just take what there is").
+- **Deliverables:** updated `pab.argo.{fetch,summary}`, `pab.pipeline.ingest`,
+  `pab.db.schema` (v4 migration); a re-ingestion run over the 881 floats
+  producing `CDOM`/adjusted/provenance-populated `mld_summary` rows.
+- **Tests:** `PROJECT_NAME`/`DATA_CENTRE` extraction and threading (a
+  synthetic-dataset fixture asserting `floats.data_center` round-trips, closing
+  the exact gap this stage fixes); CDOM mixed-layer mean (known-answer, mirrors
+  the existing `CHLA` test); v3→v4 migration idempotency; a re-ingestion smoke
+  test confirming no previously-populated field regresses.
+- **Docs:** update `db_schema.rst` for the new columns; update
+  `docs/argo_ingestion.rst` for CDOM + the provenance fields; after the pass
+  completes, update `PAB_implementation.md` with what was actually built (per
+  JXP's C5 answer — plan first, implement, then record).
+
 ## 5. Suggested order & dependencies
 
 ```
 Stage 0 ─► Stage 1 ─► Stage 2 ─┐
-                     └► Stage 3 ─► Stage 4 ─► Stage 5 ─► Stage 6 ─► Stage 7 ─► Stage 8 ─► (Stage 9)
+                     └► Stage 3 ─► Stage 4 ─► Stage 5 ─► Stage 6 ─► Stage 7 ─► Stage 8 ─► (Stage 9) ─► Stage 10
 ```
 
 Stages 2 and 3 can proceed in parallel after the database (Stage 1) exists, since
