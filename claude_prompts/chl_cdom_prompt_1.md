@@ -290,6 +290,18 @@ Did not yet run the real combined re-ingestion over the 881-float `pab.db` — t
 
 No count was materially off, so proceeding to Task 5 is warranted per the task's own gate ("stop and raise it in Q&A" only triggers on a real problem) — holding here to report back to JXP before continuing, since this is a natural, substantial checkpoint.
 
+### Task 5 — user docs updated (`db_schema.rst`, `argo_ingestion.rst`)
+
+**No new Q&A answers to check** (Q2, raised alongside Task 6, is still unanswered — irrelevant to this task anyway).
+
+**`docs/db_schema.rst`:** added `CDOM`'s unit (ppb QSDE) to *Conventions*, with a pointer to the design doc's CDOM-quantity caveat; expanded the `mld_summary` column list with `chla_adjusted`, `cdom`(+`_std`), `chla_data_mode`, `cdom_data_mode`, `bbp700_data_mode`, and a paragraph explaining what each new field means (including the "no CDOM correction applied yet, pending BGC-Argo consult" note and the "`cdom_data_mode` is always `'R'`/`NULL`, never `'A'`/`'D'`, fleet-wide" fact from Task 1/4); added a note under `profiles.data_mode` explaining it's unpopulated for BGC data and pointing readers at the per-parameter fields instead, rather than leaving that gap undocumented.
+
+**`docs/argo_ingestion.rst`:** updated the *Fetch* pipeline step to list `CDOM` in `DEFAULT_PARAMS` and correct a stale `src='erddap'` reference to the actual `src='gdac'` default (noticed while updating this section — same staleness already fixed in the design doc); added a new *Provenance: processing DAC & per-parameter data mode* section documenting the DAC/`PROJECT_NAME`/`DATA_CENTRE` capture and the per-parameter data-mode fields, including the CDOM-vs-CHLA/BBP700 contrast; updated *De-spiking and averaging* to note `CHLA_ADJUSTED`/`CDOM` get the same plain mixed-layer mean as `CHLA` (no despike/IQR — that's `BBP700`-specific).
+
+**Verification:** built the full Sphinx site with `-W` (warnings-as-errors, matching CI) — had to install `sphinxcontrib-mermaid`/`myst-parser`/`myst-nb`/`sphinx-rtd-theme` into the environment first (none were present); build succeeded clean, no warnings from either edited file. Re-ran the full test suite as a sanity check on a docs-only change: **192 passed**, unchanged.
+
+Did not touch `docs/design/PAB_implementation.md` — deferred to `chl_cdom_prompt_2.md` per C5.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -349,3 +361,13 @@ Final result: `written=52,844, skipped=0, failed=1,187` (2.2%, in line with hist
 JXP asked whether the updated local DB had also been pushed to `s3://pab/full/pab.db`. Checked directly: no — the S3 object's last-modified timestamp (2026-08-24) and size (138,854,400 B) exactly match the pre-pass DB; nothing has been uploaded since Task 4 touched only the local copy at `$PAB_DATA_DIR/pab.db` (now 141,156,352 B, modified 2026-09-05).
 
 Per JXP's follow-up ask, added **Task 6** to this doc: publish the updated DB back to `s3://pab/full/pab.db`, plus back it up to `AIOcean:PAB/` per the project's existing "Nautilus isn't backed up" convention, and keep `HOWTO.md` §7b accurate. Flagged one real design question before uploading (added as **Q2**, not decided here): Task 4's re-ingestion upserted rows **in place under the same `pab_version = "1.0"`** the original release used, which cuts against `PAB_design.md`'s own stated versioning principle (a new version should **add** records, not silently overwrite). Gave a lean (publish as-is under `1.0`, documented as a deliberate backfill exception, since no analysis method changed) but left the actual call to JXP, since it also sets precedent for how future backfills get versioned. No code changed; doc-only edit.
+
+### 2026-09-06 (Task 5 — updated `db_schema.rst` and `argo_ingestion.rst` for schema v4)
+
+No new Q&A answers relevant to this task (Q2, on `pab_version` for Task 6, remains open but doesn't block a docs update).
+
+Updated `docs/db_schema.rst`: added `CDOM`'s unit (ppb QSDE) to *Conventions* with a pointer to the CDOM-quantity caveat already in the design doc; expanded the `mld_summary` column list and added explanatory prose for the six new fields, including the "no CDOM correction applied yet" note (JXP's Q1 answer) and the "`cdom_data_mode` is always `R`/`NULL` fleet-wide" fact from Task 1; added a note on `profiles.data_mode` pointing readers to the per-parameter fields instead, since leaving that gap silent would misdocument the schema (a reader would otherwise reasonably assume that column works for BGC data).
+
+Updated `docs/argo_ingestion.rst`: corrected the *Fetch* step's stale `src='erddap'` reference to the actual `src='gdac'` default (noticed while adding `CDOM` to the `DEFAULT_PARAMS` mention — same staleness the design doc already had fixed) and added `CHLA_ADJUSTED`/`CDOM` to the variable list; added a new *Provenance: processing DAC & per-parameter data mode* section (DAC capture + the CDOM-vs-CHLA/BBP700 data-mode contrast); noted in *De-spiking and averaging* that `CHLA_ADJUSTED`/`CDOM` get the same plain mixed-layer mean as `CHLA`.
+
+Verified for real rather than assuming the prose was well-formed: built the full Sphinx site with `-W` (matching CI's warnings-as-errors setting) after installing the missing `sphinxcontrib-mermaid`/`myst-parser`/`myst-nb`/`sphinx-rtd-theme` extensions (none were in this environment) — clean build, no warnings from either file. Re-ran the full test suite as a sanity check on a docs-only change: 192 passed, unchanged from Task 4. Did not touch `PAB_implementation.md`, per C5 — that's `chl_cdom_prompt_2.md`'s job, after the analysis pass.

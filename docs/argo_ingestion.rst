@@ -19,15 +19,20 @@ Pipeline
 --------
 
 #. **Fetch** (:mod:`pab.argo.fetch`) — ``argopy.DataFetcher`` configured for
-   biogeochemical data (``ds='bgc'``, ``src='erddap'``), selected by region,
+   biogeochemical data (``ds='bgc'``, ``src='gdac'`` — reads the GDAC netCDF
+   directly, more reliable than the Ifremer BGC ERDDAP), selected by region,
    float, or profile, and narrowed with the BGC-only ``params`` / ``measured``
-   keywords. argopy is imported lazily; network access happens only at
-   ``.load()``.
+   keywords. ``DEFAULT_PARAMS`` requests ``CHLA``, ``BBP700``, ``CDOM``,
+   ``PSAL``, ``TEMP``, ``PRES``. argopy is imported lazily; network access
+   happens only at ``.load()``.
 #. **QC & data-mode filtering** — :func:`pab.argo.fetch.filter_quality` applies
    ``ds.argo.filter_qc(QC_list=[1, 2])`` and, in research mode,
    ``filter_researchmode`` (delayed-mode, QC=1 — best when MLD quality matters).
 #. **Reshape** — :func:`pab.argo.fetch.iter_profiles` calls
-   ``ds.argo.point2profile()`` and yields per-profile metadata + variable arrays.
+   ``ds.argo.point2profile()`` and yields per-profile metadata (including the
+   processing DAC and per-BGC-parameter data modes — see *Provenance* below) +
+   variable arrays (``PRES``, ``BBP700``, ``CHLA``, ``CHLA_ADJUSTED``,
+   ``CDOM``, ``PSAL``, ``TEMP``).
 #. **Summarize** (:mod:`pab.argo.summary`) — compute the MLD, de-spike
    ``BBP700``, optionally drop log-IQR outliers, and average within the mixed
    layer.
@@ -36,6 +41,23 @@ Pipeline
    ``wmo`` / ``(wmo, cycle)`` / ``profile_id``).
 #. **Q&A** (:mod:`pab.argo.qa`) — diagnostic ``BBP700`` / ``CHLA`` vs pressure
    plots with the MLD marked.
+
+Provenance: processing DAC & per-parameter data mode
+-----------------------------------------------------
+
+Each float's ``PROJECT_NAME`` / ``DATA_CENTRE`` (the processing DAC — e.g.
+distinguishing AOML- from Coriolis-processed floats) are extracted per profile
+and stored on ``floats``. Argo's whole-profile ``DATA_MODE`` is *not* a
+meaningful signal for BGC data — a bare ``DATA_MODE`` variable was not observed
+on any real BGC/GDAC fetch (as of argopy 1.4.0); BGC files instead carry a data
+mode **per BGC parameter**, since e.g. ``CHLA`` and ``PSAL`` on the same
+profile can be in different modes. ``iter_profiles`` extracts
+``CHLA_DATA_MODE`` / ``CDOM_DATA_MODE`` / ``BBP700_DATA_MODE`` accordingly,
+stored as ``mld_summary.chla_data_mode`` / ``cdom_data_mode`` /
+``bbp700_data_mode``. Notably, **``cdom_data_mode`` is always ``'R'`` or
+``NULL`` across the whole BGC-Argo fleet** — no float has ever had CDOM
+delayed-mode or real-time-adjusted processing — while ``CHLA``/``BBP700`` are
+predominantly ``'A'``/``'D'``.
 
 Mixed-layer depth (MLD) — method note
 -------------------------------------
@@ -62,8 +84,11 @@ Within the mixed layer PAB de-spikes ``BBP700`` with a **3-point moving median**
 (:func:`pab.argo.summary.moving_median` / :func:`~pab.argo.summary.despike`) to
 remove single-sample bubble spikes, optionally removes **log-space 1.5×IQR
 outliers** (:func:`pab.argo.summary.iqr_inlier_mask`), then averages
-(:func:`pab.argo.summary.mixed_layer_mean`). ``CHLA`` is averaged over the same
-layer; ``PSAL`` and ``TEMP`` are recorded as mixed-layer means.
+(:func:`pab.argo.summary.mixed_layer_mean`). ``CHLA``, ``CHLA_ADJUSTED``, and
+``CDOM`` all get the same **plain** mixed-layer mean as each other (no
+de-spike/IQR filter — Bisson's recipe was derived for ``BBP700``
+specifically); ``PSAL`` and ``TEMP`` are likewise recorded as mixed-layer
+means.
 
 References
 ----------
