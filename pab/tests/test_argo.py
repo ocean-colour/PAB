@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+import xarray as xr
 
 from pab.argo import fetch, mld, summary
 from pab.db import Store
@@ -128,6 +129,30 @@ def test_summarize_profile_end_to_end():
     assert out["chla"] == pytest.approx(np.mean([0.5, 0.5, 0.5, 0.5, 0.2]))
 
 
+def test_summarize_profile_averages_cdom_and_chla_adjusted():
+    # Mirrors test_summarize_profile_end_to_end's CHLA check: cdom/chla_adjusted
+    # get the same plain mixed-layer mean as chla (no despike/IQR, unlike bbp700).
+    pres = np.array([5.0, 10.0, 20.0, 30.0, 40.0, 50.0])
+    sig0 = np.array([25.00, 25.00, 25.005, 25.01, 25.05, 25.10])  # MLD = 40
+    cdom = np.array([1.0, 1.2, 0.8, 1.0, 2.0, 5.0])
+    chla_adjusted = np.array([0.6, 0.6, 0.6, 0.6, 0.3, 0.1])
+    out = summary.summarize_profile(pres, cdom=cdom, chla_adjusted=chla_adjusted, sig0=sig0)
+    assert out["mld"] == pytest.approx(40.0)
+    # within MLD (pres <= 40): first 5 samples
+    assert out["cdom"] == pytest.approx(np.mean([1.0, 1.2, 0.8, 1.0, 2.0]))
+    assert out["cdom_std"] == pytest.approx(np.std([1.0, 1.2, 0.8, 1.0, 2.0]))
+    assert out["chla_adjusted"] == pytest.approx(np.mean([0.6, 0.6, 0.6, 0.6, 0.3]))
+
+
+def test_summarize_profile_omits_cdom_and_chla_adjusted_when_absent():
+    # Neither is measured on every float/profile -> must default to NaN, not
+    # raise or silently omit the key (persist_summary's whitelist reads it).
+    pres = np.array([5.0, 10.0, 20.0])
+    out = summary.summarize_profile(pres, bbp700=np.full(3, 2e-3))
+    assert np.isnan(out["cdom"]) and np.isnan(out["cdom_std"])
+    assert np.isnan(out["chla_adjusted"])
+
+
 def test_summarize_profile_requires_lonlat_for_ts():
     pres = np.array([5.0, 10.0, 20.0])
     with pytest.raises(ValueError):
@@ -182,6 +207,65 @@ def test_build_fetcher_is_bgc():
     f = fetch.build_fetcher()
     # A DataFetcher configured for BGC; constructing it does not hit the network.
     assert isinstance(f, argopy.DataFetcher)
+
+
+def test_iter_profiles_extracts_dac_and_project_metadata():
+    """PROJECT_NAME/DATA_CENTRE (and DATA_MODE) must reach the yielded meta.
+
+    Regression test for the provenance bug found while planning the chl-a/CDOM
+    deep dive: ``iter_profiles`` extracted these but ``pipeline.ingest()``
+    never forwarded them to ``persist_summary``, so ``floats.project_name``/
+    ``data_center`` were NULL for every float in the full production run. This
+    test only exercises ``iter_profiles``'s own extraction (via a fake ``.argo``
+    accessor standing in for argopy's ``point2profile`` transform, so no real
+    argopy dependency is needed here); the pipeline-level round trip is covered
+    separately in ``test_pipeline.py``.
+    """
+
+    class _FakeAccessor:
+        def point2profile(self_inner):  # noqa: N805 - mimics argopy's accessor
+            return prof
+
+    class _FakeDataset:
+        argo = _FakeAccessor()
+
+    prof = xr.Dataset(
+        {
+            "PLATFORM_NUMBER": ("N_PROF", [1234567]),
+            "CYCLE_NUMBER": ("N_PROF", [12]),
+            "LATITUDE": ("N_PROF", [10.0]),
+            "LONGITUDE": ("N_PROF", [-40.0]),
+            "TIME": (
+                "N_PROF",
+                np.array(["2025-05-01T12:00:00"], dtype="datetime64[ns]"),
+            ),
+            "DATA_MODE": ("N_PROF", ["R"]),
+            "PROJECT_NAME": ("N_PROF", ["Test Project  "]),
+            "DATA_CENTRE": ("N_PROF", ["AO"]),
+            "CHLA_DATA_MODE": ("N_PROF", ["A"]),
+            "CDOM_DATA_MODE": ("N_PROF", ["R"]),
+            "BBP700_DATA_MODE": ("N_PROF", ["D"]),
+            "PRES": (("N_PROF", "N_LEVELS"), [[0.0, 10.0, 20.0]]),
+            "CHLA": (("N_PROF", "N_LEVELS"), [[0.2, 0.2, 0.2]]),
+            "CHLA_ADJUSTED": (("N_PROF", "N_LEVELS"), [[0.25, 0.25, 0.25]]),
+            "CDOM": (("N_PROF", "N_LEVELS"), [[1.0, 1.0, 1.0]]),
+        }
+    )
+
+    meta, variables = next(fetch.iter_profiles(_FakeDataset()))
+
+    assert meta["wmo"] == 1234567
+    assert meta["cycle"] == 12
+    assert meta["data_mode"] == "R"
+    assert meta["project_name"] == "Test Project"  # stripped of Argo's char padding
+    assert meta["data_center"] == "AO"
+    # per-parameter modes, distinct from the (unpopulated on real fetches)
+    # whole-profile data_mode above
+    assert meta["chla_data_mode"] == "A"
+    assert meta["cdom_data_mode"] == "R"
+    assert meta["bbp700_data_mode"] == "D"
+    assert "PRES" in variables and "CHLA" in variables
+    assert "CDOM" in variables and "CHLA_ADJUSTED" in variables
 
 
 # -- Q&A plot ---------------------------------------------------------------

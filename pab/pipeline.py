@@ -233,6 +233,8 @@ def _fetch_profile_payload(
         v["PRES"],
         bbp700=v.get("BBP700"),
         chla=v.get("CHLA"),
+        chla_adjusted=v.get("CHLA_ADJUSTED"),
+        cdom=v.get("CDOM"),
         psal=v.get("PSAL"),
         temp=v.get("TEMP"),
         lon=meta["longitude"],
@@ -261,6 +263,12 @@ def _persist_profile(
             latitude=row.get("latitude"),
             longitude=row.get("longitude"),
             time=row.get("time"),
+            data_mode=row.get("data_mode"),
+            project_name=row.get("project_name"),
+            data_center=row.get("data_center"),
+            chla_data_mode=row.get("chla_data_mode"),
+            cdom_data_mode=row.get("cdom_data_mode"),
+            bbp700_data_mode=row.get("bbp700_data_mode"),
         )
         return
 
@@ -273,6 +281,12 @@ def _persist_profile(
         latitude=meta["latitude"],
         longitude=meta["longitude"],
         time=meta["time"],
+        data_mode=meta.get("data_mode"),
+        project_name=meta.get("project_name"),
+        data_center=meta.get("data_center"),
+        chla_data_mode=meta.get("chla_data_mode"),
+        cdom_data_mode=meta.get("cdom_data_mode"),
+        bbp700_data_mode=meta.get("bbp700_data_mode"),
     )
     # Q&A figure: only the live fetch carries the full profile arrays the plot
     # needs (the precomputed-summary path has scalars only).
