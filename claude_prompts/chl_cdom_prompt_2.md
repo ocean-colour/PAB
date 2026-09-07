@@ -335,6 +335,66 @@ the Task 1 spot-check result) was already in place. `chl_cdom_prompt_1.md`
 Task 1's Sea-Bird/RAF-5.62 context is folded in via `SEABIRD_CAVEAT` on the
 map figure, per the task's instruction.
 
+### Task 3 — Chl-a report drafted: `reports/PAB/pab_chl_matchups_report.md`
+
+**Structure.** Mirrors `pace_argo_bbp700_bias_analysis.md` (header block,
+Summary, Data, per-figure sections with file/image/key-observations,
+Interpretation, How to Reproduce, Notes), scaled to this pass's 16 figures
+(13 sections, some pairing 2 related files). Per the task, the bias signature
+is established first (Figures 1-2) before any candidate mechanism is tested
+(Figures 5-14), and the concentration-dependence (Figure 3) is treated as the
+headline result rather than the single median number.
+
+**In-situ-reference caveats given prominent placement, per the task's
+explicit instruction — not a footnote.** The Summary's second paragraph and
+Interpretation point 2 lead with: switching the reference from raw to
+`chla_adjusted` Argo Chl-a moves the median bias from +0.13 to +0.58 (n=9,168,
+Figure 13) — a bigger swing than any other stratification in the report — and
+the correction-provenance gap (no `SCIENTIFIC_CALIB_*` ingested, so neither
+raw nor adjusted is an unambiguous ground truth) is stated as an open,
+unresolved question the pipeline should address before quoting a tighter bias
+number publicly. DAC stratification (Figure 14, AOML +0.06 vs. other-DACs
++0.25) is included and explicitly tied to the same reference-uncertainty
+theme (delayed-mode processing is DAC-run, not centralized).
+
+**New synthesis beyond what Task 1's Reports entry already stated** (pulled
+together only while writing the report, not previously logged): the MLD trend
+(Figure 6, octile medians +0.38 at shallow MLD to -0.55 at the deepest) and
+the Southern Ocean's outlier basin median (-0.53, n=1,028, Figure 8) are most
+parsimoniously explained as the *same* concentration-dependence effect
+(Figure 3) showing through two different stratifications — the Southern
+Ocean combines low surface Chl-a with unusually deep mixed layers, both of
+which independently push rel_diff negative — rather than as two additional,
+independent mechanisms. Framed this explicitly in Interpretation point 4
+rather than letting the MLD and basin figures read as separate findings.
+
+**Quality-filter finding corrected from Task 1's looser phrasing.** Task 1's
+Reports section described the quality-filtered subset as shifting "only
+slightly" versus the full sample; computing the actual medians for the report
+(not done precisely in Task 1) found +0.13 -> +0.22 (n=2,023) — a real,
+if more modest than bbp700's (+0.35 -> +0.49), strengthening in the same
+direction. Corrected in the report itself (Figure 9); not worth a retroactive
+edit to Task 1's already-logged entry, since the qualitative conclusion
+(quality filtering does not explain away the positive tail) is unchanged.
+
+**Numbers verified freshly, not copied from memory.** Re-ran the full
+computation (median/percent-positive/log-bias/median-ratio for the scatter;
+exact quality-subset, geometry-octile, DAC, and data-mode medians) directly
+against the live `pab.db` before writing, rather than trusting Task 1/2's
+already-logged approximate figures — all matched to the precision already
+reported, with the quality-subset exception above.
+
+**Image paths verified, not assumed.** The report lives in `reports/PAB/`
+while its figures stay in `pab/matchup/chl/` (per the project's
+internal-figures/GitHub-report split) — checked all 17 relative image links
+(`../../pab/matchup/chl/*.png`) resolve to real files before finishing, since
+a broken relative path is the kind of error that survives a visual read of
+the markdown source undetected.
+
+**JXP will review and push.** Per the task and this doc's working
+agreements, no git command was run; the file was written directly and is
+ready for review.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -491,4 +551,60 @@ stream) without resolving which — that's out of scope for a qualitative
 comparison pass. Full numbers and figure filenames are in the new Reports
 section above. No blocking questions raised. Did not start Task 3 (Chl-a
 report drafting), per "execute the 2nd task" — continuing only once
+instructed.
+
+### 2026-09-07 (Task 3 — drafted `reports/PAB/pab_chl_matchups_report.md`)
+
+Re-checked the Q&A section first: Q1 unchanged (still just `>A.`) — no new
+answer, and not relevant to this task anyway (it's about the CDOM report's
+home, Task 4's concern).
+
+Before writing, re-ran the full set of headline statistics directly against
+the live `pab.db` rather than relying on Task 1/2's already-logged numbers
+from memory — confirmed all matched to the precision previously reported,
+except the data-quality-subset median, which Task 1 had only described
+qualitatively ("shifts only slightly"); computing it precisely for the report
+found +0.13 → +0.22 (n=2,023), a real strengthening in the same direction as
+bbp700's clean-subset finding (+0.35 → +0.49), just more modest — corrected
+in the report's Figure 9 section rather than leaving the vaguer framing
+stand uncorrected in a document JXP will actually read.
+
+Drafted `reports/PAB/pab_chl_matchups_report.md` mirroring
+`pace_argo_bbp700_bias_analysis.md`'s structure (header block, Summary, Data,
+16 figures across 14 sections, Interpretation, How to Reproduce, Notes), per
+Q5's filename. Followed the task's explicit sequencing instruction —
+established the bias signature first (headline histogram/scatter, Figures
+1-2) before testing candidate mechanisms (Figures 5-14) — and did not assume
+the bbp700 depth-mismatch story carries over; instead let the data argue for
+it or against it (Interpretation point 4: the Chl/bbp700 biases are
+essentially uncorrelated, ρ=0.09, and the Chl MLD trend is better explained as
+a concentration-dependence proxy than an independent depth effect, unlike
+bbp700's flat MLD relationship).
+
+Gave the two in-situ-reference caveats (raw-vs-adjusted Chl; the
+correction-provenance gap) the prominent placement the task asked for —
+second paragraph of the Summary and the lead point of the Interpretation,
+not a footnote — since the adjusted-reference swing (+0.13 → +0.58) is
+larger than every other stratification in the report combined. Included the
+DAC stratification (Figure 14) as asked, and explicitly tied it to the same
+reference-uncertainty theme rather than presenting it as an unrelated finding
+(delayed-mode processing is DAC-run, not centralized, so cross-DAC bias
+differences and reference-choice uncertainty are plausibly the same
+underlying issue).
+
+Synthesized two connections across figures that no single prior Task 1/2 log
+entry had stated: the MLD trend (Figure 6) and the Southern Ocean's outlier
+basin median (Figure 8, -0.53) both plausibly reduce to the same
+concentration-dependence effect (Figure 3) — deep MLD and the Southern Ocean
+both co-locate with low-Chl-a water in this matchup population — rather than
+being two additional independent mechanisms. Framed this explicitly so the
+report doesn't read as a list of disconnected stratification results.
+
+Verified every one of the 17 relative image links
+(`../../pab/matchup/chl/*.png`, since the report lives in `reports/PAB/` while
+figures stay in `pab/matchup/chl/`) resolves to a real file with a direct
+filesystem check, rather than trusting the markdown source looked right by
+eye. No code changed. Per the working agreements, did not run any git
+command — the file is written and ready for JXP's review/push. Did not start
+Task 4 (CDOM report), per "execute the 3rd task" — continuing only once
 instructed.
