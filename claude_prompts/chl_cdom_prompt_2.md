@@ -8,11 +8,13 @@ CDOM comparison (C1–C4) — both now stratified by the DAC/provenance and
 adjusted-vs-raw Chl fields populated by the implementation pass. This is the
 "second pass" quantification JXP referred to in Q10.
 
-**Precondition:** `claude_prompts/chl_cdom_prompt_1.md` must be complete and
-verified — schema v4, CDOM + `_ADJUSTED` + data-mode fields populated, and
-`floats.project_name`/`data_center` filled for all 881 floats. Check its
-Reports/Logs sections before starting; if the pass is incomplete, stop and say
-so rather than working around it.
+**Precondition:** `claude_prompts/chl_cdom_prompt_1.md` is complete and
+verified (status: COMPLETE as of 2026-09-07) — schema v4, CDOM + `_ADJUSTED` +
+data-mode fields populated, and `floats.project_name`/`data_center` filled for
+873/881 floats (the remaining 8 had every profile fail to re-fetch; fully
+reconciled in that doc's Task 4 report — not a defect). Check its Reports/Logs
+sections before starting; if something there looks incomplete beyond what's
+already explained, stop and say so rather than working around it.
 
 ## Claude
 
@@ -150,3 +152,16 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-09-07 (corrected the precondition's DAC-provenance claim)
+
+While reviewing `chl_cdom_prompt_1.md` post-completion (that doc's Task 7), a
+Fable-assisted review flagged that this doc's precondition said DAC provenance
+was "filled for all 881 floats" — but `chl_cdom_prompt_1.md`'s own Task 4
+report establishes the verified reality is **873/881** (8 floats had every
+profile fail to re-fetch; fully reconciled there, cross-checked against the
+external GDAC index — not a defect). A literal reading of the old text would
+have wrongly suggested the implementation pass was incomplete. Corrected the
+precondition to state 873/881 with a pointer to the reconciliation, and to
+stamp the pass as COMPLETE (matching `chl_cdom_prompt_1.md`'s own new status
+note). No analysis started; this is a one-line factual correction only.
