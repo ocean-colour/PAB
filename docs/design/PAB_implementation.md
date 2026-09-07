@@ -1,7 +1,7 @@
 # PAB Implementation Record
 
-**Version:** 1.0
-**Date:** 2026-08-21
+**Version:** 1.1
+**Date:** 2026-09-07
 **Authors:** JXP and Claude
 
 **Status:** living document — updated as each stage is implemented.
@@ -35,6 +35,8 @@ every bump.
 | 8 | End-to-end pipeline & CLI | ✅ done | `pab.pipeline` + ``pab`` CLI |
 | 9 | Extensibility & options | ⬜ future | — |
 | — | **Full-mission production run (Nautilus)** | ✅ done | `pab_version = 1.0` over the PACE mission — see §10 |
+| 10 | BGC-Argo provenance & CDOM ingestion | ✅ done | schema v4; `pab.argo.fetch`/`pab.pipeline` DAC fix; `pab.argo.summary` CDOM + adjusted-Chl + per-parameter data-mode fields — see §11 |
+| — | **Chl-a/CDOM deep-dive analysis & reports** | ✅ done | `pab/matchup/chl/`, `pab/matchup/cdom/` (internal, not RTD); `reports/PAB/pab_chl_matchups_report.md`, `reports/PAB/pab_cdom_matchups_report.md` — see §11 |
 
 **Environment notes.** Workstation Python is 3.14.5 (plan floor 3.12);
 `bing`, `ocpy`, `remote_sensing`, `argopy`, `earthaccess`, `gsw`, `pandas`,
@@ -44,16 +46,19 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 117 tests: 115 passed + 2 skipped when the
-BING Loisel aph-basis data file is absent (the `b_bp`-recovery and fit-figure
-smoke skip, e.g. on lean CI / when the data mount is down), 117 passed when it is
-present; `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
--W` → build succeeded.
+**Verification (current).** `pytest` → 192 tests passed (grew from 117 across
+Stage 10's provenance-fix, CDOM-ingestion, and schema-migration test additions;
+the BING-guarded `b_bp`-recovery/fit-figure smoke tests still skip when the
+Loisel aph-basis data file is absent); `ruff check pab` and
+`ruff format --check pab` → clean; `sphinx-build -W` → build succeeded. Schema
+is at **v4** (see §11).
 
 **Production run.** The full-mission run over the entire PACE mission completed
 2026-08-20 on NSF/Nautilus (`pab_version = 1.0`): 54,031 profiles ingested,
 14,610 matchups, 14,609 fits. See §10 and the full-run report
-[`PAB_full_run_report.md`](PAB_full_run_report.md).
+[`PAB_full_run_report.md`](PAB_full_run_report.md). The database was
+subsequently backfilled in place (still `pab_version = 1.0`, a documented
+one-time exception) by Stage 10 — see §11.
 
 ---
 
@@ -840,6 +845,159 @@ Close-out checks on the production DB: **`pab_version = "1.0"` on 100%** of
 discover 0%, fit 1/14,610) are tabulated in
 [`PAB_full_run_report.md`](PAB_full_run_report.md), the standalone narrative of
 the run.
+
+---
+
+## 11. Stage 10 — BGC-Argo provenance, CDOM ingestion & the Chl-a/CDOM deep-dive analysis
+
+Two linked passes, executed back-to-back per `claude_prompts/chl_cdom_prompt_1.md`
+(implementation) and `claude_prompts/chl_cdom_prompt_2.md` (analysis + reports),
+following Stage 10 of `PAB_coding_plan.md` (v0.2) and the design additions in
+`PAB_design.md` (v0.5). Recorded together, last, per this project's established
+"plan → implement → go back and record" pattern.
+
+### 11.1 What Stage 10 actually built (implementation pass)
+
+**Schema v3 → v4** (`pab/db/schema.py`, `_v3_to_v4` forward migration
+alongside the inline `CREATE TABLE` DDL): six new `mld_summary` columns —
+`cdom`, `cdom_std`, `chla_adjusted`, `chla_data_mode`, `cdom_data_mode`,
+`bbp700_data_mode`. `SCHEMA_VERSION` bumped 3 → 4.
+
+**DAC/project-name provenance fix.** `floats.project_name`/`data_center` and
+`profiles.data_mode` existed since Stage 1 but were never populated — a
+genuine bug, not a schema gap. Root cause: `pab/argo/fetch.py::iter_profiles`
+never extracted `PROJECT_NAME`/`DATA_CENTRE` at all, and
+`pab/pipeline.py::ingest()` dropped even the `DATA_MODE` it did extract before
+forwarding to `persist_summary()`. Fixed in both files; regression tests added
+(`test_iter_profiles_extracts_dac_and_project_metadata`,
+`test_ingest_persists_dac_and_project_provenance`). Also discovered: a bare
+`DATA_MODE` variable does not exist on real BGC/GDAC datasets at all — only
+per-parameter `<PARAM>_DATA_MODE` — so `profiles.data_mode` remains
+structurally unpopulated for BGC data; the per-parameter fields below are the
+real fix.
+
+**CDOM ingestion + per-parameter data mode.** `"CDOM"` added to
+`pab/argo/fetch.py::DEFAULT_PARAMS`; `iter_profiles` extended to extract
+`CDOM`, `CHLA_ADJUSTED`, and per-parameter `<PARAM>_DATA_MODE` for
+CHLA/CDOM/BBP700. `pab/argo/summary.py::summarize_profile` averages
+`chla_adjusted`/`cdom` the same plain way as `chla` (no despike/IQR — that
+remains BBP700-specific); `persist_summary` writes the three new data-mode
+fields straight from profile-level metadata.
+
+**Scope decision (Q1 of `chl_cdom_prompt_1.md`): no `cdom_adjusted` was
+ingested.** A spot-check against live GDAC data found `CDOM_ADJUSTED` is
+**100% empty fleet-wide** (90,270 CDOM profile-rows / 694 floats checked
+against the live GDAC index — zero `'A'`/`'D'` mode, all `'R'`): no BGC-Argo
+float has ever had CDOM delayed-mode processed, so there was nothing for a
+`cdom_adjusted` column to mirror. JXP chose to ingest raw `cdom` only, pending
+a BGC-Argo consult on how to apply Sea-Bird Scientific's documented ~5.62×
+Reference Adjustment Factor (a manufacturer-confirmed calibration bias
+affecting most CDOM fluorometers calibrated/serviced before 2023-01-13). This
+is a deliberate, documented scope reduction from the original Stage 10 plan,
+not an oversight.
+
+**Combined re-ingestion over the existing 881 floats.** A full re-fetch of
+all 54,031 profiles (`replace=True` — required, since populating new
+per-profile fields on already-ingested profiles needs a genuine re-fetch, not
+a cheap patch): **52,844 written, 1,187 failed (2.2%)**, in line with this
+project's historical argopy transient-failure rate. Verified against known
+external facts: AOML count landed at 612/881 directly, reconciling to the
+externally-verified 617/881 once the 8 floats with 100%-failed re-fetches are
+cross-checked (5 of those 8 are AOML); CDOM populated for 394/881 floats
+(44.7%, matching the ~46% fleet-coverage figure in
+`pab/argo/BGC_Argo_Coverage_Report.md`); `chla_adjusted` populated for 89.5%
+of profiles (matching the live GDAC CHLA data-mode breakdown: ~89% `'A'` + 8%
+`'D'`). Pre-existing science fields (`chla`, `bbp700`, `mld`) were unchanged
+to bit-for-bit precision on the sampled smoke-test profiles, with only tiny
+(~0.02%), strictly-positive deltas fleet-wide from genuine upstream Argo
+delayed-mode drift between the original and re-fetch dates — not data loss.
+
+**Publishing.** The updated `pab.db` (schema v4, 141,156,352 B) was
+re-published to `s3://pab/full/pab.db` and backed up to `AIOcean:PAB/`,
+**under the same `pab_version = "1.0"`** — a deliberate, documented one-time
+exception to the project's usual versioning principle (a new version should
+*add* records, not overwrite), justified because this pass is a provenance/
+schema backfill with no analysis-method change, not a re-analysis. Verified
+via a genuine round-trip download + sha256 match, not just a clean upload
+exit code.
+
+**Docs.** `docs/db_schema.rst` and `docs/argo_ingestion.rst` updated for the
+v4 fields, the DAC/per-parameter-mode provenance, and the CDOM unit/caveat.
+
+**Tests.** Suite grew 187 → 192 (six new/modified tests across
+`test_argo.py`/`test_db.py`/`test_pipeline.py`); full suite + `ruff` clean
+throughout.
+
+### 11.2 What the analysis pass actually built
+
+**`pab/matchup/chl/`** — internal, standalone scripts (not part of the `pab`
+package API, not on Read the Docs): a shared loader
+(`data.py::load_chl_matchups()`, wrapping `gather_matchups()` + `add_strata()`
+plus the Stage 10 joins) and eight figure scripts (1:1 scatter, histogram,
+static+interactive global maps, Δt/distance/MLD/season/basin stratification,
+data-quality + Argo-data-mode stratification, three Chl-specific diagnostics,
+adjusted-vs-raw Argo Chl, and DAC stratification), plus `run_all.py`. The
+original rough `pab/matchup/plot_chl_matchup_scatter.py` (hardcoded
+`/Users/alliejames/...` paths) was absorbed into this subfolder and removed
+from its old flat location.
+
+**`pab/matchup/cdom/`** — likewise internal/standalone: a loader that reuses
+`pab.matchup.chl.data.load_chl_matchups()` rather than re-deriving joins, plus
+four figures (overall scatter, by-basin and by-season small multiples, a
+descriptive coverage map) and `run_all.py`. Every figure carries the
+mandated caveats (fluorescence-ppb-QSDE vs. combined-absorption-m⁻¹ unit
+mismatch; the unapplied Sea-Bird RAF) per the qualitative/correlative-only
+scope agreed in `chl_cdom_matchups.md` (C1–C4).
+
+**Two GitHub-facing reports** in `reports/PAB/`:
+[`pab_chl_matchups_report.md`](../../reports/PAB/pab_chl_matchups_report.md)
+and
+[`pab_cdom_matchups_report.md`](../../reports/PAB/pab_cdom_matchups_report.md)
+(a separate file, per Q1 of `chl_cdom_prompt_2.md`).
+
+### 11.3 Headline scientific findings (full detail in the reports themselves)
+
+- **Chl-a's PACE-vs-Argo bias is real but weaker and structurally different
+  from bbp700's**, and — the key result — **concentration-dependent**: PACE
+  reads low relative to Argo below roughly 0.1–0.2 mg/m³ and high above it, so
+  no single constant bias number describes the population.
+- **The in-situ reference matters more than any other factor tested.**
+  Recomputing the bias against the newly-available `chla_adjusted` (delayed-
+  mode/NPQ-corrected) reference instead of raw Argo Chl-a moves the median
+  from +0.13 to +0.58 — a larger swing than the geometric, seasonal, basin, or
+  quality stratifications combined. PAB's production matchups compare against
+  *raw* Chl-a by design; this is flagged as the report's central open
+  question, not resolved by this pass.
+- **Processing DAC correlates with bias strength** (AOML median +0.06 vs.
+  +0.25 for all other DACs combined) — plausibly reflecting cross-DAC
+  calibration/QC heterogeneity, tied to the same reference-uncertainty theme
+  above.
+- **CDOM shows essentially no rank correlation with the fitted `Adg`
+  amplitude** (Spearman ρ = -0.03 overall, near-zero in every basin/season
+  slice) — notably weaker than the modest Chl-bias-vs-`Adg` correlation found
+  in the Chl-a analysis (ρ=-0.24), suggesting `Adg`'s connection to actual
+  dissolved CDOM is weak. Because Spearman ρ is invariant under a uniform
+  rescaling, this finding will not change once the pending Sea-Bird RAF
+  correction (a uniform ×5.62, if that is the whole fix) is applied.
+
+### 11.4 Key decisions carried forward
+
+- Raw `cdom` ingested; `cdom_adjusted` deliberately deferred pending a
+  BGC-Argo consult (§11.1) — downstream CDOM analysis is raw-only throughout,
+  with the calibration caveat stated on every figure and in both reports.
+- CDOM comparisons stay qualitative/correlative permanently (no 1:1 line, no
+  bias percentage) — a `PAB_design.md` §*Comparison & metrics* design
+  principle, not just a one-off analysis choice, given the fluorescence-vs-
+  absorption unit/quantity mismatch has no fixed conversion.
+- The Chl-a and CDOM reports are separate files (Q1/Q5 of
+  `chl_cdom_prompt_2.md`) rather than one combined document, since the CDOM
+  comparison's much smaller N and qualitative-only framing risked being
+  conflated with the Chl-a report's quantitative bias claims if merged.
+- `pab_version` was **not** bumped for the Stage 10 backfill (§11.1) — a
+  documented, one-time exception; any future re-ingestion pass that changes
+  ingested values (as opposed to backfilling previously-dropped provenance
+  fields) should default to bumping the version per the project's normal
+  convention.
 
 ---
 

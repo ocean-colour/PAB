@@ -1,17 +1,3 @@
-> **A note on this document's home.** This CDOM comparison is written as a
-> **self-contained, clearly-separable unit** — its own title, header block,
-> and sections — specifically so it can land either as its own file (this
-> path) or be folded in as a section of `pab_chl_matchups_report.md` without
-> rewriting. The question of which was posed as **Q1** in
-> `claude_prompts/chl_cdom_prompt_2.md` and remains unanswered there (the
-> Q&A field is blank — `>A.` with no letter chosen, unlike every other
-> answered question in that document). The stated lean in Q1 was **(a)** a
-> separate file, which is why this content lives here for now; if JXP
-> prefers **(b)**, this entire document (minus this note) can be pasted
-> as-is into a new section of the Chl-a report. **This choice is provisional
-> pending JXP's answer to Q1 — flagging explicitly rather than treating the
-> lean as a decision.**
-
 # PACE – Argo CDOM Comparison (Qualitative/Correlative)
 
 **Date:** 2026-09-07
@@ -272,5 +258,3 @@ All scripts accept `--db` (default: `$PAB_DATA_DIR/pab.db`).
   bias number, no 1:1 line, and no claim about which quantity is "more
   correct" — per C3, that is a deliberate, agreed limitation given the
   units/quantity mismatch, not an oversight.
-- **Open item for JXP:** confirm Q1 in `claude_prompts/chl_cdom_prompt_2.md`
-  (this report's home — standalone file vs. a section of the Chl-a report).

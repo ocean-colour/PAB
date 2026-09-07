@@ -137,7 +137,7 @@ it into a quantitative bias report risks readers conflating the two; **(b)** a
 section within the Chl-a report — one document to push, and the CDOM/detrital
 aliasing story is already part of the Chl interpretation. My lean: (a). Which?
 
->A.
+>A. Make it its own file.  Be sure to include figures.
 
 ## Reports
 
@@ -448,6 +448,60 @@ filesystem, not just read visually.
 **JXP will review and push; also needs to answer Q1** so this document's
 final home is settled — flagged both in the doc itself and here.
 
+### Task 5 — `docs/design/PAB_implementation.md` updated (v1.0 → v1.1) to record Stage 10 + the analysis pass
+
+**Q1 answer confirmed before starting.** JXP answered Q1 since Task 4:
+"Make it its own file. Be sure to include figures." — confirming option (a)
+(a separate file, matching where `pab_cdom_matchups_report.md` already lives)
+and explicitly asking for embedded figures (already true — all 4 relative
+image links verified against the filesystem in Task 4). Removed the
+provisional note from the top of `pab_cdom_matchups_report.md` and the
+"open item for JXP" bullet from its Notes section, since both are now
+resolved — the report no longer needs to hedge its own location.
+
+**Recorded both passes, per C5 and this task's own gate** ("once both
+reports are drafted and reviewed with JXP" — reports are drafted; review is
+JXP's next step, not a blocker for recording what was *built*, which is this
+task's actual scope). Added a new §11 to `PAB_implementation.md`: §11.1
+covers the Stage 10 implementation pass verbatim from
+`chl_cdom_prompt_1.md`'s Reports/Logs (schema v3→v4, the DAC/project-name
+provenance bug and fix, CDOM ingestion, the `cdom_adjusted` scope reduction
+and why, the 52,844/54,031 re-ingestion run and its verification numbers, the
+`pab_version`-unchanged publishing decision); §11.2 covers what this analysis
+pass built (`pab/matchup/chl/`, `pab/matchup/cdom/`, both reports); §11.3
+summarizes the headline scientific findings at a level of detail appropriate
+for an implementation record (full detail stays in the reports themselves,
+linked); §11.4 records the key decisions carried forward (raw-CDOM-only,
+CDOM stays permanently qualitative per a real design principle, separate
+report files, `pab_version` not bumped for the backfill).
+
+Also updated the doc's front matter (Version 1.0 → 1.1, Date → 2026-09-07,
+per the doc's own stated versioning convention), the Stage 9 status table
+(two new rows: Stage 10, and the deep-dive analysis as an unnumbered
+production-adjacent entry, mirroring how the full-mission run was recorded),
+and the stale Verification paragraph (117 tests / no schema-version mention
+→ 192 tests / schema v4), which had gone quietly out of date across Stage 10
+without anyone circling back — exactly the kind of drift this recording step
+exists to catch.
+
+**Did not add `pab/matchup/chl/`/`pab/matchup/cdom/` to the §7 Module
+index.** Checked precedent first: the existing bbp700 analysis scripts
+(`pab/matchup/plot_bbp_matchup_map*.py`, etc.) were never added to that
+table either, consistent with the project's stated convention that internal,
+non-RTD analysis scripts are not part of the documented package surface the
+module index tracks. Matched that precedent rather than inventing a new one.
+
+**Verified before finishing, not assumed:** the two new relative links from
+`PAB_implementation.md` to `../../reports/PAB/*.md` resolve on the
+filesystem; a full `sphinx-build -W` (matching CI's warnings-as-errors
+setting) succeeded clean with the new §11 content and links in place; full
+suite `pytest pab/tests/` → 192 passed, unchanged (this task touches no
+package code, doc-only).
+
+Per the working agreements, ran no git command — the updated file is ready
+for JXP's own review/push. This closes out `chl_cdom_prompt_2.md`'s task
+list; all 5 tasks are now complete.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -711,3 +765,54 @@ both reports, and answering Q1 so this document's final home is settled.
 Did not start Task 5 (recording what was built in `PAB_implementation.md`),
 per "execute the 4th task" and per Task 5's own gate ("once both reports are
 drafted and reviewed with JXP") — continuing only once instructed.
+
+### 2026-09-07 (Task 5 — updated `PAB_implementation.md`; Q1 confirmed; all 5 tasks complete)
+
+Re-checked the Q&A section first: **Q1 now has a real answer** — "Make it
+its own file. Be sure to include figures." — confirming option (a), which is
+where `pab_cdom_matchups_report.md` already lived (the provisional choice
+made in Task 4 turned out to match), and explicitly asking for embedded
+figures, already satisfied (all 4 image links were verified against the
+filesystem in Task 4). Updated the report itself before moving on: removed
+its top "provisional home" note and the "open item for JXP" Notes bullet,
+since both were written specifically to flag this now-resolved question —
+leaving them in would have made a finished report look unfinished.
+
+Added a new §11 to `docs/design/PAB_implementation.md` recording both
+passes: §11.1 for the Stage 10 implementation (schema v3→v4, the DAC/
+project-name bug+fix, CDOM ingestion, the deliberate `cdom_adjusted` scope
+reduction, the 52,844/54,031 re-ingestion run and its verification numbers,
+the `pab_version`-unchanged publish decision) pulled from
+`chl_cdom_prompt_1.md`'s own Reports/Logs; §11.2 for what this analysis pass
+built (`pab/matchup/chl/`, `pab/matchup/cdom/`, both reports); §11.3
+summarizing the headline scientific findings at implementation-record
+granularity (concentration-dependent Chl bias, the raw-vs-adjusted-Argo
+swing, the DAC pattern, CDOM's near-zero `Adg` correlation); §11.4 recording
+which decisions are now permanent project conventions (CDOM stays
+qualitative-only per a real `PAB_design.md` principle, not just this one
+analysis) versus one-off calls (the `pab_version` non-bump).
+
+While updating, found the doc's own status table and Verification paragraph
+had drifted: still said "117 tests," no schema-version mention, and had no
+row at all for Stage 10 despite that stage having been complete for days.
+Fixed both (192 tests, schema v4, two new status rows) rather than only
+adding the new section and leaving the summary stale — exactly the kind of
+drift this recording step exists to catch. Bumped the doc's own Version
+1.0 → 1.1 and Date to today, per its stated versioning convention.
+
+Checked precedent before deciding whether to add `pab/matchup/chl/`/
+`pab/matchup/cdom/` to the §7 Module index: the existing bbp700 analysis
+scripts were never added there either, confirming the project's convention
+that internal, non-RTD analysis scripts sit outside the documented package
+surface that table tracks. Left the module index untouched rather than
+inventing a new convention.
+
+Verified rather than assumed: checked the two new relative links (this doc
+to `../../reports/PAB/*.md`) resolve on the filesystem; ran a full
+`sphinx-build -W` (matching CI's warnings-as-errors setting) to confirm the
+new section and cross-tree links don't break the docs build — succeeded
+clean; re-ran the full test suite (`pytest pab/tests/`) → 192 passed,
+unchanged, since this task touches no package code. Per the working
+agreements, ran no git command. This closes out `chl_cdom_prompt_2.md` — all
+five tasks are now complete; both reports and the updated implementation
+record are ready for JXP's review and push.
