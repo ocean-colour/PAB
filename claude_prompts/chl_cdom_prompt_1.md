@@ -11,6 +11,16 @@ v3→v4 to hold the new fields. The analysis and reports built on this pass live
 in `claude_prompts/chl_cdom_prompt_2.md`, which must not start until this doc's
 tasks are complete and verified.
 
+> **Status (2026-09-07): COMPLETE.** All tasks below are done, verified, and
+> logged (see Reports/Logs). Schema is v4; all 54,031 profiles were
+> re-ingested; the published `s3://pab/full/pab.db` and the `AIOcean:PAB/`
+> backup carry the updated DB under `pab_version = "1.0"` (Q2: a deliberate
+> one-time backfill exception). One scope change vs. the plan: per Q1, no
+> `cdom_adjusted` was ingested — raw `cdom` only, pending JXP's BGC-expert
+> consult (Task 3's original bullets are left as written, as the plan-vs-actual
+> record). The analysis pass in `claude_prompts/chl_cdom_prompt_2.md` is now
+> unblocked.
+
 ## Claude
 
 ### Skills
@@ -70,6 +80,7 @@ Read these before running:
 4. Execute the 4th task in Tasks below
 5. Execute the 5th task in Tasks below
 6. Execute the 6th task in Tasks below
+7. Execute the 7th task in Tasks below
 
 ## Tasks
 
@@ -180,6 +191,8 @@ Read these before running:
    Report what was published (URL, size, checksum, version) in the Reports
    section below and log your work.
 
+7. Review `chl_cdom_prompt_1.md` and update it as needed given what we have done thus far.  Use Fable if you can.  Log your work.
+
 ## Q&A
 
 **Q1 (raised by Task 1) — `cdom_adjusted` is moot as "mirror the DAC's field"; what should PAB compute instead?**
@@ -257,7 +270,7 @@ Did not run this against the real 881-float `pab.db` yet — that's Task 4's com
 
 Did not yet run the real combined re-ingestion over the 881-float `pab.db` — that is Task 4.
 
-### Task 4 — combined re-ingestion: smoke test passed; full run in progress
+### Task 4 — combined re-ingestion: done and verified (full run completed 2026-09-05)
 
 **No new Q&A answers to check.** Confirmed the local `pab.db` (downloaded from `s3://pab/full/pab.db` in an earlier task) is genuinely pre-pass: schema v3, 881/54,031/54,031/67,435/14,610/146,100/14,609/146,090 across floats/profiles/mld_summary/granules/matchups/matchup_pixels/fits/fit_results, `floats.data_center` NULL for all 881. Saved an aggregate baseline (sum + non-null count of `chla`/`bbp700`/`mld`/`psal`/`temp`/`n_points` across all 54,031 profiles, plus every table's row count) to compare against after the pass.
 
@@ -315,6 +328,18 @@ Did not touch `docs/design/PAB_implementation.md` — deferred to `chl_cdom_prom
 - Updated `HOWTO.md` §7b with a new paragraph describing the backfill (what changed, the 52,844/54,031 success rate, and the explicit `pab_version` note — cross-referencing this doc's Q2) — the existing text described only the original 2026-08-20 run and would otherwise have gone stale/misleading about what's actually in the published DB now. (`HOWTO.md` isn't part of the Sphinx build — confirmed it's absent from the page list a normal `sphinx-build` produces — so no docs-build re-check was needed for this file, unlike Task 5's `.rst` edits.)
 
 Did not duplicate the `PAB_implementation.md` update — still deferred to `chl_cdom_prompt_2.md` per C5.
+
+### Task 7 — reviewed this doc now that Tasks 1–6 are complete
+
+**No new Q&A answers to check** (Q1/Q2 already read; nothing new since Task 6).
+
+Used a **Fable** subagent to read the whole doc (Goals through Logs) and this doc's parent-and-sibling context (`chl_cdom_prompt_2.md`'s gate text) and propose surgical edits — explicitly briefed to distinguish *stale live-status text* (fair to fix) from *plan-vs-actual history* (Task 3's `cdom_adjusted` bullets vs. the Q1 answer that dropped it — a real, valuable record of what changed and why, not something to retroactively "clean up"). Reviewed its findings before applying anything.
+
+Applied two edits: (1) a **Status: COMPLETE** note under Goals — the section previously read entirely forward-looking ("must not start until... complete and verified") with nothing telling a future reader that gate has been met; the note also points at `chl_cdom_prompt_2.md` being unblocked, without rewriting any history. (2) fixed the **Task 4 heading**, which still said "full run in progress" even though its own body was updated in place when the run finished — a live-status typo, not history, so correcting it doesn't lose information.
+
+Deliberately did **not** touch Task 3's `cdom_adjusted` bullets, the Context/Working-agreements sections (fine as historical record once the status note orients a reader), or anything else Fable flagged as already consistent.
+
+**One thing surfaced but left alone, on purpose:** `chl_cdom_prompt_2.md`'s precondition currently says DAC provenance is "filled for all 881 floats," but Task 4's own verified reality is **873/881** (8 floats' fetches failed entirely — fully reconciled in that report, not a bug). A literal reading of that gate would wrongly flag the pass as incomplete. This is a real discrepancy, but it lives in a *different* file than the one this task asked me to review — flagging it to JXP rather than editing `chl_cdom_prompt_2.md` unprompted, to respect this task's actual scope.
 
 ## Logging
 
@@ -395,3 +420,11 @@ Re-verified the local DB immediately before upload (integrity `ok`, schema v4, a
 Updated `HOWTO.md` §7b with a paragraph on the backfill — the existing text only described the original 2026-08-20 run and would have silently gone stale about what the published DB now actually contains. Checked first whether `HOWTO.md` needed a Sphinx rebuild like Task 5's `.rst` edits did — it doesn't, since `HOWTO.md` isn't part of the Sphinx page list at all (confirmed against the earlier build's output), so this was a plain-markdown edit with no build-verification step needed.
 
 Learned (for future publish tasks in this project): the S3 backend here does **multipart uploads** for a 134 MB file (etag carries a `-17` suffix), so the returned `etag` can't be diffed directly against a local `sha256`/`md5` the way a single-part upload's would — a genuine round-trip download-and-hash is the reliable way to confirm content integrity, not just comparing the CLI's reported etag. Task 6 (and this doc's implementation pass) is now fully complete; `chl_cdom_prompt_2.md`'s analysis pass can proceed whenever JXP is ready.
+
+### 2026-09-07 (Task 7 — reviewed this doc post-completion; two edits applied)
+
+Used a **Fable** subagent to review the whole doc now that Tasks 1–6 are done, briefed specifically to separate "stale live-status text worth fixing" from "plan-vs-actual history worth preserving" (Task 3's original `cdom_adjusted` bullets vs. the Q1 answer that dropped it, in particular — real history, not a mistake to erase). Reviewed its proposal before applying anything, rather than taking it at face value.
+
+Applied two edits: added a **Status: COMPLETE** block under Goals (the section previously gave no signal to a cold reader that the gate — "tasks complete and verified" — had actually been met, and it now points at `chl_cdom_prompt_2.md` being unblocked); fixed the **Task 4 heading**, which still read "full run in progress" despite its own body having been updated when the run actually finished — a stale status label, not historical content, so fixing it doesn't lose information. Left Task 3's `cdom_adjusted` bullets, the Context/Working-agreements sections, and everything else untouched, per the same reasoning.
+
+Learned a genuinely useful thing along the way rather than just tidying: `chl_cdom_prompt_2.md`'s own precondition text claims DAC provenance is "filled for all 881 floats," but this doc's Task 4 report already establishes the verified reality is **873/881** (8 floats failed entirely — fully explained, not a defect). Flagged this to JXP instead of silently editing the sibling file, since Task 7's scope was this doc specifically. No code changed — doc-only review pass. This closes out `chl_cdom_prompt_1.md`.
