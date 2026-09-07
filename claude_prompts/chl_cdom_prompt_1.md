@@ -194,7 +194,7 @@ My lean: compute `cdom_adjusted = 5.62 × cdom` for all floats for now (document
 **Q2 (raised by Task 6) — `pab_version` before publishing: keep `1.0`, or bump it?**
 Task 4's re-ingestion upserted the touched `mld_summary`/`floats`/`profiles` rows **in place, under the same `pab_version = "1.0"`** the original full-mission release used — so the DB now published under `1.0` would carry materially different content (CDOM, `chla_adjusted`, DAC provenance, and the small legitimate drift in `chla`/`bbp700`/`mld` from re-fetching) than the `1.0` that's actually been cited/downloaded from `s3://pab/full/pab.db` since 2026-08-24. That cuts against this project's own stated principle in `PAB_design.md` (*Provenance & versioning*): a new version is supposed to **add** records, not silently overwrite. Options: **(a)** publish as-is under `1.0`, documenting this pass as a deliberate, one-time exception (a provenance/schema backfill, not a re-analysis — no science numbers changed except the tiny drift already explained in Task 4's report); **(b)** bump `pab_version` (e.g. `1.1`) before publishing, so anyone comparing DB snapshots by version string sees the difference honestly, at the cost of re-stamping/re-running to get every row onto the new version (unclear if that means literally changing the `pab_version` string on the already-upserted rows, or a fuller re-run). My lean: (a) with a clear note wherever this pass is documented (the eventual `PAB_implementation.md` update in `chl_cdom_prompt_2.md` is the natural place) — this really is a backfill of previously-missing provenance fields plus one new BGC variable, not a change in analysis method, so I don't think it needs its own version number the way an algorithm/prior change would. But this is your call, especially since it sets precedent for how future backfills get versioned. Which?
 
->A.
+>A. (a) Keep `1.0` — publish as-is, documented as a deliberate one-time backfill exception.
 
 ## Reports
 
@@ -302,6 +302,20 @@ No count was materially off, so proceeding to Task 5 is warranted per the task's
 
 Did not touch `docs/design/PAB_implementation.md` — deferred to `chl_cdom_prompt_2.md` per C5.
 
+### Task 6 — published the updated `pab.db` to S3; backed up to `AIOcean:PAB/`
+
+**Q2 answered:** JXP chose **(a) keep `pab_version = "1.0"`** — publish as-is, documented as a deliberate one-time backfill exception. Recorded inline.
+
+**Pre-upload verification (immediately before, on the real local DB):** `PRAGMA integrity_check` → `ok`; schema version → 4; all 8 table counts exactly matched Task 4's verified numbers (881/54,031/54,031/67,435/14,610/146,100/14,609/146,090). Local file: 141,156,352 B, sha256 `8ca7eb4...3a7ef`.
+
+**Published:**
+- Uploaded (overwrite) to `s3://pab/full/pab.db` via `aws s3 cp` against the Nautilus Ceph-RGW endpoint (`https://s3-west.nrp-nautilus.io`).
+- Verified the upload for real, not just "no error from the CLI": public `HTTP 200`, `content-length: 141156352` (exact match); then did a genuine **round-trip** — downloaded the just-uploaded object fresh to a scratch path, confirmed its **sha256 matches the local file bit-for-bit**, and re-ran the full integrity/schema-version/table-count/`data_center`/`cdom` checks against that fresh download — every number matched Task 4's verified results again, this time from what's actually live on S3, not just the local copy.
+- Backed up to `AIOcean:PAB/pab.db` via `rclone copy` (overwriting the 2026-08-20 copy); confirmed via `rclone lsl` — size and source mtime both landed correctly (141,156,352 B, 2026-09-05 10:40, matching the local file).
+- Updated `HOWTO.md` §7b with a new paragraph describing the backfill (what changed, the 52,844/54,031 success rate, and the explicit `pab_version` note — cross-referencing this doc's Q2) — the existing text described only the original 2026-08-20 run and would otherwise have gone stale/misleading about what's actually in the published DB now. (`HOWTO.md` isn't part of the Sphinx build — confirmed it's absent from the page list a normal `sphinx-build` produces — so no docs-build re-check was needed for this file, unlike Task 5's `.rst` edits.)
+
+Did not duplicate the `PAB_implementation.md` update — still deferred to `chl_cdom_prompt_2.md` per C5.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -371,3 +385,13 @@ Updated `docs/db_schema.rst`: added `CDOM`'s unit (ppb QSDE) to *Conventions* wi
 Updated `docs/argo_ingestion.rst`: corrected the *Fetch* step's stale `src='erddap'` reference to the actual `src='gdac'` default (noticed while adding `CDOM` to the `DEFAULT_PARAMS` mention — same staleness the design doc already had fixed) and added `CHLA_ADJUSTED`/`CDOM` to the variable list; added a new *Provenance: processing DAC & per-parameter data mode* section (DAC capture + the CDOM-vs-CHLA/BBP700 data-mode contrast); noted in *De-spiking and averaging* that `CHLA_ADJUSTED`/`CDOM` get the same plain mixed-layer mean as `CHLA`.
 
 Verified for real rather than assuming the prose was well-formed: built the full Sphinx site with `-W` (matching CI's warnings-as-errors setting) after installing the missing `sphinxcontrib-mermaid`/`myst-parser`/`myst-nb`/`sphinx-rtd-theme` extensions (none were in this environment) — clean build, no warnings from either file. Re-ran the full test suite as a sanity check on a docs-only change: 192 passed, unchanged from Task 4. Did not touch `PAB_implementation.md`, per C5 — that's `chl_cdom_prompt_2.md`'s job, after the analysis pass.
+
+### 2026-09-07 (Task 6 — published the updated `pab.db` to S3, backed up to `AIOcean:PAB/`)
+
+Q2 was still unanswered when asked to execute this task, and the task text itself says to resolve it first rather than guess — asked JXP directly (via a quick multiple-choice question) instead of assuming my own stated lean. Answer: keep `pab_version = "1.0"` (option (a), as I'd leaned), recorded inline in Q2.
+
+Re-verified the local DB immediately before upload (integrity `ok`, schema v4, all 8 table counts exactly matching Task 4's numbers) in case anything had drifted since. Uploaded to `s3://pab/full/pab.db` via `aws s3 cp` (Nautilus Ceph-RGW endpoint), then verified properly rather than trusting a clean CLI exit: public `HTTP 200` + exact `content-length` match, and — the stronger check — downloaded the just-uploaded object back down fresh and confirmed its **sha256 matches the local file bit-for-bit**, then re-ran the full row-count/integrity verification against that fresh download so the confirmation is about what's actually live on S3, not the local copy. Backed up to `AIOcean:PAB/pab.db` via `rclone copy` (overwrote the 2026-08-20 copy; `rclone lsl` confirms the new size/mtime landed).
+
+Updated `HOWTO.md` §7b with a paragraph on the backfill — the existing text only described the original 2026-08-20 run and would have silently gone stale about what the published DB now actually contains. Checked first whether `HOWTO.md` needed a Sphinx rebuild like Task 5's `.rst` edits did — it doesn't, since `HOWTO.md` isn't part of the Sphinx page list at all (confirmed against the earlier build's output), so this was a plain-markdown edit with no build-verification step needed.
+
+Learned (for future publish tasks in this project): the S3 backend here does **multipart uploads** for a 134 MB file (etag carries a `-17` suffix), so the returned `etag` can't be diffed directly against a local `sha256`/`md5` the way a single-part upload's would — a genuine round-trip download-and-hash is the reliable way to confirm content integrity, not just comparing the CLI's reported etag. Task 6 (and this doc's implementation pass) is now fully complete; `chl_cdom_prompt_2.md`'s analysis pass can proceed whenever JXP is ready.

@@ -258,6 +258,22 @@ local. The full DB is now **published** at
 dataset (`pab.db`, `fit_chains/` = 18.09 GiB, `site/`) is also backed up off-site to
 the Google shared drive **`AIOcean:PAB/`** (Nautilus PVCs are not backed up).
 
+**Chl-a/CDOM provenance backfill (2026-09-05/06, still `pab_version = 1.0`).**
+`pab.db` was re-ingested in place (schema v4 — see `docs/db_schema.rst`) to add
+**CDOM** (`mld_summary.cdom`), `CHLA_ADJUSTED` (`chla_adjusted`), per-**parameter**
+Argo data-mode fields (`chla_data_mode`/`cdom_data_mode`/`bbp700_data_mode` —
+`profiles.data_mode` is unpopulated for BGC data, see `docs/argo_ingestion.rst`),
+and float processing-DAC provenance (`floats.project_name`/`data_center`), all
+previously missing from the schema or never threaded through. 52,844 of 54,031
+profiles re-fetched successfully (2.2% transient argopy failures, unchanged from
+before); no analysis method changed and pre-existing fields (`chla`, `bbp700`,
+`mld`, …) are unaffected beyond a handful of profiles picking up newly-available
+Argo delayed-mode values (see `claude_prompts/chl_cdom_prompt_1.md` Task 4 for the
+full verification). Published to S3 and re-backed-up to `AIOcean:PAB/` under the
+**same** `pab_version = "1.0"` — a deliberate, documented exception to the
+"a new version adds records" convention above, since this is a provenance/schema
+backfill, not a re-analysis (JXP's call, `chl_cdom_prompt_1.md` Q2).
+
 > **Remaining follow-on:** publish the **bulk artifacts** (chains + figures) to
 > `s3://pab` via `publish_release(..., backend=NautilusS3Backend(...))` so the
 > manifest carries real S3 URLs (the reporting site can then reference figures by
