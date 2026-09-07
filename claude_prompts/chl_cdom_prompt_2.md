@@ -395,6 +395,59 @@ the markdown source undetected.
 agreements, no git command was run; the file was written directly and is
 ready for review.
 
+### Task 4 — CDOM report drafted: `reports/PAB/pab_cdom_matchups_report.md` (location provisional — Q1 still unanswered)
+
+**Q1 re-examined and found genuinely unanswered, not just unconfirmed.**
+Every other answered question in this doc and in `chl_cdom_matchups.md`
+carries actual text after `>A.` (e.g. `>A. (b) fold it in.`). Q1's field
+reads only `>A.` with nothing after it — no letter chosen. Task 1's and
+Task 2's log entries had described Q1 as "answered... option (a)," which on
+this closer look was an overread of a blank field, not a real answer — worth
+correcting now since this task's outcome actually depends on it (Task 4's
+own instructions anticipated exactly this: "do NOT assume a filename... get
+the Q&A answer first, or draft it as a clearly-separable unit that can land
+either way"). Did not retroactively edit Task 1/2's log text (historical
+record of what was believed at the time), but flagged the correction here
+and did not repeat the earlier overread.
+
+**Followed the task's explicit fallback rather than re-assuming (a).**
+Drafted `reports/PAB/pab_cdom_matchups_report.md` as a complete,
+self-contained document (its own title/header block/sections) with a note at
+the very top stating plainly: this is provisional, Q1 is unresolved, the
+stated lean in the original question was (a) which is why it lives at this
+path for now, and the entire document (minus that note) can be pasted as a
+new section into `pab_chl_matchups_report.md` if JXP prefers (b) instead —
+no rewrite needed either way. This satisfies the task's "flag that in your
+report to JXP" instruction directly in the deliverable, not just in this log.
+
+**Content.** Structured like the Chl-a report but shorter, matching C3's
+narrower qualitative/correlative scope: a "why qualitative only" section
+up front carrying both required caveats prominently (the ppb-QSDE-vs-m⁻¹
+combined-quantity mismatch, and the Sea-Bird RAF-5.62/real-time-only context
+from `chl_cdom_prompt_1.md`'s Task 1 spot-check), then Summary, Data, the
+four Task 2 figures with observations, Interpretation, How to Reproduce,
+Notes. Numbers pulled directly from Task 2's already-verified Reports section
+(ρ=-0.03 overall; basin range -0.09 to +0.19; season range -0.06 to +0.01;
+n=7,083/48.5%; 100% `cdom_data_mode='R'`) — no new computation needed since
+Task 2 already established these precisely.
+
+**One methodological point added that Task 2's log did not state:** Spearman
+ρ is invariant under any monotonic increasing transform, so the still-pending
+Sea-Bird RAF (a uniform ×5.62 multiplication) would not change any of the
+reported correlations if that is the whole correction. Flagged this
+explicitly in the Summary and Interpretation so JXP knows this report's
+qualitative finding (no meaningful CDOM/`Adg` correlation) does not
+necessarily need re-doing once the correction pass happens — only if the
+eventual correction turns out to be non-uniform (e.g. the second,
+currently-unpublished sensor-reference bias) would it need revisiting.
+
+**Image paths verified** (same pattern as Task 3: report in `reports/PAB/`,
+figures in `pab/matchup/cdom/`) — all 4 relative links checked against the
+filesystem, not just read visually.
+
+**JXP will review and push; also needs to answer Q1** so this document's
+final home is settled — flagged both in the doc itself and here.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -608,3 +661,53 @@ eye. No code changed. Per the working agreements, did not run any git
 command — the file is written and ready for JXP's review/push. Did not start
 Task 4 (CDOM report), per "execute the 3rd task" — continuing only once
 instructed.
+
+### 2026-09-07 (Task 4 — drafted `reports/PAB/pab_cdom_matchups_report.md`; found Q1 was never actually answered)
+
+Re-checked the Q&A section first, as instructed, and this time it mattered:
+Q1's field is `>A.` with no letter after it — literally blank, unlike every
+other answered question in this document (all of which have real text after
+`>A.`). Task 1's and Task 2's log entries had both described Q1 as "answered
+(option a)," which in retrospect was reading too much into an empty
+placeholder. This task's own text anticipated exactly this possibility
+("do NOT assume a filename... draft it as a clearly-separable unit that can
+land either way and flag that in your report to JXP"), so rather than
+silently repeating the earlier assumption, treated Q1 as genuinely open.
+
+Drafted `reports/PAB/pab_cdom_matchups_report.md` as a fully self-contained
+document — its own title, header block, and section structure — with an
+explicit note at the top stating the location is provisional pending JXP's
+answer to Q1, naming the stated lean (a, a separate file) as the reason it
+lives at this path for now, and stating plainly that the whole document
+(minus that note) can be pasted into the Chl-a report as a new section if
+JXP prefers (b), with no rewrite needed either way. This puts the flag where
+the task asked for it — in the deliverable itself, not just buried in this
+log.
+
+Content followed C3's narrower qualitative/correlative scope: a leading
+section restating both required caveats (the ppb-QSDE-vs-m⁻¹ unit mismatch,
+and the Sea-Bird RAF-5.62/real-time-only calibration context), then the same
+Summary/Data/Figures/Interpretation/Reproduce/Notes shape as the Chl-a
+report, sized down to the four Task 2 figures. Reused Task 2's already-
+verified numbers directly (overall ρ=-0.03; per-basin -0.09 to +0.19;
+per-season -0.06 to +0.01; n=7,083 of 14,609, 48.5%) rather than
+recomputing, since Task 2's Reports section already established them
+precisely against the live DB.
+
+Added one point not previously logged: Spearman ρ is invariant under a
+uniform multiplicative rescaling, so the still-pending Sea-Bird RAF
+correction (×5.62 on every raw value) — if that turns out to be the whole
+correction — would not change any correlation number in this report.
+Flagged this explicitly so JXP doesn't read this report as needing an
+automatic re-run once the correction lands; only a *non-uniform* correction
+(e.g. the second, still-unpublished sensor-reference bias) would require
+revisiting the conclusion.
+
+Verified all 4 relative image links (`../../pab/matchup/cdom/*.png`) resolve
+against the filesystem before finishing. No code changed. Per the working
+agreements, ran no git command — the file is written and ready for JXP's
+review. Two things now genuinely need JXP's input before Task 5: reviewing
+both reports, and answering Q1 so this document's final home is settled.
+Did not start Task 5 (recording what was built in `PAB_implementation.md`),
+per "execute the 4th task" and per Task 5's own gate ("once both reports are
+drafted and reviewed with JXP") — continuing only once instructed.
