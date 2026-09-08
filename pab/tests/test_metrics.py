@@ -236,6 +236,73 @@ def test_gather_matchups_filters_by_model_pair():
         assert df["bbp_bing"].iloc[0] == pytest.approx(2e-3)  # ExpBPow, not Cst's 9e-3
 
 
+def test_gather_nasa_giop_joins_bing_and_nasa_fits():
+    with Store.open(":memory:") as store:
+        _seed(
+            store,
+            "M1",
+            7902226,
+            5,
+            lat=27.0,
+            lon=-46.0,
+            time="2025-02-18T20:00:00",
+            bbp_argo=1e-3,
+            chla=0.1,
+            bbp_bing=2e-3,
+        )
+        # a matchup with only a BING fit (no NASA-GIOP ingest yet) must not appear
+        _seed(
+            store,
+            "M2",
+            7902136,
+            8,
+            lat=4.0,
+            lon=-137.0,
+            time="2025-07-25T13:00:00",
+            bbp_argo=2e-3,
+            chla=0.2,
+            bbp_bing=4e-3,
+        )
+        store.upsert(
+            "fits",
+            {
+                "fit_id": "M1_2_2_NASA_GIOP",
+                "matchup_id": "M1",
+                "algorithm": "NASA_GIOP",
+                "pab_version": "1.1",
+            },
+        )
+        store.upsert_many(
+            "fit_results",
+            [
+                {
+                    "fit_id": "M1_2_2_NASA_GIOP",
+                    "quantity": "NASA_GIOP_bbp_442",
+                    "value": 3e-3,
+                    "value_lo": 2.5e-3,
+                    "value_hi": 3.5e-3,
+                    "unit": "m^-1",
+                },
+                {
+                    "fit_id": "M1_2_2_NASA_GIOP",
+                    "quantity": "NASA_GIOP_adg_442",
+                    "value": 0.03,
+                    "value_lo": None,
+                    "value_hi": None,
+                    "unit": "m^-1",
+                },
+            ],
+        )
+        df = compare.gather_nasa_giop(store)
+        assert len(df) == 1  # only M1 has both a BING and a NASA-GIOP fit
+        row = df.iloc[0]
+        assert row["matchup_id"] == "M1"
+        assert row["bbp_bing"] == pytest.approx(2e-3)
+        assert row["bbp_442_nasa"] == pytest.approx(3e-3)
+        assert row["adg_442_nasa"] == pytest.approx(0.03)
+        assert row["aph_442_nasa"] is None or np.isnan(row["aph_442_nasa"])
+
+
 def test_add_oc_chl_from_granule():
     pytest.importorskip("ocpy")
     gran = make_granule()
