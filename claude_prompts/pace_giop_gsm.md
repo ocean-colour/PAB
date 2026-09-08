@@ -23,14 +23,139 @@ Read these before running — plus the **hard-won operational lessons** below.
 
 1. Execute the 1st task in Tasks below
 2. Execute the 2nd task in Tasks below
+3. Execute the 3rd task in Tasks below
+4. Execute the 4th task in Tasks below
 
-## Tasks
+
+
+### Tasks
 
 1. Read all the files in the context.  Then scour the NASA PACE website for infomration on the GIOP and GSM products.  These will be provided as IOP outputs.  Before proceeding, have a discussion with me on the plan for this work.  Ask me a series of questions in the Q&A section.  Use Fable if you can.  Log your work.
 
 2. I have answered your questions.  Read them and ask me any follow-up questions you may have.  Modify the plan as needed.  Log your work. Use Fable if you can.
 
 3. Ok, read my answer to Q6, update the plan and then proceed to work on the dev suite of matchups.  Log your work. Use Fable if you can.
+
+4. The test was a success.  Generate a set of prompts under the Full Run section below.  Log your work. Use Fable if you can.
+
+
+### Full Run
+
+The dev-set prototype validated the ingest end-to-end (see **Reports → Task 3**).
+These prompts take it to production: close the known uncertainty gap *first* (so
+the retrofit ingests everything in one pass, no backfill), retrofit every
+BING-fit matchup onto the real production DB, wire the "BING vs NASA GIOP"
+comparison into the published RTD report (Q5), publish, and close out.
+
+**Numbers that size the run** (queried read-only from the production DB,
+2026-09-08): 14,610 matchups, **14,609 with a BING fit** (the ingest
+population), sharing **11,493 unique AOP granules** → 11,493 IOP-granule
+downloads. At the prototype's ~42 MB/IOP granule that is **~0.5 TB** of cache
+(9.5 TB currently free on `/mnt/tank` — fits comfortably; delete afterwards),
+and at the prototype's ~3 s/matchup end-to-end, roughly **~12 h serial** — an
+overnight run, so no parallelism is needed unless Full-Run task 2's measured
+rate says otherwise.
+
+**⚠️ One canonical DB (the run_full_pipeline lesson #1).** The
+mission-production DB is at **`$PAB_DATA_DIR/full/pab.db`**
+(= `/mnt/tank/Oceanography/data/Color/PAB/full/pab.db`; `/home/xavier/Oceanography`
+is a symlink to `/mnt/tank/Oceanography`) — **not** `$PAB_DATA_DIR/pab.db`
+(doesn't exist) and **not** `/mnt/tank/Oceanography/data/PAB/` (holds only the
+old pilot DB). The Task 3 report's "`$PAB_DATA_DIR/pab.db`" reflected that
+session's environment, not this one. Pass the explicit DB path everywhere;
+never let a default resolve it. This is also the DB published at
+`s3://pab/full/pab.db`, so publishing (task 5) must re-push it.
+
+#### Full Run Prompts
+
+1. Execute the 1st task in Full Run Tasks below
+2. Execute the 2nd task in Full Run Tasks below
+3. Execute the 3rd task in Full Run Tasks below
+4. Execute the 4th task in Full Run Tasks below
+5. Execute the 5th task in Full Run Tasks below
+6. Execute the 6th task in Full Run Tasks below
+
+#### Full Run Tasks
+
+1. **Close the uncertainty gap before the retrofit.** NASA's IOP files carry
+   `aph_unc_442`/`adg_unc_442`, but `ocpy.pace.io.load_iop_l2` doesn't read
+   them, so the prototype's `adg_442`/`aph_442` landed with no per-pixel
+   uncertainty (Reports → Task 3, "Known gap"). Fix the loader in the `ocpy`
+   working tree (`/home/xavier/Oceanography/python/ocpy`) to read both fields,
+   then extend `pab.pace.iop.extract_iop_quantities` to attach symmetric
+   credible intervals to `adg_442`/`aph_442` the same way `bbp_442` already
+   gets one from `bbp_unc_442` (degrading gracefully — no interval — when the
+   loader/file lacks them, so old caches and tests still pass). Tests in both
+   packages; `ruff` clean. Re-verify on one real granule (any of the three
+   prototype matchups) that the uncertainties come through with plausible
+   magnitudes. Doing this *now* means the 14,609-matchup retrofit ingests
+   uncertainties in a single pass instead of needing a second sweep. Log your
+   work. Use Fable if you can.
+
+2. **Leading slice against the real production DB (count + rate first).** Wire
+   a thin, resumable entry point for `pab.fit.nasa_giop.build_nasa_giop` — a
+   `--stage`-style hook on the `pab` CLI or a small driver script, whichever is
+   less code; it needs `--db`, `--cache-dir`, an optional matchup limit/subset,
+   and file logging. Then run a **~100-matchup leading slice** against the
+   *real* `$PAB_DATA_DIR/full/pab.db` (safe: idempotent, additive, stamped
+   `pab_version = "1.1"` on parallel `fits` rows — the BING `1.0` records are
+   untouched by design). Report: (a) measured s/matchup and MB/granule →
+   re-project the full ~12 h / ~0.5 TB estimates; (b) the **pixel-distance
+   distribution** — the prototype's 3/3 landed at 0.0000 km; if a non-trivial
+   fraction of the slice lands > ~1.5 km (more than one pixel) from the BING
+   pixel, **pause and investigate** before the full send; (c) failure count
+   and causes. **Disk gate:** if the projected cache exceeds ~1 TB, decide
+   (evict-as-you-go vs. proceed) before task 3. Log the measured rates + the
+   projection. Use Fable if you can.
+
+3. **Full retrofit — all 14,609 BING-fit matchups.** Run the ingest over the
+   full population against `$PAB_DATA_DIR/full/pab.db` (the leading slice's
+   ~100 skip via idempotency). Run it resumably in the background with output
+   to a log file; it is safe to interrupt and resume (skip is keyed on
+   `matchup_id`). Expect a small transient-failure tail (downloads over
+   `earthaccess`); re-run to sweep failures until the failed list is stable,
+   then report the irreducible failures with causes. **Close-out checks:**
+   `fits` count for `algorithm = 'NASA_GIOP'` ≈ 14,609 minus irreducible
+   failures, all stamped `pab_version = "1.1"`; BING row count and
+   `pab_version = "1.0"` population unchanged; a final no-op re-run shows
+   `written: []`, no duplicates; summarize the pixel-distance and
+   `bbp_442`/`bbp700` ratio distributions as a sanity check. Then **delete the
+   ~0.5 TB IOP granule cache**. Log counts, wall-clock, failure rates. Use
+   Fable if you can.
+
+4. **Wire the comparison into the RTD report.** Add the "BING vs NASA GIOP"
+   comparison to the report layer (`pab.report.rst` + `pab.metrics.compare`),
+   mirroring the existing satellite-vs-float `b_bp` treatment (Q5): scatter
+   (interactive, like the existing Bokeh figures) + summary stats via the
+   quantity-agnostic `log_comparison`, built on `gather_nasa_giop`. **Label
+   the 442 nm-vs-700 nm `bbp` mismatch explicitly in the figure/table** (Q3 —
+   no spectral adjustment), and add a short methods-page note documenting why
+   GSM is absent (Q1: not an operationally-distributed PACE product — a NASA
+   availability fact, not a PAB gap) plus the `pab_version = "1.1"` provenance
+   of the NASA rows. Tests for the gatherer→page path; then regenerate the
+   site sources (`pab --db "$PAB_DATA_DIR/full/pab.db" --emit-site report_site`)
+   and preview with `sphinx-build` (HOWTO §7a). Do **not** commit — git is the
+   user's. Log your work. Use Fable if you can.
+
+5. **Publish.** Three artifacts, per HOWTO §7: (a) tell the user
+   `report_site/` is ready to commit + push so RTD rebuilds (user does the git
+   ops), and verify the RTD build once pushed; (b) re-upload the updated
+   `pab.db` to **`s3://pab/full/pab.db`** via `NautilusS3Backend` (it now
+   carries the NASA-GIOP rows; the currently-published copy predates them);
+   (c) re-sync the backup to **`AIOcean:PAB/`** via rclone (Nautilus is not
+   backed up). Confirm the public URL serves the new DB (size/hash). Log what
+   was published where. Use Fable if you can.
+
+6. **Verify & close out.** Spot-check a handful of matchups end-to-end (NASA
+   values vs. the granule, sibling BING/NASA rows sharing `matchup_id` +
+   `pixel_id`, report page rendering them correctly). Update
+   `docs/design/PAB_implementation.md` (§5d.3 — "BING vs NASA L2 IOP" is now
+   ingested + published), `HOWTO.md` (the NASA-GIOP ingest entry point and the
+   `"1.1"` version note), and `docs/db_schema.rst` if it enumerates
+   `algorithm`/quantity values. Write a short full-run report (counts,
+   timings, failure tail, the pixel-distance result at scale, follow-ups —
+   e.g. the deferred GSM decision). Log your work. Use Fable if you can.
+
 
 ## Plan
 
@@ -380,3 +505,46 @@ of scratch downloads and the scratch DB copy afterward. Full report + design
 detail in the new **Reports → Task 3** section. Not done yet: the full
 14,610-matchup retrofit (awaiting go-ahead), wiring the comparison into the
 RTD report site, and the `aph_unc_442`/`adg_unc_442` gap in the `ocpy` loader.
+
+### 2026-09-08 (Task 4 — wrote the Full Run prompt set)
+
+The prototype was declared a success, so this task authored the production
+prompt set under **Prompts → Full Run**: six tasks taking the NASA-GIOP work
+from validated prototype to published comparison. Before writing them, ground
+truth was gathered rather than assumed — the production DB was queried
+read-only: **14,610 matchups, 14,609 with a BING fit** (the ingest
+population), sharing **11,493 unique AOP granules**, all `pab_version = "1.0"`,
+and **zero `NASA_GIOP` rows** (confirming the Task 3 scratch run left no trace
+in production). That sizes the run concretely: ~11.5 k IOP downloads × ~42 MB
+≈ **~0.5 TB** cache (9.5 TB free on `/mnt/tank`) and ~**12 h serial** at the
+prototype's ~3 s/matchup — overnight-feasible with no new parallelism, subject
+to a measured-rate check.
+
+Locating the DB surfaced a trap now flagged prominently in the Full Run
+preamble: the mission DB is at **`$PAB_DATA_DIR/full/pab.db`**
+(`/mnt/tank/Oceanography/data/Color/PAB/full/pab.db`), *not*
+`$PAB_DATA_DIR/pab.db` as the Task 3 report's wording implied (that session's
+environment differed), and *not* `/mnt/tank/Oceanography/data/PAB/` (pilot DB
+only) — exactly the split-state failure mode `run_full_pipeline.md`'s lesson
+#1 warns about, so the prompts require an explicit DB path throughout.
+
+The six tasks, with the reasoning behind the ordering: (1) **close the
+`aph_unc_442`/`adg_unc_442` loader gap first** (in `ocpy` +
+`extract_iop_quantities`) so the retrofit ingests uncertainties in one pass
+instead of needing a 14.6 k-row backfill later; (2) **leading slice** —
+~100 matchups against the *real* DB (safe: idempotent, additive, `"1.1"`-
+stamped) behind a thin resumable CLI/driver entry point, with gates on
+measured rate, the pixel-distance distribution (prototype: 0.0000 km — pause
+if a non-trivial fraction lands > ~1.5 km), and projected disk; (3) **full
+retrofit** of all 14,609, background + resumable, sweep the transient-failure
+tail until stable, close-out count/idempotency/provenance checks, then delete
+the ~0.5 TB cache; (4) **report wiring** — the Q5 "BING vs NASA GIOP" scatter
++ summary stats via `gather_nasa_giop`/`log_comparison`, the explicit
+442-vs-700 nm label (Q3), a methods note on GSM's non-availability (Q1), then
+`--emit-site` + sphinx preview, no commits; (5) **publish** — user pushes
+`report_site/` for RTD, re-upload `pab.db` to `s3://pab/full/pab.db` (the
+published copy predates the NASA rows), re-sync `AIOcean:PAB/`; (6) **verify &
+close out** — spot-checks, `PAB_implementation.md` §5d.3 / `HOWTO.md` /
+`db_schema.rst` updates, and a short full-run report. Each prompt carries the
+doc's standing "Log your work. Use Fable if you can." (this task itself ran
+directly on Fable 5 — no delegation needed). No code changed this task.
