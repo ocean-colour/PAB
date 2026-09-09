@@ -115,21 +115,20 @@ def extract_iop_quantities(ds, ix: int, iy: int) -> list[dict[str, Any]]:
     dicts in the same shape :func:`pab.fit.run.extract_quantities` returns for
     BING, so both feed the same ``fit_results`` persistence path.
 
-    ``bbp_442`` carries a **symmetric** credible interval derived from NASA's
-    own ``bbp_unc_442`` (a single uncertainty number, unlike BING's asymmetric
-    posterior percentiles). ``adg_442``/``aph_442`` have no per-pixel
-    uncertainty in the fields ``ocpy.pace.io.load_iop_l2`` currently exposes —
-    NASA's file also carries ``aph_unc_442``/``adg_unc_442``, which the
-    ``ocpy`` loader does not read (a known gap, not fixed here) — so their
-    ``value_lo``/``value_hi`` are ``None``.
+    ``bbp_442``, ``adg_442`` and ``aph_442`` each carry a **symmetric**
+    credible interval derived from NASA's own single per-pixel uncertainty
+    number (``bbp_unc_442``/``adg_unc_442``/``aph_unc_442`` — unlike BING's
+    asymmetric posterior percentiles). The ``adg``/``aph`` uncertainty fields
+    are read only when the dataset carries them (files loaded through an
+    ``ocpy`` older than the 2026-09-08 loader fix don't) — absent fields
+    degrade gracefully to no interval and no ``*_unc_442`` row.
     """
 
     def _val(name: str) -> float | None:
+        if name not in ds:
+            return None
         v = float(ds[name].isel(x=ix, y=iy).values)
         return v if np.isfinite(v) else None
-
-    bbp = _val("bbp_442")
-    bbp_unc = _val("bbp_unc_442")
 
     out: list[dict[str, Any]] = []
 
@@ -146,15 +145,23 @@ def extract_iop_quantities(ds, ix: int, iy: int) -> list[dict[str, Any]]:
             }
         )
 
-    _add("bbp_442", bbp, bbp_unc, "m^-1")
+    bbp_unc = _val("bbp_unc_442")
+    adg_unc = _val("adg_unc_442")
+
+    _add("bbp_442", _val("bbp_442"), bbp_unc, "m^-1")
     _add("bbp_unc_442", bbp_unc, None, "m^-1")
     _add("bbp_s", _val("bbp_s"), None, "")
-    _add("adg_442", _val("adg_442"), None, "m^-1")
+    _add("adg_442", _val("adg_442"), adg_unc, "m^-1")
+    if "adg_unc_442" in ds:
+        _add("adg_unc_442", adg_unc, None, "m^-1")
     _add("adg_s", _val("adg_s"), None, "nm^-1")
 
     wave = np.asarray(ds["wavelength"].values, dtype=float)
     widx = nearest_wavelength_index(wave)
     aph_val = float(ds["aph"].isel(x=ix, y=iy, wl=widx).values)
-    _add("aph_442", aph_val if np.isfinite(aph_val) else None, None, "m^-1")
+    aph_unc = _val("aph_unc_442")
+    _add("aph_442", aph_val if np.isfinite(aph_val) else None, aph_unc, "m^-1")
+    if "aph_unc_442" in ds:
+        _add("aph_unc_442", aph_unc, None, "m^-1")
 
     return out

@@ -322,9 +322,9 @@ def test_iop_source_for_aop_raises_on_non_aop():
         iop.iop_source_for_aop("PACE_OCI.20260309T153836.L2.OC_IOP.V3_2.nc")
 
 
-def make_iop_granule():
+def make_iop_granule(with_aph_adg_unc: bool = False):
     """A tiny 3x3x3 IOP-shaped dataset (bbp_442/adg_442/adg_s/bbp_s/bbp_unc_442,
-    a/bb/aph spectral)."""
+    a/bb/aph spectral; optionally the aph_unc_442/adg_unc_442 fields)."""
     nx, ny, nw = 3, 3, 3
     lat = np.linspace(44.0, 44.2, nx)
     lon = np.linspace(-31.0, -30.8, ny)
@@ -332,17 +332,21 @@ def make_iop_granule():
     wave = np.array([440.0, 470.0, 500.0])
     aph = np.zeros((nx, ny, nw))
     aph[1, 1, :] = [0.05, 0.06, 0.07]
+    data = {
+        "a": (("x", "y", "wl"), np.zeros((nx, ny, nw))),
+        "bb": (("x", "y", "wl"), np.zeros((nx, ny, nw))),
+        "aph": (("x", "y", "wl"), aph),
+        "adg_s": (("x", "y"), np.full((nx, ny), 0.018)),
+        "adg_442": (("x", "y"), np.full((nx, ny), 0.03)),
+        "bbp_442": (("x", "y"), np.full((nx, ny), 0.004)),
+        "bbp_unc_442": (("x", "y"), np.full((nx, ny), 0.0005)),
+        "bbp_s": (("x", "y"), np.full((nx, ny), 1.2)),
+    }
+    if with_aph_adg_unc:
+        data["aph_unc_442"] = (("x", "y"), np.full((nx, ny), 0.01))
+        data["adg_unc_442"] = (("x", "y"), np.full((nx, ny), 0.006))
     return xr.Dataset(
-        {
-            "a": (("x", "y", "wl"), np.zeros((nx, ny, nw))),
-            "bb": (("x", "y", "wl"), np.zeros((nx, ny, nw))),
-            "aph": (("x", "y", "wl"), aph),
-            "adg_s": (("x", "y"), np.full((nx, ny), 0.018)),
-            "adg_442": (("x", "y"), np.full((nx, ny), 0.03)),
-            "bbp_442": (("x", "y"), np.full((nx, ny), 0.004)),
-            "bbp_unc_442": (("x", "y"), np.full((nx, ny), 0.0005)),
-            "bbp_s": (("x", "y"), np.full((nx, ny), 1.2)),
-        },
+        data,
         coords={
             "latitude": (("x", "y"), lats2d),
             "longitude": (("x", "y"), lons2d),
@@ -373,10 +377,28 @@ def test_extract_iop_quantities_values_and_uncertainty():
     assert bbp["value_hi"] == pytest.approx(0.004 + 0.0005)
     assert out["bbp_unc_442"]["value"] == pytest.approx(0.0005)
     assert out["adg_442"]["value"] == pytest.approx(0.03)
-    # no per-pixel uncertainty field for adg -> no credible interval
+    # dataset lacks the aph/adg unc fields (pre-fix ocpy loader) -> no
+    # credible interval and no *_unc_442 rows: the graceful-degradation path
     assert out["adg_442"]["value_lo"] is None and out["adg_442"]["value_hi"] is None
+    assert "adg_unc_442" not in out and "aph_unc_442" not in out
     # wavelength 440 is nearest to the 442 nm reference -> aph[...,0] = 0.05
     assert out["aph_442"]["value"] == pytest.approx(0.05)
+    assert out["aph_442"]["value_lo"] is None and out["aph_442"]["value_hi"] is None
+
+
+def test_extract_iop_quantities_aph_adg_uncertainties():
+    ds = make_iop_granule(with_aph_adg_unc=True)
+    out = {q["quantity"]: q for q in iop.extract_iop_quantities(ds, 1, 1)}
+    adg = out["adg_442"]
+    assert adg["value_lo"] == pytest.approx(0.03 - 0.006)
+    assert adg["value_hi"] == pytest.approx(0.03 + 0.006)
+    assert out["adg_unc_442"]["value"] == pytest.approx(0.006)
+    aph = out["aph_442"]
+    assert aph["value_lo"] == pytest.approx(0.05 - 0.01)
+    assert aph["value_hi"] == pytest.approx(0.05 + 0.01)
+    assert out["aph_unc_442"]["value"] == pytest.approx(0.01)
+    # bbp behaviour unchanged
+    assert out["bbp_442"]["value_hi"] == pytest.approx(0.004 + 0.0005)
 
 
 def test_open_iop_local_attaches_flags(monkeypatch):

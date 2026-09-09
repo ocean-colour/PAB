@@ -548,3 +548,44 @@ close out** — spot-checks, `PAB_implementation.md` §5d.3 / `HOWTO.md` /
 `db_schema.rst` updates, and a short full-run report. Each prompt carries the
 doc's standing "Log your work. Use Fable if you can." (this task itself ran
 directly on Fable 5 — no delegation needed). No code changed this task.
+
+### 2026-09-09 (Full Run Task 1 — closed the aph/adg uncertainty gap; verified on a real granule)
+
+Closed the known gap from the Task 3 prototype: NASA's IOP files carry
+per-pixel `aph_unc_442`/`adg_unc_442`, but `ocpy.pace.io.load_iop_l2` never
+read them, so `adg_442`/`aph_442` landed in `fit_results` with no credible
+interval. Two-sided fix:
+
+- **`ocpy` (in `/home/xavier/Oceanography/python/ocpy`):** `load_iop_l2` now
+  reads `aph_unc_442`/`adg_unc_442` when the file carries them, tolerating
+  their absence (older files) — the fields are added to the returned dataset
+  conditionally, everything else unchanged. Added
+  `ocpy/tests/test_pace_io.py` (the module previously had **no** tests):
+  a synthetic group-structured L2 IOP netCDF written with `netCDF4`,
+  exercised both with and without the unc fields.
+- **`pab.pace.iop.extract_iop_quantities`:** `adg_442`/`aph_442` now get the
+  same symmetric credible interval `bbp_442` always had (value ± unc), and
+  the raw `adg_unc_442`/`aph_unc_442` land as their own namespaced rows —
+  but **only when the dataset carries the fields**; otherwise behavior is
+  exactly the pre-fix one (no interval, no unc rows), so nothing breaks under
+  an old `ocpy`. The existing extraction test now pins that degradation path
+  explicitly; a new test covers the uncertainties.
+
+**Verified on a real granule** (the Task 3 prototype matchup `7902226_43`,
+`PACE_OCI.20260309T153836.L2.OC_IOP.V3_2.nc`, freshly downloaded from
+Earthdata Cloud): both unc fields present and read; nearest-pixel search
+again landed **0.0000 km** from the recorded BING pixel; extracted
+`adg_442 = 0.0033 ± 0.0002` (~6 % relative) and `aph_442 = 0.0066 ± 0.0007`
+(~11 %) — plausible magnitudes, in family with `bbp_442`'s ~6 %. Scratch
+download deleted afterwards.
+
+**Hygiene.** pab suite: 204 passed + the 2 BING-dependent tests
+(`test_fit_spectrum_recovers_bbp`, `test_fit_figure_smoke`) failing on
+`ModuleNotFoundError: No module named 'jax'` — an environment difference in
+this shell's conda env (`os_313` lacks jax), **not** a regression: neither
+test touches the changed code. New ocpy tests: 2 passed. `ruff check` clean
+on every touched file in both packages. Ran directly on Fable 5. Per the
+working agreement, changes in both working trees are on disk, not committed —
+note the `ocpy` change must be committed/installed wherever the Full Run
+Task 3 retrofit runs, or the retrofit silently reverts to no-uncertainty
+ingest (the graceful degradation cuts both ways).
