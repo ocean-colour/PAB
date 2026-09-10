@@ -29,6 +29,11 @@ Read these before running — plus the **hard-won operational lessons** below.
 4. Execute the 4th task in Tasks below
 
 5. Execute the 5th task in Tasks below
+6. Execute the 6th task in Tasks below
+
+7. Execute the 2nd Task in the Report section below
+8. Execute the 3rd Task in the Report section below
+
 
 ## Tasks
 
@@ -49,15 +54,180 @@ One of the important aspects of Chl-a from BGC-Argo is that they are now impleme
 
 Use Fable if you can.  Log your work.
 
-6. Ok, we wish to refine the Argo CDOM analysis.  Please do the following:
+## Report
+
+### Tasks
+
+1. Ok, we wish to refine the Argo CDOM analysis.  Please do the following:
 
    - Restrict to Argo CDOM values where the ppb is less than 6
    - Restrict to Argo CDOM values the QC flag is not 4 (bad)
-   - Restrict to AOML floats;  you may
-   - Stick with linear scale on the plot
+   - Restrict to AOML floats
+   - Compare Adg and Argo/CDOM on a linear scale
    - Add a geographic map of the data -- Ratio of PACE to Argo CDOM
-   - Avoid flag=4
-   - Split by sensor (MCOM* from the header)
+   
+If possible, we also wish to generate figures split by sensor (MCOM* from the header).  Consider all of these and ask me questions below before proceeding in Report/Q&A.  Use Fable if you can.  Log your work.
+
+2. I have answered your R1-R6 questions below.  Read my answers and see if you have any additional questions to ask.  If so, ask them.  Use Fable if you can.  Log your work.
+
+3. I have answered your R7-R8 questions below.  Read my answers and proceed to do the work and update the Report.  We will do the new extraction later.  Use Fable if you can.  Log your work.
+
+4. Ok, we are ready now to re-extract CDOM according to our discussion.  However, I also need to backfill some of the matchups, as described on the `hyper_matchups` branch.  And I think it makes sense to do them together.  Please generate the code to do so and write into the Log what we should do. I will then push these to GitHub, jump onto that branch, merge in this branch, and then proceed to do the work.  Use Fable if you can.  Log your work.
+
+
+### Q&A
+
+#### CDOM Refinement (Task 6)
+
+**R1 — CDOM < 6 ppb filter**
+
+Straightforward: an additional filter on the existing `cdom` column. Two
+small choices: (a) strict `< 6` vs. inclusive `<= 6` (I'll assume strict
+`< 6` as written); (b) whether the restricted analysis replaces the current
+7,083-matchup figures in the report or stands alongside them as a
+tighter-scoped variant. In practice this filter removes almost nothing —
+7,065 of 7,083 matchups (99.7%) already satisfy `cdom < 6`, so it mainly
+just clips the handful of very high outlier values seen in the current
+scatter. My lean: strict `< 6`, and replace — the unrestricted version stays
+recoverable in git and two parallel CDOM sections would clutter the report.
+OK?
+
+>A. (a) strict and (b) replaces
+
+**R2 — QC flag filtering is a re-ingestion, not a filter**
+
+This one is a real blocker, not a script tweak. `mld_summary.cdom` stores
+only a per-profile mixed-layer *mean* — the per-level Argo QC flags were
+never stored, and the averaging that produced that mean applied no QC
+screening at all (`filter_quality()` exists in the codebase but has zero
+call sites in the ingestion pipeline — found while writing the methodology
+section for Task 5). So there is nothing in the DB to filter by "QC != 4":
+the flags are gone, already averaged over. A concrete example: the profile
+used elsewhere in this report had all CDOM points at QC=3 and all CHLA
+points at QC=4, and both were averaged in anyway. Doing this properly means
+re-fetching every CDOM-carrying profile from the GDAC, dropping QC=4 points
+*before* averaging, and storing a new mean — a schema addition, a code
+change, and a partial re-run, comparable in scope to the original CDOM
+ingestion pass.
+
+Options: (a) do the re-ingestion pass now (correct, but the largest item on
+this list by far); (b) proceed with items 1/3/4/5 on the existing QC-blind
+means and queue the QC re-ingestion as a separate task; (c) drop the QC
+requirement. My lean: (b) — the other refinements don't depend on it, and
+the re-ingestion deserves its own pass. Which?
+
+>A. (b)
+
+**R3 — AOML-only restriction**
+
+Straightforward: `floats.data_center` is populated and already used in the
+Chl-a report's DAC comparison. AOML is **3,690 of the 7,083 CDOM-valid
+matchups (52.1%)** — smaller than its ~60% share of the full Chl-a matchup
+population, since AOML floats carry CDOM at a somewhat lower rate than the
+fleet average. Stacking AOML with the CDOM < 6 filter barely changes
+anything further (3,676 of 3,690 survive, per the R1 numbers above) — no
+surprise compounding there. OK to restrict to AOML as one of the combined
+cuts?
+
+>A. Yes, OK
+
+**R4 — Linear scale: with or without a fit line?**
+
+Re-plotting Adg vs. CDOM on linear axes is trivial. The only question is
+whether you want a regression/trend line annotated on it. Per C3 we agreed
+these are different quantities (ppb QSDE vs. m⁻¹) with no fixed conversion —
+a fitted slope on a linear plot *is* a proposed ppb→m⁻¹ conversion factor,
+which is exactly what C3 ruled out inventing. A bare linear scatter raises
+no such issue. My lean: bare scatter, no fit line. Which?
+
+>A.  Let's add a fit line
+
+**R5 — Ratio map is a conscious exception to C3**
+
+Flagging this explicitly rather than silently doing it: a map of
+`Adg / CDOM` (or its inverse) is a literal cross-unit ratio (m⁻¹ per ppb
+QSDE), which is precisely the bias-like quantity C3 was written to avoid —
+its numeric value depends on the arbitrary unit choice, not just real
+physical variation, and a map of it invites reading as a bias/conversion
+result the way the Chl-a and bbp700 rel-diff maps legitimately are. Not a
+coding problem — the map is easy to make — but a scientific-honesty
+question on a decision we already made.
+
+Options: (a) make the ratio map as a deliberate C3 exception, with a
+prominent caveat that the ratio is physically ambiguous and is not a
+calibration or bias claim; (b) avoid the literal ratio — e.g., map each
+matchup colored by the difference of the two quantities' local
+percentiles/ranks, which shows the same spatial pattern without implying a
+real physical ratio; (c) two side-by-side maps, one per quantity, no
+combined statistic. Which?
+
+>A. (a)
+
+**R6 — Sensor split requires a new float-level fetch**
+
+"MCOM*" is real: sensor model lives in the per-float `<WMO>_meta.nc` on the
+GDAC (not in anything PAB currently fetches — the `argopy` profile data
+carries no `SENSOR`/`SENSOR_MODEL` variables). Live-checked 7 CDOM floats
+across 3 DACs: the CDOM fluorometer row shows `MCOMS_FLBBCD` (3 floats, all
+AOML) vs. `ECO_FLBBCD` (3 floats, mixed DACs), both WetLabs; one AOML
+float's model was literally `'UNKNOWN'`, so coverage will be incomplete.
+Getting this for the fleet means a modest new ingestion component: ~394
+HTTPS meta-file fetches (one per CDOM float, via a predictable
+`https://data-argo.ifremer.fr/dac/<dac-folder>/<wmo>/<wmo>_meta.nc` URL), a
+small DAC-code→URL-folder lookup table (e.g. `AO`→`aoml`), a new
+`floats.cdom_sensor_model` column, and handling of `UNKNOWN`/unparseable
+cases. Much smaller than the Stage-10 CDOM pass (float-level only, no
+science-value re-fetch), but a genuine scope item — consistent with your
+"if possible" hedge.
+
+Options: (a) build it in this pass; (b) defer it alongside R2's
+re-ingestion (they're independent, but both are pipeline work); (c) skip.
+My lean: (a) if you want the split soon — it's cheap enough to do now and
+doesn't block anything else. Which?
+
+>A. (b)
+
+**R7 — Fit-line specification for the linear-scale Adg-vs-CDOM comparison (R4 follow-up)**
+
+You've asked for a fit line, but two specifics are open. First, the kind of
+fit: (a) plain OLS with an intercept — the reasonable default, letting the
+data speak with no assumptions; (b) OLS forced through the origin —
+physically defensible if one assumes Adg must vanish where CDOM does, but
+that's an assumption about the relationship, not a certainty; (c) something
+fancier (e.g. weighting by BING's posterior credible-interval widths).
+Second, and more important, the captioning: since this fit line is the one
+place we're consciously setting C3 aside, the label matters — a bare fitted
+slope on this figure reads as a proposed ppb→m⁻¹ conversion factor to
+anyone who picks up the report. I'd caption it explicitly as an
+illustrative/exploratory trend line, not a validated or recommended
+conversion, so the C3 discipline elsewhere in the report isn't undermined
+by implication.
+
+My lean: (a) plain OLS with intercept, captioned explicitly as
+illustrative-only. Which fit, and is that caption framing OK?
+
+>A. (a)
+
+**R8 — Ratio map specifics: direction, color scale, and population (R5 follow-up)**
+
+Three specifics for the ratio map. (i) Color scale: computed on the
+restricted population, Adg/CDOM spans 8.5 orders of magnitude (min ≈
+3.1×10⁻⁶, median ≈ 0.013, max ≈ 960). On a linear color scale essentially
+every point lands in one color bin and only a handful of extreme outliers
+are visible — the map would be unreadable and misleading as drawn. A log
+color scale is close to mandatory. (ii) Ratio direction: Adg/CDOM as we've
+been saying throughout, or the inverse? (The 8.5-order spread is symmetric
+under inversion — flipping just moves which extreme end blows up — so this
+is purely about which framing reads better.) (iii) Population: I'd assume
+the map uses the same restricted set as everything else in this pass
+(`cdom < 6` AND AOML, n = 3,676) for consistency, but that wasn't stated for
+R5 specifically — say the word if you want the full unrestricted population
+for this one map.
+
+My lean: log color scale, Adg/CDOM direction, same restricted n = 3,676
+population. OK on all three?
+
+>A. Let's do a truncated log color scale that encompasses 90% of the values
 
 ## Plan
 
@@ -306,3 +476,112 @@ Used a **Fable** subagent to draft the actual report prose (the Methodology and 
 Verified before finishing, not assumed: checked both new relative image links (`cdom_example_argo_profile.png`, `cdom_example_bing_fit.png`) resolve on the filesystem; `ruff check`/`ruff format --check` clean on the new script; full suite `pytest pab/tests/` → 192 passed, unchanged (this task touches no `pab` package code, only a new standalone script and report prose). Per the working agreements, ran no git command.
 
 **Worth flagging to JXP explicitly, beyond what the task asked for:** the "no QC filtering anywhere in the ingestion pipeline" finding is a real, previously-undocumented gap (not just for CDOM — it applies to CHLA and BBP700 too, since `filter_quality()` is dead code project-wide, not something added or skipped specifically for CDOM). This session only documented it as methodology, per Task 5's scope; deciding whether to actually wire in QC filtering is a separate, unasked-for code change and was not undertaken here.
+
+### 2026-09-10 (Task 6 — investigated the six requested CDOM refinements; posed R1–R6 in Q&A rather than proceeding)
+
+Checked the Q&A section first: no new answers since the last read (C1–C5, Q1–Q11 unchanged); the only change was Task 6 itself being added, plus an empty `## Report` / `### Q&A` scaffold with no content yet. Per the task's explicit instruction ("ask me questions... before proceeding"), did not implement anything — investigated each of the six requested items against the live code/data first, then posed six questions (R1–R6) under the new `### Q&A` heading, leaving each with a blank `>A.` for JXP.
+
+Investigated all six before writing any question, rather than asking blind:
+
+- **R1 (CDOM < 6):** trivial — checked the actual effect first: 7,065 of 7,083 valid CDOM matchups (99.7%) already satisfy this, so it mainly clips a handful of outliers. No blocker.
+- **R2 (QC != 4) — the real finding of this session:** confirmed this **cannot be applied to the existing data at all**. `mld_summary.cdom` is a per-profile mixed-layer *mean* computed with zero QC screening (the `filter_quality()` dead-code finding from Task 5's methodology work), and no per-level QC flags are stored anywhere in `pab.db` — there is nothing to filter after the fact. Doing this honestly requires a real re-ingestion (re-fetch, drop QC=4 before averaging, re-store), comparable in scope to the original CDOM ingestion pass. Framed this as the most consequential open question, not a plot tweak.
+- **R3 (AOML-only):** queried the actual AOML count within the CDOM-valid population directly rather than assuming — **3,690 of 7,083 (52.1%)**, notably lower than AOML's ~60% share of the full Chl-a matchup set (caught myself almost reusing that Chl-population number by mistake before verifying against the real CDOM-restricted count). Also checked the compounded CDOM<6-and-AOML count (3,676) to confirm no surprise interaction between the two filters.
+- **R4 (linear-scale comparison):** technically trivial, but flagged the real question: a linear-scale scatter with a fitted regression line would functionally *be* a proposed ppb→m⁻¹ conversion factor — exactly what C3 already ruled out. A bare scatter raises no such issue.
+- **R5 (ratio map):** flagged directly as a conscious exception to C3, not a coding question — an `Adg`/CDOM ratio mixes units with no fixed conversion, so its numeric value is partly an artifact of unit choice, similar to the kind of claim C3 was written to prevent. Offered an alternative (a percentile/rank-difference map) that shows the same spatial pattern without a literal cross-unit ratio.
+- **R6 (sensor split, "MCOM*"):** the one item requiring real investigation before any question could be posed honestly. Confirmed the current PAB fetch path (argopy's per-profile `DataFetcher`) carries no sensor-model variables at all. Found the actual source live: each float's separate `<WMO>_meta.nc` file on the GDAC (a different Argo file type PAB has never touched), fetchable via a plain HTTPS download at a predictable per-DAC URL. Downloaded and inspected 7 real meta files across 3 DACs (AOML, Coriolis, CSIRO) for floats already in the CDOM-valid matchup set: found `MCOMS_FLBBCD` (3 AOML floats) and `ECO_FLBBCD` (3 floats, mixed DACs) as the two real CDOM sensor models present — both WetLabs — plus one AOML float whose `SENSOR_MODEL` was literally `'UNKNOWN'`, meaning any sensor-split figure will have incomplete coverage. Confirmed "if possible" is genuinely possible, but constitutes a new, if modest, ingestion component (a DAC-code→URL-folder lookup, ~394 new HTTP requests, and a schema addition) — not a plot tweak.
+
+Used a **Fable** subagent to draft the R1–R6 question text from these verified findings, matching this doc's established Q&A voice (short situation statement, lettered options where relevant, a stated lean, ending in a question); caught and corrected one factual error in the draft before inserting — it had carried over the *Chl-population's* AOML count (5,894, from the companion Chl-a report) into R3 instead of the actual CDOM-population count, which I then queried directly (3,690) and corrected before finalizing. Inserted all six questions under the existing `### Q&A` scaffold as `#### CDOM Refinement (Task 6)`.
+
+Cleaned up scratch downloads (the meta.nc files fetched for R6's investigation) rather than leaving them under `/tmp`. Per the working agreements, ran no git command and made no code/pipeline changes — this task's own instruction was to ask questions before proceeding, not to implement any of the six items yet.
+
+### 2026-09-10 (Prompt 7 / Report Task 2 — reviewed R1–R6 answers; posed two follow-ups, R7–R8)
+
+JXP answered R1–R6: (R1) strict `cdom < 6`, replacing the existing unrestricted figures; (R2) proceed with the other refinements on the existing QC-blind `cdom` means, queue the QC re-ingestion separately; (R3) yes to combining AOML-only with the other cuts; (R4) add a fit line to the linear-scale comparison — overriding the "no fit line" lean, a conscious call given the C3 tension already flagged; (R5) build the ratio map as a deliberate C3 exception, with a prominent caveat; (R6) defer the sensor split alongside R2's re-ingestion.
+
+Per the task, reviewed each answer for anything that still needed clarifying before implementing, rather than either proceeding blind or manufacturing questions where none were needed. R1/R2/R3/R6 are unambiguous — nothing more to ask. R4 and R5 each left a real, concrete gap:
+
+- **R4 (fit line):** JXP said to add one but didn't specify what kind (OLS with intercept vs. forced through the origin vs. something weighted), and — more importantly — this is the one figure in the whole CDOM analysis where C3's "no conversion claim" principle is being consciously set aside, so how it's captioned matters as much as how it's fit. A bare slope with no caveat would read as a proposed ppb→m⁻¹ conversion to any reader who didn't see this Q&A exchange.
+- **R5 (ratio map):** two unresolved specifics, both grounded in a real data check before asking rather than guessed at — computed the `Adg/CDOM` ratio directly on the restricted population (`cdom < 6 AND AOML`, n=3,676) and found it **spans 8.5 orders of magnitude** (min ≈3.1e-6, median ≈0.013, max ≈960). A linear color scale would render the map as one solid color with a few invisible outliers — not a stylistic call, a legibility problem confirmed against the actual numbers. Also unresolved: ratio direction (`Adg/CDOM` vs. its inverse), and whether the map uses the same restricted population as the rest of this pass or the full unrestricted CDOM set (R1–R3's answers imply consistency, but R5 itself didn't say so explicitly).
+
+Used a **Fable** subagent to draft R7 (fit-line specification and captioning) and R8 (ratio direction/color-scale/population) from these verified facts, in the same Q&A voice as R1–R6; caught and fixed one small error in the draft before inserting — it wrote the Adg unit as "m⁻²" in R7's caption discussion, corrected to the actual unit, m⁻¹. Inserted both directly after R6's answer, each with a stated lean (plain OLS with an intercept, captioned explicitly as illustrative/not-a-conversion; log color scale, `Adg/CDOM` direction, same n=3,676 restricted population) and a blank `>A.` for JXP.
+
+Per the working agreements, ran no git command and made no code/figure changes — Prompt 7's task was to review the answers and ask further questions only if warranted, not to implement; R7/R8 are exactly that, not a full go-ahead.
+
+### 2026-09-10 (Prompt 8 / Report Task 3 — implemented R1-R8; refined the CDOM analysis; updated the report)
+
+JXP answered R7 ((a) plain OLS with intercept, illustrative caption OK) and
+R8 (log color scale, truncated to the central 90%/5th-95th percentile — did
+not object to the `Adg`/CDOM direction or the same restricted population, so
+treated both as confirmed per the stated lean) and gave the go-ahead to
+implement, noting the QC re-ingestion (R2) and sensor split (R6) will be
+"the new extraction later" — i.e. explicitly deferred, not forgotten.
+
+Computed the exact refined-population statistics before touching any code,
+per this doc's established practice: `cdom < 6 AND AOML` gives **n=3,676**
+(confirming R3's earlier estimate almost exactly — the two filters barely
+interact). Found a genuinely significant result while computing this:
+**the CDOM-`Adg` Spearman correlation flips sign and strengthens under the
+AOML restriction** — overall ρ goes from -0.03 (unrestricted) to **+0.13**,
+and every basin (+0.11 to +0.26) and every season (+0.08 to +0.17) turns
+positive, where before the signs were mixed. Verified this is driven almost
+entirely by the AOML cut, not the CDOM<6 cut (AOML-only alone was already
+3,690 of the old population; CDOM<6 removes only 14 more) — a real,
+substantive finding worth leading the updated report with, not a minor
+footnote.
+
+**Code changes**, all in `pab/matchup/cdom/`:
+- `data.py`: added `CDOM_MAX = 6.0` and folded the `cdom < 6` cut directly
+  into `valid_cdom()` (per R1, replacing the old behavior); added
+  `restrict_to_aoml()` as a separate composable filter (per R3).
+- Updated all four existing figure scripts (`plot_cdom_scatter.py`,
+  `plot_cdom_regional.py`, `plot_cdom_seasonal.py`, `plot_cdom_map.py`) to
+  apply both filters by default, replacing their unrestricted output rather
+  than adding parallel restricted variants — matching R1(b)'s explicit
+  "replaces" instruction.
+- New `plot_cdom_linear.py` (R4/R7): linear-scale scatter with a plain OLS
+  fit line, captioned on the figure itself as illustrative-only, not a
+  validated conversion — the one deliberate exception to this project's
+  no-fit-line rule for CDOM.
+- New `plot_cdom_ratio_map.py` (R5/R8): geographic map of `Adg`/CDOM, log
+  color scale truncated to the 5th-95th percentile (computed directly:
+  0.00301 to 0.07474, full range spans 8.5 orders of magnitude), with
+  `extend='both'` arrows and a prominent on-figure caveat — the second
+  deliberate C3 exception.
+- Updated `run_all.py` to reflect the new restricted population and run all
+  six figures (four regenerated + two new).
+
+**Two real bugs found and fixed on visual review, not assumed correct
+from the code:**
+1. The linear-scale figure's illustrative-only caveat box initially
+   overlapped the fit-line legend at the top of the plot; moved it below
+   the axes (matching the `fig.text` convention the by-basin/season scripts
+   already use) instead of trying to find a data-free corner inside the
+   plot, which the data's spread didn't reliably offer.
+2. The ratio map's colorbar tick labels were badly overlapping (mixing
+   major and minor log-scale ticks in a narrow truncated range); fixed by
+   setting 5 explicit geometrically-spaced ticks and disabling the minor
+   locator, then re-rendered and re-inspected to confirm.
+
+Also caught, while writing the updated Figure 4 (map) text, that the old
+report's claim about an "isolated high-CDOM point in the South Pacific" was
+backwards for the new population — checked the actual data directly and
+found that point is the population's **lowest** CDOM cluster (~6e-6 ppb,
+near-black on the viridis scale), not the highest. Corrected rather than
+carrying the error forward into the updated text.
+
+**Report update**, drafted via a **Fable** subagent from verified numbers
+(reviewed before inserting, no invented figures): rewrote the Summary and
+Data sections around the sign-flip finding; added Figures 5 and 6 with their
+observations; updated Figures 1-4's observations for the new population
+(including the corrected South Pacific point); rewrote Interpretation points
+1/3/4 (which had stated the old "no correlation anywhere" finding as current
+fact) and added a new point 5 synthesizing the AOML explanation; updated How
+to Reproduce and Notes to name the two new scripts and state plainly that
+QC filtering and the sensor split remain deferred, not silently dropped.
+
+Verified before finishing: all 8 image links (6 regenerated/new + the 2
+Task-5 example figures, unaffected by this change) resolve on the
+filesystem; `ruff check`/`ruff format --check` clean; full suite
+`pytest pab/tests/` → 192 passed, unchanged (no `pab` package code touched,
+only `pab/matchup/cdom/` standalone scripts and report prose). Per the
+working agreements, ran no git command.

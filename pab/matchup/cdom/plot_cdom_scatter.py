@@ -5,6 +5,10 @@ fluorescence proxy) and BING's ``Adg`` (m^-1, a *combined* CDOM + detrital
 absorption coefficient) are different quantities with no fixed conversion —
 this is a rank-correlation/pattern comparison, not a retrieval-accuracy test.
 
+Per the R1/R3 refinement pass, the population is restricted to ``cdom < 6``
+ppb QSDE and AOML-processed floats only (replacing the prior unrestricted
+figure).
+
 Usage
 -----
     python pab/matchup/cdom/plot_cdom_scatter.py
@@ -22,6 +26,7 @@ from pab.matchup.cdom.data import (
     DEFAULT_DB,
     QUANTITY_CAVEAT,
     add_caveat_box,
+    restrict_to_aoml,
     valid_cdom,
 )
 from pab.matchup.chl.data import load_chl_matchups
@@ -49,7 +54,7 @@ def plot_cdom_scatter(df, *, outfile=None, dpi: int = 200):
     ax.set_xlabel("Argo CDOM [ppb QSDE]")
     ax.set_ylabel(r"BING fitted CDOM+detrital amplitude $A_{dg}$ [m$^{-1}$]")
     ax.set_title(
-        f"Argo CDOM vs. PACE-fitted $A_{{dg}}$  (n = {n})\n"
+        f"Argo CDOM vs. PACE-fitted $A_{{dg}}$ — AOML, cdom < 6 ppb  (n = {n})\n"
         rf"Spearman $\rho$ = {rho:.2f}  (p={pval:.1e})"
     )
     add_caveat_box(ax, text=QUANTITY_CAVEAT)
@@ -67,8 +72,8 @@ def plot_cdom_scatter(df, *, outfile=None, dpi: int = 200):
 def main(argv=None):
     args = _parse_args(argv)
     df = load_chl_matchups(args.db)
-    df = valid_cdom(df)
-    print(f"Loaded {len(df)} valid CDOM/Adg matchups")
+    df = restrict_to_aoml(valid_cdom(df))
+    print(f"Loaded {len(df)} valid CDOM/Adg matchups (AOML, cdom < 6)")
     plot_cdom_scatter(df, outfile=args.out, dpi=args.dpi)
 
 

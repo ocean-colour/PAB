@@ -18,7 +18,12 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from pab.matchup.cdom.data import DEFAULT_DB, SEABIRD_CAVEAT, valid_cdom
+from pab.matchup.cdom.data import (
+    DEFAULT_DB,
+    SEABIRD_CAVEAT,
+    restrict_to_aoml,
+    valid_cdom,
+)
 from pab.matchup.chl.data import load_chl_matchups
 
 
@@ -63,7 +68,7 @@ def plot_cdom_map(df, *, outfile=None, dpi: int = 200):
     )
     cbar.set_label(r"log$_{10}$(Argo CDOM) [ppb QSDE]")
     ax.set_title(
-        f"CDOM matchup coverage  (n = {len(df)}, ~{100 * len(df) / 14609:.0f}% of the full Chl-a matchup set)\n"
+        f"CDOM matchup coverage — AOML, cdom < 6 ppb  (n = {len(df)})\n"
         "Color = raw Argo CDOM magnitude (not a PACE comparison)",
         fontsize=11,
     )
@@ -93,8 +98,8 @@ def plot_cdom_map(df, *, outfile=None, dpi: int = 200):
 def main(argv=None):
     args = _parse_args(argv)
     df = load_chl_matchups(args.db)
-    df = valid_cdom(df)
-    print(f"Loaded {len(df)} valid CDOM matchups")
+    df = restrict_to_aoml(valid_cdom(df))
+    print(f"Loaded {len(df)} valid CDOM matchups (AOML, cdom < 6)")
     plot_cdom_map(df, outfile=args.out, dpi=args.dpi)
 
 
