@@ -1,6 +1,14 @@
 # PACE – Argo CDOM Comparison (Qualitative/Correlative)
 
-**Date:** 2026-09-07
+**Report version:** 1.0
+**Date:** 2026-09-10
+**Versioning convention:** bump the **minor** version for substantive changes
+(new figures, a changed analysis population, rewritten sections), e.g.
+1.0 → 1.1; use an **additional decimal** for small edits, e.g. 1.1 → 1.1.1.
+Update the **Date** whenever the version changes. (Versioning starts at this
+revision — the report existed unversioned from 2026-09-07 through the
+methodology/example additions and the R1-R8 refinement pass; see
+`claude_prompts/chl_cdom_matchups.md`'s Logs for that history.)
 **Database:** `pab.db` (full production run — `pab_version = "1.0"`, 881 floats)
 **Scripts:** `pab/matchup/cdom/` — `data.py` (shared loader + caveats),
 `plot_cdom_scatter.py`, `plot_cdom_regional.py`, `plot_cdom_seasonal.py`,

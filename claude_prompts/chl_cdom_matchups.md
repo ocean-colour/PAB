@@ -33,6 +33,7 @@ Read these before running — plus the **hard-won operational lessons** below.
 
 7. Execute the 2nd Task in the Report section below
 8. Execute the 3rd Task in the Report section below
+9. Execute the 4th Task in the Report section below
 
 
 ## Tasks
@@ -72,7 +73,9 @@ If possible, we also wish to generate figures split by sensor (MCOM* from the he
 
 3. I have answered your R7-R8 questions below.  Read my answers and proceed to do the work and update the Report.  We will do the new extraction later.  Use Fable if you can.  Log your work.
 
-4. Ok, we are ready now to re-extract CDOM according to our discussion.  However, I also need to backfill some of the matchups, as described on the `hyper_matchups` branch.  And I think it makes sense to do them together.  Please generate the code to do so and write into the Log what we should do. I will then push these to GitHub, jump onto that branch, merge in this branch, and then proceed to do the work.  Use Fable if you can.  Log your work.
+4. Please update all of the Figures to be restricted to the CDOM < 6 ppb and AOML, as discussed.  Also, start versioning the Report with a number and date.  Use Fable if you can.  Log your work.
+
+5. Ok, we are ready now to re-extract CDOM according to our discussion.  However, I also need to backfill some of the matchups, as described on the `hyper_matchups` branch.  And I think it makes sense to do them together.  Please generate the code to do so and write into the Log what we should do. I will then push these to GitHub, jump onto that branch, merge in this branch, and then proceed to do the work.  Use Fable if you can.  Log your work.
 
 
 ### Q&A
@@ -585,3 +588,39 @@ filesystem; `ruff check`/`ruff format --check` clean; full suite
 `pytest pab/tests/` → 192 passed, unchanged (no `pab` package code touched,
 only `pab/matchup/cdom/` standalone scripts and report prose). Per the
 working agreements, ran no git command.
+
+### 2026-09-10 (Prompt 9 / Report Task 4 — confirmed the figure restriction; added report versioning)
+
+Re-read the file per instruction and found Report/Tasks item 4 — "update all
+of the Figures to be restricted to the CDOM < 6 ppb and AOML" plus "start
+versioning the Report with a number and date" — sitting ahead of a newly
+visible Task 5 (re-extract + `hyper_matchups` backfill) that no Prompt
+references yet. Prompt 9 maps to Task 4 specifically, not Task 5; did not
+touch Task 5.
+
+The figure-restriction half of Task 4 was already satisfied by the previous
+turn's work (Prompt 8 / Report Task 3): all six CDOM figures already default
+to the `cdom < 6 AND AOML` population. Rather than assume this was still
+true, re-ran `python -m pab.matchup.cdom.run_all` fresh and confirmed the
+printed population size (3,676) and every correlation number matched the
+previous run exactly, byte-for-byte reproducible — genuine confirmation, not
+an assumption that nothing had drifted.
+
+The new, actionable part of Task 4 was report versioning, not previously
+present. Checked this project's established convention first
+(`docs/design/PAB_design.md`'s header: minor version bump for substantive
+changes, e.g. 0.4 → 0.5; an extra decimal for small edits; update the Date on
+every bump) and applied the identical scheme to
+`reports/PAB/pab_cdom_matchups_report.md`'s header — **Report version: 1.0,
+Date: 2026-09-10** — rather than inventing a different convention for just
+this one report. Noted explicitly that versioning starts at this revision;
+the report's actual history before now (the 2026-09-07 initial draft, the
+Task 5 methodology/example additions, the R1-R8 refinement pass) is not
+retroactively assigned version numbers, since doing so would be inventing
+history rather than recording it — that history already lives in this
+doc's own Logs section, which the new header line points back to.
+
+Verified before finishing: re-ran the full figure set (see above, numbers
+unchanged) and the test suite (`pytest pab/tests/` → 192 passed, unchanged —
+this task touched only report front-matter, no code). Per the working
+agreements, ran no git command.
