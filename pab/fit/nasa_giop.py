@@ -261,3 +261,94 @@ def build_nasa_giop(
             _log.exception("NASA-GIOP ingest failed for %s", matchup_id)
             failed.append(matchup_id)
     return {"written": written, "skipped": skipped, "failed": failed}
+
+
+def main(argv=None) -> int:
+    """CLI driver: ``python -m pab.fit.nasa_giop --db DB --cache-dir DIR``.
+
+    Thin, resumable wrapper around :func:`build_nasa_giop` (idempotent — a
+    re-run skips matchups already ingested). ``--db`` is required and never
+    created (``Store.open(create=False)``): the production DB path must be
+    given explicitly, per the one-canonical-DB working agreement.
+    """
+    import argparse
+    import time
+
+    from pab import config
+    from pab.db import Store
+
+    p = argparse.ArgumentParser(
+        prog="python -m pab.fit.nasa_giop",
+        description="NASA-GIOP L2 IOP ingest for matchups with a BING fit.",
+    )
+    p.add_argument("--db", required=True, help="Existing PAB SQLite store.")
+    p.add_argument(
+        "--cache-dir", required=True, help="Local cache for downloaded IOP granules."
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Ingest at most N matchups (in matchup_id order; skipped/already-"
+        "ingested matchups count toward N, so a re-run covers the same slice).",
+    )
+    p.add_argument(
+        "--matchup",
+        action="append",
+        default=None,
+        help="Explicit matchup_id to ingest (repeatable; overrides --limit).",
+    )
+    p.add_argument("--replace", action="store_true", help="Re-ingest existing fits.")
+    p.add_argument("--log-file", default=None, help="Also log to this file.")
+    args = p.parse_args(argv)
+
+    handlers = [logging.StreamHandler()]
+    if args.log_file:
+        handlers.append(logging.FileHandler(args.log_file))
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        handlers=handlers,
+        force=True,
+    )
+
+    with Store.open(args.db, create=False) as store:
+        matchup_ids = args.matchup
+        if matchup_ids is None and args.limit is not None:
+            matchup_ids = [
+                r["matchup_id"]
+                for r in store.query(
+                    "SELECT DISTINCT m.matchup_id FROM matchups m "
+                    "JOIN fits f ON f.matchup_id = m.matchup_id "
+                    "AND f.algorithm = 'BING' "
+                    "ORDER BY m.matchup_id LIMIT ?",
+                    (args.limit,),
+                )
+            ]
+        t0 = time.monotonic()
+        result = build_nasa_giop(
+            store,
+            cache_dir=args.cache_dir,
+            replace=args.replace,
+            pab_version=config.pab_version,
+            matchup_ids=matchup_ids,
+        )
+        elapsed = time.monotonic() - t0
+
+    n_run = len(result["written"]) + len(result["failed"])
+    rate = elapsed / n_run if n_run else float("nan")
+    _log.info(
+        "nasa-giop done: written %d, skipped %d, failed %d in %.1f s (%.2f s/matchup)",
+        len(result["written"]),
+        len(result["skipped"]),
+        len(result["failed"]),
+        elapsed,
+        rate,
+    )
+    if result["failed"]:
+        _log.warning("failed matchups: %s", result["failed"])
+    return 1 if result["failed"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

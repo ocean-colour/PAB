@@ -589,3 +589,90 @@ working agreement, changes in both working trees are on disk, not committed —
 note the `ocpy` change must be committed/installed wherever the Full Run
 Task 3 retrofit runs, or the retrofit silently reverts to no-uncertainty
 ingest (the graceful degradation cuts both ways).
+
+### 2026-09-09 (Full Run Task 2 — CLI entry point + 100-matchup leading slice; all gates green)
+
+**Entry point.** Chose the driver-script option over a seventh pipeline stage
+(materially less code, no `run_pipeline`/config ripple): `pab/fit/nasa_giop.py`
+gained a `main()` so the ingest runs as
+`python -m pab.fit.nasa_giop --db DB --cache-dir DIR [--limit N] [--matchup ID
+...] [--replace] [--log-file F]`. Deliberate choices: `--db` is **required and
+never created** (`Store.open(create=False)`) so a typo'd path fails loudly
+instead of spawning a fresh DB — the one-canonical-DB lesson enforced in code;
+`--limit N` takes the first N BING-fit matchups in `matchup_id` order
+*including* already-ingested ones, so a re-run of the same `--limit` covers
+the same slice idempotently; exit code 1 if any matchup failed. Four new CLI
+tests (run+resume via a file DB, `--limit` slicing incl. `--limit 0`,
+refusal to create a missing DB); suite green, `ruff` clean.
+
+**The leading slice** (real production DB, live Earthdata Cloud): 100
+matchups → **written 100, skipped 0, failed 0** in 346.5 s. Gates:
+
+- **(a) Rate.** **3.47 s/matchup** end-to-end; 44 unique IOP granules,
+  2.07 GB (**~47 MB/granule**). Splitting the log timings by cache hit:
+  ~2.6 s/matchup floor (open + extract + persist) + ~1.8 s incremental per
+  fresh download. The slice's granule sharing (100/44 ≈ 2.3) is *higher* than
+  the full population's (14,609/11,493 ≈ 1.27), so scaling by parts:
+  11,493 downloads + 14,609 extractions → **~16.5 h serial** (up from the
+  ~12 h guess, still an overnight run — no parallelism needed) and
+  **~530 GB** of cache.
+- **(b) Pixel distance.** **100/100 at 0.0000 km** from the recorded BING
+  pixel — the prototype's grid-alignment result holds at N=100.
+- **(c) Failures.** Zero.
+- **Disk gate.** ~530 GB projected < the ~1 TB gate → **proceed, no eviction
+  machinery**; the cache is deleted after Task 3 per plan. The slice's 2 GB /
+  44 granules stay in place as a head start for the retrofit.
+
+**DB verification (read-only).** `fits`: 100 × `NASA_GIOP`, all
+`pab_version = "1.1"`; BING count (14,609) and its `"1.0"` stamp untouched.
+The Task 1 uncertainty fix is live in production rows: 100 ×
+`NASA_GIOP_adg_unc_442`, 100 × `NASA_GIOP_aph_unc_442`, and all 100
+`NASA_GIOP_adg_442` rows carry credible intervals (e.g. 0.0024 [0.0022,
+0.0026]). Ran directly on Fable 5. **Verdict: all gates green — clear to run
+Full Run Task 3 (the full retrofit).**
+
+### 2026-09-10 (Full Run Task 3 — full retrofit complete: 14,609/14,609, zero irreducible failures)
+
+Ran the full NASA-GIOP retrofit against the production
+`$PAB_DATA_DIR/full/pab.db` via `python -m pab.fit.nasa_giop` (background,
+resumable, logged to `$PAB_DATA_DIR/full/nasa_giop_full.log`).
+
+**The run.** Main pass: **written 14,508, skipped 100** (the Task 2 leading
+slice), **failed 1**, in 60,408 s = **16.8 h wall** at 4.16 s/matchup — the
+Task 2 projection said ~16.5 h, so the by-parts extrapolation held to ~2 %.
+Downloaded 11,492 IOP granules, **465 GB** peak cache (projected ~530 GB).
+The single failure was a transient NASA-side **502 Bad Gateway** on one
+granule download (`PACE_OCI.20250211T105411.L2.OC_IOP.V3_2.nc`, matchup
+`6903128_116`); one sweep re-run fetched it cleanly (`written 1, skipped
+14,608, failed 0`) — so the failure tail was stable at **zero irreducible
+failures** after a single sweep, better than the expected ~1.7 % transient
+rate (0.007 % here). A final no-op re-run confirmed idempotency: `written 0,
+skipped 14,609, failed 0` in 0.1 s. (Operational footnote: the launch
+command's `| tail` pipe masked the driver's exit code — the log's counts are
+authoritative; don't pipe the driver if the exit code matters.)
+
+**Close-out checks (all pass, read-only queries):**
+- `fits`: **14,609 × `NASA_GIOP`**, all `pab_version = "1.1"`, all
+  `success = 1`; BING population untouched (14,609 × `"1.0"`); **zero**
+  duplicate `fit_id`s.
+- `fit_results`: **116,872 `NASA_GIOP_*` rows = exactly 8 × 14,609** —
+  every quantity (`bbp_442`, `bbp_unc_442`, `bbp_s`, `adg_442`,
+  `adg_unc_442`, `adg_s`, `aph_442`, `aph_unc_442`) present for every fit;
+  all 14,609 `adg_442` rows carry credible intervals (the Task 1 fix at full
+  scale).
+- **Pixel distance: 14,609/14,609 at 0.0000 km** from the recorded BING
+  pixel — the AOP/IOP grid-alignment result is now empirical at the full
+  mission population, not just N=3/N=100.
+- **Physical sanity** (via `gather_nasa_giop`, which joined all 14,609 pairs
+  — also a live test of the Task 4 ingredient): `bbp_442(NASA)/bbp700(BING)`
+  median **1.51** (p5–p95: 1.05–2.49), consistent with the prototype's
+  1.4–1.8× and the expected blue→red backscatter decrease; median
+  `bbp_442` = 0.0020, `adg_442` = 0.0072, `aph_442` = 0.0135 m⁻¹ — plausible
+  open-ocean magnitudes. Small fill-value tails: 6 matchups lack `bbp_442`,
+  320 lack `aph_442` (NaN at the NASA pixel; expected, not an error).
+
+**Cleanup.** Deleted the 465 GB IOP granule cache; kept the two run logs.
+`pab.db` grew 139 → 177 MB with the new rows. Ran directly on Fable 5.
+**Next: Full Run Task 4 (wire the comparison into the RTD report), then
+Task 5 republishes `pab.db` to `s3://pab/full/pab.db` (the published copy
+now lags production).**

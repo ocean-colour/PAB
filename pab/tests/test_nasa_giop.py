@@ -216,3 +216,68 @@ def test_build_nasa_giop_skips_already_ingested_matchups(monkeypatch, tmp_path):
         second = nasa_giop.build_nasa_giop(store, cache_dir=tmp_path, pab_version="1.1")
         assert second["written"] == [] and second["skipped"] == [matchup_id]
         assert store.count("fits") == 2  # BING + one NASA_GIOP, no duplicate
+
+
+# -- CLI driver (python -m pab.fit.nasa_giop) ------------------------------------
+def test_main_runs_and_resumes(monkeypatch, tmp_path):
+    ds = make_iop_granule()
+    ds = ds.assign_coords(
+        latitude=(("x", "y"), np.full((3, 3), 20.0)),
+        longitude=(("x", "y"), np.full((3, 3), -50.0)),
+    )
+    monkeypatch.setattr(
+        "pab.pace.cloud.download_granule",
+        lambda source, cache_dir, replace=False: tmp_path / "fake_iop.nc",
+    )
+    monkeypatch.setattr(nasa_giop._iop, "open_iop_local", lambda fn: ds)
+
+    db = str(tmp_path / "pab.db")
+    with Store.open(db) as store:
+        _seed_matchup_with_bing_fit(store)
+
+    log_file = str(tmp_path / "run.log")
+    argv = ["--db", db, "--cache-dir", str(tmp_path), "--log-file", log_file]
+    assert nasa_giop.main(argv) == 0
+    with Store.open(db, create=False) as store:
+        row = store.query("SELECT * FROM fits WHERE algorithm = 'NASA_GIOP'")[0]
+        from pab import config
+
+        assert row["pab_version"] == config.pab_version
+    assert "nasa-giop done: written 1" in open(log_file).read()
+
+    # resume: everything skips, still exit 0, no duplicate rows
+    assert nasa_giop.main(argv) == 0
+    with Store.open(db, create=False) as store:
+        assert store.count("fits") == 2  # BING + one NASA_GIOP
+
+
+def test_main_limit_selects_leading_slice(monkeypatch, tmp_path):
+    ds = make_iop_granule()
+    ds = ds.assign_coords(
+        latitude=(("x", "y"), np.full((3, 3), 20.0)),
+        longitude=(("x", "y"), np.full((3, 3), -50.0)),
+    )
+    monkeypatch.setattr(
+        "pab.pace.cloud.download_granule",
+        lambda source, cache_dir, replace=False: tmp_path / "fake_iop.nc",
+    )
+    monkeypatch.setattr(nasa_giop._iop, "open_iop_local", lambda fn: ds)
+
+    db = str(tmp_path / "pab.db")
+    with Store.open(db) as store:
+        _seed_matchup_with_bing_fit(store)  # matchup 7902226_5_G1
+
+    argv = ["--db", db, "--cache-dir", str(tmp_path)]
+    assert nasa_giop.main([*argv, "--limit", "1"]) == 0
+    with Store.open(db, create=False) as store:
+        assert store.count("fits") == 2
+
+    # --limit 0 selects nothing and must not error
+    assert nasa_giop.main([*argv, "--limit", "0"]) == 0
+
+
+def test_main_refuses_to_create_a_db(tmp_path):
+    with pytest.raises(Exception):  # noqa: B017 -- Store.open(create=False) raises
+        nasa_giop.main(
+            ["--db", str(tmp_path / "nope.db"), "--cache-dir", str(tmp_path)]
+        )
