@@ -4,7 +4,7 @@
 **Database:** `pab.db` (full production run — `pab_version = "1.0"`, 881 floats)
 **Scripts:** `pab/matchup/cdom/` — `data.py` (shared loader + caveats),
 `plot_cdom_scatter.py`, `plot_cdom_regional.py`, `plot_cdom_seasonal.py`,
-`plot_cdom_map.py`, `run_all.py`
+`plot_cdom_map.py`, `plot_cdom_example_profile.py`, `run_all.py`
 **Figures:** `pab/matchup/cdom/*.png`
 
 ---
@@ -90,6 +90,142 @@ text) rather than a separate query path.
 | `cdom_data_mode` breakdown | 100% `'R'` (real-time); 0% `'A'`/`'D'` |
 | Basin split | Atlantic 3,123 / Pacific 2,608 / Indian 808 / Southern 544 |
 | Season split | MAM 2,263 / JJA 1,646 / DJF 1,614 / SON 1,560 |
+
+---
+
+## Methodology
+
+### Argo: CDOM ingestion and processing
+
+CDOM profiles are fetched via `argopy`'s BGC `DataFetcher` (`ds='bgc',
+src='gdac', mode='expert'`), the same mechanism already used for CHLA and
+BBP700; `"CDOM"` was added to `pab/argo/fetch.py::DEFAULT_PARAMS` in the
+Stage 10 pass. For each profile, `pab/argo/fetch.py::iter_profiles` extracts
+the per-level `CDOM` array along with the per-parameter `CDOM_DATA_MODE`.
+
+`pab/argo/summary.py::summarize_profile` then computes a mixed-layer mean and
+standard deviation of CDOM as a plain arithmetic mean over all levels within
+the mixed layer. No de-spiking and no IQR outlier rejection are applied —
+that treatment is BBP700-specific (following Bisson et al.'s recipe); CHLA
+and CDOM both receive the plain mean.
+
+Two limitations of this ingestion path should be stated plainly:
+
+1. **No QC-flag filtering is applied.** This was verified directly against
+   the live pipeline code rather than assumed. A
+   `pab.argo.fetch.filter_quality()` function exists (default: keep QC flags
+   1 and 2), but a repo-wide search confirms it has zero call sites in
+   `pab/pipeline.py` or anywhere else in the ingestion path. `fetch_profile()`
+   calls `build_fetcher(...).profile(wmo, cycle).load().data` and hands the
+   raw fetched dataset directly to `iter_profiles`/`summarize_profile`.
+   Consequently, every per-level CDOM (and CHLA) value within the mixed layer
+   is averaged in regardless of its Argo QC flag (1 = good, 2 = probably
+   good, 3 = probably bad, 4 = bad).
+2. **All CDOM values are real-time.** A fleet-wide spot-check during the
+   implementation pass found `cdom_data_mode` to be 100% `'R'`: no BGC-Argo
+   float has had CDOM delayed-mode/QC-reprocessed by any DAC. Every CDOM
+   value in this analysis is therefore real-time, unfiltered, and
+   uncorrected for the known Sea-Bird calibration low-bias discussed
+   elsewhere in this report.
+
+The resulting `cdom`, `cdom_std`, and `cdom_data_mode` are persisted into the
+`mld_summary` table (schema v4) via `persist_summary()`, keyed by
+`profile_id`.
+
+### PACE/BING: the fitted Adg amplitude
+
+BING is the Bayesian MCMC spectral-inversion framework PAB uses to fit each
+matchup's nearest-pixel PACE `Rrs(λ)` spectrum (400–700 nm). All fits in this
+report use the `ExpBPow` model pair (Exponential–Bricaud a_ph + power-law
+particulate backscatter). Each fit is an LM warm-start followed by full MCMC
+(`emcee`), producing a posterior over the model parameters.
+
+`Adg` is the amplitude of an exponential CDOM+detrital absorption term of the
+form `A_dg * exp[-S_dg * (wavelength - 400)]`. It is a term in the
+*satellite* radiative-transfer/absorption model — not any processing of the
+Argo CDOM measurement. It has no knowledge of, and is not tuned against,
+in-situ CDOM in any way, which is part of why this report's comparison is
+strictly qualitative.
+
+Every fit stores 10 posterior IOP quantities in the long-format
+`fit_results` table (as `BING_ExpBPow_<quantity>`), each recorded as a
+posterior median plus a 5–95% credible interval (`value`, `value_lo`,
+`value_hi`). `Adg` (`BING_ExpBPow_Adg`) is one of these 10.
+
+---
+
+## Example: One Float, One Matchup, One Fit
+
+To make the pipeline concrete, this section walks one real matchup end to
+end: float WMO 5907147, cycle 258 (43.08°N, 9.11°E, 2026-04-24), which pairs
+with a PACE granule fitted by BING. This is the same matchup used in Figure
+1's scatter — not a cherry-picked illustration built separately from the
+analysis population.
+
+### The Argo profile
+
+![CDOM and CHLA vs. pressure for WMO 5907147 cycle 258, points colored by QC flag, MLD marked](../../pab/matchup/cdom/cdom_example_argo_profile.png)
+
+The figure shows CDOM and CHLA vs. pressure as fetched — no QC screen
+applied by PAB — with points colored by their Argo QC flag and the 16.9 m
+mixed-layer depth marked as a dashed line. The stored `mld_summary` row for
+this profile is:
+
+| Quantity | Value |
+|---|---|
+| `mld` | 16.9 m |
+| `cdom` | 0.219 ppb QSDE |
+| `cdom_std` | 0.279 |
+| `cdom_data_mode` | `'R'` |
+| `chla` (raw) | 0.057 mg/m³ |
+| `chla_adjusted` | 0.032 mg/m³ |
+| `chla_data_mode` | `'A'` |
+| `n_points` | 45 |
+
+Note that `cdom_std` exceeds half the mean — a noisy real-time signal. A
+fresh live re-fetch of this exact profile (via the same `argopy` path, no
+filtering) found that every CDOM point in the profile carries Argo QC flag 3
+("probably bad") and every CHLA point carries QC flag 4 ("bad") — none were
+QC 1 or 2. All of these unscreened points are what got averaged into the
+`mld_summary` values above. This is a concrete illustration, for this one
+profile, of the no-QC-filtering behavior documented in the Methodology; it
+is not a claim about the QC-flag distribution of the fleet as a whole.
+
+### The BING fit
+
+![Standard two-panel BING fit figure: observed vs. median Rrs with credible band, and retrieved bbp spectrum](../../pab/matchup/cdom/cdom_example_bing_fit.png)
+
+The figure is PAB's standard two-panel fit figure
+(`pab.plotting.fit_fig.fit_figure`): the top panel shows the observed vs.
+BING-median `Rrs(λ)` with a 5–95% credible band; the bottom panel shows the
+retrieved `b_bp(λ)` spectrum with its own credible band, 700 nm marked.
+(This format predates the CDOM work and does not plot `Adg` directly.) The
+fit here is a real production fit, reconstructed from its archived MCMC
+chain — visual agreement between observed and median Rrs is excellent
+across the full 400–700 nm range with a narrow credible band, and the
+retrieved `b_bp(λ)` declines smoothly.
+
+- `fit_id`: `5907147_258_PACE_OCI.20260424T111536.L2.OC_AOP.V3_2.nc_743_198_ExpBPow`
+- Reduced `chisq = 0.093` (well below 1), `success = True`
+
+Retrieved quantities (posterior median [5–95% interval]):
+
+| Quantity | Value |
+|---|---|
+| `Adg` | 0.036 [0.032, 0.045] m⁻¹ |
+| `Sdg` | 0.018 |
+| `chl` | 0.152 mg/m³ |
+| `bbp700` | 0.00051 m⁻¹ |
+| `Aph` | 0.0085 |
+| `Bnw` | 0.00067 |
+| `beta` | 1.81 |
+
+(For context only: BING's `chl` of 0.152 mg/m³ sits well above this
+profile's Argo raw chla of 0.057 and adjusted chla of 0.032 mg/m³, but
+chlorophyll is outside this report's scope.)
+
+This fit's `Adg = 0.036 m⁻¹` is the value paired against this profile's
+mixed-layer CDOM of 0.219 ppb QSDE as one point in the Figure 1 scatter.
 
 ---
 
