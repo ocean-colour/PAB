@@ -49,6 +49,16 @@ One of the important aspects of Chl-a from BGC-Argo is that they are now impleme
 
 Use Fable if you can.  Log your work.
 
+6. Ok, we wish to refine the Argo CDOM analysis.  Please do the following:
+
+   - Restrict to Argo CDOM values where the ppb is less than 6
+   - Restrict to Argo CDOM values the QC flag is not 4 (bad)
+   - Restrict to AOML floats;  you may
+   - Stick with linear scale on the plot
+   - Add a geographic map of the data -- Ratio of PACE to Argo CDOM
+   - Avoid flag=4
+   - Split by sensor (MCOM* from the header)
+
 ## Plan
 
 **Goal.** A chl-a deep-dive on the full-mission production run (`s3://pab/full/`, pab_version 1.0; 14,610 matchups / 881 floats), mirroring the internal bbp700 bias analysis. Figures and write-up stay internal (in-repo, not RTD); the deliverable is a GitHub-facing report. Note the RTD `summary` page already carries an aggregate Chl scatter — this work is the deeper diagnostic layer behind it.
