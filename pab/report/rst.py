@@ -82,7 +82,11 @@ def summary_page(store, *, pab_version: str | None = None) -> str:
     df = compare.gather_matchups(store)
     n_matchups = store.count("matchups")
     n_floats = store.count("floats")
-    n_fits = store.count("fits")
+    # only the BING retrievals — the parallel NASA_GIOP rows are baseline
+    # ingests, not fits, and would silently double this count
+    n_fits = store.query("SELECT COUNT(*) AS n FROM fits WHERE algorithm = 'BING'")[0][
+        "n"
+    ]
     bbp = (
         compare.log_comparison(df.get("bbp_bing"), df.get("bbp_argo"))
         if len(df)
@@ -148,6 +152,21 @@ def summary_page(store, *, pab_version: str | None = None) -> str:
         out.append(
             f"- n = {chl['n']}; median sat/float ratio = "
             f"{_fmt(chl['median_ratio'])}; Spearman ρ = {_fmt(chl['spearman'])}.\n"
+        )
+    nasa_df = compare.gather_nasa_giop(store)
+    nasa = (
+        compare.log_comparison(nasa_df["bbp_442_nasa"], nasa_df["bbp_bing"])
+        if len(nasa_df)
+        else {}
+    )
+    if nasa.get("n"):
+        out.append(_heading("BING vs NASA GIOP (b_bp)", "-"))
+        out.append(
+            f"- n = {nasa['n']}; median NASA(442 nm)/BING(700 nm) ratio = "
+            f"{_fmt(nasa['median_ratio'])}; Spearman ρ = {_fmt(nasa['spearman'])}. "
+            "**The wavelengths differ by design** — see the "
+            ":doc:`comparisons <comparisons>` and :doc:`Methods <methods>` pages "
+            "before reading this as a bias.\n"
         )
     out.append(_heading("Explore the results", "-"))
     out.append(
@@ -228,6 +247,104 @@ def _chl_scatter(df, interactive, np, url_col):
         artifact_url_col=url_col,
         extra_series=extra,
     )
+
+
+#: Reader-facing caveat for every BING-vs-NASA ``b_bp`` figure/stat: the two
+#: values are at different wavelengths, deliberately not spectrally adjusted
+#: (``claude_prompts/pace_giop_gsm.md`` Q3).
+_NASA_BBP_CAVEAT = (
+    "**Wavelength caveat:** NASA reports ``b_bp`` at **442 nm** while BING's "
+    "headline ``b_bp`` is at **700 nm** (chosen to match the float ``BBP700``). "
+    "The two are compared **as-is, with no spectral adjustment**, so a ratio "
+    "above 1 is expected simply from the blue-to-red decrease of particulate "
+    "backscatter — read the scatter as a *consistency* check, not a "
+    "like-for-like validation."
+)
+
+
+def nasa_giop_section(
+    store,
+    *,
+    outdir=None,
+    sortable: bool = True,
+    max_interactive: int = MAX_INTERACTIVE_MATCHUPS,
+) -> str:
+    """The **BING vs NASA GIOP** section for the Comparisons page.
+
+    Mirrors the satellite-vs-float ``b_bp`` treatment: a log-log scatter
+    (interactive Bokeh below ``max_interactive`` matchups, a static PNG above
+    it) plus :func:`~pab.metrics.compare.log_comparison` summary stats, built
+    on :func:`~pab.metrics.compare.gather_nasa_giop`. Both the figure and the
+    stats carry the explicit 442 nm-vs-700 nm ``b_bp`` wavelength caveat.
+    Returns ``""`` when the store holds no NASA-GIOP ingest (the section
+    simply doesn't appear).
+    """
+    df = compare.gather_nasa_giop(store)
+    if not len(df):
+        return ""
+    stats = compare.log_comparison(df["bbp_442_nasa"], df["bbp_bing"])
+
+    out = [_heading("BING vs NASA GIOP (L2 IOP)", "-"), ""]
+    out.append(
+        "The same PACE overpasses, retrieved two ways: **BING** (this project) "
+        "against NASA's own **GIOP** retrieval, read from the operational "
+        "``PACE_OCI_L2_IOP`` product at the *same pixel* used for the BING fit. "
+        "See the :doc:`Methods <methods>` page for the product details and "
+        "provenance.\n"
+    )
+    out.append(_NASA_BBP_CAVEAT + "\n")
+    if stats.get("n"):
+        out.append(
+            f"- n = {stats['n']}; median NASA(442)/BING(700) ratio = "
+            f"{_fmt(stats['median_ratio'])} "
+            f"(IQR {_fmt(stats['ratio_iqr_lo'])}–{_fmt(stats['ratio_iqr_hi'])}); "
+            f"Spearman ρ = {_fmt(stats['spearman'])}; "
+            f"log10 offset = {_fmt(stats['log_bias'])}, "
+            f"RMS = {_fmt(stats['log_rms'])}.\n"
+        )
+
+    if outdir is not None and len(df) > max_interactive:
+        try:
+            from pab.plotting import population
+
+            dest = Path(outdir) / "_static" / "comparisons"
+            dest.mkdir(parents=True, exist_ok=True)
+            population.comparison_scatter(
+                df,
+                "bbp_442_nasa",
+                "bbp_bing",
+                outfile=dest / "nasa_giop_bbp_scatter.png",
+                xlabel="BING $b_{bp}$(700 nm) [m$^{-1}$]",
+                ylabel="NASA GIOP $b_{bp}$(442 nm) [m$^{-1}$]",
+            )
+            out.append(
+                ".. figure:: _static/comparisons/nasa_giop_bbp_scatter.png\n"
+                "   :width: 520px\n\n"
+                "   NASA GIOP ``b_bp`` (442 nm) vs BING ``b_bp`` (700 nm), "
+                "log-log — **note the differing wavelengths** (no spectral "
+                "adjustment applied).\n"
+            )
+        except Exception:  # noqa: BLE001 — a bad panel must not break the build
+            pass
+    elif sortable:
+        try:
+            from pab.report import interactive
+
+            fig = interactive.comparison_scatter(
+                df,
+                sat_col="bbp_442_nasa",
+                insitu_col="bbp_bing",
+                title="NASA GIOP b_bp(442) vs BING b_bp(700) — wavelengths differ",
+                xlabel="BING b_bp(700 nm)",
+                ylabel="NASA GIOP b_bp(442 nm)",
+            )
+            out.append(interactive.raw_html(fig))
+        except ImportError:
+            out.append(
+                "(The interactive BING-vs-NASA scatter requires ``bokeh`` at "
+                "build time.)\n"
+            )
+    return "\n".join(out)
 
 
 def _static_comparison_figures(df, outdir) -> str:
@@ -633,8 +750,19 @@ def methods_page() -> str:
         "- **Granule access.** Run out-of-region (outside AWS ``us-west-2``), PACE "
         "reads are slow; PAB pre-downloads granules for reliability. This affects "
         "*how* the data were read, not the results.\n"
-        "- **BING vs NASA L2 IOPs.** A direct comparison against NASA's own L2 IOP "
-        "product is planned but **not yet included**.\n"
+        "- **BING vs NASA GIOP.** The *Comparisons* page includes NASA's own "
+        "retrieval as a baseline: the operational ``PACE_OCI_L2_IOP`` product "
+        "(**GIOP** algorithm, default configuration; Werdell et al. 2013), read "
+        "at the **same pixel** used for each BING fit. NASA reports ``b_bp`` at "
+        "**442 nm**, BING at **700 nm**; the comparison is deliberately **not** "
+        "spectrally adjusted, and every figure/stat is labelled accordingly. "
+        "**GSM is absent by NASA product availability, not by choice:** NASA "
+        "does not operationally distribute a GSM (Garver-Siegel-Maritorena) "
+        "Level-2 product for PACE — GIOP is the only distributed L2 IOP suite — "
+        "so no GSM comparison is possible without reprocessing from Level-1B. "
+        'The NASA-GIOP records carry ``pab_version = "1.1"`` (they were added '
+        "alongside the existing ``1.0`` BING fits; the BING results are "
+        "unchanged).\n"
         "- **Provenance.** Every record is stamped with a ``pab_version``; the "
         "landing page shows the version and build date for this site. Per-matchup "
         "MCMC chains and figures are published as downloads (see the release "
@@ -907,7 +1035,11 @@ def build_site(
     pages = {
         "index": index_page(),
         "summary": summary_page(store, pab_version=pab_version),
-        "comparisons": comparisons_page(df, sortable=sortable, outdir=outdir),
+        "comparisons": (
+            comparisons_page(df, sortable=sortable, outdir=outdir)
+            + "\n"
+            + nasa_giop_section(store, outdir=outdir, sortable=sortable)
+        ),
         "figures": figures_page(store, outdir, df),
         "aggregates": (
             aggregates_page(store, sortable=sortable)

@@ -35,6 +35,8 @@ def comparison_scatter(
     artifact_url_col: str | None = None,
     title: str | None = None,
     extra_series: list[tuple[str, str]] | None = None,
+    xlabel: str | None = None,
+    ylabel: str | None = None,
 ):
     """A log-log satellite-vs-in-situ Bokeh scatter with a 1:1 line and hover.
 
@@ -42,6 +44,8 @@ def comparison_scatter(
         df: Per-matchup frame (``gather_matchups`` output).
         sat_col, insitu_col: Columns to plot (satellite vs in-situ).
         label, title: Axis label and figure title.
+        xlabel, ylabel: Full axis-label overrides for pairings that are not
+            satellite-vs-in-situ (e.g. BING vs NASA GIOP).
         artifact_url_col: If given (and present), tapping a point opens that URL
             (the matchup's figure/artifact).
         extra_series: Optional ``[(col, legend_label), …]`` overlaid against the
@@ -62,8 +66,8 @@ def comparison_scatter(
         title=title or f"satellite vs in-situ {label}",
         x_axis_type="log",
         y_axis_type="log",
-        x_axis_label=f"in-situ {label}",
-        y_axis_label=f"satellite {label}",
+        x_axis_label=xlabel or f"in-situ {label}",
+        y_axis_label=ylabel or f"satellite {label}",
         width=560,
         height=520,
         output_backend="webgl",  # stays responsive at 10^4–10^5 points
@@ -72,7 +76,7 @@ def comparison_scatter(
     extra = [(c, lab) for c, lab in (extra_series or []) if c in df.columns]
     primary_kw = {"legend_label": f"satellite {label}"} if extra else {}
     fig.scatter(insitu_col, sat_col, source=src, size=7, alpha=0.7, **primary_kw)
-    for (col, leg), color in zip(extra, _EXTRA_COLORS):
+    for (col, leg), color in zip(extra, _EXTRA_COLORS, strict=False):
         fig.scatter(
             insitu_col,
             col,
