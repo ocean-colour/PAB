@@ -175,6 +175,40 @@ def test_match_through_pipeline_and_resume():
         assert again["match"]["written"] == [] and len(again["match"]["skipped"]) == 2
 
 
+def test_match_restricts_to_an_explicit_selection():
+    # backfill_unmatched.md Task 3: match must be narrowable to an explicit
+    # subset (e.g. an interrupted run's un-matched tail), mirroring discover's
+    # existing selection_keys() behavior, without re-sweeping the whole store.
+    profiles = _profiles()
+    full_cfg = pipeline.PipelineConfig(profiles=profiles)
+    opener = _opener_for(profiles)
+    with Store.open(":memory:") as store:
+        pipeline.run(store, full_cfg, stages=("ingest", "discover"), searcher=_searcher)
+
+        subset_cfg = pipeline.PipelineConfig(profiles=[profiles[0]])
+        out = pipeline.run(store, subset_cfg, stages=("match",), opener=opener)
+        assert out["match"]["written"] == ["7902226_5_PACE_20_-50"]
+        assert out["match"]["qualifying_total"] == 1
+        assert store.count("matchups") == 1  # the other profile untouched
+
+
+def test_match_without_a_selection_covers_the_whole_store():
+    # A bare PipelineConfig() (no profiles/profiles_csv) must not narrow match
+    # to nothing — selection_keys() is None, so it sweeps the whole store.
+    profiles = _profiles()
+    ingest_cfg = pipeline.PipelineConfig(profiles=profiles)
+    opener = _opener_for(profiles)
+    with Store.open(":memory:") as store:
+        pipeline.run(
+            store, ingest_cfg, stages=("ingest", "discover"), searcher=_searcher
+        )
+        bare_cfg = pipeline.PipelineConfig()
+        assert bare_cfg.selection_keys() is None
+        out = pipeline.run(store, bare_cfg, stages=("match",), opener=opener)
+        assert len(out["match"]["written"]) == 2
+        assert out["match"]["qualifying_total"] == 2
+
+
 def test_config_cache_dir_default_and_override(tmp_path):
     assert pipeline.PipelineConfig().cache().name == "granules"
     assert pipeline.PipelineConfig(cache_dir=tmp_path).cache() == tmp_path
@@ -491,6 +525,11 @@ def _stub_iter_profiles(ds):
         "PRES": np.linspace(0.0, 100.0, 12),
         "BBP700": np.full(12, 2e-3),
         "CHLA": np.full(12, 0.2),
+        # Indices 0-2 fall in this profile's mixed layer (~18 dbar out of a
+        # 0-100 dbar linear T gradient); index 0 is QC=4 so a real ingest run
+        # visibly changes cdom_qc_filtered relative to the QC-blind cdom.
+        "CDOM": np.array([1.0, 2.0, 6.0, 1.0, 50.0] + [0.9] * 7),
+        "CDOM_QC": np.array([4.0, 2.0, 3.0, 1.0, 1.0] + [1.0] * 7),
         "TEMP": np.linspace(20.0, 10.0, 12),
         "PSAL": np.full(12, 35.0),
     }
@@ -524,6 +563,25 @@ def test_ingest_persists_dac_and_project_provenance(stub_iter_profiles):
     assert all(f["data_center"] == "AO" for f in floats)
     assert len(profs) == 2
     assert all(p["data_mode"] == "R" for p in profs)
+
+
+def test_ingest_persists_qc_filtered_cdom(stub_iter_profiles):
+    """chl_cdom_matchups.md R2: CDOM_QC must reach summarize_profile through
+    the live-fetch ingest path, end to end — not just at the summary.py unit
+    level (already covered in test_argo.py). ``_stub_iter_profiles`` puts a
+    QC=4 point inside the mixed layer, so a real ingest run must produce a
+    ``cdom_qc_filtered`` that differs from the QC-blind ``cdom``."""
+    profiles = _live_profiles(1)
+    cfg = pipeline.PipelineConfig(profiles=profiles, make_figures=False)
+    with Store.open(":memory:") as store:
+        out = pipeline.ingest(store, cfg, fetcher=_dataset_fetcher())
+        assert out["failed"] == []
+        row = store.query(
+            "SELECT cdom, cdom_qc_filtered, cdom_n_qc4_dropped FROM mld_summary"
+        )[0]
+    assert row["cdom"] == pytest.approx(3.0)  # mean of [1.0, 2.0, 6.0] (raw)
+    assert row["cdom_qc_filtered"] == pytest.approx(4.0)  # mean of [2.0, 6.0]
+    assert row["cdom_n_qc4_dropped"] == 1
 
 
 def test_ingest_parallel_matches_serial(stub_iter_profiles):

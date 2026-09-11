@@ -35,7 +35,7 @@ from collections.abc import Callable
 
 #: Bumped whenever the DDL changes; stored in ``PRAGMA user_version`` so a
 #: database file knows which schema it was created under (see ``migrate``).
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 #: Ordered list of ``CREATE TABLE``/``CREATE INDEX`` statements. ``IF NOT
 #: EXISTS`` keeps ``create_all`` idempotent.
@@ -45,7 +45,12 @@ TABLES: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS floats (
         wmo          INTEGER PRIMARY KEY,
         project_name TEXT,
-        data_center  TEXT
+        data_center  TEXT,
+        cdom_sensor_model TEXT   -- CDOM fluorometer SENSOR_MODEL from the
+                                 -- float's GDAC <wmo>_meta.nc (e.g.
+                                 -- 'MCOMS_FLBBCD', 'ECO_FLBBCD'); NULL if
+                                 -- not fetched or the float carries no CDOM
+                                 -- sensor; v5
     )
     """,
     """
@@ -84,6 +89,13 @@ TABLES: tuple[str, ...] = (
                                      -- which is unpopulated for BGC); v4
         cdom_data_mode  TEXT,        -- per-parameter mode for CDOM; v4
         bbp700_data_mode TEXT,       -- per-parameter mode for BBP700; v4
+        cdom_qc_filtered      REAL,  -- mixed-layer mean of CDOM with QC=4
+                                     -- ("bad") points dropped before
+                                     -- averaging; NULL until re-ingested; v5
+        cdom_qc_filtered_std  REAL,  -- v5
+        cdom_n_qc4_dropped    INTEGER, -- QC=4 points excluded from
+                                     -- cdom_qc_filtered (0 if none/not
+                                     -- computed); v5
         created     TEXT,
         pab_version TEXT
     )
@@ -265,12 +277,43 @@ def _v3_to_v4(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
 
 
+def _v4_to_v5(conn: sqlite3.Connection) -> None:
+    """v4 → v5: QC-filtered CDOM + CDOM sensor-model provenance.
+
+    Added for the combined CDOM-refinement + hyperspectral-backfill pass
+    (``claude_prompts/chl_cdom_matchups.md`` R2/R6, and
+    ``claude_prompts/hyper_matchups.md``/``backfill_unmatched.md`` on the
+    ``hyper_matchups`` branch). Two independent additions:
+
+    - ``mld_summary.cdom_qc_filtered``/``_std``/``cdom_n_qc4_dropped`` — R2's
+      QC-aware CDOM mean, computed by dropping Argo QC=4 ("bad") points
+      *before* averaging (see :func:`pab.argo.summary.mixed_layer_mean`'s new
+      ``qc``/``bad_qc`` parameters). The original ``cdom``/``cdom_std``
+      (QC-blind, per Task 5's methodology finding) are kept unchanged
+      alongside these — this is an addition, not a silent overwrite of a
+      previously-published value.
+    - ``floats.cdom_sensor_model`` — R6's per-float CDOM fluorometer model
+      (``MCOMS_FLBBCD`` vs. ``ECO_FLBBCD``, or ``NULL``/``'UNKNOWN'``),
+      fetched once per float from its GDAC ``<wmo>_meta.nc``
+      (:func:`pab.argo.fetch.fetch_cdom_sensor_model`) — a different Argo file
+      type PAB had never previously read.
+    """
+    conn.execute("ALTER TABLE floats ADD COLUMN cdom_sensor_model TEXT")
+    for ddl in (
+        "ALTER TABLE mld_summary ADD COLUMN cdom_qc_filtered REAL",
+        "ALTER TABLE mld_summary ADD COLUMN cdom_qc_filtered_std REAL",
+        "ALTER TABLE mld_summary ADD COLUMN cdom_n_qc4_dropped INTEGER",
+    ):
+        conn.execute(ddl)
+
+
 # Forward migrations: map a *starting* version to a callable that upgrades the
 # database by one step.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _v1_to_v2,
     2: _v2_to_v3,
     3: _v3_to_v4,
+    4: _v4_to_v5,
 }
 
 

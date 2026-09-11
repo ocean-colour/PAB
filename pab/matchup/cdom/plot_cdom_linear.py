@@ -78,6 +78,9 @@ def plot_cdom_linear(df, *, outfile=None, dpi: int = 200):
     fig.tight_layout()
     fig.text(0.5, -0.04, FIT_LINE_CAVEAT, ha="center", fontsize=7.5, color="#555555")
 
+    #
+    ax.set_ylim(0., 0.1)
+
     if outfile is not None:
         outfile = Path(outfile)
         fig.savefig(outfile, dpi=dpi, bbox_inches="tight")

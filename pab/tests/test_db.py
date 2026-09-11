@@ -77,12 +77,14 @@ def test_create_is_idempotent(store):
 
 def test_migrations_add_figure_path_columns(tmp_path):
     # a v1 database migrates all the way forward: mld_summary.qa_path (v2),
-    # matchups.scene_path (v3), and the CDOM/provenance columns (v4) — without
-    # touching existing data.
+    # matchups.scene_path (v3), the CDOM/provenance columns (v4), and the
+    # QC-filtered-CDOM/sensor-model columns (v5) — without touching existing
+    # data.
     import sqlite3
 
     db = tmp_path / "v1.db"
     conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE floats (wmo INTEGER PRIMARY KEY)")
     conn.execute("CREATE TABLE mld_summary (profile_id INTEGER PRIMARY KEY, mld REAL)")
     conn.execute("CREATE TABLE matchups (matchup_id TEXT PRIMARY KEY, profile_id INT)")
     conn.execute("PRAGMA user_version = 1")
@@ -90,6 +92,7 @@ def test_migrations_add_figure_path_columns(tmp_path):
     schema.migrate(conn)
     mld_cols = {r[1] for r in conn.execute("PRAGMA table_info(mld_summary)")}
     mch_cols = {r[1] for r in conn.execute("PRAGMA table_info(matchups)")}
+    floats_cols = {r[1] for r in conn.execute("PRAGMA table_info(floats)")}
     assert "qa_path" in mld_cols
     assert "scene_path" in mch_cols
     assert {
@@ -99,18 +102,24 @@ def test_migrations_add_figure_path_columns(tmp_path):
         "chla_data_mode",
         "cdom_data_mode",
         "bbp700_data_mode",
+        "cdom_qc_filtered",
+        "cdom_qc_filtered_std",
+        "cdom_n_qc4_dropped",
     } <= mld_cols
-    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 4
+    assert "cdom_sensor_model" in floats_cols
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 5
 
 
 def test_v3_to_v4_migration_is_idempotent(tmp_path):
-    # A genuine v3-shaped database (the real pab.db's state before this pass)
-    # migrates to v4 once; calling migrate() again (a resumed/rerun ingest)
-    # must be a safe no-op, not a duplicate-column error.
+    # A genuine v3-shaped database migrates to v4 once; calling migrate()
+    # again (a resumed/rerun ingest) must be a safe no-op, not a
+    # duplicate-column error. Runs on to v5 too, since migrate() always walks
+    # to SCHEMA_VERSION.
     import sqlite3
 
     db = tmp_path / "v3.db"
     conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE floats (wmo INTEGER PRIMARY KEY)")
     conn.execute(
         "CREATE TABLE mld_summary (profile_id INTEGER PRIMARY KEY, mld REAL, "
         "qa_path TEXT)"
@@ -120,7 +129,7 @@ def test_v3_to_v4_migration_is_idempotent(tmp_path):
     conn.commit()
 
     schema.migrate(conn)
-    assert schema.get_version(conn) == 4
+    assert schema.get_version(conn) == 5
     cols = {r[1] for r in conn.execute("PRAGMA table_info(mld_summary)")}
     assert {
         "cdom",
@@ -129,12 +138,50 @@ def test_v3_to_v4_migration_is_idempotent(tmp_path):
         "chla_data_mode",
         "cdom_data_mode",
         "bbp700_data_mode",
+        "cdom_qc_filtered",
+        "cdom_qc_filtered_std",
+        "cdom_n_qc4_dropped",
     } <= cols
 
-    schema.migrate(conn)  # already at SCHEMA_VERSION -> must not re-run _v3_to_v4
-    assert schema.get_version(conn) == 4
+    schema.migrate(conn)  # already at SCHEMA_VERSION -> must not re-run any step
+    assert schema.get_version(conn) == 5
     cols_after = [r[1] for r in conn.execute("PRAGMA table_info(mld_summary)")]
     assert cols_after.count("cdom") == 1  # no duplicate column from a double-migrate
+    conn.close()
+
+
+def test_v4_to_v5_migration_is_idempotent(tmp_path):
+    # A genuine v4-shaped database (the real pab.db's state after the
+    # chl_cdom_prompt_1.md pass) migrates to v5 once; a second migrate() call
+    # is a safe no-op.
+    import sqlite3
+
+    db = tmp_path / "v4.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE floats (wmo INTEGER PRIMARY KEY, project_name TEXT, "
+        "data_center TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE mld_summary (profile_id INTEGER PRIMARY KEY, mld REAL, "
+        "qa_path TEXT, cdom REAL, cdom_std REAL, chla_adjusted REAL, "
+        "chla_data_mode TEXT, cdom_data_mode TEXT, bbp700_data_mode TEXT)"
+    )
+    conn.execute("CREATE TABLE matchups (matchup_id TEXT PRIMARY KEY, scene_path TEXT)")
+    conn.execute("PRAGMA user_version = 4")
+    conn.commit()
+
+    schema.migrate(conn)
+    assert schema.get_version(conn) == 5
+    mld_cols = {r[1] for r in conn.execute("PRAGMA table_info(mld_summary)")}
+    floats_cols = {r[1] for r in conn.execute("PRAGMA table_info(floats)")}
+    assert {"cdom_qc_filtered", "cdom_qc_filtered_std", "cdom_n_qc4_dropped"} <= mld_cols
+    assert "cdom_sensor_model" in floats_cols
+
+    schema.migrate(conn)  # already at SCHEMA_VERSION -> must not re-run _v4_to_v5
+    assert schema.get_version(conn) == 5
+    cols_after = [r[1] for r in conn.execute("PRAGMA table_info(floats)")]
+    assert cols_after.count("cdom_sensor_model") == 1
     conn.close()
 
 
