@@ -176,6 +176,40 @@ Fetched and read the key papers; full review with per-paper quotes saved to
   phase-function effects on Rrs can reach 65% (Xiong et al. 2017 via Bisson
   2021); multiplicative, so cannot explain a bias that vanishes at high bbp.
 
+### 2026-09-11 (Task 2 — BING vs GIOP comparison: partial support, with a twist)
+
+Compared δ_BING and δ_GIOP on the common sample (n = 13,388; GIOP bbp700
+extrapolated as bbp_442·(442/700)^s from the PACE-team `NASA_GIOP` fits).
+Figure `task2_bing_vs_giop_scatter.png`, tables `task2_summary_overall.csv` /
+`task2_summary_regimes.csv`, full write-up `task2_bing_vs_giop.md` — all in
+`$PAB_DATA_DIR/bias_analysis/`.
+
+- **Overall:** BING median δ = +0.376 (1.60×, 84.5% positive); GIOP median
+  δ = +0.118 (1.13×, 61.6% positive). ρ(δ,δ) = 0.87 (partly induced by the
+  shared Argo reference); ρ(bbp,bbp) = 0.90; median BING/GIOP = 1.51× at 700.
+- **By regime:** Low — BING +0.45 (91%), GIOP +0.23 (77%). Mid — BING +0.17,
+  GIOP −0.23. High — BING +0.01, GIOP −0.28. GIOP-on-PACE behaves like
+  heritage GIOP-on-MODIS (negative outside the gyres; cf. Bisson 2019/2021).
+- **The 1.5× BING−GIOP gap is a spectral-slope disagreement, not a blue-end
+  one:** BING bbp440/GIOP bbp442 = 0.86 (near agreement), GIOP slope η ≈ 1.92
+  (pinned near its cap of 2) vs BING fitted β ≈ 0.38;
+  ρ(log(BING/GIOP), η−β) = 0.86.
+- **What survives:** a shared, algorithm-independent overestimate in
+  oligotrophic water of **at least +23%** — robust because GIOP's η ≤ 2 cap
+  makes +23% a floor (flatter slope ⇒ larger δ_GIOP). That exceeds the float
+  error budget (10–15%) and localizes a component of the bias upstream in
+  Rrs(λ).
+- **What does not survive:** the thesis claim that BING and GIOP "agree on
+  sign and magnitude" — magnitude differs ~1.5×, and sign flips for GIOP in
+  mid/high-bbp water. The 1.59× headline is specific to BING's bbp700.
+- **Mechanistic twist:** BING's anomalously flat fitted slopes (β ≈ 0.4) in
+  clear water are the expected signature of an *additive red-end Rrs
+  contamination* — extra Rrs(700) forces the free fit to hold bbp up at 700
+  and flatten β, while 442-anchored GIOP barely sees it. So the two-algorithm
+  test localizes the problem to red-end Rrs, consistent with (but not yet
+  proof of) aerosol residuals. Direct tests: AOD split (Task 4) and the
+  updated inelastic Rrs retrieval (Task 5).
+
 ## Summary of the bias
 
 From the full PAB dataset (n = 13,563 matchups after outlier removal, δ ≥ −1.5, March 2024 – June 2026):
