@@ -895,3 +895,17 @@ correctly gated the destructive/outward steps):**
   page after pushing; that check plus doc updates fall to Task 7.
 
 Ran directly on Fable 5.
+
+### 2026-09-11 (Task 6a follow-up — push verified on origin; RTD rebuild pending a branch decision)
+
+The user pushed (`origin/pace_giop_gsm` @ `9455b79`, carrying the code, the
+regenerated `report_site/`, and this doc). RTD verification found the live
+report **has not rebuilt — by construction, not by failure**: the `pab-report`
+RTD project's active versions are `develop`, `latest` (→ `main`), `stage-9`,
+and `first-full-run`; `pace_giop_gsm` is not an activated version (its URL
+404s), and `/en/develop/` + `/en/latest/` still serve the pre-NASA build.
+To get the new report live, either **merge `pace_giop_gsm` into `develop`
+(or `main`)** — RTD rebuilds those automatically — or **activate the
+`pace_giop_gsm` version** in the RTD dashboard. Both are user actions (git /
+RTD dashboard). Verification of the rebuilt page will happen once one of
+those lands (Task 7 territory).
