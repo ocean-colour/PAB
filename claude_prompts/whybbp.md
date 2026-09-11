@@ -82,6 +82,8 @@ Read the thesis discussion before running analyses — it sets up the hypotheses
 
 >A. I am not sure.  Please check.
 
+> *Checked (2026-09-11, Task 3): partially. Local sources cover 536/788 matchup floats (MBARI float list "1st date": 410; Stoer & Fennel 2024 `*_meta.nc`: 349). Full coverage (787/788) required the GDAC synthetic-profile index (data-argo.ifremer.fr); its first-profile dates agree with the MBARI list to 0.0 days median. Cached as `bias_analysis` inputs.*
+
 **Q3 — Do the PACE L2 granules include an AOD or AC quality variable, and are the granules accessible locally?**
 
 >A. I am not sure.  Please check as best you can.
@@ -209,6 +211,34 @@ Figure `task2_bing_vs_giop_scatter.png`, tables `task2_summary_overall.csv` /
   test localizes the problem to red-end Rrs, consistent with (but not yet
   proof of) aerosol residuals. Direct tests: AOD split (Task 4) and the
   updated inelastic Rrs retrieval (Task 5).
+
+### 2026-09-11 (Task 3 — float age vs bias: flat; Argo drift ruled out)
+
+Computed float age at each matchup from deployment dates and tested δ vs age.
+Figure `task3_float_age_vs_bias.png`, per-float table
+`task3_within_float_rho.csv`, write-up `task3_float_age.md` — all in
+`$PAB_DATA_DIR/bias_analysis/`.
+
+- **Deployment dates (answers Q2):** local metadata covers only 536/788
+  matchup floats; full coverage (787/788) from the GDAC synthetic-profile
+  index (first S-profile date per WMO). GDAC and MBARI-list dates agree to
+  0.0 days median for the 410 floats in both.
+- **Sample:** n = 13,543 with age; ages 0–8.2 yr (median 511 d, 37% > 2 yr).
+- **Flat by every test:** global ρ(δ, age) = −0.003 (p = 0.74); partial ρ
+  controlling log bbp_Argo = +0.000; per-regime ρ between −0.11 and −0.01
+  (all negligible, mostly wrong sign for drift); within-float test (356
+  floats, ≥15 matchups over ≥180 d — immune to between-float confounders):
+  median ρ = −0.002, 50% positive, Wilcoxon p = 0.86. Six-month bin medians
+  sit at +0.34…+0.44 from age 0 through 6 yr. New floats (< 6 months) already
+  show the full bias.
+- **Conclusion:** Argo dark-count/sensitivity *drift* is ruled out as a
+  measurable contributor. Only a static fleet-wide calibration offset
+  (bounded at 10–15% by the literature) remains on the Argo side —
+  insufficient for the +37% median bias. Combined with Task 2, the bias is
+  increasingly isolated to the satellite/Rrs side.
+- **Caveat:** this test cannot see a time-independent fleet-wide offset, and
+  deployment = first S-profile date (can postdate launch by days; irrelevant
+  at multi-year scale).
 
 ## Summary of the bias
 
