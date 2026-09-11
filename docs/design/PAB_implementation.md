@@ -514,10 +514,22 @@ reconstruction are mockable/lazy seams.
 - **`gather_matchups` filters `fits` by `model_pair`** (`AND f.model_pair = ?`),
   so a second model pair (or other fits) on the same matchup yields one row, not
   duplicates.
-- **NASA L2 IOP baseline is deferred** (not ingested). BING-vs-Argo (`b_bp`,
-  Chl) is implemented; BING-vs-NASA awaits an `ocpy.pace.io.load_iop_l2` ingest
-  that populates `NASA_L2IOP_*` — a thin lazy seam the quantity-agnostic metric
-  slots into. Documented in `metrics.rst`.
+- **NASA L2 IOP baseline is ingested + published** (2026-09-09/11, closing the
+  deferral this bullet used to record). NASA's `PACE_OCI_L2_IOP` (GIOP) product
+  is read per matchup at the *same pixel* as the BING fit and persisted as a
+  **parallel `fits` row** (`algorithm = 'NASA_GIOP'`, MCMC columns NULL, its
+  own `pab_version = "1.1"`) plus namespaced `NASA_GIOP_*` `fit_results` —
+  note the namespace is `NASA_GIOP_*`, not the `NASA_L2IOP_*` placeholder the
+  design reserved. Modules: `pab.pace.iop` (granule mapping/extraction; the
+  AOP→IOP granule join is a verified filename-tag swap),
+  `pab.fit.nasa_giop` (idempotent batch driver + `python -m pab.fit.nasa_giop`
+  CLI), `pab.metrics.compare.gather_nasa_giop`, and a "BING vs NASA GIOP"
+  report section (`pab.report.rst.nasa_giop_section`). Full-mission ingest:
+  **14,609/14,609 matchups**, every IOP-granule nearest-pixel search landing
+  **0.0000 km** from the recorded BING pixel; the 442 nm-vs-700 nm `b_bp`
+  wavelength mismatch is deliberately not adjusted and is labelled on every
+  figure/stat. Full decision record + run report:
+  `claude_prompts/pace_giop_gsm.md`.
 
 **Tests** — `pab/tests/test_metrics.py` (11): `log_comparison` known-values +
 NaN/nonpositive handling; `season_of`/`region_of`; `gather_matchups` + `compare`

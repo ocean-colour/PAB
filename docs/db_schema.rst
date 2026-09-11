@@ -86,7 +86,10 @@ Tables
 ``fits``
     One row per fitted spectrum, with configuration + provenance. **PK**
     ``fit_id``; **FK**\ s to ``matchups`` and ``matchup_pixels``. Columns:
-    ``algorithm``, ``model_pair``, ``anw_model``, ``bbnw_model``,
+    ``algorithm`` (``BING`` for MCMC fits; ``NASA_GIOP`` for the NASA L2 IOP
+    baseline ingest — a *parallel* row per matchup at the same pixel, with the
+    BING/MCMC-specific columns NULL and its own ``pab_version``),
+    ``model_pair``, ``anw_model``, ``bbnw_model``,
     ``rrs_source`` (``L2_AOP`` vs ``PAB_L1B:<algo/version>``), ``prior_set``,
     ``nsteps``, ``nburn``, ``nwalkers``, ``wave_min``/``wave_max``, ``chisq``,
     ``aic``, ``bic``, ``accept_frac``, ``success``, ``chains_path``,
@@ -99,8 +102,12 @@ Tables
     ``value_hi`` (5th/95th percentiles), ``unit``.
 
     Long format keeps the table stable as model pairs are added: a second pair
-    (``BING_GIOP_bbp``) or the NASA baseline (``NASA_L2IOP_bbp``) writes new
-    rows, not new columns. :meth:`pab.db.store.Store.fit_results_wide` pivots
+    (``BING_GIOP_bbp``) or the NASA baseline writes new rows, not new columns.
+    The NASA baseline is now real: ``NASA_GIOP_*`` rows (``NASA_GIOP_bbp_442``,
+    ``NASA_GIOP_adg_442``, ``NASA_GIOP_aph_442``, their ``*_unc_442``
+    uncertainties and the ``bbp_s``/``adg_s`` spectral slopes) attach to the
+    parallel ``NASA_GIOP`` fit row.
+    :meth:`pab.db.store.Store.fit_results_wide` pivots
     this into the wide, namespaced columns used for export and reporting.
 
 Migrations

@@ -440,6 +440,64 @@ Three matchups from three different floats were ingested for real, hitting live 
 - Wiring `gather_nasa_giop` into the RTD report (`pab.report.rst`) as the published "BING vs NASA GIOP" page (Q5: yes, eventually); this turn built and validated only the gatherer.
 - The `aph_unc_442`/`adg_unc_442` gap in the `ocpy` loader.
 
+#### Full Run — NASA-GIOP retrofit: close-out report (2026-09-11)
+
+**Outcome.** NASA's GIOP retrieval (`PACE_OCI_L2_IOP`) is ingested for
+**14,609 of 14,609** BING-fit matchups — zero irreducible failures — as
+parallel `fits` rows (`algorithm = 'NASA_GIOP'`, `pab_version = "1.1"`; the
+`1.0` BING records untouched) with 8 `NASA_GIOP_*` quantities each (116,872
+`fit_results` rows). The "BING vs NASA GIOP" comparison is wired into the
+report site, and the merged database (NASA rows **+** the laptop's `cdom_chl`
+variables) is published at `https://s3-west.nrp-nautilus.io/pab/full/pab.db`
+and backed up to `AIOcean:PAB/`.
+
+**Timings & rates** (workstation, off-cloud, serial):
+- Leading slice (100): 3.47 s/matchup; projected 16.5 h / ~530 GB.
+- Full retrofit: **16.8 h wall** (projection held to ~2 %), 4.16 s/matchup,
+  11,492 IOP granules, **465 GB** peak cache (deleted after).
+- Failure tail: **1 transient** NASA-side 502 in 14,609 (0.007 %; the ~1.7 %
+  CMR-era estimate was pessimistic for this path); recovered by one sweep
+  re-run; final no-op re-run `written 0 / skipped 14,609 / failed 0`.
+
+**The headline scientific numbers** (on the published site):
+`bbp_442(NASA)/bbp700(BING)` median **1.51** (IQR 1.05–2.49 at p5–p95),
+Spearman **ρ = 0.866**, log10 offset +0.20, RMS 0.24, n = 14,603 — the
+442-vs-700 nm wavelength gap is deliberately unadjusted and labelled on every
+figure/stat (Q3). Median `adg_442` = 0.0072, `aph_442` = 0.0135 m⁻¹, with
+per-pixel uncertainties ingested for all three headline quantities.
+
+**The empirical result worth remembering: all 14,609 IOP-granule
+nearest-pixel searches landed 0.0000 km from the recorded BING pixel** — 
+PACE's AOP and IOP suites share a pixel grid per overpass at full-mission
+scale. The code still searches rather than assuming it.
+
+**Verification (this close-out):** all 14,609 NASA rows share
+`matchup_id` + `pixel_id` with their BING sibling (SQL, full population);
+4 matchups across 2 floats re-downloaded fresh from Earthdata and all 8
+quantities matched the DB **exactly**; the built site renders the section,
+stats, and the 61 KB static scatter.
+
+**Bugs found & fixed along the way** (all with regression tests):
+`download_granule` missing `earthaccess.login()` (Task 3 of the dev
+prototype); the summary page counting NASA rows as "BING fits" (Task 4);
+`aggregate_healpix` crashing on positions retracted by an Argo delayed-mode
+refresh (float 2903938, Task 6); plus the `ocpy` loader gap for
+`aph_unc_442`/`adg_unc_442` closed before the retrofit (Task 1).
+
+**Follow-ups / open items:**
+- **RTD rebuild pending a user action:** everything is pushed on
+  `pace_giop_gsm`, but the `pab-report` RTD project builds
+  `develop`/`latest(main)`/`stage-9`/`first-full-run` — merge the branch (or
+  activate a `pace_giop_gsm` version on the dashboard) and the site goes
+  live; then verify `/en/<version>/comparisons.html` shows the section.
+- **GSM: dropped per Q1(A)**, documented on the methods page as a NASA
+  product-availability fact. Reopening it would mean running `l2gen`
+  (`iop_opt=2`) from L1B — a separate, scoped decision if demand appears.
+- The `matchup_summary.{csv,parquet}` on S3 predate the `cdom_chl` refresh
+  and the NASA rows; regenerate + re-upload with the next `report` release.
+- Bulk-artifact publish (chains/figures → `s3://pab`) and `ZenodoBackend`
+  remain the standing §7b follow-ons.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -909,3 +967,36 @@ To get the new report live, either **merge `pace_giop_gsm` into `develop`
 `pace_giop_gsm` version** in the RTD dashboard. Both are user actions (git /
 RTD dashboard). Verification of the rebuilt page will happen once one of
 those lands (Task 7 territory).
+
+### 2026-09-11 (Full Run Task 8 — verify & close out)
+
+**Spot-checks, all green.** Sibling integrity checked over the *full
+population*, not a handful (SQL is cheap): all **14,609/14,609** `NASA_GIOP`
+fits share `matchup_id` + `pixel_id` with their BING sibling, all stamped
+`"1.1"` (BING: 14,609 × `"1.0"`), every NASA fit carrying exactly 8
+quantities. End-to-end: **4 matchups** (floats 6990514 × 3 cycles + 2902263 —
+the same-float clustering was an accident of a sloppy `LIKE`/`OR` query,
+patched with a fourth pick from a second float) had their IOP granules
+**re-downloaded fresh** from Earthdata Cloud; nearest-pixel search landed
+0.0000 km and all 8 extracted quantities matched the DB **exactly** on each.
+The locally-built site renders the section, stats and static scatter
+correctly.
+
+**Docs updated.** `PAB_implementation.md` §5d.3: the "NASA L2 IOP baseline is
+deferred" bullet replaced with the implemented/published record (noting the
+namespace landed as `NASA_GIOP_*`, not the reserved `NASA_L2IOP_*`).
+`HOWTO.md`: new §4 subsection for the `python -m pab.fit.nasa_giop` driver
+(idempotent, never creates a DB, full-scale cost figures), and a §7b
+paragraph recording the `1.1` publish as the **merged** `cdom_chl` + NASA
+union — including the two-machines/one-S3-key lesson. `db_schema.rst`:
+`fits.algorithm` now documents the `NASA_GIOP` parallel-row convention and
+the `fit_results` example uses the real `NASA_GIOP_*` names.
+
+**Full-run close-out report** added under **Reports** (outcome, timings,
+failure tail, the 0.0000 km result at scale, headline numbers, bugs fixed,
+follow-ups). **One item remains open and is user-held:** the RTD rebuild —
+`develop`/`main` still lack the branch, no `pace_giop_gsm` version is
+activated, so `/en/develop/` + `/en/latest/` still serve the pre-NASA build
+(re-verified this session). Merge or activate, and the published site goes
+live; that final look at the live page is the only unfinished box on this
+prompt doc. Ran directly on Fable 5.
