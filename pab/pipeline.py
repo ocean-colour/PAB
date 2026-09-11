@@ -235,6 +235,7 @@ def _fetch_profile_payload(
         chla=v.get("CHLA"),
         chla_adjusted=v.get("CHLA_ADJUSTED"),
         cdom=v.get("CDOM"),
+        cdom_qc=v.get("CDOM_QC"),
         psal=v.get("PSAL"),
         temp=v.get("TEMP"),
         lon=meta["longitude"],
@@ -631,7 +632,14 @@ def _search_with_retry(searcher, lat, lon, t0, t1, config, *, attempts: int = 3)
 
 
 def match(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
-    """Stage 4: build matchups (idempotent/resumable)."""
+    """Stage 4: build matchups (idempotent/resumable).
+
+    Narrowed to ``profiles``/``profiles_csv`` when one is given explicitly
+    (see :meth:`PipelineConfig.selection_keys`), mirroring ``discover`` — this
+    is what makes a targeted completion of an interrupted run's un-matched
+    tail possible without re-sweeping every already-matched profile (see
+    ``backfill_unmatched.md`` Task 3 on the ``hyper_matchups`` branch).
+    """
     from pab.matchup.engine import build_matchups
 
     return build_matchups(
@@ -640,6 +648,7 @@ def match(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
         config=config.matchup,
         replace=config.replace,
         jobs=config.jobs,
+        selection=config.selection_keys(),
     )
 
 

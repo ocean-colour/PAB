@@ -534,19 +534,33 @@ def write_matchup(store, matchup: Matchup, *, created: str | None = None) -> str
     return matchup.matchup_id
 
 
-def qualifying_profiles(store) -> list[dict[str, Any]]:
+def qualifying_profiles(
+    store, *, selection: set[tuple[int, int]] | None = None
+) -> list[dict[str, Any]]:
     """Profiles that have a mixed-layer summary (the matchup-eligible floats).
+
+    Args:
+        store: An open store.
+        selection: ``{(wmo, cycle)}`` to narrow the sweep to an explicit
+            subset (e.g. the un-matched tail from a truncated run — see
+            ``backfill_unmatched.md`` Task 3), mirroring
+            ``PipelineConfig.selection_keys()``'s use in ``discover``.
+            ``None`` (the default) sweeps every qualifying profile in the
+            store, as before this parameter existed.
 
     Returns:
         One dict per profile with ``profile_id``, ``wmo``, ``cycle``,
         ``latitude``, ``longitude``, ``time`` — the inputs to
         :func:`find_matchup`.
     """
-    return store.query(
+    rows = store.query(
         "SELECT p.profile_id, p.wmo, p.cycle, p.latitude, p.longitude, p.time "
         "FROM profiles p JOIN mld_summary m ON p.profile_id = m.profile_id "
         "ORDER BY p.profile_id"
     )
+    if selection is None:
+        return rows
+    return [r for r in rows if (int(r["wmo"]), int(r["cycle"])) in selection]
 
 
 def candidate_granules(
@@ -601,6 +615,7 @@ def build_matchups(
     replace: bool = False,
     created: str | None = None,
     jobs: int = 1,
+    selection: set[tuple[int, int]] | None = None,
 ) -> dict[str, list[str]]:
     """Match every qualifying profile against the stored granules and persist.
 
@@ -623,17 +638,36 @@ def build_matchups(
         replace: Re-write matchups that already exist.
         created: Timestamp to stamp on written rows.
         jobs: Profile-level parallel processes (1 = serial).
+        selection: ``{(wmo, cycle)}`` to narrow the sweep to an explicit
+            subset (see :func:`qualifying_profiles`) — the "single-matchup
+            targeting" enhancement ``HOWTO.md`` lists as planned, added for
+            ``backfill_unmatched.md`` Task 3 (completing a truncated run's
+            un-matched tail without re-sweeping everything already matched).
+            ``None`` (default) sweeps the whole store, unchanged from before
+            this parameter existed.
 
     Returns:
-        ``{"written": [...], "skipped": [...], "unmatched": [...]}`` — matchup
-        ids written, matchup ids skipped (already present), and
-        ``"{wmo}_{cycle}"`` for profiles with no qualifying granule (or no
-        position to match against).
+        ``{"written": [...], "skipped": [...], "unmatched": [...],
+        "qualifying_total": int}`` — matchup ids written, matchup ids skipped
+        (already present), ``"{wmo}_{cycle}"`` for profiles with no
+        qualifying granule (or no position to match against), and the size of
+        the qualifying set this call actually swept (post-``selection``) —
+        per ``backfill_unmatched.md`` Task 7, so a caller can verify
+        ``written + skipped + unmatched (+ stalled) == qualifying_total``
+        rather than trusting the totals "look plausible" (the failure mode
+        that let the full-mission ``match`` stage silently stop 1,690
+        profiles short of completion — see ``hyper_matchups.md``). This
+        function itself never drops a profile between buckets; the mismatch
+        this guards against is an **external** one (the calling process being
+        killed, or never re-invoked to reach 100% coverage across resumes).
     """
     config = config or MatchupConfig()
     written: list[str] = []
     skipped: list[str] = []
     unmatched: list[str] = []
+
+    qualifying = qualifying_profiles(store, selection=selection)
+    qualifying_total = len(qualifying)
 
     # Gather per-profile inputs in the parent (DB reads only); the heavy
     # open+extract in find_matchup is what fans out.
@@ -648,7 +682,7 @@ def build_matchups(
     if not replace:
         for row in store.query("SELECT profile_id, matchup_id FROM matchups"):
             done.setdefault(row["profile_id"], row["matchup_id"])
-    for profile in qualifying_profiles(store):
+    for profile in qualifying:
         if profile["profile_id"] in done:
             skipped.append(done[profile["profile_id"]])
             continue
@@ -671,26 +705,42 @@ def build_matchups(
         inputs.append((profile, candidates))
 
     if jobs and int(jobs) > 1 and inputs and picklable(opener):
-        return _build_matchups_parallel(
+        result = _build_matchups_parallel(
             store, inputs, config, created, int(jobs), replace,
             written, skipped, unmatched, opener=opener,
         )
+    else:
+        for profile, candidates in inputs:
+            result_one = find_matchup(profile, candidates, opener=opener, config=config)
+            if result_one is None:
+                unmatched.append(f"{profile['wmo']}_{profile['cycle']}")
+                continue
+            exists = store.query(
+                "SELECT 1 FROM matchups WHERE matchup_id = ?", (result_one.matchup_id,)
+            )
+            if exists and not replace:
+                skipped.append(result_one.matchup_id)
+                continue
+            write_matchup(store, result_one, created=created)
+            written.append(result_one.matchup_id)
+        result = {"written": written, "skipped": skipped, "unmatched": unmatched}
 
-    for profile, candidates in inputs:
-        result = find_matchup(profile, candidates, opener=opener, config=config)
-        if result is None:
-            unmatched.append(f"{profile['wmo']}_{profile['cycle']}")
-            continue
-        exists = store.query(
-            "SELECT 1 FROM matchups WHERE matchup_id = ?", (result.matchup_id,)
+    result["qualifying_total"] = qualifying_total
+    accounted = (
+        len(result["written"])
+        + len(result["skipped"])
+        + len(result["unmatched"])
+        + len(result.get("stalled", []))
+    )
+    if accounted != qualifying_total:
+        _log.error(
+            "match: accounting mismatch — %d written+skipped+unmatched(+stalled) "
+            "vs %d qualifying profiles; this call did not account for every "
+            "profile it started with (backfill_unmatched.md Task 7 guard)",
+            accounted,
+            qualifying_total,
         )
-        if exists and not replace:
-            skipped.append(result.matchup_id)
-            continue
-        write_matchup(store, result, created=created)
-        written.append(result.matchup_id)
-
-    return {"written": written, "skipped": skipped, "unmatched": unmatched}
+    return result
 
 
 def _build_matchups_parallel(

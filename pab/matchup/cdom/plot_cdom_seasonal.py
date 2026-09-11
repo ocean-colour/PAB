@@ -16,7 +16,12 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy import stats
 
-from pab.matchup.cdom.data import DEFAULT_DB, QUANTITY_CAVEAT, valid_cdom
+from pab.matchup.cdom.data import (
+    DEFAULT_DB,
+    QUANTITY_CAVEAT,
+    restrict_to_aoml,
+    valid_cdom,
+)
 from pab.matchup.chl.data import load_chl_matchups
 
 SEASON_ORDER = ["DJF", "MAM", "JJA", "SON"]
@@ -59,7 +64,8 @@ def plot_cdom_seasonal(df, *, outfile=None, dpi: int = 200):
         ax.set_xlabel("Argo CDOM [ppb QSDE]")
     axes[0].set_ylabel(r"BING $A_{dg}$ [m$^{-1}$]")
     fig.suptitle(
-        f"Argo CDOM vs. PACE-fitted $A_{{dg}}$ by season  (n = {len(df)} total)", y=1.04
+        f"Argo CDOM vs. PACE-fitted $A_{{dg}}$ by season — AOML, cdom < 6 ppb  (n = {len(df)} total)",
+        y=1.04,
     )
     fig.text(0.5, -0.06, QUANTITY_CAVEAT, ha="center", fontsize=7.5, color="#555555")
     fig.tight_layout()
@@ -76,8 +82,8 @@ def plot_cdom_seasonal(df, *, outfile=None, dpi: int = 200):
 def main(argv=None):
     args = _parse_args(argv)
     df = load_chl_matchups(args.db)
-    df = valid_cdom(df)
-    print(f"Loaded {len(df)} valid CDOM/Adg matchups")
+    df = restrict_to_aoml(valid_cdom(df))
+    print(f"Loaded {len(df)} valid CDOM/Adg matchups (AOML, cdom < 6)")
     plot_cdom_seasonal(df, outfile=args.out, dpi=args.dpi)
 
 

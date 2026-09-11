@@ -36,6 +36,36 @@ _PER_PARAM_MODE_VARS = ("CHLA", "CDOM", "BBP700")
 #: Default QC flags retained (1 = good, 2 = probably good).
 DEFAULT_QC = (1, 2)
 
+#: Argo QC flag PAB drops from the mixed-layer mean when QC-aware CDOM
+#: filtering is requested (per chl_cdom_matchups.md R2) — "bad" data.
+#: Distinct from DEFAULT_QC/filter_quality, which nothing in the ingestion
+#: pipeline actually calls (see pab.argo.summary's module docstring).
+BAD_CDOM_QC = (4,)
+
+#: Official Argo DAC 2-letter code -> GDAC directory name, for the floats
+#: actually present in this project's matchup set (chl_cdom_matchups.md R6).
+#: Not necessarily exhaustive of every Argo DAC.
+DAC_FOLDERS: dict[str, str] = {
+    "AO": "aoml",
+    "BO": "bodc",
+    "CS": "csiro",
+    "HZ": "csio",
+    "IF": "coriolis",
+    "IN": "incois",
+    "JA": "jma",
+    "KM": "kma",
+    "KO": "kordi",
+    "ME": "meds",
+}
+
+#: GDAC meta-file URL template (float-level; a different Argo file type than
+#: the per-profile files ``iter_profiles`` reads). ``{dac}`` is a
+#: :data:`DAC_FOLDERS` value, not the 2-letter code.
+GDAC_META_URL = "https://data-argo.ifremer.fr/dac/{dac}/{wmo}/{wmo}_meta.nc"
+
+#: The ``SENSOR`` row identifying the CDOM fluorometer in a meta.nc file.
+CDOM_SENSOR_ROW = "FLUOROMETER_CDOM"
+
 
 def build_fetcher(
     *,
@@ -123,7 +153,8 @@ def iter_profiles(ds) -> Iterator[tuple[dict[str, Any], dict[str, np.ndarray]]]:
     yields its metadata (``wmo``, ``cycle``, ``latitude``, ``longitude``,
     ``time``, ``data_mode``, ``project_name``, ``data_center``,
     ``chla_data_mode``, ``cdom_data_mode``, ``bbp700_data_mode``) and a dict of
-    its 1-D variable arrays (including ``CDOM`` and ``CHLA_ADJUSTED`` when
+    its 1-D variable arrays (including ``CDOM``, ``CDOM_QC`` — the per-level
+    QC flag, for R2's QC-filtered mixed-layer mean — and ``CHLA_ADJUSTED`` when
     present, alongside ``PRES``/``BBP700``/``CHLA``/``PSAL``/``TEMP``).
 
     ``data_mode`` is extracted defensively but is a no-op on a real BGC/GDAC
@@ -146,7 +177,16 @@ def iter_profiles(ds) -> Iterator[tuple[dict[str, Any], dict[str, np.ndarray]]]:
     prof = ds.argo.point2profile()
     var_names = [
         v
-        for v in ("PRES", "BBP700", "CHLA", "CHLA_ADJUSTED", "CDOM", "PSAL", "TEMP")
+        for v in (
+            "PRES",
+            "BBP700",
+            "CHLA",
+            "CHLA_ADJUSTED",
+            "CDOM",
+            "CDOM_QC",
+            "PSAL",
+            "TEMP",
+        )
         if v in prof
     ]
     n_prof = prof.sizes.get("N_PROF", 0)
@@ -173,3 +213,97 @@ def iter_profiles(ds) -> Iterator[tuple[dict[str, Any], dict[str, np.ndarray]]]:
                 meta[f"{p.lower()}_data_mode"] = str(one[mode_var].values).strip()
         variables = {v: np.asarray(one[v].values, dtype=float) for v in var_names}
         yield meta, variables
+
+
+def _default_meta_downloader(url: str) -> bytes:
+    """Real HTTP downloader for :func:`fetch_cdom_sensor_model` (network seam)."""
+    import urllib.request
+
+    with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - fixed https GDAC host
+        return resp.read()
+
+
+def fetch_cdom_sensor_model(
+    wmo: int, data_center: str | None, *, downloader=None
+) -> str | None:
+    """Fetch a float's CDOM fluorometer ``SENSOR_MODEL`` from its GDAC meta.nc.
+
+    Per chl_cdom_matchups.md R6: sensor identity ("MCOM*" vs. ``ECO_FLBBCD``)
+    is not present in anything :func:`iter_profiles` reads — it lives only in
+    the float's separate, per-**float** (not per-profile) ``<wmo>_meta.nc``
+    file, fetched here via a plain HTTPS download (not through argopy's
+    ``DataFetcher``, which has no meta-file support).
+
+    Args:
+        wmo: Float WMO id.
+        data_center: The float's 2-letter DAC code (``floats.data_center``,
+            e.g. ``'AO'``); looked up in :data:`DAC_FOLDERS` for the GDAC URL
+            path. ``None`` or an unknown code returns ``None`` rather than
+            guessing a folder.
+        downloader: ``url -> bytes`` override (the test seam — mocks the
+            network); defaults to a real HTTPS GET.
+
+    Returns:
+        The stripped ``SENSOR_MODEL`` string for the ``FLUOROMETER_CDOM``
+        sensor row (e.g. ``'MCOMS_FLBBCD'``, ``'ECO_FLBBCD'``, or the literal
+        string ``'UNKNOWN'`` some floats report), or ``None`` if the float has
+        no DAC mapping, no CDOM sensor row, or the fetch/parse fails for any
+        reason — a missing sensor model must never abort a re-ingestion pass.
+    """
+    dac = DAC_FOLDERS.get((data_center or "").strip().upper())
+    if dac is None:
+        return None
+    url = GDAC_META_URL.format(dac=dac, wmo=wmo)
+    get = downloader or _default_meta_downloader
+    try:
+        raw = get(url)
+    except Exception:  # noqa: BLE001 - a fetch failure must not abort re-ingestion
+        return None
+
+    import tempfile
+    from pathlib import Path
+
+    import xarray as xr
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / f"{wmo}_meta.nc"
+        path.write_bytes(raw)
+        try:
+            with xr.open_dataset(path) as ds:
+                if "SENSOR" not in ds or "SENSOR_MODEL" not in ds:
+                    return None
+                sensors = _decode_char_array(ds["SENSOR"].values)
+                models = _decode_char_array(ds["SENSOR_MODEL"].values)
+        except Exception:  # noqa: BLE001 - a malformed meta file must not abort
+            return None
+
+    for sensor, model in zip(sensors, models, strict=True):
+        if sensor == CDOM_SENSOR_ROW:
+            return model or None
+    return None
+
+
+def _decode_char_array(values) -> list[str]:
+    """Decode a netCDF fixed-width byte/char array to a list of stripped strings.
+
+    A real GDAC meta.nc yields plain ``bytes`` rows via xarray (no
+    ``.tobytes()`` — decode directly; ``str(x)`` would silently stringify a
+    ``bytes`` object to its ``b'...'`` repr). A synthetic/round-tripped
+    dataset (e.g. in tests) can instead yield ``numpy.str_``, which — despite
+    already being a real ``str`` — *also* defines ``.tobytes()``, returning
+    the raw in-memory encoding (UTF-32 on most builds), not UTF-8 text; that
+    check must come after the plain-``str`` check, not before, or "real
+    string" rows get mangled through a UTF-8 decode of the wrong bytes.
+    """
+    out = []
+    for x in values:
+        if isinstance(x, bytes):
+            s = x.decode("utf-8", errors="ignore")
+        elif isinstance(x, str):
+            s = str(x)
+        elif hasattr(x, "tobytes"):
+            s = x.tobytes().decode("utf-8", errors="ignore")
+        else:
+            s = str(x)
+        out.append(s.strip())
+    return out

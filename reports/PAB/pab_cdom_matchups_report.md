@@ -1,10 +1,19 @@
 # PACE – Argo CDOM Comparison (Qualitative/Correlative)
 
-**Date:** 2026-09-07
+**Report version:** 1.0
+**Date:** 2026-09-10
+**Versioning convention:** bump the **minor** version for substantive changes
+(new figures, a changed analysis population, rewritten sections), e.g.
+1.0 → 1.1; use an **additional decimal** for small edits, e.g. 1.1 → 1.1.1.
+Update the **Date** whenever the version changes. (Versioning starts at this
+revision — the report existed unversioned from 2026-09-07 through the
+methodology/example additions and the R1-R8 refinement pass; see
+`claude_prompts/chl_cdom_matchups.md`'s Logs for that history.)
 **Database:** `pab.db` (full production run — `pab_version = "1.0"`, 881 floats)
 **Scripts:** `pab/matchup/cdom/` — `data.py` (shared loader + caveats),
 `plot_cdom_scatter.py`, `plot_cdom_regional.py`, `plot_cdom_seasonal.py`,
-`plot_cdom_map.py`, `run_all.py`
+`plot_cdom_map.py`, `plot_cdom_linear.py`, `plot_cdom_ratio_map.py`,
+`plot_cdom_example_profile.py`, `run_all.py`
 **Figures:** `pab/matchup/cdom/*.png`
 
 ---
@@ -46,50 +55,226 @@ correction is applied or estimated here.
 
 ## Summary
 
-Across **7,083 matchups** (48.5% of the 14,609 in the full Chl-a matchup set
-— consistent with CDOM's known ~46-48% fleet coverage relative to
-CHLA/BBP700), raw Argo CDOM shows **essentially no rank correlation** with
-the fitted `Adg` amplitude: **Spearman ρ = -0.03** overall (statistically
-distinguishable from zero only because of the large sample size — the effect
-size itself is negligible). This holds up under every stratification tried:
-by ocean basin (ρ from -0.09 to +0.19), and by season (ρ from -0.06 to +0.01).
-No basin or season shows a materially different story.
+**Refinement pass (chl_cdom_matchups.md R1–R8).** The population is now
+restricted to **AOML-processed floats with raw CDOM < 6 ppb QSDE**
+(n=3,676), replacing the earlier unrestricted population (n=7,083). The
+original unrestricted figures/numbers are recoverable in git history; they
+are not reproduced below.
 
-This is a genuinely different, and on its face more surprising, result than
-the companion Chl-a report's finding that the *Chl-a bias* correlates
-modestly with `Adg` (ρ=-0.24) — here, the in-situ quantity `Adg` is supposed
-to relate to (CDOM) shows almost no relationship with `Adg` itself. The two
-findings are not in tension (one is about a bias, the other about a raw
-quantity), but together they suggest `Adg`'s connection to actual dissolved
-CDOM is weak, and whatever else `Adg` is picking up — detrital particulate
-absorption, retrieval noise, or aliasing from other fitted terms — may
-dominate it in much of the ocean.
+**Headline result: under this restriction, the CDOM-Adg correlation flips
+sign and strengthens.** The overall Spearman ρ moves from -0.03 (practically
+zero, unrestricted) to **+0.13** (p=4.0e-16) — and, unlike before, where
+signs were mixed and near-zero everywhere, **every basin and every season
+now shows a positive correlation** (ρ ranging from +0.08 to +0.26). The
+correlation remains weak-to-moderate in absolute terms, but the qualitative
+change — from "no relationship anywhere" to "a consistent positive
+relationship everywhere" — is a substantive finding, not noise. This change
+is driven almost entirely by the **AOML restriction**, not the CDOM < 6 cut:
+the AOML-only subset of the old population was already 3,690 matchups, and
+the CDOM < 6 cut removes only 14 more (7,065 of the original 7,083 already
+satisfied it).
 
-**One important methodological point for future work on this dataset:**
-Spearman rank correlation is invariant under any monotonic increasing
-transform of either variable. Since the Sea-Bird RAF (multiplying every raw
-CDOM value by the constant 5.62) is exactly such a transform, **applying the
-still-pending correction would not change any of the correlations reported
-here.** If JXP's planned correction pass ends up being a uniform
-multiplicative factor, this report's qualitative finding — CDOM and `Adg`
-are essentially rank-uncorrelated — will not need to be redone.
+Two new figures are added, and **both are deliberate, one-off exceptions to
+this report's own C3 rule** (never showing a 1:1/fit line or cross-unit bias
+statistic for CDOM, since Argo CDOM in ppb QSDE and BING's `Adg` in m⁻¹ have
+no fixed conversion):
+
+- **Figure 5** — the same comparison on a linear scale, with a fitted OLS
+  trend line, captioned explicitly as illustrative only, not a validated
+  conversion.
+- **Figure 6** — a geographic map of the literal cross-unit ratio
+  `Adg`/CDOM — exactly the kind of bias-like presentation C3 exists to
+  prevent, shown here as a qualitative visual only, with a prominent caveat.
+
+**This refined result is not the final word.** Two requested refinements
+remain open and deferred to a future re-ingestion pass: Argo QC-flag
+filtering (R2 — no per-level QC flags are stored in `pab.db`, only an
+already-averaged mixed-layer mean, so this cannot be applied retroactively)
+and a split by CDOM sensor model (R6 — feasible via a float-level GDAC
+meta-file fetch, but not built in this update). **No QC screening is applied
+even to this restricted, AOML-only population.**
+
+**One important methodological point carried over from the unrestricted
+analysis:** Spearman rank correlation is invariant under any monotonic
+increasing transform of either variable. Since the Sea-Bird RAF (multiplying
+every raw CDOM value by the constant 5.62) is exactly such a transform,
+**applying the still-pending correction would not change any of the rank
+correlations reported here** (though it would change Figure 5's OLS slope,
+which is fit in absolute, not rank, units).
 
 ---
 
 ## Data
 
-Reuses `pab.matchup.chl.data.load_chl_matchups()` (the CDOM population is a
-subset of the exact same joined matchup table the Chl-a report draws from —
-see `pab.matchup.cdom.data` for the CDOM-specific validity filter and caveat
-text) rather than a separate query path.
+Built from `pab.matchup.chl.data.load_chl_matchups()` (the CDOM population is
+a subset of the exact same joined matchup table the Chl-a report draws from)
+via `pab.matchup.cdom.data.valid_cdom()` + `restrict_to_aoml()`, applying two
+cuts to the previous unrestricted set of 7,083:
 
-| | Value |
+1. **AOML-processed floats only** (`floats.data_center == 'AO'`).
+2. **Raw CDOM < 6 ppb QSDE** (strict).
+
+The AOML restriction does essentially all the work: AOML-only within the old
+population was already 3,690 matchups, and the CDOM < 6 cut removes only 14
+more. This restricted population (n=3,676) replaces the old unrestricted set
+in every figure below.
+
+| | Old (n=7,083, all DACs) | New (n=3,676, AOML only) |
+|---|---|---|
+| Overall Spearman ρ | -0.03 | **+0.13** (p=4.0e-16) |
+| Atlantic | -0.06 | **+0.19** (n=1,181) |
+| Pacific | +0.19 | **+0.11** (n=1,647) |
+| Indian | +0.06 | **+0.26** (n=524) |
+| Southern | -0.09 | **+0.12** (n=324) |
+| DJF | -0.03 | **+0.08** (n=990) |
+| MAM | -0.03 | **+0.16** (n=1,192) |
+| JJA | -0.06 | **+0.15** (n=693) |
+| SON | +0.01 | **+0.17** (n=801) |
+
+`cdom_data_mode` is still 100% `'R'` (real-time) in the restricted population
+— the AOML cut does not change this fleet-wide fact.
+
+Note: the worked example in the Methodology section below (float WMO
+5907147) is Coriolis-processed (`data_center = 'IF'`) and therefore falls
+outside this restricted AOML-only population. It remains in the report as-is
+because it illustrates the general Argo-ingestion/BING-fitting *methodology*,
+not this specific AOML cut.
+
+---
+
+## Methodology
+
+### Argo: CDOM ingestion and processing
+
+CDOM profiles are fetched via `argopy`'s BGC `DataFetcher` (`ds='bgc',
+src='gdac', mode='expert'`), the same mechanism already used for CHLA and
+BBP700; `"CDOM"` was added to `pab/argo/fetch.py::DEFAULT_PARAMS` in the
+Stage 10 pass. For each profile, `pab/argo/fetch.py::iter_profiles` extracts
+the per-level `CDOM` array along with the per-parameter `CDOM_DATA_MODE`.
+
+`pab/argo/summary.py::summarize_profile` then computes a mixed-layer mean and
+standard deviation of CDOM as a plain arithmetic mean over all levels within
+the mixed layer. No de-spiking and no IQR outlier rejection are applied —
+that treatment is BBP700-specific (following Bisson et al.'s recipe); CHLA
+and CDOM both receive the plain mean.
+
+Two limitations of this ingestion path should be stated plainly:
+
+1. **No QC-flag filtering is applied.** This was verified directly against
+   the live pipeline code rather than assumed. A
+   `pab.argo.fetch.filter_quality()` function exists (default: keep QC flags
+   1 and 2), but a repo-wide search confirms it has zero call sites in
+   `pab/pipeline.py` or anywhere else in the ingestion path. `fetch_profile()`
+   calls `build_fetcher(...).profile(wmo, cycle).load().data` and hands the
+   raw fetched dataset directly to `iter_profiles`/`summarize_profile`.
+   Consequently, every per-level CDOM (and CHLA) value within the mixed layer
+   is averaged in regardless of its Argo QC flag (1 = good, 2 = probably
+   good, 3 = probably bad, 4 = bad).
+2. **All CDOM values are real-time.** A fleet-wide spot-check during the
+   implementation pass found `cdom_data_mode` to be 100% `'R'`: no BGC-Argo
+   float has had CDOM delayed-mode/QC-reprocessed by any DAC. Every CDOM
+   value in this analysis is therefore real-time, unfiltered, and
+   uncorrected for the known Sea-Bird calibration low-bias discussed
+   elsewhere in this report.
+
+The resulting `cdom`, `cdom_std`, and `cdom_data_mode` are persisted into the
+`mld_summary` table (schema v4) via `persist_summary()`, keyed by
+`profile_id`.
+
+### PACE/BING: the fitted Adg amplitude
+
+BING is the Bayesian MCMC spectral-inversion framework PAB uses to fit each
+matchup's nearest-pixel PACE `Rrs(λ)` spectrum (400–700 nm). All fits in this
+report use the `ExpBPow` model pair (Exponential–Bricaud a_ph + power-law
+particulate backscatter). Each fit is an LM warm-start followed by full MCMC
+(`emcee`), producing a posterior over the model parameters.
+
+`Adg` is the amplitude of an exponential CDOM+detrital absorption term of the
+form `A_dg * exp[-S_dg * (wavelength - 400)]`. It is a term in the
+*satellite* radiative-transfer/absorption model — not any processing of the
+Argo CDOM measurement. It has no knowledge of, and is not tuned against,
+in-situ CDOM in any way, which is part of why this report's comparison is
+strictly qualitative.
+
+Every fit stores 10 posterior IOP quantities in the long-format
+`fit_results` table (as `BING_ExpBPow_<quantity>`), each recorded as a
+posterior median plus a 5–95% credible interval (`value`, `value_lo`,
+`value_hi`). `Adg` (`BING_ExpBPow_Adg`) is one of these 10.
+
+---
+
+## Example: One Float, One Matchup, One Fit
+
+To make the pipeline concrete, this section walks one real matchup end to
+end: float WMO 5907147, cycle 258 (43.08°N, 9.11°E, 2026-04-24), which pairs
+with a PACE granule fitted by BING. This is the same matchup used in Figure
+1's scatter — not a cherry-picked illustration built separately from the
+analysis population.
+
+### The Argo profile
+
+![CDOM and CHLA vs. pressure for WMO 5907147 cycle 258, points colored by QC flag, MLD marked](../../pab/matchup/cdom/cdom_example_argo_profile.png)
+
+The figure shows CDOM and CHLA vs. pressure as fetched — no QC screen
+applied by PAB — with points colored by their Argo QC flag and the 16.9 m
+mixed-layer depth marked as a dashed line. The stored `mld_summary` row for
+this profile is:
+
+| Quantity | Value |
 |---|---|
-| Matchups with a BING `ExpBPow` fit | 14,609 |
-| Valid for this comparison (finite, positive `cdom` and `adg_bing`) | **7,083** (48.5%) |
-| `cdom_data_mode` breakdown | 100% `'R'` (real-time); 0% `'A'`/`'D'` |
-| Basin split | Atlantic 3,123 / Pacific 2,608 / Indian 808 / Southern 544 |
-| Season split | MAM 2,263 / JJA 1,646 / DJF 1,614 / SON 1,560 |
+| `mld` | 16.9 m |
+| `cdom` | 0.219 ppb QSDE |
+| `cdom_std` | 0.279 |
+| `cdom_data_mode` | `'R'` |
+| `chla` (raw) | 0.057 mg/m³ |
+| `chla_adjusted` | 0.032 mg/m³ |
+| `chla_data_mode` | `'A'` |
+| `n_points` | 45 |
+
+Note that `cdom_std` exceeds half the mean — a noisy real-time signal. A
+fresh live re-fetch of this exact profile (via the same `argopy` path, no
+filtering) found that every CDOM point in the profile carries Argo QC flag 3
+("probably bad") and every CHLA point carries QC flag 4 ("bad") — none were
+QC 1 or 2. All of these unscreened points are what got averaged into the
+`mld_summary` values above. This is a concrete illustration, for this one
+profile, of the no-QC-filtering behavior documented in the Methodology; it
+is not a claim about the QC-flag distribution of the fleet as a whole.
+
+### The BING fit
+
+![Standard two-panel BING fit figure: observed vs. median Rrs with credible band, and retrieved bbp spectrum](../../pab/matchup/cdom/cdom_example_bing_fit.png)
+
+The figure is PAB's standard two-panel fit figure
+(`pab.plotting.fit_fig.fit_figure`): the top panel shows the observed vs.
+BING-median `Rrs(λ)` with a 5–95% credible band; the bottom panel shows the
+retrieved `b_bp(λ)` spectrum with its own credible band, 700 nm marked.
+(This format predates the CDOM work and does not plot `Adg` directly.) The
+fit here is a real production fit, reconstructed from its archived MCMC
+chain — visual agreement between observed and median Rrs is excellent
+across the full 400–700 nm range with a narrow credible band, and the
+retrieved `b_bp(λ)` declines smoothly.
+
+- `fit_id`: `5907147_258_PACE_OCI.20260424T111536.L2.OC_AOP.V3_2.nc_743_198_ExpBPow`
+- Reduced `chisq = 0.093` (well below 1), `success = True`
+
+Retrieved quantities (posterior median [5–95% interval]):
+
+| Quantity | Value |
+|---|---|
+| `Adg` | 0.036 [0.032, 0.045] m⁻¹ |
+| `Sdg` | 0.018 |
+| `chl` | 0.152 mg/m³ |
+| `bbp700` | 0.00051 m⁻¹ |
+| `Aph` | 0.0085 |
+| `Bnw` | 0.00067 |
+| `beta` | 1.81 |
+
+(For context only: BING's `chl` of 0.152 mg/m³ sits well above this
+profile's Argo raw chla of 0.057 and adjusted chla of 0.032 mg/m³, but
+chlorophyll is outside this report's scope.)
+
+This fit's `Adg = 0.036 m⁻¹` is the value paired against this profile's
+mixed-layer CDOM of 0.219 ppb QSDE as one point in the Figure 1 scatter.
 
 ---
 
@@ -100,16 +285,18 @@ text) rather than a separate query path.
 ![CDOM vs Adg scatter](../../pab/matchup/cdom/cdom_vs_adg_scatter.png)
 
 **Key observations:**
-- No 1:1 line, by design (see above). Spearman ρ = -0.03 (n=7,083, p=0.014 —
-  significant only in the large-sample statistical sense, not practically
-  meaningful).
-- The point cloud is broad and largely unstructured: CDOM values span roughly
-  four orders of magnitude (~10⁻⁵ to ~10² ppb QSDE, with the bulk between
-  ~0.1 and ~5), and for any given CDOM value, `Adg` spans roughly two orders
-  of magnitude.
-- A small number of very low `Adg` values (below ~10⁻³ m⁻¹) sit at
-  moderate-to-high CDOM — a handful of BING fits pushing the CDOM/detrital
-  amplitude toward its lower bound regardless of the in-situ CDOM reading.
+- No 1:1 line, by design (see above). Spearman ρ = **+0.13** (n=3,676,
+  p=4.0e-16) — a real, if modest, positive rank correlation, a sign flip and
+  strengthening from the unrestricted population's ρ=-0.03.
+- CDOM values now span roughly six orders of magnitude within this
+  AOML-only, cdom<6 population (a small cluster near ~10⁻⁵ ppb, then a
+  bimodal main cluster between ~0.1 and ~5 ppb); `Adg` still spans roughly
+  two-to-three orders of magnitude for any given CDOM value — the
+  correlation is real but far from tight.
+- A handful of very low `Adg` values (down to ~10⁻⁵ m⁻¹) still occur at
+  moderate-to-high CDOM, and a few very low-CDOM points (~10⁻⁵ ppb) pair with
+  ordinary-magnitude `Adg` — neither extreme is common enough to drive the
+  overall correlation.
 
 ---
 
@@ -120,17 +307,17 @@ text) rather than a separate query path.
 ![CDOM vs Adg by basin](../../pab/matchup/cdom/cdom_vs_adg_by_basin.png)
 
 **Key observations:**
-- Atlantic (n=3,123, ρ=-0.06) and Southern (n=544, ρ=-0.09) show mild
-  negative correlation; Indian (n=808, ρ=+0.06) is close to zero; **Pacific
-  (n=2,608, ρ=+0.19) is the one basin with a correlation worth noting**, though
-  still weak in absolute terms.
-- No basin shows anything resembling the strong rank agreement seen in the
-  Chl-a-vs-Argo comparison (ρ=0.78) — CDOM/`Adg` agreement is uniformly weak
-  to absent, everywhere.
-- The Pacific's mild positive signal is not obviously explained by this
-  comparison alone (e.g., a specific water mass or CDOM source) and is flagged
-  as the one pattern worth a closer look if this comparison is revisited after
-  the Sea-Bird correction is applied.
+- **Every basin is now positive**: Atlantic ρ=+0.19 (n=1,181), Pacific
+  ρ=+0.11 (n=1,647), Indian ρ=+0.26 (n=524, the strongest of the four),
+  Southern ρ=+0.12 (n=324) — a marked change from the unrestricted
+  population, where signs were mixed (Atlantic and Southern were negative).
+- Still, no basin approaches the strong rank agreement seen in the
+  Chl-a-vs-Argo comparison (ρ=0.78) — CDOM/`Adg` agreement is real but
+  consistently weak-to-moderate, everywhere.
+- The visible bimodal clustering of CDOM values (two dense vertical bands,
+  roughly 0.1-1 and 1-3 ppb) appears in every basin, not just one — likely a
+  real feature of the AOML fleet's CDOM distribution rather than a
+  basin-specific artifact.
 
 ---
 
@@ -141,13 +328,16 @@ text) rather than a separate query path.
 ![CDOM vs Adg by season](../../pab/matchup/cdom/cdom_vs_adg_seasonal.png)
 
 **Key observations:**
-- All four seasons show near-zero correlation (DJF -0.03, MAM -0.03, JJA
-  -0.06, SON +0.01) — no meaningful seasonal modulation of the CDOM/`Adg`
-  relationship, in either direction.
-- This rules out a seasonal confound (e.g., productivity-driven CDOM
-  production varying by season in a way that would show up differently in
-  different quarters) as an explanation for the weak overall correlation —
-  the weakness is consistent year-round.
+- **Every season is now positive**: DJF ρ=+0.08 (n=990, the weakest), MAM
+  ρ=+0.16 (n=1,192), JJA ρ=+0.15 (n=693), SON ρ=+0.17 (n=801) — again a
+  marked change from the unrestricted population's near-zero/mixed-sign
+  seasonal pattern.
+- DJF being the weakest of the four (though still positive) is a mild
+  seasonal modulation worth noting, but not large enough to argue for a
+  specific productivity- or season-driven mechanism on this evidence alone.
+- The positive correlation is consistent enough across all four seasons that
+  a seasonal confound is not needed to explain the headline result — the
+  AOML restriction alone (Data section) accounts for the bulk of the change.
 
 ---
 
@@ -160,63 +350,136 @@ text) rather than a separate query path.
 **Key observations:**
 - Descriptive only: color encodes raw Argo CDOM magnitude, not a PACE
   comparison (per C3, no bias metric exists for CDOM).
-- Coverage tracks the general BGC-Argo matchup population (dense in the
-  Atlantic and western Pacific, sparser in the Indian Ocean and Southern
-  Ocean) rather than concentrating in any particular CDOM-source region (e.g.
-  major river plumes are not obviously over-represented in this matchup set).
-- The highest single CDOM value in the set is a visibly isolated point in the
-  South Pacific; no broad regional hot-spot of elevated CDOM stands out
-  otherwise. This map is provided for coverage/context, not as evidence for
-  or against any hypothesis about the CDOM/`Adg` relationship.
+- Coverage now shows the AOML-only subset (dense in the North Atlantic,
+  Mediterranean, and along several zonal ship-track-like bands; sparser in
+  the Indian Ocean and high Southern Ocean) rather than the full multi-DAC
+  fleet.
+- One visibly isolated dark point in the South Pacific (~29°S, 139°W) is a
+  cluster of the population's **lowest** CDOM values (~6×10⁻⁶ ppb, verified
+  directly against the data) — not the highest, correcting an
+  easy-to-mis-scan reading of the color scale. The highest CDOM values
+  (~4.8 ppb, near the CDOM<6 cutoff) are scattered across several basins
+  (South Atlantic, Caribbean, eastern tropical Pacific) with no single
+  standout hot-spot. This map is provided for coverage/context, not as
+  evidence for or against any hypothesis about the CDOM/`Adg` relationship.
+
+---
+
+## Figure 5 — Linear-Scale Comparison with an Illustrative OLS Trend Line
+
+**File:** `cdom_vs_adg_linear.png`
+
+![Linear-scale CDOM vs Adg with OLS fit](../../pab/matchup/cdom/cdom_vs_adg_linear.png)
+
+**Key observations:**
+- Per R4/R7, this is a deliberate, one-off exception to the no-fit-line rule
+  applied to every other CDOM figure in this project: a fitted slope across
+  different units reads as a proposed ppb→m⁻¹ conversion factor, which this
+  is explicitly not. The figure is captioned on the plot itself as
+  "illustrative OLS trend only — NOT a validated or recommended
+  ppb-to-m⁻¹ conversion."
+- The OLS fit is `Adg = 0.0062 × CDOM + 0.0144`, with **R² = 0.01** — the fit
+  explains almost none of the variance despite the positive rank correlation
+  (ρ=+0.13) reported elsewhere in this report. Spearman ρ and R² measure
+  different things: a weak-but-real *rank* relationship does not imply a
+  strong *linear* one.
+- The bulk of points cluster at low CDOM (0-2 ppb) and low `Adg` (0-0.1
+  m⁻¹); a handful of outliers extend to CDOM ≈ 5, `Adg` ≈ 1.2-1.3.
+- The fit line is nearly flat: the relationship, while positive in rank, is
+  not well described by a straight line over this range — most of the
+  signal lies in which points are relatively higher or lower than others,
+  not in a proportional scaling.
+
+---
+
+## Figure 6 — Geographic Map of the Adg/CDOM Ratio
+
+**File:** `cdom_ratio_map.png`
+
+![Geographic map of Adg/CDOM ratio](../../pab/matchup/cdom/cdom_ratio_map.png)
+
+**Key observations:**
+- Per R5/R8, this is also a deliberate, explicitly-flagged exception to the
+  no-ratio rule applied everywhere else in this report: a literal cross-unit
+  ratio (m⁻¹ per ppb QSDE) is precisely the kind of bias-like quantity C3
+  exists to prevent. It is presented as a qualitative visual only, with the
+  caveat stamped on the figure itself.
+- Color shows `Adg`/CDOM on a log scale, clipped to the central 90% of
+  values (5th percentile ≈ 0.00301, median ≈ 0.01335, 95th percentile ≈
+  0.07474 m⁻¹ per ppb QSDE), with `extend='both'` colorbar arrows marking
+  that more extreme values exist beyond the shown range — the full ratio
+  spans 8.5 orders of magnitude.
+- No single dominant regional hot-spot or cold-spot is obvious at a glance —
+  the color pattern looks broadly patchy/mixed rather than cleanly zonal or
+  coastal-vs-open-ocean.
+- No quantitative regional breakdown of the ratio itself was computed (only
+  the CDOM-`Adg` *correlation* was broken out by basin/season, in the Data
+  section table above); this map is a qualitative visual only, consistent
+  with C3's spirit even though the ratio itself is a conscious exception to
+  it.
 
 ---
 
 ## Interpretation
 
-1. **CDOM and the fitted `Adg` amplitude are essentially rank-uncorrelated,
-   globally and in every basin/season slice tried.** The overall ρ=-0.03 is
-   not practically different from zero, and no stratification surfaces a
-   materially different story (Pacific's ρ=+0.19 is the largest magnitude
-   seen anywhere, and still weak).
+1. **Restricted to AOML, CDOM and the fitted `Adg` amplitude show a real,
+   if weak-to-moderate, positive rank correlation — everywhere.** The
+   overall ρ=+0.13 is small but not practically zero, and every basin
+   (ρ=+0.11 to +0.26) and every season (ρ=+0.08 to +0.17) agrees in sign.
+   This supersedes the unrestricted population's finding (ρ≈0 with mixed
+   signs across strata) — see point 5 below for why.
 
 2. **This is not an artifact of the unapplied Sea-Bird correction.** Spearman
    ρ is invariant under a uniform multiplicative rescaling, so applying the
    RAF (5.62x) to every raw CDOM value — if that is what the eventual
-   correction turns out to be — would not change any correlation reported
-   here. If the eventual, fuller correction (including the second,
+   correction turns out to be — would not change any rank correlation
+   reported here (it would change Figure 5's OLS slope, which fits absolute
+   values). If the eventual, fuller correction (including the second,
    currently-unpublished sensor-reference bias) is *not* a uniform factor,
    this conclusion would need to be revisited; that cannot be evaluated until
    that correction is published.
 
-3. **Plausible reasons `Adg` might not track in-situ CDOM well, none
-   confirmed here** (out of scope for a qualitative comparison, but worth
-   naming for follow-on work):
+3. **Plausible reasons the correlation is real but still only
+   weak-to-moderate, not confirmed here** (out of scope for a qualitative
+   comparison, but worth naming for follow-on work):
    - **`Adg` is a combined quantity.** JXP's own framing when scoping this
      comparison (C3) anticipated detrital absorption is generally much
-     smaller than CDOM absorption; this result does not confirm that
-     expectation — if detritus is negligible, a cleaner signal between CDOM
-     and `Adg` might be expected than what is observed.
+     smaller than CDOM absorption; a weak-but-real correlation is at least
+     consistent with that expectation (a dominant detrital term would more
+     likely erase the signal entirely) without confirming it.
    - **Unit/quantity mismatch nonlinearity.** A fluorescence proxy (ppb QSDE)
-     and an absorption coefficient (m⁻¹) need not be even monotonically
-     related if the underlying optical relationship is regime-dependent (e.g.
-     changes with CDOM source, degradation state, or particle load) — this
-     could suppress rank correlation even without either measurement being
-     "wrong."
+     and an absorption coefficient (m⁻¹) need not be linearly related even
+     where they are monotonically related — consistent with Figure 5's weak
+     R² alongside a real Spearman ρ.
    - **CDOM sensor data quality.** Every value used here is real-time only —
      no BGC-Argo float has ever had CDOM delayed-mode quality control applied
-     (Figure 1's `cdom_data_mode` breakdown, corroborating the fleet-wide
-     spot-check in `chl_cdom_prompt_1.md`) — so real-time-grade sensor noise
-     is plausibly larger, relative to the signal, than for the more mature
-     CHLA/BBP700 QC pipelines.
+     (corroborating the fleet-wide spot-check in `chl_cdom_prompt_1.md`) —
+     so real-time-grade sensor noise is plausibly larger, relative to the
+     signal, than for the more mature CHLA/BBP700 QC pipelines, and no QC
+     screening is applied here regardless (R2, deferred).
 
-4. **Net assessment:** this comparison does not support treating BING's
-   `Adg` as a usable proxy for in-situ CDOM concentration in its current
-   form, though it remains a physically motivated absorption-budget term in
-   its own right. The companion Chl-a report's `Adg`-vs-Chl-bias correlation
-   (ρ=-0.24) should not be read as validating `Adg` against CDOM — that
-   finding and this one address different questions and are not in tension,
-   but this report does not provide independent support for the physical
-   CDOM-aliasing mechanism hypothesized there.
+4. **Net assessment:** this comparison now supports a real, if modest,
+   physical relationship between BING's `Adg` and in-situ CDOM — but only
+   within the AOML subset, and only on unfiltered, uncorrected raw data.
+   `Adg` is not yet established as a usable general-purpose proxy for in-situ
+   CDOM. The companion Chl-a report's `Adg`-vs-Chl-bias correlation (ρ=-0.24)
+   should not be read as validating `Adg` against CDOM directly — that
+   finding and this one address different questions.
+
+5. **The sign-flip under the AOML restriction is the central new
+   take-away of this refinement pass.** Restricting to AOML-processed floats
+   moves the overall Spearman ρ from -0.03 to +0.13 and turns every basin and
+   season positive, while the accompanying CDOM < 6 cut changes almost
+   nothing on its own (Data section). The most natural reading is that
+   non-AOML DACs' CDOM data — or their processing conventions — were adding
+   enough noise or inconsistency to wash out a real signal that AOML's data
+   reveals more cleanly. This is consistent with, though does not prove, a
+   DAC-specific data-quality or convention difference, paralleling a similar
+   AOML-vs-other-DACs pattern already noted in the companion Chl-a report.
+   The natural next steps are the two deferred refinements: applying Argo
+   QC-flag screening (R2) and splitting by CDOM sensor model, `MCOMS_FLBBCD`
+   vs. `ECO_FLBBCD` (R6), to test whether the signal strengthens further
+   under either.
 
 ---
 
@@ -237,7 +500,15 @@ python -m pab.matchup.cdom.plot_cdom_scatter --out cdom_vs_adg_scatter.png
 python -m pab.matchup.cdom.plot_cdom_regional --out cdom_vs_adg_by_basin.png
 python -m pab.matchup.cdom.plot_cdom_seasonal --out cdom_vs_adg_seasonal.png
 python -m pab.matchup.cdom.plot_cdom_map --out cdom_global_map.png
+python -m pab.matchup.cdom.plot_cdom_linear --out cdom_vs_adg_linear.png
+python -m pab.matchup.cdom.plot_cdom_ratio_map --out cdom_ratio_map.png
 ```
+
+All five figure scripts (scatter, by-basin, by-season, map, linear, ratio
+map) restrict to AOML floats with `cdom < 6` by default
+(`pab.matchup.cdom.data.valid_cdom()` + `restrict_to_aoml()`); there is no
+CLI flag to reproduce the old unrestricted population — use the git history
+of this file/these scripts if the unrestricted figures are needed again.
 
 All scripts accept `--db` (default: `$PAB_DATA_DIR/pab.db`).
 
@@ -257,4 +528,12 @@ All scripts accept `--db` (default: `$PAB_DATA_DIR/pab.db`).
 - This report is intentionally narrower in scope than the Chl-a report: no
   bias number, no 1:1 line, and no claim about which quantity is "more
   correct" — per C3, that is a deliberate, agreed limitation given the
-  units/quantity mismatch, not an oversight.
+  units/quantity mismatch, not an oversight. Figures 5 and 6 are named,
+  one-off exceptions to this rule (R4/R5), not a reversal of it.
+- QC-flag filtering (R2) and the CDOM sensor-model split (R6) were both
+  requested but are **deferred to a future re-ingestion pass**, not silently
+  dropped: the current matchup files store only an already-averaged
+  mixed-layer CDOM mean with no per-level QC flags (so QC screening requires
+  a real re-ingestion), and the sensor split, while feasible via a
+  float-level GDAC meta-file fetch, was not built in this update. Even the
+  restricted AOML-only population presented here carries no QC screening.

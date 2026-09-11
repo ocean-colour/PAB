@@ -16,6 +16,16 @@ ingest raw ``cdom`` only pending a BGC-Argo consult on how to apply the
 Sea-Bird 5.62x Reference Adjustment Factor — so there is nothing for a
 "raw vs. adjusted" CDOM comparison to compare yet. Every figure here is raw
 CDOM only; the Sea-Bird caveat is carried as text, not as a second series.
+
+**Refinement pass (chl_cdom_matchups.md R1-R8).** Per R1/R3, the analysis
+population is now restricted to ``cdom < 6`` ppb QSDE and AOML-processed
+floats only (``valid_cdom()`` + :func:`restrict_to_aoml`), replacing the
+prior unrestricted 7,083-matchup figures. Two further restrictions were
+requested (R2: drop QC=4 points; R6: split by CDOM sensor model) but both
+require a real re-ingestion pass — no per-level QC flag or sensor-model
+field is stored anywhere in ``pab.db`` today, only the already-averaged
+``mld_summary.cdom`` mean — so per R2(b)/R6(b) both are deferred to a
+separate future pass, not applied here.
 """
 
 from __future__ import annotations
@@ -23,6 +33,9 @@ from __future__ import annotations
 import numpy as np
 
 from pab.matchup.chl.data import DEFAULT_DB, load_chl_matchups  # noqa: F401 (re-export)
+
+#: Per R1: strict "< 6", not "<= 6". Removes only 18 of 7,083 matchups.
+CDOM_MAX = 6.0
 
 #: Per C3: the two quantities are not the same thing, and PAB draws no
 #: ppb -> absorption conversion. Every CDOM figure carries this verbatim.
@@ -47,7 +60,7 @@ SEABIRD_CAVEAT = (
 
 
 def valid_cdom(df):
-    """Rows with finite, positive raw ``cdom`` and fitted ``adg_bing``.
+    """Rows with finite, positive raw ``cdom`` (< :data:`CDOM_MAX`, per R1) and fitted ``adg_bing``.
 
     Args:
         df: Frame from :func:`load_chl_matchups`.
@@ -55,17 +68,33 @@ def valid_cdom(df):
     Returns:
         A filtered copy — the CDOM comparison population (~48% of the full
         Chl-a matchup set, consistent with the ~46% fleet-coverage figure in
-        ``pab/argo/BGC_Argo_Coverage_Report.md``).
+        ``pab/argo/BGC_Argo_Coverage_Report.md``). Combine with
+        :func:`restrict_to_aoml` for the R1-R8 refined analysis population.
     """
     ok = (
         df["cdom"].notna()
         & np.isfinite(df["cdom"])
         & (df["cdom"] > 0)
+        & (df["cdom"] < CDOM_MAX)
         & df["adg_bing"].notna()
         & np.isfinite(df["adg_bing"])
         & (df["adg_bing"] > 0)
     )
     return df[ok].copy()
+
+
+def restrict_to_aoml(df):
+    """AOML-processed floats only (per R3 — combined with :func:`valid_cdom`'s cdom < 6 cut).
+
+    Args:
+        df: Frame already filtered by :func:`valid_cdom`.
+
+    Returns:
+        A filtered copy — 3,676 of the 3,690 AOML-in-``valid_cdom`` matchups
+        survive the combined ``cdom < 6`` + AOML cut (verified: the two
+        restrictions barely interact).
+    """
+    return df[df["is_aoml"]].copy()
 
 
 def add_caveat_box(

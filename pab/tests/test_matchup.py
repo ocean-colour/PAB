@@ -185,6 +185,56 @@ def test_build_matchups_persists_links_and_is_idempotent():
         assert store.count("matchup_pixels") == 10
 
 
+def test_qualifying_profiles_selection_filters_by_wmo_cycle():
+    with Store.open(":memory:") as store:
+        _seed_store(store)  # 7902226 / 5
+        persist_summary(
+            store, wmo=7902136, cycle=8,
+            summary={"mld": 30.0, "mld_method": "x", "n_points": 5},
+            latitude=4.0, longitude=-137.0, time="2025-05-02T00:00:00",
+        )
+        all_profiles = engine.qualifying_profiles(store)
+        assert len(all_profiles) == 2
+
+        restricted = engine.qualifying_profiles(store, selection={(7902226, 5)})
+        assert len(restricted) == 1
+        assert (restricted[0]["wmo"], restricted[0]["cycle"]) == (7902226, 5)
+
+        empty = engine.qualifying_profiles(store, selection={(9999999, 1)})
+        assert empty == []
+
+
+def test_build_matchups_restricts_to_an_explicit_selection():
+    # backfill_unmatched.md Task 3: completing a truncated run's tail must not
+    # re-sweep profiles already outside the requested selection.
+    ds = make_granule(center=(20.0, -50.0))
+    with Store.open(":memory:") as store:
+        _seed_store(store)  # 7902226 / 5
+        persist_summary(
+            store, wmo=7902136, cycle=8,
+            summary={"mld": 30.0, "mld_method": "x", "n_points": 5},
+            latitude=4.0, longitude=-137.0, time="2025-05-02T00:00:00",
+        )
+        out = engine.build_matchups(
+            store, opener=lambda s: ds, selection={(7902226, 5)}
+        )
+        # only the selected profile is accounted for at all
+        assert out["written"] == ["7902226_5_G1"]
+        assert out["qualifying_total"] == 1
+        assert store.count("matchups") == 1  # 7902136/8 untouched, not even "unmatched"
+
+
+def test_build_matchups_reports_qualifying_total_for_reconciliation():
+    ds = make_granule(center=(20.0, -50.0))
+    with Store.open(":memory:") as store:
+        _seed_store(store)
+        out = engine.build_matchups(store, opener=lambda s: ds)
+        # written + skipped + unmatched (+ stalled) must equal qualifying_total
+        assert out["qualifying_total"] == 1
+        accounted = len(out["written"]) + len(out["skipped"]) + len(out["unmatched"])
+        assert accounted == out["qualifying_total"]
+
+
 def test_build_matchups_unmatched_when_out_of_window():
     ds = make_granule(center=(20.0, -50.0))
     with Store.open(":memory:") as store:

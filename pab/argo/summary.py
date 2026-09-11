@@ -104,6 +104,8 @@ def mixed_layer_mean(
     *,
     despike_values: bool = False,
     iqr_filter: bool = False,
+    qc: ArrayLike | None = None,
+    bad_qc: frozenset[int] = frozenset(),
 ) -> tuple[float, float, int]:
     """Mean / std / count of ``values`` within the mixed layer (``pres <= mld``).
 
@@ -113,6 +115,12 @@ def mixed_layer_mean(
         mld: Mixed-layer depth; if ``nan`` the result is ``(nan, nan, 0)``.
         despike_values: Apply a 3-point moving median before averaging.
         iqr_filter: Drop log-space IQR outliers before averaging.
+        qc: Per-level Argo QC flags aligned with ``pres`` (e.g. ``CDOM_QC``),
+            or ``None`` to skip QC screening entirely (the project's default
+            ingestion behavior — see the module docstring's QC-filtering
+            caveat). Ignored unless ``bad_qc`` is non-empty.
+        bad_qc: QC flag values to exclude before averaging (e.g. ``{4}`` to
+            drop Argo's "bad" flag). No effect if ``qc`` is ``None``.
 
     Returns:
         ``(mean, std, n_points)`` over the retained mixed-layer samples.
@@ -139,6 +147,16 @@ def mixed_layer_mean(
     in_ml = np.isfinite(pres) & (pres <= mld) & np.isfinite(vals)
     if iqr_filter and in_ml.any():
         in_ml &= iqr_inlier_mask(np.where(in_ml, vals, np.nan))
+    if qc is not None and bad_qc:
+        qc_arr = np.atleast_1d(np.asarray(qc, dtype=float))
+        if qc_arr.shape == pres.shape:
+            in_ml &= ~np.isin(qc_arr, list(bad_qc))
+        else:
+            _log.warning(
+                "qc/pressure length mismatch (%s vs %s); ignoring qc for this variable",
+                qc_arr.shape,
+                pres.shape,
+            )
     sel = vals[in_ml]
     if sel.size == 0:
         return float("nan"), float("nan"), 0
@@ -152,6 +170,7 @@ def summarize_profile(
     chla: ArrayLike | None = None,
     chla_adjusted: ArrayLike | None = None,
     cdom: ArrayLike | None = None,
+    cdom_qc: ArrayLike | None = None,
     psal: ArrayLike | None = None,
     temp: ArrayLike | None = None,
     lon: float | None = None,
@@ -182,6 +201,14 @@ def summarize_profile(
             (as of 2026-09, no BGC-Argo float has ever had CDOM delayed-mode
             processed, so ``CDOM_ADJUSTED`` is never populated fleet-wide; a
             PAB-side correction is deferred pending JXP's BGC-Argo consult).
+        cdom_qc: Argo ``CDOM_QC`` per-level flags aligned with ``pres``, when
+            present. When given alongside ``cdom``, a *second*, QC-screened
+            mean is also computed (dropping QC=4 "bad" points before
+            averaging — per ``chl_cdom_matchups.md`` R2) and returned as
+            ``cdom_qc_filtered``/``cdom_qc_filtered_std``/
+            ``cdom_n_qc4_dropped``, alongside the unchanged, QC-blind
+            ``cdom``/``cdom_std`` (this is an addition, not a replacement of
+            the original ingestion behavior).
         lon, lat: Profile location (needed for TEOS-10 if ``sig0`` is absent).
         sig0: Potential density; if omitted it is derived from ``psal``/``temp``.
         despike_bbp: 3-point moving-median de-spike of ``BBP700``.
@@ -191,7 +218,8 @@ def summarize_profile(
     Returns:
         Dict with the ``mld_summary`` fields (no ``profile_id``): ``mld``,
         ``mld_method``, ``bbp700``, ``bbp700_std``, ``chla``, ``chla_std``,
-        ``chla_adjusted``, ``cdom``, ``cdom_std``, ``psal``, ``temp``,
+        ``chla_adjusted``, ``cdom``, ``cdom_std``, ``cdom_qc_filtered``,
+        ``cdom_qc_filtered_std``, ``cdom_n_qc4_dropped``, ``psal``, ``temp``,
         ``n_points``.
     """
     pres = np.asarray(pres, dtype=float)
@@ -217,6 +245,9 @@ def summarize_profile(
         "chla_adjusted": float("nan"),
         "cdom": float("nan"),
         "cdom_std": float("nan"),
+        "cdom_qc_filtered": float("nan"),
+        "cdom_qc_filtered_std": float("nan"),
+        "cdom_n_qc4_dropped": 0,
         "psal": float("nan"),
         "temp": float("nan"),
         "n_points": 0,
@@ -233,8 +264,17 @@ def summarize_profile(
     if chla_adjusted is not None:
         summary["chla_adjusted"] = mixed_layer_mean(pres, chla_adjusted, mld_val)[0]
     if cdom is not None:
-        mean, std, _ = mixed_layer_mean(pres, cdom, mld_val)
+        mean, std, n_raw = mixed_layer_mean(pres, cdom, mld_val)
         summary.update(cdom=mean, cdom_std=std)
+        if cdom_qc is not None:
+            qc_mean, qc_std, n_filtered = mixed_layer_mean(
+                pres, cdom, mld_val, qc=cdom_qc, bad_qc=frozenset({4})
+            )
+            summary.update(
+                cdom_qc_filtered=qc_mean,
+                cdom_qc_filtered_std=qc_std,
+                cdom_n_qc4_dropped=max(0, n_raw - n_filtered),
+            )
     if psal is not None:
         summary["psal"] = mixed_layer_mean(pres, psal, mld_val)[0]
     if temp is not None:
@@ -319,6 +359,9 @@ def persist_summary(
                 "chla_adjusted",
                 "cdom",
                 "cdom_std",
+                "cdom_qc_filtered",
+                "cdom_qc_filtered_std",
+                "cdom_n_qc4_dropped",
                 "psal",
                 "temp",
                 "n_points",
@@ -330,3 +373,22 @@ def persist_summary(
     row["bbp700_data_mode"] = bbp700_data_mode
     store.upsert("mld_summary", row)
     return profile_id
+
+
+def persist_cdom_sensor_model(store, *, wmo: int, sensor_model: str | None) -> None:
+    """Upsert one float's ``cdom_sensor_model`` (per chl_cdom_matchups.md R6).
+
+    A deliberately separate, one-per-**float** call — not threaded through
+    :func:`persist_summary`, which runs once per *profile*. Only the
+    ``cdom_sensor_model`` column is written, so repeated calls (or an
+    unrelated profile-level ``floats`` upsert) never clobber
+    ``project_name``/``data_center`` back to ``NULL``.
+
+    Args:
+        store: An open :class:`pab.db.store.Store`.
+        wmo: Float WMO id (must already exist in ``floats``).
+        sensor_model: The value from :func:`pab.argo.fetch.fetch_cdom_sensor_model`
+            (``None`` if unavailable — stored as ``NULL``, not skipped, so a
+            re-run can tell "checked, no sensor found" from "never checked").
+    """
+    store.upsert("floats", {"wmo": wmo, "cdom_sensor_model": sensor_model})
