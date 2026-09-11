@@ -54,6 +54,7 @@ Read the thesis discussion before running analyses — it sets up the hypotheses
 3. Execute the 3rd task in Tasks below. First check to see whether I have answered any new Q&A questions.
 4. Execute the 4th task in Tasks below. First check to see whether I have answered any new Q&A questions.
 5. Execute the 5th task in Tasks below. First check to see whether I have answered any new Q&A questions.
+6. Execute the 6th task in Tasks below. First check to see whether I have answered any new Q&A questions.
 
 ## Tasks
 
@@ -67,7 +68,9 @@ Read the thesis discussion before running analyses — it sets up the hypotheses
 
 4. **AOD and atmospheric correction quality analysis.** Check whether the PACE L2 granules include aerosol optical depth (AOD) or AC quality flags. If so, split matchups into clean-sky and hazy subsets and compare median δ. Smaller bias under low-AOD conditions directly supports the aerosol contamination hypothesis. If the flag is not available, note it and discuss what additional data would be needed. Log.  Use Fable if you can.
 
-5. **Synthesis and discussion draft.** Drawing on Tasks 0–4, the thesis, and the literature, write a 3–4 paragraph discussion of the bias suitable for the paper. Address: (a) what the data establish, (b) what they cannot resolve, (c) the most likely explanation and why, (d) what future work would confirm it. Save as `bias_analysis/bias_discussion_draft.md`. Log.  Use Fable if you can.
+5. **RT.** It is possible that the bias is due to the Rrs(λ) retrieval algorithm.  JXP has recently updated the inelastic scattering correction in the Rrs(λ) retrieval algorithm.  Please check whether this has any effect on the bias.  You may wish to examine the work in `retrieve-or-bust` and `IOPtics` repositories. Log your work. Use Fable if you can.
+
+6. **Synthesis and discussion draft.** Drawing on Tasks 0–4, the thesis, and the literature, write a 3–4 paragraph discussion of the bias suitable for the paper. Address: (a) what the data establish, (b) what they cannot resolve, (c) the most likely explanation and why, (d) what future work would confirm it. Save as `bias_analysis/bias_discussion_draft.md`. Log.  Use Fable if you can.
 
 ## Q&A
 
@@ -131,6 +134,47 @@ database. Full summary saved to `$PAB_DATA_DIR/bias_analysis/task0_thesis_and_st
 - **For Task 2:** GIOP is already in the DB (14,609 `NASA_GIOP` fits,
   confirming Q1), but stores `bbp_442` + slope `bbp_s` — bbp700 must be
   extrapolated as bbp_442 × (442/700)^bbp_s.
+
+### 2026-09-11 (Task 1 — literature review on the bias)
+
+Fetched and read the key papers; full review with per-paper quotes saved to
+`$PAB_DATA_DIR/bias_analysis/task1_literature_review.md`.
+
+- **Read directly:** Bisson et al. (2021, GRL; full text via PMC), Bisson et
+  al. (2019, Opt. Express; PMC), Schmechtig et al. (2015/v1.4 2018 DAC
+  processing doc; PDF), Dall'Olmo et al. (2023 bbp RTQC manual; PDF),
+  Serra-Pompei et al. (2023; bioRxiv preprint PDF), Gordon et al. (1988)
+  formulation via the open IOCCG Report 5, Barnard (2021) SEANOE
+  scale-factor-correction record. **Not readable:** Bailey & Werdell (2006)
+  primary PDF (paywalled — criteria verified verbatim from Bisson et al. 2019)
+  and Poteau et al. (2017) (bot-blocked at Wiley and HAL).
+- **Satellite-vs-float discrepancies:** heritage sensors at 443–532 nm are
+  biased *low* vs floats in the median (MODIS GIOP −21%, CALIOP −11%,
+  Bisson 2021; ratios 0.77–0.88 for MODIS/VIIRS GIOP/QAA, Bisson 2019) — so
+  the PACE +59% at 700 nm is not a generic "satellites run high" result. But
+  Serra-Pompei et al. (2023) show MODIS-GIOP *overestimates floats
+  specifically in the low-bbp oligotrophic tail* — a direct precedent for the
+  PAB regime structure.
+- **Aerosol hypothesis (H1):** mechanism explicitly documented — "small
+  uncertainties in the aerosol correction lead to large uncertainties in Rrs
+  at green and red bands" (Bisson 2021). New leverage argument from Gordon
+  (1988): at 700 nm, δbbp ≈ (aw/g1)·δrrs, so the entire oligotrophic-regime
+  bias (+0.4×10⁻³ m⁻¹) needs only ~3–4×10⁻⁵ sr⁻¹ of residual Rrs(700); an
+  additive Rrs error also naturally reproduces the regime dependence.
+- **Argo calibration (H3):** quantified at 10–15% (Bisson 2019) to ≤20%
+  (Serra-Pompei 2023 citing Bittig 2019 — the open Bittig text contains no
+  explicit % — so 10–15% is the better-anchored bound). Documented systematic
+  issues: factory-only darks, drift/biofouling, parking-hook contamination
+  (QC manual), and a real fleet-wide scale-factor correction after ADMT18
+  (wrong weighted-phase-function constants; Barnard 2021, origin Poteau et
+  al. 2017). Big enough to contribute in the low regime, far too small for a
+  1.59× ratio.
+- **Inelastic (H4):** uncorrected Raman shifts retrieved bbp by up to ~20%
+  (Bisson 2019) — but BING models inelastics, and FLH–δ anticorrelation
+  stands; literature consistent with ruling out as primary.
+- **Phase function (H5):** float χ spans 1.076–1.142 across sensor models;
+  phase-function effects on Rrs can reach 65% (Xiong et al. 2017 via Bisson
+  2021); multiplicative, so cannot explain a bias that vanishes at high bbp.
 
 ## Summary of the bias
 
