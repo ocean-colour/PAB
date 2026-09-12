@@ -88,6 +88,8 @@ Read the thesis discussion before running analyses — it sets up the hypotheses
 
 >A. I am not sure.  Please check as best you can.
 
+> *Checked (2026-09-11, Task 4): yes — L2 AOP granules contain `aot_865`, `angstrom`, and `l2_flags` (ATMFAIL/ATMWARN/ABSAER/etc.). Granules are NOT local (85 pilot files only, covering 20 full-run matchups), but single-pixel values are fetchable from the Earthdata cloud via authenticated HTTPS range reads (~6 s/granule). A checkpointed fetch retrieved 14,606/14,610 matchup pixels (~30 min); per-matchup cache in `bias_analysis/task4_matchup_aod.csv`. See the Task 4 log entry.*
+
 ## Reports
 
 ## Logging
@@ -239,6 +241,35 @@ Figure `task3_float_age_vs_bias.png`, per-float table
 - **Caveat:** this test cannot see a time-independent fleet-wide offset, and
   deployment = first S-profile date (can postdate launch by days; irrelevant
   at multi-year scale).
+
+### 2026-09-11 (Task 4 — AOD split: dose-response confirmed, with a clean-sky floor)
+
+Fetched aot_865/angstrom/l2_flags at every matchup's rank-1 pixel from the
+Earthdata cloud (14,606/14,610; ~30 min detached run; tooling + per-matchup
+cache kept in `$PAB_DATA_DIR/bias_analysis/`) and tested delta vs AOD. Figure
+`task4_aod_vs_bias.png`, tables `task4_aod_splits.csv` /
+`task4_flag_subsets.csv` / `task4_aod_quartiles_lowregime.csv`, write-up
+`task4_aod_analysis.md`.
+
+- **Q3 answered:** L2 AOP granules carry `aot_865`, `angstrom`, `l2_flags`;
+  granules are not local, but single-pixel cloud reads work (~6 s/granule).
+- **Dose-response, robust to regime:** rho(delta, aot_865) = +0.164
+  (p = 2e-82); partial rho controlling log bbp_Argo = +0.147; within-regime
+  rho = +0.10 to +0.15. Median delta rises clean -> hazy: +0.292 (aot < 0.05)
+  -> +0.432 (aot >= 0.15); low-regime AOD quartiles monotonic +0.387 ->
+  +0.491. MODGLINT-flagged pixels also show elevated delta (+0.459 vs +0.350
+  unflagged) — same additive-radiance signature. rho(delta, angstrom) =
+  -0.162 (coarse marine/dust aerosol -> larger bias).
+- **Direct support for aerosol contamination as a driver** — the first
+  dose-response evidence, in the direction the hypothesis predicts.
+- **Honest limit:** the clean-sky floor is large (low-regime median delta
+  +0.38 even at aot < 0.05; the quartile swing spans only ~0.10 of the +0.45
+  low-regime bias). Either the residual tracks aerosol *model error* rather
+  than AOD (retrieved aot_865 comes from the same AC and understates clear-
+  sky residuals), or a second additive red-end term (glint residual, BRDF,
+  red-band calibration) sets the floor. Both readings keep the error in
+  Rrs(lambda) upstream of the inversion, consistent with Tasks 2-3; AERONET-OC
+  Rrs(700) matchups or a reprocessed-AC comparison would separate them.
 
 ## Summary of the bias
 
