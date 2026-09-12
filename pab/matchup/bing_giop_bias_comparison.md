@@ -32,21 +32,27 @@ Following the full PAB pipeline run (n = 14,610 matchups, March 2024 – June 20
 
 ## Figures
 
-### Figure 1 — 1:1 Scatter: Argo vs. BING (left) and Argo vs. GIOP (right)
+### Figure 1 — Global map of GIOP relative bias
 
-![1:1 scatter]({{artifact:b1e6f873-d0fc-4627-a5c8-d7772e79b4c8}})
+![GIOP global map](pace_argo_bbp700_global_map_giop.png)
+
+Global distribution of PACE–Argo b_bp,700 matchups colored by GIOP relative bias δ = (GIOP − Argo) / GIOP. The positive bias is present but weaker than BING, and is geographically widespread with no strong regional clustering.
+
+### Figure 2 — 1:1 Scatter: Argo vs. BING (left) and Argo vs. GIOP (right)
+
+![1:1 scatter](bing_giop_argo_scatter.png)
 
 BING (blue) sits well above the 1:1 line with a median ratio of 1.56×. GIOP (orange) is much closer to the 1:1 line with a median ratio of 1.11×, indicating substantially better agreement with Argo.
 
-### Figure 2 — δ_BING vs. δ_GIOP
+### Figure 3 — δ_BING vs. δ_GIOP
 
-![delta scatter]({{artifact:4042938b-2253-48c2-9770-e49f73064dec}})
+![delta scatter](delta_bing_vs_giop.png)
 
 Each point is one matchup. The two algorithms are highly correlated (Spearman ρ = 0.88), meaning the same matchups are biased in both — consistent with a shared upstream cause in Rrs(λ). However, the cloud sits below the 1:1 diagonal: for any given BING bias, GIOP's bias is smaller, confirming that BING-specific inversion assumptions amplify the bias beyond what Rrs alone explains.
 
-### Figure 3 — Distribution of δ: BING vs. GIOP
+### Figure 4 — Distribution of δ: BING vs. GIOP
 
-![histogram]({{artifact:4305fd68-f32d-49d2-98d5-b937328c3292}})
+![histogram](delta_histogram_bing_vs_giop.png)
 
 BING (blue) is strongly right-skewed with a median δ = +0.360. GIOP (orange) is nearly centered around zero with a median δ = +0.097. Both distributions have a spike at −1.5 from clipping of extreme outliers.
 
