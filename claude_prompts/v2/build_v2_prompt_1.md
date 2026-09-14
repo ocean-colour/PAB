@@ -93,7 +93,7 @@ it is the one that protects the published 1.0 results from everything after
 
 ## Q&A
 
-### Q1 (Task 2, 2026-09-14) — confirm the S3 upload of `v1/pab.db` — **awaiting JXP**
+### Q1 (Task 2, 2026-09-14) — confirm the S3 upload of `v1/pab.db` — **ANSWERED: yes**
 
 The **local** freeze is done (`full/` → `v1/`, symlink, `chmod a-w`, sha256
 verified unchanged). The remaining half is outward-facing, so it is held here
@@ -113,6 +113,9 @@ per the working agreement. Proposed, on your go-ahead:
 - `s3://pab/v1/` does not currently exist, so this only adds an object — it
   overwrites nothing.
 >A. Yes, go ahead
+
+Done — uploaded to `s3://pab/v1/pab.db` and verified by
+anonymous re-download + sha256. See the Task 2 report below.
 
 
 ## Reports
@@ -162,6 +165,149 @@ All 13 required imports succeed: `pab`, `argopy`, `erddapy`, `robust`, `jax`,
    It is metadata-only: `s3fs` and `boto3` both import and work, and PAB's S3
    path (`pab/report/publish.py`) uses **sync `boto3`**, never `aiobotocore`.
    Left as-is rather than pinning `aiobotocore` down, which would churn `s3fs`.
+
+
+### Task 2 — v1 frozen, locally and on S3 (2026-09-14): **done**
+
+**Local freeze.** `mv $PAB_DATA_DIR/full $PAB_DATA_DIR/v1` + `ln -s v1 full`;
+`chmod a-w v1/pab.db` (now `-r--r--r--`).
+
+| | |
+|---|---|
+| path | `/mnt/tank/Oceanography/data/Color/PAB/v1/pab.db` |
+| sha256 | `09de0a6d334dc02e73494b198567a37707e1942e5cfd1173c89822b35f978273` |
+| size | 169,938,944 B |
+| schema | `PRAGMA user_version` = 4 |
+
+The sha256 **matches the invariant** in the working agreements
+(`09de0a6d…f978273`, 169,938,944 B) and is unchanged before the move, after the
+move, and after the S3 round-trip. The DB was clean at move time — no `-wal` /
+`-shm` files, no open handles.
+
+The freeze was checked to actually bite, not just to be set: a `CREATE TABLE`
+through the `full` symlink fails with `attempt to write a readonly database`,
+while `mode=ro` opens read normally. Row counts through the symlink match the
+expected v1 inventory exactly:
+
+| table | rows |
+|---|---|
+| floats | 881 |
+| profiles | 54,031 |
+| mld_summary | 54,031 |
+| granules | 67,435 |
+| matchups | 14,610 |
+| matchup_pixels | 146,100 |
+| fits | 29,218 (14,609 `BING` `1.0` + 14,609 `NASA_GIOP` `1.1`) |
+| fit_results | 262,962 |
+
+Note the pixel table is named **`matchup_pixels`**, not `pixels`.
+
+**S3 upload** (confirmed by JXP — Q1). `NautilusS3Backend(bucket="pab",
+prefix="v1")`, creds from the `nautilus_s3` rclone remote, endpoint
+`https://s3-west.nrp-nautilus.io`. Uploaded in 2.6 s to a **new** key:
+
+- `https://s3-west.nrp-nautilus.io/pab/v1/pab.db`
+
+**Verified by anonymous re-download** (no credentials): HTTP 200,
+`content-length` 169,938,944, sha256 `09de0a6d…f978273` — identical to the
+local frozen file. No ACL work was needed: the bucket carries a
+`PublicReadOnly` policy on `arn:aws:s3:::pab/*`, so any new prefix is
+public-read on arrival.
+
+**`s3://pab/full/` left untouched**, as required — all three live objects still
+HTTP 200 with their original modtimes:
+
+| key | bytes | last-modified |
+|---|---|---|
+| `full/pab.db` | 169,938,944 | Fri, 11 Sep 2026 11:08:25 GMT |
+| `full/matchup_summary.csv` | 5,449,551 | Wed, 26 Aug 2026 13:48:56 GMT |
+| `full/matchup_summary.parquet` | 2,413,488 | Wed, 26 Aug 2026 13:48:56 GMT |
+| `v1/pab.db` *(new)* | 169,938,944 | Mon, 14 Sep 2026 12:14:12 GMT |
+
+`full/pab.db` and `v1/pab.db` share the etag
+`190ca801f4af98dd803074cf837e24d3-21` — byte-identical, same multipart layout.
+
+
+### Task 3 — v2 database built (2026-09-14): **done**
+
+New module **`pab/db/split_version.py`** (+ **`pab/tests/test_split_version.py`**,
+15 tests against a synthetic schema-v4 store on disk). Run:
+
+```
+python -m pab.db.split_version \
+    --src $PAB_DATA_DIR/v1/pab.db --dst $PAB_DATA_DIR/v2/pab.db --fit-chains
+```
+
+`$PAB_DATA_DIR/v2/pab.db` — **120,635,392 B** (170 MB → 120.6 MB after
+`VACUUM`), schema v4, writable. `$PAB_DATA_DIR/v2/fit_chains/` created, empty.
+
+| table | v1 | v2 | |
+|---|---:|---:|---|
+| floats | 881 | 881 | = |
+| profiles | 54,031 | 54,031 | = |
+| mld_summary | 54,031 | 54,031 | = |
+| granules | 67,435 | 67,435 | = |
+| matchups | 14,610 | 14,610 | = |
+| matchup_pixels | 146,100 | 146,100 | = |
+| **fits** | 29,218 | **14,609** | −14,609 BING |
+| **fit_results** | 262,962 | **116,872** | −146,090 BING |
+
+Both targets in the task are hit exactly: `fits` = **14,609, all
+`NASA_GIOP`** (all `pab_version` `1.1`); `fit_results` = **116,872, all
+`NASA_GIOP_*`** (0 rows fail `LIKE 'NASA_GIOP_%'`; 8 distinct quantities).
+
+Verification, all clean:
+
+- `PRAGMA integrity_check` → `ok`
+- `PRAGMA foreign_key_check` → 0 violations
+- 0 orphan `fit_results`; 0 `fits` with a dangling `matchup_id`
+- every non-fit table equal to v1 (table above)
+- **`matchups.scene_path` kept** — 14,586 non-null, same as v1 (R7)
+- `PRAGMA user_version` = 4 in both
+- **`v1/pab.db` sha256 unchanged**: `09de0a6d…f978273`, still `-r--r--r--`
+
+`pytest pab/tests` → **230 passed, 0 failed** (215 + 15 new).
+
+
+### Task 4 — docs updated (2026-09-14): **done**
+
+**`HOWTO.md` — new §5b "Versions — `v1/` (frozen) and `v2/`"** (between
+Outputs and Notes & gotchas). Covers the frozen-v1 rule (sha256 invariant,
+`chmod a-w`, read-only opens, explicit `--db`), the full three-way layout
+table (workstation / Nautilus PVC / S3, plus backup), the public-URL and
+bucket-policy facts, and how to build a version database with
+`python -m pab.db.split_version`, with the v1→v2 count table. §7b gained a
+short "Versioned layout" note recording `s3://pab/v1/pab.db` and pointing at
+§5b, so "what is published where" is no longer stale.
+
+**`docs/db_schema.rst`** — a new Conventions bullet stating that
+`pab_version` records when a **row** was created, **not** which database file
+it lives in, with the concrete v2 case (copied `matchups` stamped `1.0`,
+NASA-GIOP fits `1.1`, only v2-created rows `2.0`) and the corollary: do not
+infer a DB's version from the stamps inside it. It also links the existing
+counter-example (the 2026-09-05/06 backfill deliberately stayed at `1.0`). The
+Migrations section now distinguishes schema migration from *version splitting*
+and points at `pab.db.split_version`, and the Access API section autodocs the
+new module so those `:mod:` references resolve.
+
+**`run_full_inelastic.md` Plan §1** — "Proposed layout (confirm in R1)" became
+"confirmed in R1; the workstation and S3 rows were **built on 2026-09-14**…
+the PVC row is still pending", plus an **"As built"** block with the real
+numbers and three practical notes (below).
+
+Verification: `python -m sphinx -b html docs` builds **clean, zero warnings**;
+`pytest pab/tests` → **230 passed**; `ruff check` clean on both new files (the
+8 remaining repo-wide errors are pre-existing in
+`pab/argo/check_argo_coverage.py`, untouched here); `v1/pab.db` still
+`-r--r--r--` at `09de0a6d…f978273`.
+
+**One thing that did change in practice**, now documented in all three places:
+`pab.fit.artifacts.chains_path()` resolves to **`$PAB_DATA_DIR/fit_chains/`** —
+the *root* of `PAB_DATA_DIR`, not a per-version subdirectory. So the
+`$PAB_DATA_DIR/v2/fit_chains/` created in Task 3 is **inert on the workstation**
+unless `PAB_DATA_DIR` is itself pointed at `…/Color/PAB/v2`. The plan's PVC row
+already gets this right (`PAB_DATA_DIR=/data/v2`); the workstation row did not
+say it.
 
 
 ## Logging
@@ -226,3 +372,157 @@ What I learned / want to remember:
 - Reminder for the rest of the series: nothing in this task touched
   `$PAB_DATA_DIR`. `v1/pab.db` does not exist yet — the freeze is Task 2, and
   the DB is still at `full/pab.db`.
+
+### 2026-09-14 (Task 2 — froze v1.0, locally and at a permanent S3 URL)
+
+The published 1.0 dataset is now immutable and has its own versioned home, so
+nothing built in the rest of the v2 series can disturb it.
+
+Local side:
+
+- `mv $PAB_DATA_DIR/full $PAB_DATA_DIR/v1` then `ln -s v1 $PAB_DATA_DIR/full`.
+  The symlink means every existing command, script and `--db` path that says
+  `full/pab.db` keeps resolving, so nothing had to be updated to match.
+- `chmod a-w v1/pab.db` → `-r--r--r--`. The whole `full/` directory moved, so
+  the two NASA-GIOP logs and the two sibling DBs
+  (`pab_merged_nasa_giop_2026-09-10.db`, `pab_pre_cdom_merge_2026-09-10.db`)
+  came along into `v1/` — only `pab.db` itself was write-protected.
+- sha256 `09de0a6d…f978273` / 169,938,944 B, matching the invariant in the
+  working agreements, and identical before the move, after the move, and after
+  the S3 round-trip.
+
+S3 side (confirmed with JXP first, per the outward-facing-actions agreement):
+
+- `NautilusS3Backend(bucket="pab", prefix="v1")` with creds pulled out of the
+  `nautilus_s3` rclone remote. 170 MB in 2.6 s → `s3://pab/v1/pab.db`.
+- Verified the way the agreement wants it verified — an *anonymous* `curl` of
+  `https://s3-west.nrp-nautilus.io/pab/v1/pab.db`, re-downloaded and sha256'd,
+  matching the local file. Not just a successful PUT.
+- `s3://pab/full/` untouched: all three objects still 200 with their original
+  modtimes (11 Sep / 26 Aug). The live site keeps working off them.
+
+What I learned / want to remember:
+
+- **Verify the freeze, don't just set it.** `chmod a-w` is easy to believe in;
+  I confirmed it by actually attempting `CREATE TABLE` through the symlink and
+  getting `attempt to write a readonly database`. Worth doing because the
+  symlink adds an indirection that could plausibly have been the thing you
+  write through. It isn't — the mode on the target wins.
+- The pixel table is **`matchup_pixels`**, not `pixels`. The prompt's context
+  block says "146,100 pixels", which reads like a table name; it is not one. I
+  tripped on this while inventorying and it will matter in Task 3's
+  "every other table equal to v1" check.
+- `full/pab.db` and the new `v1/pab.db` came out with the **same etag**
+  (`190ca801f4af98dd803074cf837e24d3-21`, a 21-part multipart tag). boto3's
+  multipart chunking is deterministic for a given file size, so the etag is a
+  cheap byte-identity check between two S3 objects without downloading either
+  — useful later for confirming `full/` and `v1/` have not diverged.
+- No ACL handling was needed. The bucket has a `PublicReadOnly` policy scoped
+  to `arn:aws:s3:::pab/*`, i.e. the whole bucket, so a brand-new prefix is
+  world-readable the moment the object lands. `NautilusS3Backend.upload()`
+  sets no ACL and does not need to.
+- Note for Task 4's docs: `s3://pab` also still holds the old `run1k/` tree
+  (`pab.db`, `fit_chains/`, `pipeline/` figures) from July. Not touched, but
+  it is part of "what is published where" if that section gets rewritten.
+
+### 2026-09-14 (Task 3 — built the v2 database with `pab/db/split_version.py`)
+
+Wrote `pab/db/split_version.py` (module + `python -m` entry point) and
+`pab/tests/test_split_version.py` (15 tests), then used it to create
+`$PAB_DATA_DIR/v2/pab.db` from the frozen v1.
+
+The module is copy → delete → `VACUUM` → verify, with the source opened
+**read-only** throughout and its sha256 taken before the copy and re-checked at
+the end, so a run proves it left the release alone rather than merely intending
+to. `verify()` is a separate public function, so the copy can be re-checked at
+any later date without rebuilding it.
+
+Results — every number the task asked for landed exactly:
+
+- `fits` 29,218 → **14,609**, all `NASA_GIOP` (`pab_version` `1.1`)
+- `fit_results` 262,962 → **116,872**, all `NASA_GIOP_*`
+- every other table bit-for-bit equal in count to v1
+- `matchups.scene_path` 14,586 non-null, unchanged (R7)
+- `integrity_check` ok, `foreign_key_check` clean, 0 orphans
+- v1 sha256 `09de0a6d…f978273` unchanged
+- 169,938,944 B → 120,635,392 B after `VACUUM`
+- `v2/fit_chains/` created, empty
+
+What I learned / want to remember:
+
+- **`shutil.copy2` would have been a bug here.** It propagates mode, so
+  copying the `chmod a-w` v1 file gives a read-only v2, and the very next
+  statement — the `DELETE` — fails with `attempt to write a readonly
+  database`. I used the `sqlite3` **online-backup API** (`src.backup(dst)`)
+  instead: it creates the destination with normal permissions *and* takes a
+  transactionally consistent snapshot. There is a regression test for exactly
+  this (`test_copy_of_readonly_source_is_writable`), because it is the kind of
+  thing that gets "simplified" back into a `copy2` later.
+- Delete order matters and is not incidental: `fit_results` first, then
+  `fits`. Done the other way round with `PRAGMA foreign_keys = ON` the parent
+  delete trips the constraint. Both run inside one `with conn:` transaction.
+- The dropped algorithm is a **parameter**, not a hard-coded `'BING'`, and
+  there is a test that drops `NASA_GIOP` instead. Cheap to do, and it means
+  the helper is reusable when a v3 line eventually needs the same surgery.
+- `VACUUM` reclaimed 49.3 MB (29%). Worth doing — without it the freed pages
+  stay in the file and the "v2 is smaller because it has fewer fits" story
+  would not hold on disk.
+- Verifying by quantity **prefix** (`substr` up to the first `_`) is coarse:
+  `NASA_GIOP_bbp_442` counts under `NASA`. That is fine for proving no BING
+  rows survive, but I also ran an explicit
+  `WHERE quantity NOT LIKE 'NASA_GIOP_%'` → 0 check against the real DB, since
+  the task's wording is specifically "all `NASA_GIOP_*`".
+- `VACUUM` preserves `PRAGMA user_version` — confirmed v4 on both sides. Worth
+  knowing, since it does *not* preserve everything (it rebuilds the file).
+
+### 2026-09-14 (Task 4 — documented the v1/v2 layout and the pab_version caveat)
+
+Wrote the versioning story into the three places that will be consulted later:
+`HOWTO.md` (how to operate it), `docs/db_schema.rst` (how to read the stamps),
+and the plan doc (what was actually built).
+
+- **`HOWTO.md` §5b "Versions"**, a new subsection between Outputs and Notes &
+  gotchas. The frozen-v1 rule stated as a rule with its enforcement (sha256
+  invariant, `chmod a-w`, read-only URI opens, explicit `--db`, attach-don't-
+  copy for comparisons); a workstation/PVC/S3/backup table; the public URL
+  pattern and the `arn:aws:s3:::pab/*` bucket policy; and the
+  `python -m pab.db.split_version` recipe with the v1→v2 counts. §7b got a
+  pointer to it so the older "what is published where" text is not stale.
+- **`docs/db_schema.rst`**: the `pab_version` caveat as a Conventions bullet,
+  the Migrations section now separating schema migration from version
+  splitting, and an `automodule` for `pab.db.split_version`.
+- **`run_full_inelastic.md` Plan §1**: "Proposed" → confirmed/built, plus an
+  "As built" block with the real numbers and the three notes below.
+
+What I learned / want to remember:
+
+- **The `v2/fit_chains/` directory Task 3 asked for is, on the workstation,
+  inert.** `pab.fit.artifacts.chains_path()` is
+  `Path(DATA_DIR) / "fit_chains" / f"{fit_id}.npz"` where `DATA_DIR` is
+  `PAB_DATA_DIR` itself — the *root*, not a per-version subdir. With the
+  `.bashrc` value `PAB_DATA_DIR=…/Color/PAB`, chains land in
+  `…/Color/PAB/fit_chains/` no matter which `--db` is passed, so a v2 fit run
+  on this box would scatter chains into the shared root and mix them with v1's
+  unless `PAB_DATA_DIR` is deliberately set to `…/Color/PAB/v2`. The plan's PVC
+  row already anticipated exactly this (`PAB_DATA_DIR=/data/v2`); the
+  workstation row did not. Flagged in all three docs — this is the sort of
+  thing that silently produces an unattributable pile of NPZs.
+- Related and slightly alarming: the **test suite writes into that same root
+  `…/Color/PAB/fit_chains/`**. Two `.npz` files there were rewritten during my
+  `pytest` runs today. It does not threaten the freeze (nothing goes near
+  `v1/pab.db`, which I re-verified after every run), but a test touching a
+  production data directory at all is worth knowing about.
+- `/home/xavier/Oceanography` is a **symlink to `/mnt/tank/Oceanography`**, so
+  the `.bashrc` `PAB_DATA_DIR=/home/xavier/Oceanography/data/Color/PAB` and the
+  prompt series' `/mnt/tank/Oceanography/data/Color/PAB` are the *same
+  directory*. I checked this rather than assuming, because a genuine split
+  there would have meant Tasks 2–3 froze and built in the wrong place.
+- `VACUUM` preserves `PRAGMA user_version`, so a version split leaves the
+  schema version alone — worth stating in the Migrations section, since
+  "splitting a version" and "migrating a schema" are easy to conflate and only
+  one of them touches `user_version`.
+- The docs build is clean with **zero** warnings, and stays that way with the
+  new `automodule`. Sphinx here is not in nitpick mode, so an unresolved
+  `:mod:` reference would have failed silently — adding the `automodule` makes
+  the two new cross-references actually resolve rather than just look right in
+  the source.

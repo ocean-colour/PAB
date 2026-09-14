@@ -137,7 +137,9 @@ starts with the **DB split** (R9).
 ### 1. Two databases: `v1` (frozen) and `v2` (this run)
 
 The v1.0 fits stay in their own database, untouched; everything this run
-produces goes into a new one. Proposed layout (confirm in **R1**):
+produces goes into a new one. Layout (confirmed in **R1**; the workstation and
+S3 rows were **built on 2026-09-14** — see `build_v2_prompt_1.md` Tasks 2/3.
+The PVC row is still pending, and is the only part not yet executed):
 
 | | v1 (frozen) | v2 (this run) |
 |---|---|---|
@@ -159,6 +161,32 @@ backfilled profiles/matchups exist **only in v2** (v1 is frozen). The
 (SQLite `ATTACH`, join on `matchup_id`+`pixel_id`). The version-aware
 `fit_id` is kept even though the DBs are separate — it makes an accidental
 cross-DB merge harmless.
+
+**As built (2026-09-14).** The workstation and S3 rows came out exactly as
+proposed. `$PAB_DATA_DIR/v1/pab.db` is `chmod a-w` at sha256
+`09de0a6d…f978273` (169,938,944 B), `$PAB_DATA_DIR/full` is a symlink to `v1`,
+and `s3://pab/v1/pab.db` is up and public with the `full/` objects untouched.
+`$PAB_DATA_DIR/v2/pab.db` (120,635,392 B after `VACUUM`) holds 14,609
+`NASA_GIOP` fits and 116,872 `NASA_GIOP_*` `fit_results`; the 14,609 BING fits
+and 146,090 BING `fit_results` are gone and every other table matches v1
+row-for-row, `matchups.scene_path` included (14,586 non-null). Built by the new
+`pab/db/split_version.py`. Three practical notes:
+
+- **`v2/fit_chains/` on the workstation is inert unless `PAB_DATA_DIR` points
+  at it.** `pab.fit.artifacts.chains_path()` resolves to
+  `$PAB_DATA_DIR/fit_chains/`, i.e. the *root* of `PAB_DATA_DIR`, not a
+  per-version subdirectory — so with the usual
+  `PAB_DATA_DIR=…/Color/PAB`, chains land in `…/Color/PAB/fit_chains/` no
+  matter which `--db` is passed. The PVC row already handles this
+  (`PAB_DATA_DIR=/data/v2`); any workstation run that writes chains must set
+  `PAB_DATA_DIR=…/Color/PAB/v2` deliberately. Note the existing root
+  `…/Color/PAB/fit_chains/` is also what the **test suite** writes into.
+- The whole old `full/` directory was renamed, so `v1/` also carries the two
+  sibling DBs (`pab_merged_nasa_giop_2026-09-10.db`,
+  `pab_pre_cdom_merge_2026-09-10.db`) and the two NASA-GIOP logs. Only
+  `pab.db` itself is write-protected.
+- `s3://pab` still holds the old July `run1k/` tree; untouched, but it is part
+  of "what is published where".
 
 ### 2. The fit: what changes and what BING needs from PAB
 
