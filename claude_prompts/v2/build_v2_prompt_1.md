@@ -46,10 +46,10 @@ it is the one that protects the published 1.0 results from everything after
 
 ## Prompts
 
-1. Execute the 1st task in Tasks below
-2. Execute the 2nd task in Tasks below
-3. Execute the 3rd task in Tasks below
-4. Execute the 4th task in Tasks below
+1. Execute the 1st task in Tasks below. Use Opus 5
+2. Execute the 2nd task in Tasks below. Use Opus 5
+3. Execute the 3rd task in Tasks below. Use Opus 5
+4. Execute the 4th task in Tasks below. Use Opus 5
 
 ## Tasks
 
