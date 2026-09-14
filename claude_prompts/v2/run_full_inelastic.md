@@ -91,119 +91,158 @@ If you need to use Python, be sure to use the `ocean14` conda environment.
 
 ## Plan
 
-*Drafted 2026-09-13 after reading the context set (`HOWTO.md`, both design
-docs, the three run logs) and checking the current state read-only: the
-production DB, the BING/`robust` code, a cached PACE granule, the Nautilus
-namespace, `s3://pab`, and the live Argo index. Numbers below are measured,
-not recalled. Open decisions are in **Q&A → Planning**; the plan is written
-against my recommendations there and will be revised once answered.*
+*Drafted 2026-09-13 after reading the context set and checking the current
+state read-only (production DB, BING/`robust` code, a cached PACE granule,
+Nautilus, `s3://pab`, the live Argo index). **Revised 2026-09-14 after the
+round-1 answers (Q1–Q12)** and two further verifications: the L1B geometry
+read (Q3) and BING's free-`B_p` chain layout (Q4). Open decisions are in
+**Q&A → Planning — round 2**; the plan assumes my recommendations there.*
 
-### 1. What changes in the fit — and what BING needs from PAB
+### 0. Decisions locked in round 1
 
-**Production `1.0` fit** (`pab/fit/models.py::FitConfig` →
-`bing.parameters.standard.expb_pow`): `ExpBricaud`+`Pow`, 400–700 nm,
-`nsteps=10000`/`nburn=1000`/16 walkers, and the **elastic Gordon** forward
-model — `rt_dict['rt_backend']` defaults to `'gordon'`, `include_Raman=False`,
-no fluorescence.
+| Decision | Answer |
+|---|---|
+| Version stamp | **`pab_version = "2.0"`** |
+| Fit identity | version-aware `fit_id` `{matchup}_{ix}_{iy}_{model_pair}_v2.0` + **schema v5** provenance columns |
+| **v1.0 and v2.0 live in separate databases** | new — see §1 |
+| Geometry | **A — read from the L1B granule** (verified below) |
+| RT config | `robust_hybrid`, Raman on, Chl-fluorescence on (`phi_C = 0.02` fixed), CDOM-fl **off**, **`wave_max = 720`**, **`B_p` free** |
+| Backfill | gaps **A + B + D**; gap C (the 36,683-profile `match` plateau) dropped |
+| DB custody | single writer on the PVC during the run; workstation read-only meanwhile |
+| Report | 2.0 headline + one **1.0-vs-2.0** comparison section |
+| Bulk-artifact publish | deferred again |
+| Dev env | `ocean14` (install `pab`, `argopy` there) |
+| Provenance | git SHAs of `PAB`/`bing`/`ocpy`/`remote_sensing`/`retrieve-or-bust` in `pkg_versions` + image label (`bing` @ `bf56f6d`, `robust` @ `dfab27c`, both trees clean today) |
+| MCMC | keep `nsteps=10000` / `nburn=1000`; walkers = `max(16, 2×ndim)` = 16 still at ndim 6 |
+| Gate | 100-matchup leading slice, reviewed by JXP before the full send |
 
-**Target `2.0` fit:** same model pair, priors and MCMC length, but
-`rt_backend='robust_hybrid'` (the RoB emulator: ZTT analytic backbone + the
-learned HydroLight-trained correction, valid 350–750 nm — our 400–700 nm
-window sits inside), `include_Raman=True`, `include_Chl_fl=True`,
-`include_CDOM_fl=False` (per the Goals). BING's `rt_dict_from_p` already
-picks these up from the parameter tuple, and `p_ntuple.gen` accepts
-arbitrary kwargs, so the BING side is ready (PR #29 `rob_rt` merged; the
-project has adopted `robust`'s inelastic path — `bing/.claude/skills/
-inelastic-rrs`). Three BING requirements fall on PAB:
+### 1. Two databases: `v1` (frozen) and `v2` (this run)
 
-1. **Geometry is mandatory.** A robust backend refuses to fit without an
-   `ObsGeometry(theta_s, theta_v=0, dphi=0)` — `theta_s` is *never*
-   defaulted (`bing.rt.defs.validate_rt_dict`). **PACE L2 AOP granules carry
-   no per-pixel angles**: I inspected a cached V3.2 granule — `l2prod = Rrs
-   Rrs_unc aot_865 angstrom avw nflh`; the only geometry is
-   `scan_line_attributes/csol_z` (centre solar zenith per scan line) and
-   `navigation_data/tilt`. PAB must source `theta_s` (and ideally
-   `theta_v`/`dphi`) itself — see **Q3**.
-2. **Fluorescence needs `a_ph`.** `include_Chl_fl` requires the Bricaud
-   model to have `set_aph(Chl)` called; PAB already seeds Chl from the
-   float's mixed-layer `chla` (0.1 fallback) via `init_other_bits`, so this
-   works as-is. The quantum yield `phi_C` is a **fixed** 0.02 in BING (no
-   free `phi_C` in the MCMC), emission shape `double_gaussian=True`.
-3. **Downwelling irradiance.** With Raman on and no `Ed` supplied, `robust`
-   falls back to its packaged L23 `Ed` spectra interpolated in `theta_s`
-   (documented default). PACE L2 has `F0` but no `Ed`; accept the fallback.
+The v1.0 fits stay in their own database, untouched; everything this run
+produces goes into a new one. Proposed layout (confirm in **R1**):
 
-### 2. PAB code work (before anything runs at scale)
+| | v1 (frozen) | v2 (this run) |
+|---|---|---|
+| workstation | `$PAB_DATA_DIR/v1/pab.db` — today's `full/pab.db`, renamed; `full/` kept as a symlink so old commands keep working | `$PAB_DATA_DIR/v2/pab.db` |
+| PVC | `/data/v1/pab.db` (+ the existing `/data/fit_chains` → `/data/v1/fit_chains`) | `/data/v2/pab.db`, `/data/v2/fit_chains`, `/data/v2/pipeline` (`PAB_DATA_DIR=/data/v2`, so `pab.fit.artifacts` keys chains there with no code change) |
+| S3 | `s3://pab/v1/pab.db` (copy of today's `full/pab.db`); the `full/` objects stay where they are — the published site's download links point at them | `s3://pab/v2/pab.db` + `v2/matchup_summary.*`; the v2 site's downloads page points at `v2/` |
+| backup | already at `AIOcean:PAB/` | `AIOcean:PAB/pab_v2_<date>.db` (copy-not-sync, dated) |
+
+**v2 starts as a copy of v1 minus the BING 1.0 fits:** `floats`,
+`profiles`, `mld_summary`, `granules`, `matchups`, `matchup_pixels` and the
+14,609 **NASA-GIOP** rows (`algorithm='NASA_GIOP'`, `1.1`) are carried over —
+the NASA values are per-pixel product reads independent of BING's RT, and
+the "BING vs NASA GIOP" comparison must work inside v2 — while the BING
+`fits`/`fit_results` rows (and `chains_path` references) are dropped. The
+copied rows keep their original `pab_version` stamps (`1.0` = when the
+matchup was made); every row *created* by this run stamps `2.0`. The
+backfilled profiles/matchups exist **only in v2** (v1 is frozen). The
+1.0-vs-2.0 report section reads v1 through a new `--compare-db` option
+(SQLite `ATTACH`, join on `matchup_id`+`pixel_id`). The version-aware
+`fit_id` is kept even though the DBs are separate — it makes an accidental
+cross-DB merge harmless.
+
+### 2. The fit: what changes and what BING needs from PAB
+
+**Production 1.0**: `ExpBricaud`+`Pow`, 400–700 nm, 5 free parameters,
+elastic Gordon (`rt_backend='gordon'`), 10k steps / 16 walkers.
+
+**2.0**: same model pair and priors; `rt_backend='robust_hybrid'` (the RoB
+emulator, valid 350–750 nm); `include_Raman=True`; `include_Chl_fl=True`
+(`phi_C=0.02` fixed, double-Gaussian emission); `include_CDOM_fl=False`;
+**`wave_max=720`** (PACE `wavelength_3d` runs to 719 nm, so the 685 nm
+fluorescence peak's red shoulder is now inside the window); **`fit_Bp=True`**
+— `B_p` (particulate backscattering ratio) becomes a **6th free parameter**,
+sampled linearly on BING's default prior [0.004, 0.05] and carried as the
+*trailing* element of the parameter vector (`inference.log_prob` peels
+`params[-1]`; `init_mcmc` sets `ndim = 6`, walkers stay 16). BING's side is
+ready (`rt_dict_from_p` reads all of these off the parameter tuple).
+
+BING requirements that fall on PAB:
+
+1. **Geometry — verified, option A works.** For the cached production
+   granule `PACE_OCI.20250309T131631.L2.OC_AOP.V3_2.nc` a CMR search on
+   `PACE_OCI_L1B_SCI` returns the same-stamp `…L1B.V3.nc` (1.8 GB; CMR
+   lists each granule twice — dedupe by name). `xr.open_datatree` over
+   `earthaccess.open` reads `geolocation_data/{solar_zenith, sensor_zenith,
+   solar_azimuth, sensor_azimuth}` lazily: **same 1709×1272 grid, lat/lon
+   identical at the matched pixel (868, 142)**, open + 4-value read
+   **7.6 s out-of-region** (faster in-pod). At that pixel: `theta_s = 29.47°`
+   (the scan-line `csol_z` says 31.26° — option C would be 1.8° off) and
+   `theta_v = 54.58°` (a nadir assumption would be 55° off). `dphi` =
+   `sensor_azimuth − solar_azimuth` (wrapped). Geometry is a **pixel**
+   property, not a fit property → store it on `matchup_pixels`
+   (**R3**).
+2. **Fluorescence needs `a_ph`** — satisfied: PAB already seeds Chl from
+   the float's mixed-layer `chla` (0.1 fallback) via `init_other_bits`.
+3. **`Ed`** — none in PACE L2; `robust` falls back to its packaged L23 `Ed`
+   interpolated in `theta_s` (documented default). Accept.
+
+### 3. PAB code work (before anything runs at scale)
 
 | # | Change | Where |
 |---|---|---|
-| a | `FitConfig` gains `rt_backend`, `include_Chl_fl`, `include_CDOM_fl` (False), `phi_C`, `Bp_value`/`fit_Bp`; `build_models` forwards them to `standard.expb_pow`. | `pab/fit/models.py` |
-| b | Geometry: derive per-pixel `ObsGeometry` for the fitted pixel (source per **Q3**); thread it as the 5th tuple element into `chisq_fit.fit` and `fit_one`; record it on the fit row. | `pab/pace/{cloud,extract}.py`, `pab/fit/run.py` |
-| c | `_fit_diagnostics` and `pab.plotting.fit_fig` call `calc_Rrs_from_models` (Gordon) directly → dispatch to `calc_Rrs_from_models_robust(..., geom=)` when the backend is robust, else the χ²/AIC/BIC and the fit figures are computed with the *wrong* forward model. | `pab/fit/run.py`, `pab/plotting/fit_fig.py` |
-| d | **Identity + provenance.** `fit_id = {matchup}_{ix}_{iy}_{model_pair}` is unchanged between 1.0 and 2.0, so `build_fits` would *skip every matchup* (or, with `--replace`, overwrite the 1.0 rows — exactly what the versioning convention forbids). Version-aware `fit_id` + new `fits` columns (`rt_backend`, inelastic flags, `phi_C`, `theta_s/theta_v/dphi`) → **schema v5**. See **Q2**. Add `robust` (+ git SHAs of `bing`/`robust`, which both report `0.0.dev0`) to `pkg_versions`. | `pab/db/schema.py`, `pab/fit/{run,artifacts}.py`, `pab/config.py` |
-| e | Report/metrics select by `model_pair` today; they must select by `pab_version` (or config) so the site shows 2.0 and can compare 2.0 vs 1.0 — **Q7**. | `pab/metrics/compare.py`, `pab/report/rst.py` |
-| f | Worker hygiene: JAX pays a ~0.2 s JIT per process (fine) but spawns its own XLA CPU thread pool → 50 workers × N threads oversubscribe the pod. Pin XLA to 1 thread in `pab.parallel.init_worker` (alongside the BLAS caps). Note `prepare_spectrum` drops non-finite bands, so `nwave` varies per pixel → one recompile per distinct shape (cheap). | `pab/parallel.py` |
-| g | Environment/image: `retrieve-or-bust` (2.2 MB package) + `jax`/`flax`/`optax`/`jaxtyping` added to the staged build (`nautilus/build_image.sh`, `Dockerfile`); image tag `pab:2.0.0`. No conda env currently has everything: `ocean14` has `robust`+`jax` but not `pab`/`argopy`; `os_313` has `pab`/`argopy` but not `robust`/`jax` — **Q9**. | `Dockerfile`, `nautilus/build_image.sh` |
-| h | Tests for a–f; a toy-size robust fit under `importorskip("robust")`; `ruff` clean. | `pab/tests/` |
+| a | `FitConfig` gains `rt_backend`, `include_Chl_fl`, `include_CDOM_fl` (False), `phi_C`, `fit_Bp`, `Bp_value`; `wave_max` default → 720 for 2.0; `build_models` forwards them to `standard.expb_pow`. | `pab/fit/models.py` |
+| b | **Free `B_p` plumbing**: `_initial_guess` / `_prior_bounds` / `_is_log_param` / `model_param_names` gain the trailing `B_p` (linear, [0.004, 0.05], seed 0.01); `extract_quantities` must **peel `flat[:, -1]` before** splitting `a`/`bb` params (today it would hand `eval_bbnw` three columns) and emit `BING_ExpBPow_Bp`; `_fit_diagnostics` passes `Bp` to the robust forward model. | `pab/fit/run.py` |
+| c | **Geometry**: schema v5 adds `matchup_pixels.{theta_s, theta_v, dphi, geom_source}`; new `pab.pace.l1b`-side reader (`l1b_source_for_aop` name-swap + CMR lookup, lazy `geolocation_data` read at `(ix, iy)`, grid check against the pixel's stored lat/lon — the same discipline as the NASA-GIOP join); a new **parallel `geometry` stage** (`--jobs`, workers read, parent writes — the `match` shape) that fills the columns for every pixel lacking them. Runs once over the 14,610 existing matchups and again after the backfill. Running it as its own stage keeps the ~4 s L1B open out of `fit`'s *serial* parent loop (17k × 4 s ≈ 19 h if done there). `fit` then just reads the three angles and builds `ObsGeometry`, passed as the 5th tuple element to `chisq_fit.fit` / `fit_one`. | `pab/db/schema.py`, `pab/pace/`, `pab/pipeline.py`, `pab/fit/run.py` |
+| d | `_fit_diagnostics` and `pab.plotting.fit_fig` call the Gordon `calc_Rrs_from_models` directly → dispatch to `calc_Rrs_from_models_robust(..., geom=, Bp=)` for robust fits (χ²/AIC/BIC and the fit figure must use the fitted physics). `fit_fig` reads the angles back from the DB. | `pab/fit/run.py`, `pab/plotting/fit_fig.py` |
+| e | **Provenance**: schema v5 adds `fits.{rt_backend, include_raman, include_chl_fl, include_cdom_fl, phi_c, fit_bp}`; version-aware `make_fit_id`; `pkg_versions` gains `robust` and the five git SHAs. | `pab/db/schema.py`, `pab/fit/{run,artifacts}.py`, `pab/config.py` |
+| f | **Report/metrics**: `gather_matchups` selects by `model_pair` only → add `pab_version`; new `gather_version_pair(store_v2, v1_path)` for the comparison section; `--compare-db`; the downloads page's base URL → `…/pab/v2`. | `pab/metrics/compare.py`, `pab/report/rst.py`, `pab/pipeline.py` |
+| g | **Workers**: pin XLA's CPU thread pool to 1 in `pab.parallel.init_worker` (JAX otherwise spawns its own pool per worker); per-process JIT ~0.2 s, plus one recompile per distinct `nwave` (bands dropped by `prepare_spectrum`). | `pab/parallel.py` |
+| h | **DB-split tooling**: a small `pab.db.split_version` helper (or script) that builds `v2/pab.db` from `v1/pab.db` per §1 and verifies it (`foreign_key_check`, counts). | `pab/db/` |
+| i | **Image `pab:2.0.0`**: add `retrieve-or-bust` (2.2 MB) + `jax`/`flax`/`optax`/`jaxtyping` to the staged build; `--label` the SHAs. | `Dockerfile`, `nautilus/build_image.sh` |
+| j | **Env**: `pip install -e` PAB + `argopy==1.4.0`/`erddapy==3.2.1` into `ocean14` (Python 3.14 — fall back to `os_313` + `robust`/`jax` if `argopy` won't install). | — |
+| k | Tests for a–h (toy-size robust fit under `importorskip("robust")`, B_p peel, geometry stage with an injected opener, schema v5 migration, split helper); `ruff` clean. | `pab/tests/` |
 
-**Cost.** BING's benchmark: `gordon` 38.9k `log_prob` calls/s vs
-`robust_hybrid` 5.7k/s (**6.9× slower**, elastic); the Raman + fluorescence
-kernels add on top. A fit is 16 walkers × 11,000 steps ≈ 176k calls → ~31 s
-of forward model at hybrid-elastic rates, plausibly **1–2 min CPU/fit**
-inelastic (to be measured in the leading slice, **Q12**). ~16.6k fits /
-50 cores ≈ **6–12 h** — the 1.0 fit stage was CephFS-bound, not CPU-bound,
-so the DB-local Job wrapper in `nautilus/full_fit_job.yaml` stays.
+**Cost.** BING's benchmark: `robust_hybrid` 5.7k vs `gordon` 38.9k
+`log_prob` calls/s (**6.9× slower**, elastic) before the Raman/fluorescence
+kernels; 16 walkers × 11k steps = 176k calls/fit → **~1–2 min CPU/fit**
+expected (measured in the slice). ~16.6k fits / 50 cores ≈ **6–12 h**.
+Geometry stage: ~13.5k unique L1B opens (11,494 granules today + the
+backfill) at ~4 s in-pod / 16 workers ≈ **1 h**. The DB-local Job wrapper
+stays (the 1.0 fit stage was CephFS-bound). Fit pod memory: JAX adds a few
+hundred MB per worker → request 100 Gi, not 64 Gi, at 50 workers.
 
-### 3. Backfilling the missing matchups (sized from the production DB, 2026-09-13)
+### 4. Backfill (A + B + D; sized read-only 2026-09-13)
 
-Production: 881 floats / 54,031 profiles / 67,435 granules / 14,610 matchups
-(14,609 BING fits, 1.0) + 14,609 NASA-GIOP rows (1.1). Profiles run to
-2026-07-06 (the day the selection was cut) but **granules stop at
-2026-06-01** — NASA's forward stream had not reached June when `discover`
-ran. Four distinct gaps:
-
-| Gap | Size (measured) | Fix | Expected new matchups (≈28 % match rate) |
+| Gap | Size | Fix | ≈ new matchups (28 %) |
 |---|---|---|---|
-| **A** — ingested but never had candidates (2026-06-02 → 07-06) | **2,356** profiles | `discover --profiles-csv <subset> --replace` (the coverage-skip test would otherwise skip them again) → `match` | ~650 |
-| **B** — new profiles since the selection was cut | **4,981** profiles / 686 floats (live `bgc-s` index query today, BBP700-or-CHLA, 2026-07-06 → 09-14) | new selection CSV → `ingest` → `discover` → `match` | ~1,400 |
-| **C** — the `match` plateau: positioned, in-window, never matched | **36,683** profiles (≤ 2026-06-01) | mostly genuinely unmatchable (no cloud-free coincident granule); includes the stall/timeout casualties (~1 wedged read per 86 profiles, then a 120 s skip). A full re-pass costs ~3 days of `match` and yielded <1 %/pass in August. Cheap first step: `nautilus/coverage_check.py` (DB-only) to count profiles with ≥1 candidate but no matchup, and a CMR check for newer PACE reprocessing (all 67,435 granules are V3.2). **Q5** | unknown, likely small |
-| **D** — odds and ends | 399 profiles without a position (unmatchable); 1 matchup without a fit (`5906568_97…`); ~475 of the original 54,506 selection never ingested (argopy transients) | re-attempt ingest for the 475; the 1 fit re-runs naturally under 2.0 | ~130 |
+| **A** — ingested, never had candidates (granules in the DB stop 2026-06-01; profiles run to 07-06) | **2,356** profiles | subset CSV from the DB → `discover --profiles-csv … --replace` → `match` | ~650 |
+| **B** — new BGC profiles since the selection was cut | **4,981** / 686 floats (live `bgc-s` query, 2026-07-06 → 09-14; re-queried at run time so the window ends *that* day) | selection CSV → `ingest` → `discover` → `match` | ~1,400 |
+| **D** — leftovers | ~475 never-ingested profiles of the original 54,506 (argopy transients); 1 unfit matchup | re-attempt `ingest`; the matchup fits naturally under 2.0 | ~130 |
 
-Total ≈ **+2,000–2,500 matchups** → **~16.6–17.1k fits** under 2.0. The
-NASA-GIOP baseline (`python -m pab.fit.nasa_giop`, idempotent, 4 s/matchup)
-then needs ~2.5 h + ~90 GB of scratch cache for the new matchups only.
+→ **~+2,200 matchups, ~16.8k fits.** Then NASA-GIOP for the new matchups
+only (`python -m pab.fit.nasa_giop --db v2/pab.db`, ~2.2k × 4 s ≈ 2.5 h,
+~100 GB scratch cache), and `figure` for the 2.0 fit figures (+ scenes for
+the new matchups only).
 
-**DB placement matters (lesson #1).** The canonical DB is the workstation
-`$PAB_DATA_DIR/full/pab.db` = the published `s3://pab/full/pab.db`
-(sha-verified 2026-09-11, 169,938,944 B). The Nautilus PVC copy
-`/data/full/pab.db` is **stale** (pre-`cdom_chl`, pre-NASA). Before any
-Nautilus stage runs, the merged DB is uploaded to the PVC and becomes the
-single writer's copy; the workstation copy is read-only until the run's DB
-comes back. **Q6**.
+### 5. Sequence
 
-### 4. Proposed sequence
-
-0. **Code + local validation** (workstation): §2 a–h; fit 3–5 real
-   matchups from cached granules under both configs; confirm the robust
-   path, geometry, provenance columns, figure/diagnostic dispatch.
-1. **Image `pab:2.0.0`** (+`robust`/`jax`), `nautilus/validate_job.yaml`
-   smoke test in-pod (5 profiles → 1 fit) with the 2.0 config.
-2. **Stage the canonical DB** on the PVC; **backfill** ingest (B + D) →
-   discover (A + B, `--replace` for A) → match — existing Job manifests,
-   lazy NASA-S3 reads, `--jobs 16` for match (memory-bound). All new
-   `matchups`/`mld_summary` rows stamp 2.0.
-3. **Leading slice** (~100 matchups, `fit` 2.0 in-pod): measure s/fit,
-   χ² and acceptance distributions, `bbp700(2.0)/bbp700(1.0)` on the same
-   pixels — the go/no-go gate (**Q12**).
-4. **Full `fit` 2.0** over all ~16.6k matchups (DB-local wrapper,
-   `--jobs 50`, chains under version-distinct ids; +~20 GB on the PVC).
-5. **NASA-GIOP** for the new matchups (workstation driver, as before).
-6. **figure → report → `--emit-site`**; site headline = 2.0 with a
-   1.0-vs-2.0 comparison section (**Q7**); publish DB → `s3://pab/full/`,
-   backup → `AIOcean:PAB/` (dated name), user pushes `report_site/` for RTD.
-7. **Verify & close out**: provenance (every 2.0 row stamped; 1.0/1.1 rows
-   byte-unchanged), integrity, docs (`HOWTO.md`, `PAB_implementation.md`,
-   `db_schema.rst`), run report.
+0. **Code + env** (§3 a–k) on the workstation; fit 3–5 real matchups from
+   the cached granules under 1.0 and 2.0 configs; unit + smoke tests.
+1. **Split the DB** (`v1` frozen, `v2` built per §1); rename local dirs;
+   copy `v1/pab.db` → `s3://pab/v1/`.
+2. **Image `pab:2.0.0`**; in-pod `validate_job` smoke (5 profiles → 1 fit
+   with geometry + 2.0 config).
+3. **Stage `v2/pab.db` on the PVC** (`/data/v2/`); rename `/data/fit_chains`
+   → `/data/v1/fit_chains`; `/data/full/` → `/data/v1/`.
+4. **Backfill** in-pod: `ingest` (B + D) → `discover` (A + B; `--replace`
+   for A) → `match` (`--jobs 16`).
+5. **`geometry` stage** in-pod over every pixel (`--jobs 16`, ~1 h).
+6. **Leading slice** (100 matchups, `fit` 2.0): s/fit, χ²/acceptance vs 1.0,
+   `bbp700(2.0)/bbp700(1.0)`, `B_p` posterior spread, robust-backend errors.
+   **JXP reviews before step 7.** (Also, diagnostic only: the same 100 with
+   `B_p` fixed, to attribute the shift — **R2**.)
+7. **Full `fit` 2.0** (DB-local wrapper, `--jobs 50`, 100 Gi).
+8. DB back to the workstation → **NASA-GIOP** for the new matchups.
+9. **`figure`** (2.0 fit figures; scenes for new matchups) → **`report`** →
+   `--emit-site report_site --compare-db v1/pab.db --downloads-base-url
+   …/pab/v2`; publish `v2/pab.db` + tables → `s3://pab/v2/`; backup →
+   `AIOcean:PAB/`; user pushes `report_site/` for RTD.
+10. **Verify & close out**: every 2.0 row stamped; v1 DB byte-identical to
+    its 2026-09-11 sha; integrity; docs (`HOWTO.md`, `PAB_implementation.md`,
+    `db_schema.rst`, `PAB_design.md` provenance section for the two-DB
+    convention); run report.
 
 ## Q&A
 
@@ -360,6 +399,121 @@ implausible. Agree, and do you want to look at the slice before I proceed?
 **Your answer:** yes, and yes — the physics change deserves a look.
 
 
+### Planning — round 2
+
+*Answers to Q1–Q12 read and folded into the Plan (2026-09-14). Answer inline
+under **Your answer:**; each carries my recommendation.*
+
+**R1 — The two-database layout (your Q2/Q6 answer).** Please confirm §1 of
+the Plan: (a) `v1/` = today's `full/pab.db` frozen (local rename with a
+`full/` symlink; a copy to `s3://pab/v1/pab.db`; the `full/` S3 objects left
+in place because the live site links them); (b) `v2/pab.db` starts as a copy
+of v1 **minus the BING 1.0 `fits`/`fit_results`**, keeping profiles,
+summaries, granules, matchups, pixels **and the 14,609 NASA-GIOP rows** (so
+the NASA comparison works inside v2 without cross-DB joins); (c) the
+backfilled profiles/matchups go into v2 only — v1 stays frozen and does not
+receive 1.0 fits for the new matchups (so the 1.0-vs-2.0 section covers the
+14,609 shared matchups); (d) on the PVC, `/data/fit_chains` → `/data/v1/
+fit_chains` and `/data/full/` → `/data/v1/`, with `PAB_DATA_DIR=/data/v2`
+for the run. Alternative for (b): copy v1 *including* the 1.0 fits, so v2 is
+a superset and the comparison needs no `ATTACH` — but then "separate
+databases" is only a fork, and the 1.0 rows would be duplicated in two
+places.
+*(My recommendation: (a)–(d) as written.)*
+
+**Your answer:**
+
+**R2 — Free `B_p`: prior and attribution.** (a) Keep BING's default linear
+uniform prior **[0.004, 0.05]** on `B_p`, seed 0.01? (b) Report it as
+`BING_ExpBPow_Bp` (median + 5–95 %) like the other free parameters. (c) With
+`B_p` free *and* new RT physics *and* a wider window, the 1.0-vs-2.0
+difference has three causes. Proposal: in the leading slice only, also fit
+the same 100 matchups with `B_p` fixed at 0.01 (diagnostic, chains to
+scratch, not persisted) so we can say how much of the `b_bp` shift is the
+extra parameter versus the emulator + inelastic terms. Worth the ~2 extra
+hours?
+*(My recommendation: (a) yes, (b) yes, (c) yes.)*
+
+**Your answer:**
+
+**R3 — Geometry as a pixel property + a `geometry` stage.** The L1B read
+works (Plan §2.1). Proposal: store `theta_s`/`theta_v`/`dphi`/`geom_source`
+on **`matchup_pixels`** (schema v5) rather than on `fits`, and fill them in a
+new **parallel `geometry` stage** (workers open the L1B lazily, parent
+writes) run once over all pixels before `fit` — keeping the ~4 s L1B open
+out of `fit`'s serial parent loop (which would otherwise add ~19 h). Two
+policies to set: (i) if a pixel has **no geometry** at fit time (L1B missing
+from CMR, or the grid check fails), **skip the fit and record it as failed**
+(strict — `theta_s` must never be assumed) rather than falling back to a
+computed solar zenith; (ii) the grid check requires the L1B lat/lon at
+`(ix, iy)` to match the stored pixel position to < 0.01° (they were
+bit-identical in the test), else the pixel is flagged and skipped.
+*(My recommendation: pixels table + stage; strict (i); (ii) as stated.)*
+
+**Your answer:**
+
+**R4 — `wave_max = 720` and the red edge.** PACE's last `wavelength_3d`
+bands are 713 and 719 nm; 719 nm sits on the edge of the 720–730 nm water-
+vapour feature, and `Rrs_unc` there is larger than at 700 nm. Two options:
+(a) 720 as answered — BING weights each band by `Rrs_unc`, so a noisier
+edge band down-weights itself; (b) 715 — drops that one band. I'd check the
+slice's `Rrs_unc(719)/Rrs(719)` distribution and the per-band residuals
+before deciding to drop it.
+*(My recommendation: (a) 720, with the slice check.)*
+
+**Your answer:**
+
+**R5 — Backfill B's window and the standing rule.** Q5 left this open: I
+will re-query the Argo index **at run time** so gap B runs to that day
+(4,981 profiles as of 2026-09-14; ~55 more per day). Should "end = today at
+run time" become the standing rule for every future backfill (recorded in
+`PAB_design.md`)?
+*(My recommendation: yes.)*
+
+**Your answer:**
+
+**R6 — NASA-GIOP for the ~2,200 new matchups.** The driver downloads whole
+IOP granules (~47 MB each) to a cache and needs the DB local. Run it on the
+**workstation after the fit stage** (v2 DB back from the PVC; ~2.5 h,
+~100 GB scratch, deleted after), stamped `1.1` like the existing NASA rows
+(same product, same code)? Or in-pod?
+*(My recommendation: workstation, after; keep the `1.1` stamp.)*
+
+**Your answer:**
+
+**R7 — `figure` scope for 2.0.** Re-render the **fit figures** for all
+~16.8k 2.0 fits (they encode the fitted physics; ~9 h at 16 workers) and
+**scenes only for the new matchups** (scenes don't depend on the fit)?
+Skipping fit figures entirely would save the 9 h but leave the report's
+per-matchup gallery/tap-through pointing at 1.0 figures.
+*(My recommendation: as stated.)*
+
+**Your answer:**
+
+**R8 — Getting the site live.** `full-inelastic` is 94 commits ahead of
+`develop` and 121 ahead of `main`; the `pab-report` RTD project builds
+`develop`/`latest(main)`, so the NASA-GIOP (1.1) report from the previous
+prompt doc is **still not live** either. When 2.0's `report_site/` is ready,
+will you merge to `develop` (or activate the branch on the RTD dashboard)?
+Nothing for me to do here beyond regenerating the site — just flagging that
+two reports are now queued behind that merge.
+*(My recommendation: merge `full-inelastic` → `develop` at the close-out.)*
+
+**Your answer:**
+
+**R9 — Order of work for the next prompt.** Unless you say otherwise, the
+next task starts §3 in this order: (j) env → (a, b, e) fit config + `B_p` +
+provenance → (c) geometry schema/stage → (d) diagnostics/figure dispatch →
+(h) DB split → (f) report → (g) workers → (i) image → (k) tests throughout,
+with a workstation fit of the cached matchups under 2.0 as the first
+end-to-end check. Anything you want reordered or pulled forward (e.g. the
+DB split first, so v1 is frozen before any code touches a DB)?
+*(My recommendation: as listed, but **do the DB split first** — it is the
+one irreversible-looking step and it protects v1 from everything after.)*
+
+**Your answer:**
+
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -429,3 +583,57 @@ record git SHAs in `pkg_versions`; keep the MCMC length; a 100-matchup
 leading slice as the gate. No code changed; nothing written outside this
 doc. Ran directly on Fable 5.1 (no delegation needed — the work was
 reading and synthesis).
+
+### 2026-09-14 (Planning Task 2 — folded in Q1–Q12; verified L1B geometry + free-B_p layout; revised Plan; posted R1–R9)
+
+Read the twelve answers. Three of them change the shape of the run rather
+than just a knob: **v1.0 and v2.0 fits live in separate databases**
+(Q2/Q6), **`B_p` is a free parameter** (Q4b), and geometry comes from the
+**L1B granule** (Q3 = A). Everything else landed on the recommendation
+(2.0; version-aware `fit_id` + schema v5; `robust_hybrid` + Raman + Chl-fl,
+CDOM-fl off; `wave_max=720`; backfill A+B+D only; 2.0 headline + one
+comparison section; defer the bulk publish; `ocean14`; SHAs in
+`pkg_versions`; keep the MCMC length; a reviewed 100-matchup slice).
+
+**Verified before revising (read-only):**
+
+- **L1B geometry works.** For the cached production granule
+  `PACE_OCI.20250309T131631.L2.OC_AOP.V3_2.nc`, a CMR search on
+  `PACE_OCI_L1B_SCI` returns the same-stamp `…L1B.V3.nc` (1.8 GB; each
+  granule listed twice — dedupe by name). Lazy `open_datatree` over
+  `earthaccess.open` reads `geolocation_data/{solar_zenith, sensor_zenith,
+  solar_azimuth, sensor_azimuth}` in 7.6 s out-of-region; the grid is the
+  same 1709×1272 and lat/lon are **identical** at the matched pixel
+  (868, 142). The real angles there — `theta_s` 29.47°, `theta_v` 54.58° —
+  show why the cheap options were rejected: the scan-line `csol_z` is 1.8°
+  off and a nadir assumption would be 55° off.
+- **Free `B_p` is a trailing parameter** in BING's vector (`log_prob` peels
+  `params[-1]`; `ndim` 5 → 6; walkers stay at 16). PAB's
+  `extract_quantities` splits the flattened chain into `a`/`bb` params by
+  `nparam_a` and would hand `eval_bbnw` a stray column — the peel must be
+  added, along with `B_p` in the initial guess / bounds / names.
+- **Branch state**: `full-inelastic` is 94 commits ahead of `develop` and
+  121 ahead of `main`; `bing` (`bf56f6d`) and `retrieve-or-bust`
+  (`dfab27c`) working trees are clean, so SHAs are meaningful as-is. 11,494
+  distinct granules carry the 14,610 matchups (sizes the geometry stage).
+
+**Plan revisions:** a new §0 table of locked decisions; a new §1 describing
+the two-database layout (`v1/` frozen incl. a copy to `s3://pab/v1/`; `v2/`
+= v1 minus the BING 1.0 fits, keeping the NASA-GIOP rows; backfill into v2
+only; `--compare-db` for the 1.0-vs-2.0 section; version-aware ids kept as
+a merge guard); §2 rewritten around the verified L1B path and the 6-param
+fit; §3 gains the `B_p` plumbing, a **parallel `geometry` stage** writing
+`theta_s/theta_v/dphi/geom_source` onto `matchup_pixels` (keeping the ~4 s
+L1B open out of `fit`'s serial parent loop — ~19 h otherwise), the DB-split
+helper, `--compare-db`, and a 100 Gi memory note for JAX workers; §4 drops
+gap C; §5 is now a 10-step sequence with the DB split first and JXP's slice
+review as the explicit gate.
+
+**Round 2 (R1–R9)** asks to confirm the two-DB layout and contents, the
+`B_p` prior + a diagnostic B_p-fixed slice for attribution, geometry on the
+pixels table with strict skip-if-missing, keeping 720 nm with a red-edge
+check, "end = today" as the standing backfill rule, NASA-GIOP on the
+workstation after the fit, figure scope, the RTD merge that two reports now
+wait on, and the order of the code work (recommendation: DB split first).
+No code changed; the one network action was the read-only L1B check. Ran
+directly on Fable 5.1.
