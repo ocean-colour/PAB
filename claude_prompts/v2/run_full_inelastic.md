@@ -119,6 +119,21 @@ read (Q3) and BING's free-`B_p` chain layout (Q4). Open decisions are in
 | MCMC | keep `nsteps=10000` / `nburn=1000`; walkers = `max(16, 2×ndim)` = 16 still at ndim 6 |
 | Gate | 100-matchup leading slice, reviewed by JXP before the full send |
 
+### 0b. Round-2 outcome (2026-09-14) — plan is final; execution moves to the `build_v2_prompt_<n>.md` series
+
+R1–R9 all took the recommendation, with one change: **R7 — existing PACE
+scenes are *not* re-rendered; the v2 site points at the v1 scenes**
+(`matchups.scene_path` is carried into v2 by the split, so `figure` renders
+fit figures for every 2.0 fit and scenes only for backfilled matchups).
+Also settled: the `B_p` prior [0.004, 0.05] linear with a diagnostic
+`B_p`-fixed slice for attribution (R2); geometry on `matchup_pixels` via a
+parallel `geometry` stage, **strict skip** when a pixel has no geometry (R3);
+`wave_max = 720` with a red-edge check in the slice (R4); **"end = today at
+run time" is the standing backfill rule** (R5 → `PAB_design.md`); NASA-GIOP
+for the new matchups on the workstation after the fit, stamped `1.1` (R6);
+JXP merges `full-inelastic` → `develop` at close-out (R8); the code work
+starts with the **DB split** (R9).
+
 ### 1. Two databases: `v1` (frozen) and `v2` (this run)
 
 The v1.0 fits stay in their own database, untouched; everything this run
@@ -246,6 +261,25 @@ the new matchups only).
     its 2026-09-11 sha; integrity; docs (`HOWTO.md`, `PAB_implementation.md`,
     `db_schema.rst`, `PAB_design.md` provenance section for the two-DB
     convention); run report.
+
+### 6. Execution — the prompt-doc series (`claude_prompts/v2/`)
+
+| Doc | Scope | Plan refs |
+|---|---|---|
+| `build_v2_prompt_1.md` | `ocean14` env; **freeze v1** (rename, sha, `s3://pab/v1/`); build **v2** (split helper; keeps NASA rows + scene paths); docs | §1, §3 h/j |
+| `build_v2_prompt_2.md` | schema v5 pixel geometry; L1B reader; parallel **`geometry` stage**; local validation | §2.1, §3 c |
+| `build_v2_prompt_3.md` | `pab_version=2.0`; `FitConfig` 2.0 + `FitConfig.v1()`; free `B_p`; geometry into the fit; v5 `fits` provenance + version-aware `fit_id` + SHAs; robust dispatch in diagnostics/figures; XLA pinning; real 1.0-vs-2.0 fits on cached matchups | §2, §3 a/b/d/e/g |
+| `build_v2_prompt_4.md` | image `pab:2.0.0` (+`robust`/JAX); PVC re-layout `/data/v1`, `/data/v2`; stage v2 DB; in-pod validation | §3 i, §5 2–3 |
+| `build_v2_prompt_5.md` | backfill A+B+D (selections → ingest → discover `--replace` → match); `geometry` over every pixel | §4, §5 4–5 |
+| `build_v2_prompt_6.md` | 100-matchup leading slice + `B_p`-fixed attribution; **JXP review gate** | §5 6 |
+| `build_v2_prompt_7.md` | full 2.0 fit; DB return; NASA-GIOP for new matchups | §5 7–8 |
+| `build_v2_prompt_8.md` | version-aware metrics; **1.0-vs-2.0** section (`--compare-db`); figures (fit figs all, scenes new only); `--emit-site` | §3 f, §5 9 |
+| `build_v2_prompt_9.md` | publish `s3://pab/v2/`, backup, verify (v1 sha unchanged), docs, `PAB_v2_run_report.md` | §5 10 |
+
+Each doc follows the project's prompt-doc shape (Goals / Claude / Context /
+Prompts / Tasks / Q&A / Reports / Logging / Logs), repeats the working
+agreements (user's git; `ocean14`; explicit `--db`; **`v1/pab.db` frozen**;
+confirm outward-facing steps), and cites the Plan sections it executes.
 
 ## Q&A
 
@@ -640,3 +674,44 @@ workstation after the fit, figure scope, the RTD merge that two reports now
 wait on, and the order of the code work (recommendation: DB split first).
 No code changed; the one network action was the read-only L1B check. Ran
 directly on Fable 5.1.
+
+### 2026-09-14 (Planning Task 3 — R1–R9 folded in; plan finalised; nine `build_v2_prompt_<n>.md` docs written)
+
+Read the round-2 answers: all nine accept the recommendation; the one
+substantive change is **R7** — do not re-render the existing PACE scenes,
+point the v2 site at the v1 ones (cheap to honour: `matchups.scene_path`
+rides along in the v1→v2 split, so `figure` only needs a "scene exists →
+skip" guard and renders scenes for backfilled matchups only). R5 makes
+"end = today at run time" the standing backfill rule; R8 confirms JXP will
+merge `full-inelastic` → `develop` at close-out (the 1.1 NASA-GIOP report is
+queued behind the same merge); R9 confirms the DB split goes first.
+
+Updated the Plan with a **§0b round-2 outcome** block and a **§6 execution
+table** mapping the nine prompt docs to Plan sections. Then wrote the
+series in `claude_prompts/v2/`: (1) env + freeze v1 + build v2 + docs;
+(2) schema v5 pixel geometry + L1B reader + parallel `geometry` stage;
+(3) the 2.0 fit — `pab_version=2.0`, `FitConfig` 2.0 with a `FitConfig.v1()`
+for reproducible comparisons, free `B_p` plumbing (the trailing-parameter
+peel in `extract_quantities`), geometry into the 5-tuple, v5 `fits`
+provenance + version-aware `fit_id` + git SHAs via a container-friendly
+seam, robust dispatch in `_fit_diagnostics`/`fit_fig`, XLA pinning, and a
+real 1.0-vs-2.0 fit on the cached matchups; (4) image `pab:2.0.0`, PVC
+re-layout to `/data/v1` (frozen) and `/data/v2`, staging the v2 DB,
+in-pod validation; (5) backfill A+B+D with the `--replace` re-discover for
+gap A and a CMR check on how far the AOP forward stream reaches, then
+`geometry` over every pixel; (6) the 100-matchup gate with the `B_p`-fixed
+attribution slice and an explicit stop for JXP's review; (7) the full fit
+(100 Gi for JAX workers), DB return, NASA-GIOP for the new matchups on the
+workstation; (8) version-aware `gather_matchups`, the 1.0-vs-2.0 section via
+`--compare-db`, figures in-pod (fit figures all, scenes new only), site
+regeneration against `…/pab/v2` downloads; (9) publish to `s3://pab/v2/`,
+dated `AIOcean` backup, verification incl. the frozen-v1 sha, docs, and a
+`PAB_v2_run_report.md`. Each doc carries the working agreements (user's
+git; `ocean14`; explicit `--db`; `v1/pab.db` frozen; confirm outward-facing
+steps) and cites the Plan sections it executes.
+
+One design point resolved while writing Prompt 8: after Prompt 7 returns
+the DB to the workstation, the chains stay on the PVC, so `figure` must run
+in-pod against a fresh upload of the v2 DB, then copy back — written into
+the task rather than left to chance. No code changed; no network actions.
+Ran directly on Fable 5.1.
