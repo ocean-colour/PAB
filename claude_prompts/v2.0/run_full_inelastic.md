@@ -1,4 +1,4 @@
-# Running the full PAB pipeline
+# Running the full PAB pipeline with inelastic RT (v2.0)
 
 ## Goals
 
@@ -85,6 +85,8 @@ If you need to use Python, be sure to use the `ocean14` conda environment.
 ### Planning
 
 1. Read all the files in the context.  We wish to develop a plan to re-run the BING analysis in Nautilus with the new RoB RT emulator.  We will also need to backfill the missing matchups from the original run.  Have a discussion with me on the plan for this work.  Ask me a series of questions in the Q&A section.  Use Fable if you can.  Log your work.
+
+2. I have answered your first round of questions.  See my answers, update the Plan, and then ask me another round.  Use Fable if you can. Log your work.
 
 ## Plan
 
@@ -216,7 +218,7 @@ will differ materially from 1.0 — a re-analysis, not a backfill. Bump to
 `"1.2"` (next minor after the NASA-GIOP `1.1`)?
 *(My recommendation: `2.0`.)*
 
-**Your answer:**
+**Your answer:** 2.0
 
 **Q2 — Keeping 1.0 and 2.0 fits side by side (identity + schema).** Today
 `fit_id = {matchup_id}_{ix}_{iy}_{model_pair}` and the `fits` table has no
@@ -234,7 +236,7 @@ migration, like v2–v4). The alternative — a new `model_pair` label such as
 OK with (i)+(ii)?
 *(My recommendation: yes.)*
 
-**Your answer:**
+**Your answer:** (i) I wish to keep the v1.0 fits as a separate database.  I think the version-aware ID is also good;  (ii) yes, this is good
 
 **Q3 — Where does the viewing/illumination geometry come from?** The L2
 AOP granule has no per-pixel angles (verified). Options:
@@ -256,7 +258,7 @@ Whichever we pick is recorded on the fit row (Q2) so it can be revisited.
 *(My recommendation: **A** if the L1B open works in-pod, else **B**; never C
 for a production run.)*
 
-**Your answer:**
+**Your answer:** A
 
 **Q4 — Confirm the RT configuration.** `rt_backend='robust_hybrid'` (not
 `robust_ztt`; the 400–700 nm window is inside the emulator's 350–750 nm
@@ -271,7 +273,7 @@ is actually constrained — 700 nm cuts the 685 nm peak's shoulder; (b) free
 *(My recommendation: the config as stated, with **(a) yes, `wave_max=720`**
 and **(b) no** — keep `B_p` fixed for this run.)*
 
-**Your answer:**
+**Your answer:** (a) yes, `wave_max=720` and (b) let B_p be free
 
 **Q5 — Backfill scope.** Gaps **A** (2,356 profiles, re-discover + match),
 **B** (4,981 new profiles, full chain) and **D** (475 ingest retries) are
@@ -285,7 +287,7 @@ window permanently (every future run backfills to `today`)?
 *(My recommendation: A+B+D now; C conditional on the two checks; B to run
 date; yes, "end = today" as the standing rule.)*
 
-**Your answer:**
+**Your answer:** A+B+D
 
 **Q6 — DB custody for the run.** Upload the canonical merged
 `$PAB_DATA_DIR/full/pab.db` to the PVC (replacing the stale `/data/full/
@@ -295,7 +297,7 @@ Anything on your laptop (`cdom_chl`) still unpublished that would collide?
 *(My recommendation: yes to the custody rule; please confirm the laptop is
 in sync with S3 as of 2026-09-11.)*
 
-**Your answer:**
+**Your answer:** yes on your plan, but note my desire to keep the v1.0 and v2.0 fits as separate databases.
 
 **Q7 — Report presentation.** Make **2.0 the headline** everywhere (summary,
 aggregates, Chl, NASA-GIOP comparison), and add a **"1.0 vs 2.0"** section
@@ -304,7 +306,7 @@ measurement of what the RT change did), with 1.0 otherwise retired from the
 site? Or keep both versions fully rendered (doubles the page set)?
 *(My recommendation: 2.0 headline + one comparison section.)*
 
-**Your answer:**
+**Your answer:** 2.0 headline + one comparison section.
 
 **Q8 — Chains and the bulk-artifact publish.** 2.0 adds ~17k chains
 (~1.3 MB each, ~20 GB) beside the 1.0 set on the PVC (500 Gi, ample). Keep
@@ -312,7 +314,7 @@ deferring the bulk publish to `s3://pab` (the standing §7b follow-on), or
 fold it into this run's publish step now that there are two versions?
 *(My recommendation: defer again — keep this run focused.)*
 
-**Your answer:**
+**Your answer:** Defer again
 
 **Q9 — Development environment.** You asked for `ocean14`; it has
 `robust`+`jax` but not `pab`/`argopy`, while `os_313` (where the PAB suite
@@ -323,7 +325,7 @@ into `os_313` instead? The container image is unaffected either way.
 *(My recommendation: `ocean14` first; fall back to `os_313` if `argopy`
 won't install on 3.14.)*
 
-**Your answer:**
+**Your answer:** Yes, use `ocean14` and install what you need.
 
 **Q10 — Code provenance for the image.** The image builds from the local
 working trees of `PAB`, `bing`, `ocpy`, `remote_sensing` and now
@@ -335,7 +337,7 @@ any uncommitted `bing`/`robust` work before the build so the SHAs are
 meaningful?
 *(My recommendation: yes to both.)*
 
-**Your answer:**
+**Your answer:** yes to both.
 
 **Q11 — MCMC length.** Keep `nsteps=10000`/`nburn=1000`/16 walkers (the 1.0
 settings) despite the ~7× costlier likelihood? Projected 6–12 h of fit on
@@ -343,7 +345,7 @@ settings) despite the ~7× costlier likelihood? Projected 6–12 h of fit on
 1.0-vs-2.0 comparison confound RT physics with chain length.
 *(My recommendation: keep.)*
 
-**Your answer:**
+**Your answer:** Keep.
 
 **Q12 — The go/no-go gate.** Before the full send: a ~100-matchup leading
 slice in-pod (the same pattern as the NASA-GIOP run) reporting measured
@@ -354,7 +356,7 @@ wavelengths, missing geometry). Proposed pause triggers: median s/fit
 implausible. Agree, and do you want to look at the slice before I proceed?
 *(My recommendation: yes, and yes — the physics change deserves a look.)*
 
-**Your answer:**
+**Your answer:** yes, and yes — the physics change deserves a look.
 
 
 ## Logging
