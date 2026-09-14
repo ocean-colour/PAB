@@ -266,6 +266,47 @@ Verification, all clean:
 `pytest pab/tests` → **230 passed, 0 failed** (215 + 15 new).
 
 
+### Task 4 — docs updated (2026-09-14): **done**
+
+**`HOWTO.md` — new §5b "Versions — `v1/` (frozen) and `v2/`"** (between
+Outputs and Notes & gotchas). Covers the frozen-v1 rule (sha256 invariant,
+`chmod a-w`, read-only opens, explicit `--db`), the full three-way layout
+table (workstation / Nautilus PVC / S3, plus backup), the public-URL and
+bucket-policy facts, and how to build a version database with
+`python -m pab.db.split_version`, with the v1→v2 count table. §7b gained a
+short "Versioned layout" note recording `s3://pab/v1/pab.db` and pointing at
+§5b, so "what is published where" is no longer stale.
+
+**`docs/db_schema.rst`** — a new Conventions bullet stating that
+`pab_version` records when a **row** was created, **not** which database file
+it lives in, with the concrete v2 case (copied `matchups` stamped `1.0`,
+NASA-GIOP fits `1.1`, only v2-created rows `2.0`) and the corollary: do not
+infer a DB's version from the stamps inside it. It also links the existing
+counter-example (the 2026-09-05/06 backfill deliberately stayed at `1.0`). The
+Migrations section now distinguishes schema migration from *version splitting*
+and points at `pab.db.split_version`, and the Access API section autodocs the
+new module so those `:mod:` references resolve.
+
+**`run_full_inelastic.md` Plan §1** — "Proposed layout (confirm in R1)" became
+"confirmed in R1; the workstation and S3 rows were **built on 2026-09-14**…
+the PVC row is still pending", plus an **"As built"** block with the real
+numbers and three practical notes (below).
+
+Verification: `python -m sphinx -b html docs` builds **clean, zero warnings**;
+`pytest pab/tests` → **230 passed**; `ruff check` clean on both new files (the
+8 remaining repo-wide errors are pre-existing in
+`pab/argo/check_argo_coverage.py`, untouched here); `v1/pab.db` still
+`-r--r--r--` at `09de0a6d…f978273`.
+
+**One thing that did change in practice**, now documented in all three places:
+`pab.fit.artifacts.chains_path()` resolves to **`$PAB_DATA_DIR/fit_chains/`** —
+the *root* of `PAB_DATA_DIR`, not a per-version subdirectory. So the
+`$PAB_DATA_DIR/v2/fit_chains/` created in Task 3 is **inert on the workstation**
+unless `PAB_DATA_DIR` is itself pointed at `…/Color/PAB/v2`. The plan's PVC row
+already gets this right (`PAB_DATA_DIR=/data/v2`); the workstation row did not
+say it.
+
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -430,3 +471,55 @@ What I learned / want to remember:
   the task's wording is specifically "all `NASA_GIOP_*`".
 - `VACUUM` preserves `PRAGMA user_version` — confirmed v4 on both sides. Worth
   knowing, since it does *not* preserve everything (it rebuilds the file).
+
+### 2026-09-14 (Task 4 — documented the v1/v2 layout and the pab_version caveat)
+
+Wrote the versioning story into the three places that will be consulted later:
+`HOWTO.md` (how to operate it), `docs/db_schema.rst` (how to read the stamps),
+and the plan doc (what was actually built).
+
+- **`HOWTO.md` §5b "Versions"**, a new subsection between Outputs and Notes &
+  gotchas. The frozen-v1 rule stated as a rule with its enforcement (sha256
+  invariant, `chmod a-w`, read-only URI opens, explicit `--db`, attach-don't-
+  copy for comparisons); a workstation/PVC/S3/backup table; the public URL
+  pattern and the `arn:aws:s3:::pab/*` bucket policy; and the
+  `python -m pab.db.split_version` recipe with the v1→v2 counts. §7b got a
+  pointer to it so the older "what is published where" text is not stale.
+- **`docs/db_schema.rst`**: the `pab_version` caveat as a Conventions bullet,
+  the Migrations section now separating schema migration from version
+  splitting, and an `automodule` for `pab.db.split_version`.
+- **`run_full_inelastic.md` Plan §1**: "Proposed" → confirmed/built, plus an
+  "As built" block with the real numbers and the three notes below.
+
+What I learned / want to remember:
+
+- **The `v2/fit_chains/` directory Task 3 asked for is, on the workstation,
+  inert.** `pab.fit.artifacts.chains_path()` is
+  `Path(DATA_DIR) / "fit_chains" / f"{fit_id}.npz"` where `DATA_DIR` is
+  `PAB_DATA_DIR` itself — the *root*, not a per-version subdir. With the
+  `.bashrc` value `PAB_DATA_DIR=…/Color/PAB`, chains land in
+  `…/Color/PAB/fit_chains/` no matter which `--db` is passed, so a v2 fit run
+  on this box would scatter chains into the shared root and mix them with v1's
+  unless `PAB_DATA_DIR` is deliberately set to `…/Color/PAB/v2`. The plan's PVC
+  row already anticipated exactly this (`PAB_DATA_DIR=/data/v2`); the
+  workstation row did not. Flagged in all three docs — this is the sort of
+  thing that silently produces an unattributable pile of NPZs.
+- Related and slightly alarming: the **test suite writes into that same root
+  `…/Color/PAB/fit_chains/`**. Two `.npz` files there were rewritten during my
+  `pytest` runs today. It does not threaten the freeze (nothing goes near
+  `v1/pab.db`, which I re-verified after every run), but a test touching a
+  production data directory at all is worth knowing about.
+- `/home/xavier/Oceanography` is a **symlink to `/mnt/tank/Oceanography`**, so
+  the `.bashrc` `PAB_DATA_DIR=/home/xavier/Oceanography/data/Color/PAB` and the
+  prompt series' `/mnt/tank/Oceanography/data/Color/PAB` are the *same
+  directory*. I checked this rather than assuming, because a genuine split
+  there would have meant Tasks 2–3 froze and built in the wrong place.
+- `VACUUM` preserves `PRAGMA user_version`, so a version split leaves the
+  schema version alone — worth stating in the Migrations section, since
+  "splitting a version" and "migrating a schema" are easy to conflate and only
+  one of them touches `user_version`.
+- The docs build is clean with **zero** warnings, and stays that way with the
+  new `automodule`. Sphinx here is not in nitpick mode, so an unresolved
+  `:mod:` reference would have failed silently — adding the `automodule` makes
+  the two new cross-references actually resolve rather than just look right in
+  the source.

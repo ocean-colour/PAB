@@ -196,6 +196,70 @@ The SQLite store (`--db`) holds all the structured results and is the source of
 truth; the site and manifest are derived from it.
 
 
+## 5b. Versions — `v1/` (frozen) and `v2/`
+
+From 2026-09-14 the released datasets are kept **one directory per version**,
+and the published v1.0 database is **frozen**. Before this, everything lived in
+a single `full/` directory that was re-ingested in place.
+
+**The frozen-v1 rule.** `v1/pab.db` is the database behind the published 1.0
+results. It is `chmod a-w` and its sha256 is an invariant:
+
+```
+09de0a6d334dc02e73494b198567a37707e1942e5cfd1173c89822b35f978273   169,938,944 B
+```
+
+**No stage, script or test writes to it.** Read it with an explicit read-only
+open (`sqlite3.connect("file:…?mode=ro", uri=True)`), and pass `--db` explicitly
+everywhere so no default can resolve to it by accident. To compare v2 against
+v1, attach v1 read-only rather than copying rows into it.
+
+| | v1 (frozen, published 1.0) | v2 (the inelastic-RT run) |
+| --- | --- | --- |
+| workstation | `$PAB_DATA_DIR/v1/pab.db` — the old `full/pab.db`, renamed. `$PAB_DATA_DIR/full` is now a **symlink to `v1`**, so existing commands and docs that say `full/pab.db` keep working. | `$PAB_DATA_DIR/v2/pab.db`, `$PAB_DATA_DIR/v2/fit_chains/` |
+| PVC (Nautilus) | `/data/v1/pab.db` | `/data/v2/pab.db`, `/data/v2/fit_chains/`, `/data/v2/pipeline/` — set `PAB_DATA_DIR=/data/v2` so chains key there |
+| S3 | `s3://pab/v1/pab.db` (public, immutable). The **`s3://pab/full/` objects stay put** — the live site's download links point at them, and `full/pab.db` is byte-identical to `v1/pab.db`. | `s3://pab/v2/pab.db` + `v2/matchup_summary.*` |
+| backup | `AIOcean:PAB/` | `AIOcean:PAB/pab_v2_<date>.db` (dated copy, not a sync) |
+
+Public URLs are `https://s3-west.nrp-nautilus.io/pab/<key>`; the bucket policy
+is public-read on `arn:aws:s3:::pab/*`, so a new prefix needs no ACL work.
+
+**Where chains actually land.** `pab.fit.artifacts.chains_path()` resolves to
+`$PAB_DATA_DIR/fit_chains/<fit_id>.npz` — the *root* of `PAB_DATA_DIR`, not a
+per-version subdirectory. `v2/fit_chains/` is therefore only used when
+`PAB_DATA_DIR` itself points at the version directory (`…/PAB/v2`), which is
+what the PVC row above does. On the workstation with the usual
+`PAB_DATA_DIR=…/Color/PAB`, chains go to `…/Color/PAB/fit_chains/` regardless of
+which `--db` you pass — so set `PAB_DATA_DIR` deliberately before a run that
+writes chains.
+
+**Building a version database.** `pab/db/split_version.py` copies a release and
+strips one algorithm's fits, which is how v2 was created from v1:
+
+```bash
+python -m pab.db.split_version \
+    --src "$PAB_DATA_DIR/v1/pab.db" --dst "$PAB_DATA_DIR/v2/pab.db" --fit-chains
+```
+
+It opens the source **read-only**, copies via the `sqlite3` online-backup API
+(a `shutil.copy2` would carry the `a-w` mode onto the copy and break the next
+write), deletes the `BING` `fits` plus their `fit_results`, `VACUUM`s, then
+verifies: `integrity_check`, `foreign_key_check`, every non-fit table equal to
+the source, `matchups.scene_path` preserved, and the source's sha256 unchanged.
+It exits non-zero if any check fails. v2 as built:
+
+| table | v1 | v2 |
+| --- | ---: | ---: |
+| floats / profiles / mld_summary | 881 / 54,031 / 54,031 | unchanged |
+| granules / matchups / matchup_pixels | 67,435 / 14,610 / 146,100 | unchanged |
+| `fits` | 29,218 (14,609 BING + 14,609 NASA-GIOP) | **14,609** (NASA-GIOP only) |
+| `fit_results` | 262,962 | **116,872** (`NASA_GIOP_*` only) |
+
+The NASA-GIOP rows are kept because they are the baseline the v2 comparison is
+measured against, and `matchups.scene_path` is kept so the v2 site reuses v1's
+14,586 PACE scene quick-looks instead of re-rendering them.
+
+
 ## 6. Notes & gotchas
 
 - **Granule opens are slow out-of-region.** Opening a PACE L2 granule from S3
@@ -311,6 +375,14 @@ machines writing descendants of the same DB, check the published object before
 pushing — the S3 key is last-writer-wins, and the NASA rows are re-graftable
 into any sibling with two `INSERT`s (see `claude_prompts/pace_giop_gsm.md`,
 Full Run Task 5/6 entries).
+
+**Versioned layout (2026-09-14).** The published 1.0 database also now has a
+permanent, immutable home at
+`https://s3-west.nrp-nautilus.io/pab/v1/pab.db` (byte-identical to
+`full/pab.db`, same sha256 `09de0a6d…f978273`). The `full/` objects above are
+**unchanged** and remain what the live site links. See
+[§5b Versions](#5b-versions--v1-frozen-and-v2) for the full v1/v2 layout across
+workstation, PVC and S3, and for the frozen-v1 rule.
 
 > **Remaining follow-on:** publish the **bulk artifacts** (chains + figures) to
 > `s3://pab` via `publish_release(..., backend=NautilusS3Backend(...))` so the

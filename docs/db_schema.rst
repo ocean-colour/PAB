@@ -21,6 +21,16 @@ Conventions
   ``TEMP`` in °C; wavelengths in nm.
 * Distances in km; time offsets in hours; timestamps as ISO-8601 text.
 * Every results-bearing row carries a ``pab_version`` stamp for provenance.
+* ``pab_version`` records when a **row** was created, **not** which database
+  file it currently lives in. The two diverge as soon as a version database is
+  built by copying another (:mod:`pab.db.split_version`): the v2 store carries
+  ``matchups`` stamped ``1.0`` and the NASA-GIOP ``fits``/``fit_results``
+  stamped ``1.1``, because those records were made during the v1 run and were
+  carried over unchanged; only rows *created* by the v2 run stamp ``2.0``. So
+  do not infer a database's version from the stamps inside it — a single file
+  legitimately holds several. Likewise a ``pab_version`` bump does not imply a
+  re-analysis: the 2026-09-05/06 chl-a/CDOM provenance backfill deliberately
+  stayed at ``1.0`` (see ``HOWTO.md`` §7b).
 
 Tables
 ------
@@ -120,6 +130,12 @@ The schema version lives in ``PRAGMA user_version``.
 schema (version 1); later DDL changes register a forward step and bump
 ``SCHEMA_VERSION``.
 
+Splitting a release into a new version database is a separate concern from
+schema migration and lives in :mod:`pab.db.split_version`: it copies a store
+and drops one algorithm's ``fits``/``fit_results``, leaving the schema version
+untouched (``VACUUM`` preserves ``PRAGMA user_version``). See ``HOWTO.md``
+§5b for the ``v1``/``v2`` layout and the frozen-v1 rule.
+
 Access API
 ----------
 
@@ -129,3 +145,6 @@ Access API
 
 .. automodule:: pab.db.schema
    :members: SCHEMA_VERSION, create_all, migrate, get_version
+
+.. automodule:: pab.db.split_version
+   :members: split_version, verify, copy_database, drop_algorithm, table_counts, sha256
