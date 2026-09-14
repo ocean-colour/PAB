@@ -70,7 +70,7 @@ Read the thesis discussion before running analyses — it sets up the hypotheses
 
 5. **RT.** It is possible that the bias is due to the Rrs(λ) retrieval algorithm.  JXP has recently updated the inelastic scattering correction in the Rrs(λ) retrieval algorithm.  Please check whether this has any effect on the bias.  You may wish to examine the work in `retrieve-or-bust` and `IOPtics` repositories. Log your work. Use Fable if you can.
 
-6. **Synthesis and discussion draft.** Drawing on Tasks 0–4, the thesis, and the literature, write a 3–4 paragraph discussion of the bias suitable for the paper. Address: (a) what the data establish, (b) what they cannot resolve, (c) the most likely explanation and why, (d) what future work would confirm it. Save as `bias_analysis/bias_discussion_draft.md`. Log.  Use Fable if you can.
+6. **Synthesis and discussion draft.** Drawing on Tasks 0–5, the thesis, and the literature, write a discussion of the bias suitable for the paper. Address: (a) what the data establish, (b) what they cannot resolve, (c) the most likely explanation and why, (d) what future work would confirm it. Save as `bias_analysis/bias_discussion_draft.md`. Log.  Use Fable if you can.
 
 ## Q&A
 
