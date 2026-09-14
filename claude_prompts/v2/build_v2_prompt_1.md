@@ -50,6 +50,7 @@ it is the one that protects the published 1.0 results from everything after
 2. Execute the 2nd task in Tasks below. Use Opus 5
 3. Execute the 3rd task in Tasks below. Use Opus 5
 4. Execute the 4th task in Tasks below. Use Opus 5
+5. Execute the 5th task in Tasks below. Use Opus 5
 
 ## Tasks
 
@@ -87,6 +88,8 @@ it is the one that protects the published 1.0 results from everything after
    creation, not the DB's version. Update `claude_prompts/v2/
    run_full_inelastic.md` Plan §1 if anything about the layout changed in
    practice. Log.
+
+5. **Update**.  Based on what you have done, update the prompt doc `build_v2_prompt_2.md`, as needed.  Use Opus 5. Log
 
 ## Q&A
 
