@@ -89,6 +89,8 @@ If you need to use Python, be sure to use the `ocean14` conda environment.
 
 2. I have answered your first round of questions.  See my answers, update the Plan, and then ask me another round.  Use Fable if you can. Log your work.
 
+3. I have answered your second round of questions.  See my answers and update the Plan.  Then generate a series of prompt docs named `build_v2_prompt_<number>.md` in the `claude_prompts/v2` directory.  Use Fable if you can. Log your work.
+
 ## Plan
 
 *Drafted 2026-09-13 after reading the context set and checking the current
@@ -421,7 +423,7 @@ databases" is only a fork, and the 1.0 rows would be duplicated in two
 places.
 *(My recommendation: (a)–(d) as written.)*
 
-**Your answer:**
+**Your answer:** I agree, use your Recommendations.
 
 **R2 — Free `B_p`: prior and attribution.** (a) Keep BING's default linear
 uniform prior **[0.004, 0.05]** on `B_p`, seed 0.01? (b) Report it as
@@ -434,7 +436,7 @@ extra parameter versus the emulator + inelastic terms. Worth the ~2 extra
 hours?
 *(My recommendation: (a) yes, (b) yes, (c) yes.)*
 
-**Your answer:**
+**Your answer:** I agree, use your Recommendations
 
 **R3 — Geometry as a pixel property + a `geometry` stage.** The L1B read
 works (Plan §2.1). Proposal: store `theta_s`/`theta_v`/`dphi`/`geom_source`
@@ -450,7 +452,7 @@ computed solar zenith; (ii) the grid check requires the L1B lat/lon at
 bit-identical in the test), else the pixel is flagged and skipped.
 *(My recommendation: pixels table + stage; strict (i); (ii) as stated.)*
 
-**Your answer:**
+**Your answer:** I agree, use your Recommendations.
 
 **R4 — `wave_max = 720` and the red edge.** PACE's last `wavelength_3d`
 bands are 713 and 719 nm; 719 nm sits on the edge of the 720–730 nm water-
@@ -461,7 +463,7 @@ slice's `Rrs_unc(719)/Rrs(719)` distribution and the per-band residuals
 before deciding to drop it.
 *(My recommendation: (a) 720, with the slice check.)*
 
-**Your answer:**
+**Your answer:** I agree, use your Recommendations.
 
 **R5 — Backfill B's window and the standing rule.** Q5 left this open: I
 will re-query the Argo index **at run time** so gap B runs to that day
@@ -470,7 +472,7 @@ run time" become the standing rule for every future backfill (recorded in
 `PAB_design.md`)?
 *(My recommendation: yes.)*
 
-**Your answer:**
+**Your answer:** yes
 
 **R6 — NASA-GIOP for the ~2,200 new matchups.** The driver downloads whole
 IOP granules (~47 MB each) to a cache and needs the DB local. Run it on the
@@ -479,7 +481,7 @@ IOP granules (~47 MB each) to a cache and needs the DB local. Run it on the
 (same product, same code)? Or in-pod?
 *(My recommendation: workstation, after; keep the `1.1` stamp.)*
 
-**Your answer:**
+**Your answer:** I agree, use your Recommendations.
 
 **R7 — `figure` scope for 2.0.** Re-render the **fit figures** for all
 ~16.8k 2.0 fits (they encode the fitted physics; ~9 h at 16 workers) and
@@ -488,7 +490,7 @@ Skipping fit figures entirely would save the 9 h but leave the report's
 per-matchup gallery/tap-through pointing at 1.0 figures.
 *(My recommendation: as stated.)*
 
-**Your answer:**
+**Your answer:** No need to remake the existing scenes.  Let's point to v1.0 for those
 
 **R8 — Getting the site live.** `full-inelastic` is 94 commits ahead of
 `develop` and 121 ahead of `main`; the `pab-report` RTD project builds
@@ -499,7 +501,7 @@ Nothing for me to do here beyond regenerating the site — just flagging that
 two reports are now queued behind that merge.
 *(My recommendation: merge `full-inelastic` → `develop` at the close-out.)*
 
-**Your answer:**
+**Your answer:** Yes, I will merge to `develop` at the close-out.
 
 **R9 — Order of work for the next prompt.** Unless you say otherwise, the
 next task starts §3 in this order: (j) env → (a, b, e) fit config + `B_p` +
@@ -511,7 +513,7 @@ DB split first, so v1 is frozen before any code touches a DB)?
 *(My recommendation: as listed, but **do the DB split first** — it is the
 one irreversible-looking step and it protects v1 from everything after.)*
 
-**Your answer:**
+**Your answer:** I agree, use your Recommendations.
 
 
 ## Logging
