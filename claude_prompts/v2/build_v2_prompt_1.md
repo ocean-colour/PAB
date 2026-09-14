@@ -90,7 +90,75 @@ it is the one that protects the published 1.0 results from everything after
 
 ## Q&A
 
+### Q1 (Task 2, 2026-09-14) — confirm the S3 upload of `v1/pab.db` — **awaiting JXP**
+
+The **local** freeze is done (`full/` → `v1/`, symlink, `chmod a-w`, sha256
+verified unchanged). The remaining half is outward-facing, so it is held here
+per the working agreement. Proposed, on your go-ahead:
+
+- `NautilusS3Backend(bucket="pab", prefix="v1")` uploads
+  `$PAB_DATA_DIR/v1/pab.db` (169,938,944 B) to a **new** key
+  `s3://pab/v1/pab.db`; creds read from the `nautilus_s3` rclone remote.
+- Nothing under `s3://pab/full/` is touched — the three live objects there
+  (`pab.db`, `matchup_summary.csv`, `matchup_summary.parquet`) are what the
+  site links, and `full/pab.db` is already byte-identical to the new `v1/`
+  copy, so the site keeps working either way.
+- Verified afterwards by anonymous re-download of
+  `https://s3-west.nrp-nautilus.io/pab/v1/pab.db` + sha256 compare.
+- No ACL work needed: the bucket policy is `PublicReadOnly` on
+  `arn:aws:s3:::pab/*`, so the new prefix is public-read on arrival.
+- `s3://pab/v1/` does not currently exist, so this only adds an object — it
+  overwrites nothing.
+
+
 ## Reports
+
+### Task 1 — `ocean14` environment (2026-09-14): **ready**
+
+`argopy` **does install on Python 3.14** — no fallback to `os_313` needed.
+`aiohttp==3.12.15` (argopy's upper pin) has no cp314 wheel but builds cleanly
+from sdist in this env.
+
+**Test suite:** `pytest pab/tests` → **215 passed, 0 skipped, 0 failed** (35 s).
+Against the recorded `os_313` baseline of *213 passed + 2 jax-env failures*
+(215 collected), `ocean14` is **+2 passing / -2 failing**: the two jax tests now
+run because `jax` is present here. No test regressed.
+
+**`package_versions()` snapshot** (Python 3.14.6):
+
+| package | version |
+|---|---|
+| pab | 1.1 (editable, `/mnt/tank/Oceanography/python/PAB`) |
+| bing | 0.0.dev0 (editable, `../bing`) |
+| ocpy | 0.1.dev0 (editable, `../ocpy`) |
+| argopy | 1.4.0 |
+| remote_sensing | 0.0.dev0 (editable, `../remote_sensing`) |
+| earthaccess | 0.18.0 |
+| numpy | 2.5.2 |
+| scipy | 1.18.0 |
+| xarray | 2025.9.0 |
+
+Other tracked versions: `jax` 0.11.1, `robust` 0.0.dev0 (editable,
+`../retrieve-or-bust`), `erddapy` 3.2.1, `healpy` 1.19.0, `bokeh` 3.9.1,
+`pandas` 3.0.3, `matplotlib` 3.11.0, `netCDF4` 1.7.4, `sqlalchemy` 2.0.52,
+`boto3` 1.43.40, `aiohttp` 3.12.15, `pytest` 9.1.1.
+
+All 13 required imports succeed: `pab`, `argopy`, `erddapy`, `robust`, `jax`,
+`bing`, `ocpy`, `remote_sensing`, `earthaccess`, `healpy`, `bokeh` (plus
+`boto3`, `s3fs`, `sqlalchemy` needed by the S3 / docs paths).
+`pab --help` resolves to `$CONDA_PREFIX/bin/pab`.
+
+**Two side effects of installing argopy, both benign but recorded:**
+
+1. `xarray` **2026.4.0 → 2025.9.0** (argopy 1.4.0 pins `xarray<=2025.9.0`).
+   This is the same xarray the v1.0 results were produced with under `os_313`,
+   so it moves *toward* the published stack, not away from it.
+2. `aiohttp` **3.14.3 → 3.12.15** (argopy pins `aiohttp<=3.12.15`). This leaves
+   a pip metadata conflict — `aiobotocore 3.9.0 requires aiohttp>=3.14.0`.
+   It is metadata-only: `s3fs` and `boto3` both import and work, and PAB's S3
+   path (`pab/report/publish.py`) uses **sync `boto3`**, never `aiobotocore`.
+   Left as-is rather than pinning `aiobotocore` down, which would churn `s3fs`.
+
 
 ## Logging
 
@@ -103,3 +171,54 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-09-14 (Task 1 — stood up the `ocean14` env with the full v2 stack)
+
+Built out `ocean14` (Python 3.14.6) so the whole v2 run can happen in one
+environment, resolving the split recorded earlier (`ocean14` had `robust`/`jax`
+but no `pab`/`argopy`; `os_313` had `pab`/`argopy` but no `robust`/`jax`).
+
+What was done:
+
+- `pip install -e . --no-deps` for PAB → `pab 1.1` editable. Before this, `pab`
+  only "imported" in `ocean14` because the CWD was the repo — it was never
+  actually installed, and `pab` the console script did not exist. It does now.
+- `pip install argopy==1.4.0 erddapy==3.2.1`. **The open question in the task —
+  whether `argopy` installs on Python 3.14 — is answered: yes.** The only
+  sdist-only dependency is `aiohttp==3.12.15` (argopy's upper pin, no cp314
+  wheel published); it compiled its C extensions against 3.14 without a
+  complaint and cached a `cp314` wheel. No fallback to `os_313` +
+  `retrieve-or-bust` + `jax` is needed, so the series can stay in one env.
+- `pip install -e ../remote_sensing --no-deps` (only local checkout; the same
+  one `os_313` uses).
+- Filled in the four `requirements.txt` docs deps that were missing:
+  `sphinx-rtd-theme`, `myst-parser`, `myst-nb`, `sphinxcontrib-mermaid`. These
+  pulled `sqlalchemy 2.0.52` in transitively via `jupyter-cache`, which also
+  closes a gap I would have hit later.
+- `pytest pab/tests` → **215 passed, 0 skipped, 0 failed**. The `os_313`
+  baseline was 213 passed + 2 jax-env failures out of the same 215 collected,
+  so `ocean14` is strictly better: the two jax tests pass here because `jax`
+  0.11.1 is installed. Nothing regressed under the newer numpy/pandas.
+
+What I learned / want to remember:
+
+- Installing `argopy` is not free in this env: it **downgraded `xarray`
+  2026.4.0 → 2025.9.0** and **`aiohttp` 3.14.3 → 3.12.15**. The xarray move is
+  actually desirable — 2025.9.0 is what the published v1.0 numbers were
+  computed against in `os_313` — but it is worth knowing that `ocean14` is no
+  longer on the newest xarray, and that anything else in this env expecting
+  2026.x is now on older code.
+- The aiohttp downgrade leaves one unsatisfiable pip constraint:
+  `aiobotocore 3.9.0 requires aiohttp>=3.14.0`. I deliberately did **not**
+  chase it. It is metadata-only (both `s3fs` and `boto3` import and function),
+  and PAB's only S3 code path, `pab/report/publish.py`, imports **sync
+  `boto3`** lazily and never touches `aiobotocore`. Pinning `aiobotocore` back
+  would drag `s3fs` around for no benefit. Task 2's S3 upload is therefore
+  unaffected — but if a *future* async/fsspec S3 path ever appears, this is
+  the first thing to check.
+- `pandas` here is **3.0.3**, a major version ahead of `os_313`'s 2.2.3, and
+  the suite still passes clean. Good signal, but any pandas-3 behaviour
+  difference in the v2 stages will show up in `ocean14` and not in `os_313`.
+- Reminder for the rest of the series: nothing in this task touched
+  `$PAB_DATA_DIR`. `v1/pab.db` does not exist yet — the freeze is Task 2, and
+  the DB is still at `full/pab.db`.
