@@ -74,6 +74,8 @@ Read these before running — plus the **hard-won operational lessons** below.
    recorded by the `figure` stage (a plain `--stage figure` backfills existing
    scene PNGs). Both surface in the report once recorded.
 
+If you need to use Python, be sure to use the `ocean14` conda environment.  
+
 ## Prompts
 
 1. Execute the 1st task in Tasks/Planning below
