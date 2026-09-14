@@ -79,6 +79,7 @@ If you need to use Python, be sure to use the `ocean14` conda environment.
 ## Prompts
 
 1. Execute the 1st task in Tasks/Planning below
+2. Execute the 2nd task in Tasks/Planning below
 
 ## Tasks
 
