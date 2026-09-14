@@ -109,6 +109,7 @@ per the working agreement. Proposed, on your go-ahead:
   `arn:aws:s3:::pab/*`, so the new prefix is public-read on arrival.
 - `s3://pab/v1/` does not currently exist, so this only adds an object — it
   overwrites nothing.
+>A. Yes, go ahead
 
 
 ## Reports
