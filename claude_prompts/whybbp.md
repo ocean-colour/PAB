@@ -271,6 +271,82 @@ cache kept in `$PAB_DATA_DIR/bias_analysis/`) and tested delta vs AOD. Figure
   Rrs(lambda) upstream of the inversion, consistent with Tasks 2-3; AERONET-OC
   Rrs(700) matchups or a reprocessed-AC comparison would separate them.
 
+### 2026-09-13 (Task 5 — RT/inelastic check: production fits were elastic-only; corrected treatment halves the bias)
+
+Examined the updated inelastic work in `bing` (branch `inelastic-fixes`,
+merged into the current checkout), `retrieve-or-bust` (`robust` — ports the
+fixed physics at rtol ≤ 1e-6 and adds learned δ_R/δ_F correction heads), and
+`IOPtics` (L23/PANGAEA validation framework). Then refit the run1k spectra to
+measure the effect. Figure `task5_inelastic_effect.png`, tables
+`task5_refit_results.csv` / `task5_regimes.csv` / `task5_matchup_table.csv`,
+write-up `task5_inelastic_rt.md` — all in `$PAB_DATA_DIR/bias_analysis/`.
+
+- **What the update is:** (1) fluorescence gained the Lu = Eu/π conversion —
+  pre-fix it was ~3× too bright (validated vs Loisel+23 HydroLight X4−X2);
+  (2) the Raman correction gained the true Ed(λ′)/Ed(λ) ratio (flat-solar
+  fallback distorts its shape, "too weak in the red").
+- **Decisive discovery:** the 14,609 PAB production fits were **elastic-only**
+  — `FitConfig` defaults `include_Raman=False` and has no fluorescence switch
+  at all, and BING's own defaults are off. The thesis statement that the
+  fitted version "accounts for inelastic processes" describes the code's
+  capability, not the production configuration. Every Raman/fluorescence
+  photon in the observed Rrs was booked as elastic signal — mostly bbp700.
+- **Refit experiment (274 run1k spectra, post-fix BING, 3 variants, 10k MCMC
+  steps, 0 failures):** median δ = +0.354 (refit elastic control) → +0.239
+  (+Raman, true Ed ratio) → **+0.152** (+Raman+Chl-fl, φ_C = 0.02); paired
+  Wilcoxon p = 4e-44. bbp700 deflates by ×0.857 (Raman) and ×0.782
+  (Raman+fl), nearly uniformly across regimes; χ²ᵣ *improves* (0.50 → 0.42).
+- **Extrapolated to the full run:** median δ +0.371 → ≈ +0.19 (ratio 1.59× →
+  ≈ 1.24×); low regime +0.45 → ≈ +0.30.
+- **Convergence with Task 2:** the corrected BING low-regime bias (~+0.27)
+  lands near the GIOP floor (+0.23) — BING's flat fitted red-end slopes were
+  largely the elastic-only fit absorbing inelastic radiance, not (only)
+  atmospheric residuals. The remaining ~+0.2/+0.3 bias still exceeds the
+  float budget and still shows the Task 4 AOD dose-response, so the
+  aerosol/Rrs-residual hypothesis survives at about half its former
+  amplitude.
+- **Caveats:** effect sizes quoted refit-vs-refit (the elastic control sits
+  6% below the stored pre-fix values — code drift + MCMC noise); Ed shape
+  from TOA F0 rather than surface Ed (second order); φ_C fixed at 0.02
+  (fluorescence share ~8% scales with it; Raman ~14% does not); run1k
+  subsample (n = 258 paired), full-run numbers are extrapolations. Obvious
+  pipeline change: enable `include_Raman`/`include_Chl_fl` (+ Ed wiring) in
+  `pab.fit` and re-run production fits.
+
+### 2026-09-13 (Task 6 — synthesis: discussion draft written)
+
+Wrote the paper-ready discussion (4 paragraphs) to
+`$PAB_DATA_DIR/bias_analysis/bias_discussion_draft.md`, drawing on Tasks 0–5,
+the thesis, and the Task 1 literature. Structure and argument:
+
+- **(a) What the data establish:** the +0.37 median bias (1.59×, 83.5%
+  positive, concentrated in oligotrophic water) is not co-location, vertical
+  sampling, float drift (flat δ vs age across and within 356 floats), or
+  observed-fluorescence contamination (FLH anticorrelation); a static float
+  offset is bounded at 10–15%, far below 59%.
+- **(b) The decomposition (the new result):** ~half the bias is a
+  retrieval-configuration artifact — the production fits were elastic-only,
+  and the corrected Raman + fluorescence treatment deflates bbp700 by ×0.78
+  (full-run extrapolation +0.37 → ≈ +0.19); the remainder is an additive
+  Rrs-level residual established independently by the GIOP floor (≥ +23% in
+  the low regime) and the AOD dose-response, with the corrected BING
+  converging onto the GIOP floor.
+- **(c) Most likely explanation:** missing inelastic physics + residual
+  aerosol/glint radiance in Rrs; the Gordon (1988) leverage shows the
+  residual half needs only ~2×10⁻⁵ sr⁻¹ of spurious Rrs(700). What the data
+  cannot resolve: the composition of the additive term (aerosol-model error
+  in clear skies vs glint/BRDF/red-band calibration — the clean-sky floor
+  is ambiguous) and a possible ≤ 10–15% static float share.
+- **(d) Future work:** (1) re-run production fits with inelastics enabled
+  (measured, not extrapolated, corrected bias); (2) direct Rrs(650–720)
+  validation vs AERONET-OC / cruise radiometry (prediction: +2×10⁻⁵ sr⁻¹
+  additive offset in oligotrophic scenes, growing with AOD); (3) repeat the
+  matchup on the SPEXone/HARP2-informed reprocessing.
+- Draft flags for the authors: Poteau et al. (2017) cited second-hand
+  (verify before submission); thesis text needs updating where it claims the
+  production fits "account for inelastic processes" and that BING and GIOP
+  "agree on sign and magnitude."
+
 ## Summary of the bias
 
 From the full PAB dataset (n = 13,563 matchups after outlier removal, δ ≥ −1.5, March 2024 – June 2026):
