@@ -127,6 +127,7 @@ pab --db data/pab.db --download
 | `ingest` | Persist BGC-Argo profiles + mixed-layer summaries (parallel fetch — see `--ingest-jobs`). | → `mld_summary` |
 | `discover` | Find in-window PACE granules per profile (earthaccess; parallel via `--discover-jobs`). A profile is skipped only if the store already holds a granule **whose footprint covers that profile's own position** in its time window. | → `granules` |
 | `match` | Build PACE↔Argo matchups (Stage 4 spatial/temporal gate). Candidates come from an in-memory `GranuleIndex` (time window **+** footprint bounding box padded by `MatchupConfig.footprint_pad_deg`), so only granules that plausibly cover the float are opened. | → `matchups` |
+| `geometry` | Read each matchup pixel's solar/sensor geometry (`theta_s`, `theta_v`, `dphi`) from the co-temporal **PACE L1B** granule. Grouped **by granule** — 146,100 pixels sit on 11,494 granules, so it is one 1.8 GB lazy open per granule, not per pixel. Parallel via `--jobs`. | → `matchup_pixels.theta_s`/`theta_v`/`dphi`/`geom_source` |
 | `fit` | Run BING spectral fits per matchup (needs BING + emcee). | → `fit_results` |
 | `figure` | Render per-matchup fit + scene figures (best-effort; needs Loisel data; parallel via `--jobs` — the costliest stage per matchup at ~42 s serial). | → `outdir/figures` |
 | `report` | Build the static site + a release manifest (Stage 7). | → `outdir/site`, `outdir/release` |
@@ -136,6 +137,23 @@ their natural keys — profile, `matchup_id`, `fit_id`). Re-running the pipeline
 resumes where it left off. `discover` additionally skips any profile that already
 has an in-window granule, so it won't re-query the network on resume. Use
 `--replace` to force re-doing completed work.
+
+**`geometry` runs before `fit`, and that order matters.** The inelastic RT
+backend (`rt_backend='robust_hybrid'`, v2.0) reads `theta_s`/`theta_v`/`dphi`
+off `matchup_pixels` at fit time; a pixel whose geometry is still NULL cannot be
+fitted with it. Two consequences:
+
+- Run `--stage geometry` (or a full run, which includes it) **before** any 2.0
+  `--stage fit`. The default stage order already does this.
+- The geometry read is deliberately **not** inside `fit`. It is per *granule*,
+  not per fit, so folding it in would pay an L1B open in `fit`'s serial parent
+  loop — 146,100 opens instead of 11,494.
+
+The stage is idempotent on `theta_s IS NULL`, so a resumed run does **zero**
+network work for pixels already filled, and a granule that fails transiently is
+simply retried by the next run (it is recorded in the summary's `failed` list,
+never raised). Per-pixel grid-check failures land in `mismatched` and leave that
+pixel NULL; they do not cost the granule's other pixels.
 
 **Provenance.** Records carry the `pab_version` and a `created` timestamp.
 Re-running under a *new* `pab_version` **adds** records rather than overwriting,

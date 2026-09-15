@@ -91,7 +91,28 @@ Tables
     The ~10 selected ``Rrs`` pixels per matchup. **PK** ``pixel_id``;
     **unique** ``(matchup_id, ix, iy)``; **FK** ``matchup_id`` → ``matchups``.
     Columns: ``ix``, ``iy``, ``latitude``, ``longitude``, ``distance_km``,
-    ``rank`` (1 = nearest), ``flagged``.
+    ``rank`` (1 = nearest), ``flagged``, and — **v5** — the per-pixel viewing
+    geometry: ``theta_s``, ``theta_v``, ``dphi`` (all **degrees**) and
+    ``geom_source``.
+
+    The geometry is read from the co-temporal **PACE L1B** granule
+    (``geolocation_data``), which shares the L2's ``(scans, pixels)`` grid, and
+    is filled by the ``geometry`` pipeline stage; ``geom_source`` records where
+    it came from (e.g. ``'L1B_V3'``). It is stored per **pixel**, not per fit,
+    because it is a property of the observation rather than of the model fitted
+    to it — so it is read once and reused by every fit of that pixel.
+
+    * ``theta_s`` — solar zenith angle, degrees, ``0 ≤ theta_s < 90`` for a
+      daylight observation (L1B ``solar_zenith``).
+    * ``theta_v`` — sensor (viewing) zenith angle, degrees, ``0`` at nadir
+      (L1B ``sensor_zenith``).
+    * ``dphi`` — **relative** azimuth, degrees, defined as
+      ``sensor_azimuth − solar_azimuth`` **wrapped to (−180, 180]**. For the
+      reference pixel ``(868, 142)`` of
+      ``PACE_OCI.20250309T131631``: ``sensor_azimuth = 61.58°``,
+      ``solar_azimuth = −19.75°``, hence ``dphi = 81.33°``.
+
+    NULL on rows created before v5.
 
 ``fits``
     One row per fitted spectrum, with configuration + provenance. **PK**
@@ -104,6 +125,14 @@ Tables
     ``nsteps``, ``nburn``, ``nwalkers``, ``wave_min``/``wave_max``, ``chisq``,
     ``aic``, ``bic``, ``accept_frac``, ``success``, ``chains_path``,
     ``figure_path``, ``pkg_versions`` (JSON), ``pab_version``, ``created``.
+
+    **v5** adds the radiative-transfer configuration, which is what
+    distinguishes a 2.0 fit from a 1.0 one (the ``model_pair`` is unchanged
+    between them): ``rt_backend`` (``'gordon'`` for the elastic 1.0 fits,
+    ``'robust_hybrid'`` for the inelastic 2.0 ones), the inelastic switches
+    ``include_raman`` / ``include_chl_fl`` / ``include_cdom_fl`` (0/1),
+    ``phi_c`` (chlorophyll-fluorescence quantum yield), and ``fit_bp`` (0/1 —
+    whether :math:`B_p` was a free parameter). NULL on rows created before v5.
 
 ``fit_results``
     The scalar IOP results in **long format**. **PK** ``(fit_id, quantity)``;
@@ -129,6 +158,13 @@ The schema version lives in ``PRAGMA user_version``.
 :data:`pab.db.schema.MIGRATIONS` registry. Stage 1 ships only the initial
 schema (version 1); later DDL changes register a forward step and bump
 ``SCHEMA_VERSION``.
+
+A migration step only ever runs on a database still at its *starting*
+version, so each version must be defined **completely** in one step: adding a
+column to ``_v4_to_v5`` after some file has already been stamped
+``user_version = 5`` will never apply it to that file, silently. This is why
+v5 carries both the ``matchup_pixels`` geometry and the ``fits`` RT columns in
+a single migration.
 
 Splitting a release into a new version database is a separate concern from
 schema migration and lives in :mod:`pab.db.split_version`: it copies a store

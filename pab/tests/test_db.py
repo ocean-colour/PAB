@@ -85,11 +85,15 @@ def test_migrations_add_figure_path_columns(tmp_path):
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE mld_summary (profile_id INTEGER PRIMARY KEY, mld REAL)")
     conn.execute("CREATE TABLE matchups (matchup_id TEXT PRIMARY KEY, profile_id INT)")
+    conn.execute("CREATE TABLE matchup_pixels (pixel_id INTEGER PRIMARY KEY, ix INT)")
+    conn.execute("CREATE TABLE fits (fit_id TEXT PRIMARY KEY, algorithm TEXT)")
     conn.execute("PRAGMA user_version = 1")
     conn.commit()
     schema.migrate(conn)
     mld_cols = {r[1] for r in conn.execute("PRAGMA table_info(mld_summary)")}
     mch_cols = {r[1] for r in conn.execute("PRAGMA table_info(matchups)")}
+    px_cols = {r[1] for r in conn.execute("PRAGMA table_info(matchup_pixels)")}
+    fit_cols = {r[1] for r in conn.execute("PRAGMA table_info(fits)")}
     assert "qa_path" in mld_cols
     assert "scene_path" in mch_cols
     assert {
@@ -100,7 +104,17 @@ def test_migrations_add_figure_path_columns(tmp_path):
         "cdom_data_mode",
         "bbp700_data_mode",
     } <= mld_cols
-    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 4
+    # v5: per-pixel viewing geometry + the RT provenance on fits.
+    assert {"theta_s", "theta_v", "dphi", "geom_source"} <= px_cols
+    assert {
+        "rt_backend",
+        "include_raman",
+        "include_chl_fl",
+        "include_cdom_fl",
+        "phi_c",
+        "fit_bp",
+    } <= fit_cols
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 5
 
 
 def test_v3_to_v4_migration_is_idempotent(tmp_path):
@@ -116,11 +130,13 @@ def test_v3_to_v4_migration_is_idempotent(tmp_path):
         "qa_path TEXT)"
     )
     conn.execute("CREATE TABLE matchups (matchup_id TEXT PRIMARY KEY, scene_path TEXT)")
+    conn.execute("CREATE TABLE matchup_pixels (pixel_id INTEGER PRIMARY KEY, ix INT)")
+    conn.execute("CREATE TABLE fits (fit_id TEXT PRIMARY KEY, algorithm TEXT)")
     conn.execute("PRAGMA user_version = 3")
     conn.commit()
 
     schema.migrate(conn)
-    assert schema.get_version(conn) == 4
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION
     cols = {r[1] for r in conn.execute("PRAGMA table_info(mld_summary)")}
     assert {
         "cdom",
@@ -132,7 +148,7 @@ def test_v3_to_v4_migration_is_idempotent(tmp_path):
     } <= cols
 
     schema.migrate(conn)  # already at SCHEMA_VERSION -> must not re-run _v3_to_v4
-    assert schema.get_version(conn) == 4
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION
     cols_after = [r[1] for r in conn.execute("PRAGMA table_info(mld_summary)")]
     assert cols_after.count("cdom") == 1  # no duplicate column from a double-migrate
     conn.close()
@@ -297,3 +313,154 @@ def test_idempotent_fit_results_upsert(seeded):
     res = store.query("SELECT value FROM fit_results WHERE fit_id='F1'")
     assert len(res) == 1
     assert res[0]["value"] == pytest.approx(2.0e-3)
+
+
+# --- v5: per-pixel viewing geometry + RT provenance -------------------------
+
+#: The columns `_v4_to_v5` must add, by table.
+V5_COLUMNS = {
+    "matchup_pixels": {"theta_s", "theta_v", "dphi", "geom_source"},
+    "fits": {
+        "rt_backend",
+        "include_raman",
+        "include_chl_fl",
+        "include_cdom_fl",
+        "phi_c",
+        "fit_bp",
+    },
+}
+
+
+def _v4_shaped_db(path):
+    """A minimal but genuine v4-shaped database (the real v2/pab.db's state)."""
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE matchup_pixels (pixel_id INTEGER PRIMARY KEY, "
+        "matchup_id TEXT, ix INT, iy INT, flagged INT)"
+    )
+    conn.execute(
+        "CREATE TABLE fits (fit_id TEXT PRIMARY KEY, algorithm TEXT, pab_version TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO matchup_pixels (matchup_id, ix, iy, flagged) "
+        "VALUES ('M1', 868, 142, 0)"
+    )
+    conn.execute(
+        "INSERT INTO fits (fit_id, algorithm, pab_version) "
+        "VALUES ('F1', 'NASA_GIOP', '1.1')"
+    )
+    conn.execute("PRAGMA user_version = 4")
+    conn.commit()
+    return conn
+
+
+def test_v4_to_v5_adds_geometry_and_rt_columns(tmp_path):
+    conn = _v4_shaped_db(tmp_path / "v4.db")
+    schema.migrate(conn)
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 5
+    for table, expected in V5_COLUMNS.items():
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        assert expected <= cols, table
+    conn.close()
+
+
+def test_v4_to_v5_leaves_legacy_rows_null_and_intact(tmp_path):
+    """Existing rows survive the migration with NULL in every new column."""
+    conn = _v4_shaped_db(tmp_path / "v4.db")
+    schema.migrate(conn)
+
+    px = conn.execute(
+        "SELECT matchup_id, ix, iy, theta_s, theta_v, dphi, geom_source "
+        "FROM matchup_pixels"
+    ).fetchone()
+    assert px == ("M1", 868, 142, None, None, None, None)
+
+    fit = conn.execute(
+        "SELECT fit_id, algorithm, pab_version, rt_backend, include_raman, "
+        "include_chl_fl, include_cdom_fl, phi_c, fit_bp FROM fits"
+    ).fetchone()
+    assert fit == ("F1", "NASA_GIOP", "1.1", None, None, None, None, None, None)
+    conn.close()
+
+
+def test_v4_to_v5_is_idempotent(tmp_path):
+    """A second migrate() must be a no-op, not a duplicate-column error."""
+    conn = _v4_shaped_db(tmp_path / "v4.db")
+    schema.migrate(conn)
+    schema.migrate(conn)
+    assert schema.get_version(conn) == 5
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(matchup_pixels)")]
+    assert cols.count("theta_s") == 1
+    fit_cols = [r[1] for r in conn.execute("PRAGMA table_info(fits)")]
+    assert fit_cols.count("rt_backend") == 1
+    conn.close()
+
+
+def test_fresh_v5_database_matches_the_migrated_one(tmp_path):
+    """``create_all`` and the migration path must agree on the v5 columns.
+
+    Guards the classic drift where a column is added to the DDL but not to the
+    migration (new databases get it, existing ones silently do not) or vice
+    versa.
+    """
+    fresh = Store.open(tmp_path / "fresh.db")
+    migrated = _v4_shaped_db(tmp_path / "v4.db")
+    schema.migrate(migrated)
+    for table, expected in V5_COLUMNS.items():
+        fresh_cols = {r[1] for r in fresh.conn.execute(f"PRAGMA table_info({table})")}
+        mig_cols = {r[1] for r in migrated.execute(f"PRAGMA table_info({table})")}
+        assert expected <= fresh_cols, f"{table} missing from create_all DDL"
+        assert expected <= mig_cols, f"{table} missing from _v4_to_v5"
+    fresh.close()
+    migrated.close()
+
+
+def test_geometry_columns_round_trip(seeded):
+    """The new pixel columns accept and return degrees, including a wrapped dphi."""
+    store, _pid = seeded
+    store.upsert(
+        "matchup_pixels",
+        {
+            "matchup_id": "M1",
+            "ix": 868,
+            "iy": 142,
+            "theta_s": 29.47,
+            "theta_v": 54.58,
+            "dphi": 81.33,  # 61.58 - (-19.75), already in (-180, 180]
+            "geom_source": "L1B_V3",
+        },
+    )
+    row = store.query(
+        "SELECT theta_s, theta_v, dphi, geom_source FROM matchup_pixels "
+        "WHERE ix = 868 AND iy = 142"
+    )[0]
+    assert row == {
+        "theta_s": 29.47,
+        "theta_v": 54.58,
+        "dphi": 81.33,
+        "geom_source": "L1B_V3",
+    }
+
+
+def test_readonly_v4_database_refuses_to_migrate(tmp_path):
+    """A frozen release must fail loudly rather than be migrated in place.
+
+    ``v1/pab.db`` is ``chmod a-w`` at v4; ``Store.open`` defaults to
+    ``create=True`` and would try to migrate it. That must raise, and
+    ``create=False`` must still read fine.
+    """
+    import sqlite3
+
+    path = tmp_path / "frozen.db"
+    _v4_shaped_db(path).close()
+    path.chmod(0o444)
+
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        Store.open(path)
+
+    store = Store.open(path, create=False)
+    assert store.count("matchup_pixels") == 1
+    assert schema.get_version(store.conn) == 4  # untouched
+    store.close()

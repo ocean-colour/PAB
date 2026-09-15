@@ -25,7 +25,8 @@ Units (recorded here for the schema-reference docs):
 * depths/MLD in metres (m); ``bbp700`` and IOPs in m\\ :sup:`-1`;
   ``Rrs`` in sr\\ :sup:`-1`; ``CHLA`` in mg m\\ :sup:`-3`;
   ``PSAL`` in PSU; ``TEMP`` in degrees Celsius; wavelengths in nm;
-  distances in km; time offsets in hours; timestamps as ISO-8601 text.
+  distances in km; time offsets in hours; timestamps as ISO-8601 text;
+  **viewing geometry in degrees** (``theta_s``, ``theta_v``, ``dphi``).
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from collections.abc import Callable
 
 #: Bumped whenever the DDL changes; stored in ``PRAGMA user_version`` so a
 #: database file knows which schema it was created under (see ``migrate``).
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 #: Ordered list of ``CREATE TABLE``/``CREATE INDEX`` statements. ``IF NOT
 #: EXISTS`` keeps ``create_all`` idempotent.
@@ -127,6 +128,12 @@ TABLES: tuple[str, ...] = (
         distance_km REAL,
         rank        INTEGER,           -- 1 = nearest valid pixel
         flagged     INTEGER,           -- 0/1 l2_flags screen result
+        theta_s     REAL,              -- solar zenith (deg); v5
+        theta_v     REAL,              -- sensor zenith (deg); v5
+        dphi        REAL,              -- relative azimuth (deg), sensor - solar,
+                                       -- wrapped to (-180, 180]; v5
+        geom_source TEXT,              -- provenance of the geometry, e.g.
+                                       -- 'L1B_V3'; v5
         UNIQUE (matchup_id, ix, iy)
     )
     """,
@@ -156,7 +163,14 @@ TABLES: tuple[str, ...] = (
         figure_path  TEXT,              -- PNG/PDF on disk (not in DB)
         pkg_versions TEXT,              -- JSON of pab.config.package_versions()
         pab_version  TEXT NOT NULL,
-        created      TEXT
+        created      TEXT,
+        rt_backend      TEXT,           -- radiative-transfer backend, e.g.
+                                        -- 'gordon' (1.0) | 'robust_hybrid'; v5
+        include_raman   INTEGER,        -- 0/1 Raman scattering in the RT; v5
+        include_chl_fl  INTEGER,        -- 0/1 chlorophyll fluorescence; v5
+        include_cdom_fl INTEGER,        -- 0/1 CDOM fluorescence; v5
+        phi_c           REAL,           -- chlorophyll fluorescence quantum yield; v5
+        fit_bp          INTEGER         -- 0/1 was B_p a free parameter; v5
     )
     """,
     # --- Namespaced scalar IOP results (long format) -----------------------
@@ -265,12 +279,56 @@ def _v3_to_v4(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
 
 
+def _v4_to_v5(conn: sqlite3.Connection) -> None:
+    """v4 → v5: per-pixel viewing geometry, and the v2.0 RT provenance.
+
+    Two groups of columns, deliberately in **one** migration step (see the
+    note below):
+
+    ``matchup_pixels`` gains the solar/sensor geometry the inelastic RT
+    backend needs — ``theta_s``, ``theta_v``, ``dphi`` (all degrees) and
+    ``geom_source``. Geometry is a property of the **pixel**, not of the fit
+    (``run_full_inelastic.md`` R3), so it lives here and is read once per
+    pixel by the ``geometry`` stage rather than per fit.
+
+    ``fits`` gains the radiative-transfer configuration that distinguishes a
+    2.0 fit from a 1.0 one — ``rt_backend``, ``include_raman``,
+    ``include_chl_fl``, ``include_cdom_fl``, ``phi_c``, ``fit_bp``. Without
+    these the two generations of fits are indistinguishable in the store.
+
+    **Why both at once.** A migration step only ever runs on a database still
+    at the *starting* version. Splitting these across two prompts would stamp
+    ``user_version = 5`` on ``v2/pab.db`` after the first half, and the second
+    half's columns would then never be applied to that file — the step is
+    skipped, silently, because the database already claims to be v5. So v5 is
+    defined once, completely.
+
+    All columns are NULL on legacy rows.
+    """
+    for ddl in (
+        # matchup_pixels — per-pixel viewing geometry.
+        "ALTER TABLE matchup_pixels ADD COLUMN theta_s REAL",
+        "ALTER TABLE matchup_pixels ADD COLUMN theta_v REAL",
+        "ALTER TABLE matchup_pixels ADD COLUMN dphi REAL",
+        "ALTER TABLE matchup_pixels ADD COLUMN geom_source TEXT",
+        # fits — radiative-transfer configuration / provenance.
+        "ALTER TABLE fits ADD COLUMN rt_backend TEXT",
+        "ALTER TABLE fits ADD COLUMN include_raman INTEGER",
+        "ALTER TABLE fits ADD COLUMN include_chl_fl INTEGER",
+        "ALTER TABLE fits ADD COLUMN include_cdom_fl INTEGER",
+        "ALTER TABLE fits ADD COLUMN phi_c REAL",
+        "ALTER TABLE fits ADD COLUMN fit_bp INTEGER",
+    ):
+        conn.execute(ddl)
+
+
 # Forward migrations: map a *starting* version to a callable that upgrades the
 # database by one step.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _v1_to_v2,
     2: _v2_to_v3,
     3: _v3_to_v4,
+    4: _v4_to_v5,
 }
 
 

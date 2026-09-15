@@ -310,6 +310,64 @@ already gets this right (`PAB_DATA_DIR=/data/v2`); the workstation row did not
 say it.
 
 
+### Task 5 — `build_v2_prompt_2.md` updated (2026-09-14): **done**
+
+Everything added is **verified against the real v2 store or the real env**, not
+carried over from assumption. Four edits:
+
+**Working agreements** gained a "Settled in Prompt 1" block: `ocean14` is ready
+and is the only env needed (no `os_313` fallback); the regression baseline is
+now **230 passed**, not 215; `xarray` is pinned at 2025.9.0 by argopy, and
+`xr.open_datatree(..., engine="h5netcdf")` was **checked to still work** on
+that version (it does — the Context read is reproducible, and "upgrade xarray
+to get datatree" would break argopy); the 8 `ruff` errors in
+`pab/argo/check_argo_coverage.py` are pre-existing.
+
+**Context** gained the as-built database facts (v1 frozen at v4 and
+`-r--r--r--`; v2 at v4, writable, with its counts) and a pointer to
+`split_version.copy_database` for Task 4's scratch copy. Two factual
+corrections:
+
+- The doc said *"the three cached V3.2 granules"* in
+  `/mnt/tank/Oceanography/data/PAB/pilot/granules/`. There are **85 files
+  (42 `V3_2` + 43 `V3_1`)**, of which **10 `V3_2` granules appear in v2's
+  matchups**, covering **20 matchups / 200 pixels** — tabulated in the doc.
+  That is a far better Task 4 validation set than three. (The directory really
+  is under `…/data/PAB/`, not `$PAB_DATA_DIR` — verified, not a typo.)
+- **`PACE_OCI.20250309T131631` — the granule the verified-facts block was
+  measured on — is one of the ten.** So Task 4 now has a known-answer anchor
+  rather than only a sanity range.
+- Task 3's sizing figure **checked and confirmed**: the 14,610 matchups do
+  reference exactly **11,494 distinct granules**. Also newly recorded: all
+  146,100 pixels have `flagged = 0`, so none can be skipped on that basis.
+
+**A new "Before you start — four things Prompt 1 changed under you"** block, of
+which the first is the one that would have cost real time:
+
+> Once Task 1 sets `SCHEMA_VERSION = 5`, `Store.open(v1_path)` — default
+> `create=True`, so it tries to migrate — raises `OperationalError: attempt to
+> write a readonly database` on the frozen v1. **Verified by simulating the
+> bump against the real file** (v1's sha256 unchanged afterwards). Every read
+> of v1 must pass `create=False` or open read-only by URI.
+
+The other three: `v2/pab.db` is the one that gets migrated (log the
+`user_version` before/after); the `PAB_DATA_DIR`-root chains gotcha and the
+test suite writing into that shared root; and where the docs now are (§5b,
+the new `db_schema.rst` structure, zero Sphinx warnings to preserve).
+
+**Task-level edits:** Task 2 now names the two constants
+(`RRS_SOURCE_PREFIX`, `RRS_SOURCE_L2`) that `pab/tests/test_pace.py:307-309`
+asserts and that must survive the module rewrite; Task 3 cites
+`pab/pipeline.py:35` and its current tuple; Task 4 gets the 10-granule set and
+the known-answer check (`theta_s = 29.47°`, `theta_v = 54.58°`,
+`dphi = 81.33°`).
+
+**One judgement call to confirm or delete:** I added a **Task 5** to
+`build_v2_prompt_2.md` ("update `build_v2_prompt_3.md`, as needed"), mirroring
+the Task 5 you added here, so each prompt hands its findings forward. It is
+marked in the doc as removable if that was not the intent.
+
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -526,3 +584,55 @@ What I learned / want to remember:
   `:mod:` reference would have failed silently — adding the `automodule` makes
   the two new cross-references actually resolve rather than just look right in
   the source.
+
+### 2026-09-14 (Task 5 — fed Prompt 1's findings forward into `build_v2_prompt_2.md`)
+
+Updated the next prompt doc so it starts from what is now true rather than what
+was assumed when the series was drafted. I checked every claim against the real
+store or the real environment before writing it down; three turned out to be
+wrong or incomplete in the existing doc.
+
+The substantive corrections:
+
+- **"The three cached V3.2 granules" is wrong.** There are 85 files in
+  `…/data/PAB/pilot/granules/` (42 `V3_2` + 43 `V3_1`). I cross-joined their
+  names against `v2`'s `matchups` and found **10 `V3_2` granules that actually
+  appear in v2**, covering **20 matchups / 200 pixels**. Task 4's local
+  validation is therefore ~7× bigger than the doc assumed, and I tabulated the
+  per-granule breakdown so the next session doesn't have to re-derive it.
+- **The known-answer granule is in that set.** `PACE_OCI.20250309T131631` —
+  the one the verified-facts block measured `theta_s = 29.47°` /
+  `theta_v = 54.58°` on — is one of the ten. That upgrades Task 4 from "values
+  look physically sensible" to a real regression anchor, so I wrote the
+  expected `dphi = 61.58 − (−19.75) = 81.33°` into the task as well.
+- **11,494 granules confirmed.** Task 3's sizing figure was carried over from
+  planning; I checked it (`COUNT(DISTINCT granule_id)` over v2's matchups) and
+  it is exactly right. Also noted that all 146,100 pixels have `flagged = 0`,
+  so there is no flag-based shortcut to reduce the work.
+
+The finding I most wanted recorded is a **collision between Prompt 1's freeze
+and Prompt 2's first task**: `Store.open()` defaults to `create=True`, which
+calls `migrate()`. While `SCHEMA_VERSION` is 4 that is a no-op on v1, so the
+freeze looks harmless. The moment Task 1 bumps it to 5, *any* default open of
+`v1/pab.db` raises `OperationalError: attempt to write a readonly database`. I
+didn't reason about this — I simulated it, monkeypatching `SCHEMA_VERSION = 5`
+and a fake `_v4_to_v5` and opening the real frozen file both ways
+(`create=True` fails, `create=False` reads 14,610 matchups fine), then
+re-checked v1's sha256 to confirm the experiment left it untouched. This is
+latent in every later prompt that reads v1 — the `--compare-db` work
+especially — so it went in as warning #1 of a new "Before you start" block.
+
+What I learned / want to remember:
+
+- **A freeze plus a schema bump is a design interaction, not two independent
+  changes.** Making the release read-only silently converts "migrate on open"
+  from a convenience into a hard failure. The failure mode is the *good* one
+  (loud, and the data is safe), but it will surface as a confusing error in
+  unrelated code, so it is worth naming up front rather than debugging later.
+- Verifying a prompt doc's numbers is cheap and pays off — three of the facts
+  I checked were stale, and the "three granules" one would have quietly made
+  Task 4's validation much weaker than it can be.
+- I added a self-propagating **Task 5** to prompt 2 (update prompt 3), mirroring
+  what JXP added here, and flagged it as removable. Extending the chain seemed
+  like the intent, but it changes prompt 2's scope, so it is called out
+  explicitly rather than slipped in.

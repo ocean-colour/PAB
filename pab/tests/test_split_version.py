@@ -1,6 +1,6 @@
 """Tests for ``pab.db.split_version`` (the v1 -> v2 database split).
 
-Everything runs against a small **synthetic schema-v4 store** built on disk in
+Everything runs against a small **synthetic current-schema store** built on disk in
 ``tmp_path``, so the tests never touch the frozen release.
 """
 
@@ -89,15 +89,16 @@ def _seed(path, *, n_matchups=3, n_pixels=2):
 
 @pytest.fixture
 def v1_db(tmp_path):
-    """A synthetic, frozen (read-only) v1 database."""
+    """A synthetic, frozen (read-only) v1-style database at the current schema."""
     path = _seed(tmp_path / "v1" / "pab.db")
     path.chmod(0o444)
     return path
 
 
-def test_seed_is_schema_v4(v1_db):
+def test_seed_is_at_the_current_schema_version(v1_db):
+    """The synthetic store tracks ``SCHEMA_VERSION``, whatever it is today."""
     conn = sqlite3.connect(f"file:{v1_db}?mode=ro", uri=True)
-    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 4
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION
     conn.close()
 
 

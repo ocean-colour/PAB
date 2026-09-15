@@ -326,7 +326,7 @@ class GranuleIndex:
         return out
 
 
-def _open_with_timeout(source, *, opener=None, timeout_s: float = 0.0):
+def _open_with_timeout(source, *, opener=None, timeout_s: float = 0.0, open_fn=None):
     """Open a granule, raising :class:`TimeoutError` if it takes too long.
 
     Uses ``SIGALRM``, which interrupts the calling thread even when it is parked
@@ -339,9 +339,23 @@ def _open_with_timeout(source, *, opener=None, timeout_s: float = 0.0):
     caller is not the main thread (``signal.alarm`` is main-thread only) — the
     chunk-level guard in :func:`_build_matchups_parallel` remains the backstop
     for those cases.
+
+    Args:
+        source: Passed to the opener; also named in the timeout message.
+        opener: Test seam forwarded to :func:`pab.pace.cloud.open_granule`.
+        timeout_s: Bound in seconds; ``<= 0`` disables the guard.
+        open_fn: Alternative single-argument open callable, used instead of
+            ``cloud.open_granule``. Lets other readers — e.g.
+            :func:`pab.pace.l1b.open_l1b_geolocation`, which reads a different
+            product and group — share this guard rather than re-implement it.
     """
     import signal
     import threading
+
+    def _open():
+        if open_fn is not None:
+            return open_fn(source)
+        return cloud.open_granule(source, opener=opener)
 
     if timeout_s and timeout_s > 0 and threading.current_thread() is threading.main_thread():
 
@@ -351,11 +365,11 @@ def _open_with_timeout(source, *, opener=None, timeout_s: float = 0.0):
         previous = signal.signal(signal.SIGALRM, _timed_out)
         signal.setitimer(signal.ITIMER_REAL, float(timeout_s))
         try:
-            return cloud.open_granule(source, opener=opener)
+            return _open()
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0.0)
             signal.signal(signal.SIGALRM, previous)
-    return cloud.open_granule(source, opener=opener)
+    return _open()
 
 
 def _close_quietly(ds) -> None:

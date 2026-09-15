@@ -1,7 +1,8 @@
 """End-to-end pipeline & CLI (Stage 8).
 
 A single, resumable, config-driven stage runner tying Stages 2–7 together —
-**ingest → discover → match → fit → figure → report** — with **no new science**:
+**ingest → discover → match → geometry → fit → figure → report** — with **no
+new science**:
 each stage is a thin wrapper over the module already built for it, reads/writes
 the shared :class:`pab.db.store.Store`, and **skips work already done** (the
 existing `persist_*`/`build_*` idempotency), so a re-run resumes. Re-running
@@ -32,7 +33,15 @@ from pab.parallel import PROGRESS_EVERY, init_worker, picklable
 _log = logging.getLogger("pab.pipeline")
 
 #: The pipeline stages, in run order.
-STAGES: tuple[str, ...] = ("ingest", "discover", "match", "fit", "figure", "report")
+STAGES: tuple[str, ...] = (
+    "ingest",
+    "discover",
+    "match",
+    "geometry",
+    "fit",
+    "figure",
+    "report",
+)
 
 
 @dataclass
@@ -643,6 +652,28 @@ def match(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
     )
 
 
+def geometry(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
+    """Per-pixel viewing geometry from PACE L1B (idempotent by ``theta_s``).
+
+    Runs **between ``match`` and ``fit``** because the inelastic RT backend
+    needs ``theta_s``/``theta_v``/``dphi`` at fit time, and because the read is
+    per **granule** — grouping the pixels turns 146,100 potential L1B opens
+    into 11,494. Doing it inside ``fit`` would pay each 1.8 GB open in the
+    serial parent loop instead.
+
+    ``opener`` maps an AOP granule source to a geolocation dataset (the test
+    seam); live, the stage resolves the L1B granule through CMR itself.
+    """
+    from pab.matchup.geometry import build_geometry
+
+    return build_geometry(
+        store,
+        opener=opener,
+        replace=config.replace,
+        jobs=config.jobs,
+    )
+
+
 def fit(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
     """Stage 5: fit each matchup with BING (idempotent by ``fit_id``)."""
     from pab.fit.run import build_fits
@@ -835,6 +866,7 @@ _STAGE_FUNCS = {
     "ingest": ingest,
     "discover": discover,
     "match": match,
+    "geometry": geometry,
     "fit": fit,
     "figure": figure,
     "report": report,
@@ -1013,7 +1045,10 @@ def main(argv=None) -> int:
             from pab.pace.cloud import cached_opener
 
             opener = cached_opener(config.cache())
-        with Store.open(Path(args.db)) as store:
+        # Read-only: never create or migrate. `--emit-site` against a frozen
+        # release (v1/pab.db is chmod a-w) must work, and a default open would
+        # try to migrate it and fail.
+        with Store.open(Path(args.db), create=False) as store:
             written = rst.build_site(
                 store,
                 args.emit_site,
