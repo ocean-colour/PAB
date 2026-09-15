@@ -517,6 +517,57 @@ unary ~: 'NoneType'` from `h5netcdf`/`h5py` during GC. It is uncatchable (it
 happens in a finaliser), harmless, and does not affect results.
 
 
+### Task 5 — `build_v2_prompt_3.md` updated (2026-09-15): **done**
+
+Every claim added was checked against the real store, the real installed
+environment, or the code — not carried over. **Task 3 shrank and Task 5 grew.**
+
+**The biggest change: Prompt 3's Task 3 no longer has a migration to write.**
+Prompt 2 Task 1 already shipped the `fits` v5 columns (`rt_backend`,
+`include_raman`, `include_chl_fl`, `include_cdom_fl`, `phi_c`, `fit_bp`;
+`wave_max` confirmed pre-existing), because splitting v5 across two prompts
+would have stamped `v2/pab.db` at `user_version = 5` after the first half and
+then silently skipped the second. The task now says so explicitly, and warns
+that a genuinely missing column needs a `_v5_to_v6`, **not** an edit to
+`_v4_to_v5`.
+
+**Three corrections, each verified:**
+
+1. **Task 5 said "the 3 cached-granule matchups"** — it is **10 granules / 20
+   matchups / 200 pixels**, all validated in Task 4. Corrected, with the
+   ~9 s/granule serial figure so the run can be budgeted.
+2. **Task 5 assumed geometry would already be filled.** It will not be: the
+   real `v2/pab.db` has geometry on **0 of 146,100** pixels (re-checked after
+   Task 4 — the validation ran entirely in a scratch copy that was then
+   deleted). A fresh copy therefore has none, and *every* fit would be
+   recorded as failed by Task 2's own "no geometry → `failed`" rule. Task 5
+   now runs `--stage geometry` on the copy first.
+3. **Task 5 expects chains under `$PAB_DATA_DIR/v2/fit_chains/`** — they will
+   not land there unless `PAB_DATA_DIR` itself points at `…/Color/PAB/v2`,
+   since `chains_path()` keys off the root of `PAB_DATA_DIR`, not `--db`. The
+   task now states the required env var.
+
+**A new gotcha found while checking Task 1**, added to Context:
+`package_versions()["pab"]` reads the **installed distribution** metadata, not
+`pab.config.pab_version`. `config.pab_version`, the dist version and
+`setup.py` are three separate strings that today all happen to read `1.1`, so
+bumping the first two without re-running `pip install -e .` would make every
+2.0 fit's provenance JSON record `pab: 1.1` — wrong, and invisible until
+someone audits a chain file months later. Task 1 now requires the reinstall
+and a `package_versions()` check.
+
+Also added: the settled environment facts (287-test baseline, the frozen-v1
+`create=False` rule), the exact geometry column names and the
+**already-wrapped** `dphi` contract (Task 2 must not re-wrap), the new modules
+to reuse rather than re-invent, the new stage order, and the measured
+`theta_s` / `theta_v` / `dphi` ranges from 200 real pixels as `ObsGeometry`
+sanity bounds.
+
+**Judgement call to confirm or delete:** I added a **Task 6** to
+`build_v2_prompt_3.md` ("update `build_v2_prompt_4.md`"), mirroring the Task 5
+you added to Prompt 1, and flagged it as removable in the doc.
+
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -715,3 +766,53 @@ What I learned / want to remember:
   HOWTO's "Planned enhancements"), so bounding a validation run means pruning a
   scratch copy. That worked fine, but it is the second time the missing filter
   has cost a workaround; worth implementing if a third comes up.
+
+### 2026-09-15 (Prompt 2 Task 5 — handed Prompt 2's findings to `build_v2_prompt_3.md`)
+
+Updated the next prompt so it starts from the current state of the code and
+the databases. The net effect is that **Task 3 got smaller and Task 5 got
+bigger** — the opposite of what the doc assumed in both cases.
+
+Substantive edits:
+
+- **Task 3's schema work is already delivered.** Prompt 2 Task 1 carried both
+  halves of v5, so `fits` already has all six RT columns. Left uncorrected,
+  Prompt 3 would have written a migration that either duplicated columns or —
+  worse — been added to `_v4_to_v5` and never run, because `v2/pab.db` is
+  already stamped v5.
+- **Task 5's "3 cached-granule matchups" is 10 granules / 20 matchups / 200
+  pixels**, per Task 4's measurement.
+- **Task 5 would have fitted nothing.** It assumed geometry was already in
+  place. I re-checked the real `v2/pab.db`: 0 of 146,100 pixels have
+  `theta_s`. Task 4 ran entirely inside a scratch copy I then deleted, which
+  is correct hygiene but means the geometry has to be regenerated per scratch
+  copy. Every fit would have been recorded as failed by Prompt 3's own
+  no-geometry rule, which would have looked like a bug in the new fit code.
+- **Task 5's chains path is wrong without an env var**, for the
+  `PAB_DATA_DIR`-root reason found in Prompt 1 Task 4.
+
+What I learned / want to remember:
+
+- **The most valuable thing to check in a forward-looking prompt is its
+  *preconditions*, not its instructions.** Two of the four corrections were
+  of the form "this task assumes state that does not exist". Those are the
+  errors that cost a whole session, because the symptom (every fit failing)
+  points at the code being written rather than at the setup.
+- **A version string can exist three times and disagree.** `pab.config.
+  pab_version`, `setup.py`'s `version`, and the installed `.dist-info`
+  version are independent; `package_versions()` reads the third. They agree
+  today only by coincidence. An editable install does **not** pick up a
+  `setup.py` version bump without reinstalling, so provenance would have been
+  quietly wrong for every 2.0 fit. I only found this because I went to check
+  whether bumping `pab_version` would break any test, and noticed
+  `package_versions` uses `importlib.metadata` rather than the constant.
+- **Deleting the scratch copy was right, but it has a cost worth naming.**
+  Keeping the validation out of `v2/pab.db` is the whole point of the
+  frozen/scratch discipline, and I would do it again — but it means the next
+  prompt pays ~90 s to regenerate geometry, and that only becomes obvious if
+  someone says so. Now it is in the doc with a time estimate rather than
+  being discovered as a failure.
+- Carried forward the small contract details that are easy to get wrong
+  twice: `dphi` arrives **already wrapped**, so Prompt 3 must not re-wrap it,
+  and `wrap_dphi` is the canonical implementation because the reflex formula
+  has the wrong half-open end.
