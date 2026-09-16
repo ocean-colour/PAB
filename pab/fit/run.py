@@ -22,6 +22,7 @@ from typing import Any
 
 import numpy as np
 
+from pab.config import pab_version as _pab_version
 from pab.fit import artifacts as _artifacts
 from pab.fit.models import FitConfig, build_models, model_param_names
 from pab.matchup.engine import _close_quietly
@@ -75,9 +76,32 @@ BRICAUD_APH440 = 0.05582
 _BRICAUD_ANW = ("ExpBricaud", "ExpBricaudFix")
 
 
-def make_fit_id(matchup_id: str, ix: int, iy: int, model_pair: str) -> str:
-    """Deterministic fit id: ``"{matchup_id}_{ix}_{iy}_{model_pair}"``."""
-    return f"{matchup_id}_{int(ix)}_{int(iy)}_{model_pair}"
+def make_fit_id(
+    matchup_id: str, ix: int, iy: int, model_pair: str, version: str | None = None
+) -> str:
+    """Deterministic, **version-aware** fit id.
+
+    ``"{matchup_id}_{ix}_{iy}_{model_pair}_v{pab_version}"``.
+
+    The version suffix is what lets 1.0 and 2.0 fits of the *same pixel*
+    coexist. ``build_fits`` skips a matchup whose ``fit_id`` is already in the
+    store, so without it a 2.0 run over a store holding 1.0 fits would skip
+    every matchup as "already done" — and ``--replace`` would overwrite the 1.0
+    rows rather than adding to them. The 1.0 ids already written stay exactly as
+    they are; nothing rewrites them.
+
+    Args:
+        matchup_id: The matchup.
+        ix, iy: Pixel indices.
+        model_pair: e.g. ``"ExpBPow"``.
+        version: Overrides :data:`pab.config.pab_version` (tests, and
+            reconstructing a historical id).
+
+    Returns:
+        The fit id.
+    """
+    v = _pab_version if version is None else version
+    return f"{matchup_id}_{int(ix)}_{int(iy)}_{model_pair}_v{v}"
 
 
 def chl_from_aph(aph_log10):

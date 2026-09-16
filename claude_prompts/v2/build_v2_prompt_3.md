@@ -526,6 +526,75 @@ plain `robust_ztt`. The production run should suppress the warning explicitly
 rather than reach for that policy expecting selective fallback.
 
 
+### Task 4 — provenance + identity (2026-09-15): **done**
+
+No migration written — schema v5 already carries the six `fits` RT columns
+(Prompt 2 Task 1), confirmed at `user_version = 5`.
+
+**Version-aware `fit_id`.** `make_fit_id(matchup_id, ix, iy, model_pair,
+version=None)` →
+`{matchup_id}_{ix}_{iy}_{model_pair}_v{pab_version}`, e.g.
+`7902226_5_G1_3_4_ExpBPow_v2.0`. `version=` overrides for tests and for
+reconstructing a historical id. Three tests, including the one the task asked
+for — **the unsuffixed 1.0 format is never produced under 2.0** — with the
+reason recorded in the test: `build_fits` skips a matchup whose `fit_id` is
+already stored, so a colliding id would make a 2.0 run skip every matchup that
+already has a 1.0 fit, and `--replace` would overwrite the published rows
+instead of adding to them.
+
+**`package_versions()`** gained `robust` and a nested `git_sha` map:
+
+```json
+{"pab": "2.0", "bing": "0.0.dev0", "ocpy": "0.1.dev0", "argopy": "1.4.0",
+ "remote_sensing": "0.0.dev0", "earthaccess": "0.18.0", "robust": "0.0.dev0",
+ "numpy": "2.5.2", "scipy": "1.18.0", "xarray": "2025.9.0",
+ "git_sha": {"PAB": "736d8f6", "bing": "bf56f6d", "ocpy": "c3132a6",
+             "remote_sensing": "2b85c65", "retrieve-or-bust": "5ca740d"}}
+```
+
+All five SHAs resolve on the workstation. Two details worth recording:
+
+- **`robust` is distributed as `retrieve-or-bust`** —
+  `importlib.metadata.version("robust")` raises `PackageNotFoundError`. A
+  `_DISTRIBUTION_NAMES` alias maps it, and the entry is keyed under the
+  **import** name, which is what appears in tracebacks and in `rt_backend`.
+- **The git SHAs are the point, not a nicety.** Four of the five repos are
+  editable installs permanently reporting `0.0.dev0`, so the version string
+  identifies nothing. After Task 3's change to `robust`, "which `robust`?" is a
+  question a 2.0 fit has to be able to answer.
+
+**The container seam.** Resolution order per repo is `PAB_GIT_SHAS` (a JSON
+object, e.g. from an image label the entrypoint exports) **then**
+`git rev-parse --short HEAD` in the installed source tree, with
+`"unknown"` as the floor. The env var **wins** over git, so a deliberately
+stamped image is never second-guessed by a stray `.git` copied into it.
+`_git_sha` cannot raise or hang: missing `.git`, missing `git` binary, bad
+repo, all become `"unknown"`, and the subprocess has a 10 s timeout —
+provenance capture must never fail a fit. Malformed JSON in the env var is
+ignored rather than fatal (tested).
+
+One deliberate deviation from the task text: the SHAs are read **once per
+process** via `functools.cache` rather than literally at import. `import pab`
+spawning five subprocesses would be a poor trade for an identical result, and
+`find_spec` is used instead of importing the packages so a provenance lookup
+never drags in `jax` or `argopy`.
+
+**`persist_fit` writes the v5 columns** — `rt_backend`, `include_raman`,
+`include_chl_fl`, `include_cdom_fl`, `phi_c`, `fit_bp` — from the `FitConfig`.
+Two tests assert a 2.0 row and a `FitConfig.v1()` row land distinctly
+(`robust_hybrid`/1/1/0/1 vs `gordon`/0/0/0/0, `wave_max` 720 vs 700).
+
+**`docs`/report.** `provenance_block` would have rendered the nested map as a
+dict repr inside the version column, so the SHAs now get their own
+"Source revisions" table on the methods page. Sphinx still builds with **zero**
+warnings.
+
+**Tests: 325 passed, 1 skipped** (was 315). Eight new: the `robust` entry, the
+`git_sha` map's shape, SHAs looking like short hashes, the env-var override,
+malformed JSON tolerated, `"unknown"` for a non-repo, and the two `persist_fit`
+configuration rows.
+
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -703,3 +772,45 @@ What I learned / want to remember:
   geometry-**blind** by explicit assumption, which is defensible, rather than
   geometry-**corrupted**, which was not — but it is still unvalidated
   off-nadir, and that should keep being said until M5 data exists.
+
+### 2026-09-15 (Prompt 3 Task 4 — version-aware fit ids and real provenance)
+
+`make_fit_id` now carries `_v{pab_version}`, `package_versions()` reports
+`robust` plus a git SHA per source repo, and `persist_fit` writes the six v5 RT
+columns. 325 tests pass; docs clean.
+
+What I learned / want to remember:
+
+- **The version suffix is load-bearing, not decorative.** `build_fits` resumes
+  by checking whether a `fit_id` is already in the store. Had 2.0 reproduced
+  the 1.0 id, a 2.0 run over a store containing 1.0 fits would have reported
+  every matchup as "skipped — already done" and written nothing, which looks
+  exactly like a successful resume. `--replace` would have been worse: it would
+  have overwritten the published 1.0 rows. I put that reasoning inside the test
+  rather than in a comment, because the test is what a future reader will hit
+  when they wonder why the id has a suffix.
+- **`robust`'s import name and distribution name differ** (`retrieve-or-bust`),
+  so the obvious `importlib.metadata.version("robust")` raises. I keyed the
+  provenance entry under the *import* name — that is the name in `rt_backend`,
+  in tracebacks, and in every conversation about it — and put the mapping in a
+  documented alias dict rather than silently recording a name nobody uses.
+- **Versions genuinely do not identify this stack.** Four of five repos are
+  editable installs stuck at `0.0.dev0`. Before today that was a latent
+  weakness; after Task 3 changed `robust`'s inference behaviour it is a real
+  one, because "which `robust`?" now changes the numbers. The SHA map is the
+  fix, and it is worth more than the version strings beside it.
+- **Designing the container seam meant deciding precedence, and the
+  non-obvious direction is right.** Env var **over** git: an image is stamped
+  by its build with the SHAs it checked out, and if a `.git` happens to be
+  copied in, it is likelier to be stale or irrelevant than authoritative. The
+  other order would let an accident silently override a deliberate statement.
+- **Provenance capture must not be able to fail the thing it describes.**
+  `_git_sha` swallows every failure into `"unknown"` and bounds the subprocess
+  at 10 s; malformed JSON in the env var is ignored, not raised. A fit that
+  dies because it could not work out its own commit would be an absurd way to
+  lose a 146,100-pixel run.
+- A nested value in `package_versions()` quietly broke a *presentation*
+  contract I would not have thought to check: `rst.py` builds a two-column
+  DataFrame straight from the mapping, so `git_sha` would have rendered as a
+  Python dict repr on the public methods page. Found it by rendering the block
+  rather than trusting that the tests passing meant it looked right.

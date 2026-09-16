@@ -850,9 +850,20 @@ def provenance_block(*, pab_version: str | None = None) -> str:
         f"Built from ``pab_version`` ``{pab_version}`` on "
         f"{datetime.now(UTC).date().isoformat()}. Installed package versions:\n"
     )
-    pv = package_versions()
+    pv = dict(package_versions())
+    # `git_sha` is a nested {repo: sha} map, not a version string — render it as
+    # its own table rather than letting a dict repr into the version column.
+    shas = pv.pop("git_sha", None)
     df = pd.DataFrame({"package": list(pv), "version": list(pv.values())})
     out.append(rst_table(df))
+    if shas:
+        out.append("")
+        out.append(
+            "Source revisions (the editable installs all report ``0.0.dev0``, "
+            "so the commit is what identifies the code):\n"
+        )
+        sha_df = pd.DataFrame({"repository": list(shas), "commit": list(shas.values())})
+        out.append(rst_table(sha_df))
     return "\n".join(out)
 
 

@@ -9,9 +9,37 @@ from pab.fit import FitConfig, artifacts, run
 
 
 # -- pure helpers (no bing) -------------------------------------------------
-def test_make_fit_id():
+def test_make_fit_id_is_version_aware():
+    from pab.config import pab_version
+
     assert (
-        run.make_fit_id("7902226_5_G1", 3, 4, "ExpBPow") == "7902226_5_G1_3_4_ExpBPow"
+        run.make_fit_id("7902226_5_G1", 3, 4, "ExpBPow")
+        == f"7902226_5_G1_3_4_ExpBPow_v{pab_version}"
+    )
+    assert run.make_fit_id("7902226_5_G1", 3, 4, "ExpBPow", version="1.0") == (
+        "7902226_5_G1_3_4_ExpBPow_v1.0"
+    )
+
+
+def test_make_fit_id_does_not_produce_the_1_0_format():
+    """The unsuffixed 1.0 id must never be generated under 2.0.
+
+    ``build_fits`` skips a matchup whose ``fit_id`` is already stored, so if 2.0
+    reproduced the 1.0 id it would skip every matchup that already has a 1.0
+    fit — and ``--replace`` would overwrite the published rows instead of adding
+    to them.
+    """
+    legacy = "7902226_5_G1_3_4_ExpBPow"
+    produced = run.make_fit_id("7902226_5_G1", 3, 4, "ExpBPow")
+    assert produced != legacy
+    assert produced.startswith(legacy + "_v")
+    assert produced.endswith("_v2.0")
+
+
+def test_fit_ids_of_the_two_generations_do_not_collide():
+    args = ("7902226_5_G1", 3, 4, "ExpBPow")
+    assert run.make_fit_id(*args, version="1.0") != run.make_fit_id(
+        *args, version="2.0"
     )
 
 
@@ -683,3 +711,119 @@ def test_packaged_ed_covers_the_fit_window_and_raman_excitation():
     assert wave_ed.min() <= 352.0
     assert wave_ed.max() >= FitConfig().wave_max
     assert table.shape[0] == len(robust_ed.ZENITH_ANCHORS)
+
+
+# --- provenance: git SHAs + the persisted RT columns (Prompt 3 Task 4) -------
+def test_package_versions_includes_robust_under_its_import_name():
+    """``robust`` is distributed as ``retrieve-or-bust``; record the import name."""
+    from pab.config import package_versions
+
+    pv = package_versions()
+    assert "robust" in pv
+    assert pv["robust"] != "not installed"
+
+
+def test_package_versions_carries_a_git_sha_map():
+    from pab.config import _GIT_REPOS, package_versions
+
+    pv = package_versions()
+    assert set(pv["git_sha"]) == set(_GIT_REPOS)
+    # this checkout is a git repo, so PAB at least must resolve
+    assert pv["git_sha"]["PAB"] != "unknown"
+
+
+def test_git_shas_look_like_short_hashes():
+    from pab.config import UNKNOWN_SHA, git_shas
+
+    for repo, sha in git_shas().items():
+        assert sha == UNKNOWN_SHA or (
+            4 <= len(sha) <= 40 and all(c in "0123456789abcdef" for c in sha)
+        ), f"{repo} -> {sha!r}"
+
+
+def test_env_var_overrides_the_git_sha(monkeypatch):
+    """The container seam: no ``.git`` in the image, SHAs fed in by the build."""
+    import json
+
+    from pab.config import GIT_SHA_ENV, git_shas
+
+    git_shas.cache_clear()
+    monkeypatch.setenv(GIT_SHA_ENV, json.dumps({"PAB": "deadbee", "bing": "cafe123"}))
+    try:
+        shas = git_shas()
+        assert shas["PAB"] == "deadbee"
+        assert shas["bing"] == "cafe123"
+        # repos absent from the override still fall back to git
+        assert "ocpy" in shas
+    finally:
+        git_shas.cache_clear()
+
+
+def test_malformed_sha_env_var_does_not_break_provenance(monkeypatch):
+    from pab.config import _GIT_REPOS, GIT_SHA_ENV, git_shas
+
+    git_shas.cache_clear()
+    monkeypatch.setenv(GIT_SHA_ENV, "not json {{{")
+    try:
+        shas = git_shas()  # must not raise
+        assert set(shas) == set(_GIT_REPOS)
+    finally:
+        git_shas.cache_clear()
+
+
+def test_unknown_sha_for_a_non_repo(tmp_path):
+    from pab.config import UNKNOWN_SHA, _git_sha
+
+    assert _git_sha(tmp_path) == UNKNOWN_SHA
+    assert _git_sha(None) == UNKNOWN_SHA
+    assert _git_sha(tmp_path / "nope") == UNKNOWN_SHA
+
+
+def test_persist_fit_writes_the_v5_rt_columns():
+    """The six columns that distinguish a 2.0 fit from a 1.0 one."""
+    import json
+
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        artifacts.persist_fit(
+            store,
+            fit_id="F2",
+            matchup_id=matchup_id,
+            pixel_id=pixel_id,
+            result=_fake_result(),
+            config=FitConfig(),
+            chains_path="/tmp/F2.npz",
+        )
+        fit = store.query("SELECT * FROM fits WHERE fit_id = 'F2'")[0]
+        assert fit["rt_backend"] == "robust_hybrid"
+        assert fit["include_raman"] == 1
+        assert fit["include_chl_fl"] == 1
+        assert fit["include_cdom_fl"] == 0
+        assert fit["fit_bp"] == 1
+        assert fit["phi_c"] == pytest.approx(0.02)
+        assert fit["wave_max"] == pytest.approx(720.0)
+        assert fit["pab_version"] == "2.0"
+        # the git SHAs ride along in the provenance JSON
+        pkg = json.loads(fit["pkg_versions"])
+        assert pkg["git_sha"]["PAB"]
+        assert pkg["robust"] != "not installed"
+
+
+def test_persist_fit_records_the_1_0_configuration_distinctly():
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        artifacts.persist_fit(
+            store,
+            fit_id="F1",
+            matchup_id=matchup_id,
+            pixel_id=pixel_id,
+            result=_fake_result(),
+            config=FitConfig.v1(),
+            chains_path="/tmp/F1.npz",
+        )
+        fit = store.query("SELECT * FROM fits WHERE fit_id = 'F1'")[0]
+        assert fit["rt_backend"] == "gordon"
+        assert fit["include_raman"] == 0
+        assert fit["include_chl_fl"] == 0
+        assert fit["fit_bp"] == 0
+        assert fit["wave_max"] == pytest.approx(700.0)
