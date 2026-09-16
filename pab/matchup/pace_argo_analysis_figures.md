@@ -13,7 +13,7 @@ Relative difference: `(bbp_bing − bbp_argo) / bbp_bing`
 
 ## Figure 1 — Relative difference vs. mixed layer depth
 
-![rel_diff vs MLD](bbp700_reldiff_vs_mld.png)
+![rel_diff vs MLD](../../docs/figures/bbp700_reldiff_vs_mld.png)
 
 The bias shows no clear relationship with mixed layer depth — median relative
 difference stays near +0.35 regardless of how deep the mixed layer extends,
@@ -31,7 +31,7 @@ quintile medians argue against it being the primary driver.
 
 ## Figure 2 — Seasonal cycle
 
-![Seasonal cycle](bbp700_reldiff_seasonal.png)
+![Seasonal cycle](../../docs/figures/bbp700_reldiff_seasonal.png)
 
 The positive bias is consistent across all months (data span March 2024 – May
 2026, pooled across years). Monthly medians stay close to the overall median of
@@ -42,7 +42,7 @@ shoaling, or diurnal variability as primary drivers.
 
 ## Figure 3 — By ocean basin
 
-![Basin comparison](bbp700_reldiff_by_basin.png)
+![Basin comparison](../../docs/figures/bbp700_reldiff_by_basin.png)
 
 The positive bias is present in all four ocean basins. The Atlantic dominates
 the sample (137 of 262 matchups). Basin-to-basin differences in median bias

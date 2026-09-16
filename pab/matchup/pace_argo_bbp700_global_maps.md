@@ -11,7 +11,7 @@
 ## Figures
 
 ### Static map (cartopy)
-![Global PACE–Argo bbp700 relative difference](pace_argo_bbp700_global_map.png)
+![Global PACE–Argo bbp700 relative difference](../../docs/figures/pace_argo_bbp700_global_map.png)
 
 *Mollweide projection. Color = (PACE − Argo) / PACE, clipped to ±1. Red = PACE exceeds Argo. Blue = Argo exceeds PACE.*
 
