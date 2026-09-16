@@ -18,6 +18,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 from pab.config import DATA_DIR
+
 PAB_DB_DEFAULT = Path(DATA_DIR) / "pab.db"
 
 

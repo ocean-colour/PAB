@@ -11,9 +11,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import numpy as np
 from scipy import stats
 
 from pab.config import DATA_DIR
@@ -27,9 +27,8 @@ DEFAULT_OUT = Path(DATA_DIR) / "chl_pace_vs_argo_scatter.png"
 CHl_MAX = 100.0
 
 
-def load_data(db: Path = DEFAULT_DB) -> "pd.DataFrame":
+def load_data(db: Path = DEFAULT_DB):
     """Load Chl-a matchup data from the PAB database."""
-    import pandas as pd
     with Store.open(db, create=False) as store:
         df = gather_matchups(store)
     before = len(df)
@@ -45,7 +44,6 @@ def load_data(db: Path = DEFAULT_DB) -> "pd.DataFrame":
 def make_scatter(df, out=DEFAULT_OUT):
     log_a = np.log10(df["chla_argo"])
     log_b = np.log10(df["chl_bing"])
-    n = len(df)
     rho, _ = stats.spearmanr(df["chla_argo"], df["chl_bing"])
     bias = np.mean(log_b - log_a)
     rms  = np.sqrt(np.mean((log_b - log_a) ** 2))
@@ -65,8 +63,10 @@ def make_scatter(df, out=DEFAULT_OUT):
 
         lo = 10 ** (min(log_a.min(), log_b.min()) - 0.2)
         hi = 10 ** (max(log_a.max(), log_b.max()) + 0.2)
-        ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
-        ax.set_xscale("log"); ax.set_yscale("log")
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
         ax.plot([lo, hi], [lo, hi], "k-", lw=1.2, label="1:1")
         ax.plot([lo, hi], [lo * med_ratio, hi * med_ratio], "r--", lw=1.2,
                 label=f"median ratio = {med_ratio:.2f}")

@@ -12,13 +12,16 @@ Usage
 """
 
 from __future__ import annotations
+
 import argparse
 from pathlib import Path
-import numpy as np
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import numpy as np
 
 from pab.config import DATA_DIR
+
 PAB_DB_DEFAULT = Path(DATA_DIR) / "pab.db"
 OUT_DEFAULT    = Path(DATA_DIR) / "pace_argo_bbp700_clean_map.png"
 

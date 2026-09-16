@@ -29,6 +29,7 @@ import numpy as np
 # Argument parsing
 # ---------------------------------------------------------------------------
 from pab.config import DATA_DIR
+
 PAB_DB_DEFAULT = Path(DATA_DIR) / "pab.db"
 
 
@@ -196,7 +197,8 @@ def main(argv=None):
     for _, row in df.iterrows():
         bbp_b = float(row["bbp_bing"])
         rd = (bbp_b - row["bbp_argo"]) / bbp_b if bbp_b > 0 else float("nan")
-        cyc = int(row["cycle"]) if not pd.isna(row["cycle"]) else "?"
+        import math
+        cyc = int(row["cycle"]) if not math.isnan(float(row["cycle"])) else "?"
         print(f"  WMO {row['wmo']} cycle {str(cyc):>3s}  "
               f"lat={row['latitude']:.3f}  lon={row['longitude']:.3f}  "
               f"bbp_pace={row['bbp_bing']:.6f}  bbp_argo={row['bbp_argo']:.6f}  "

@@ -146,8 +146,10 @@ def scatter_1to1(df: pd.DataFrame, out: Path) -> mpl.figure.Figure:
     ax.plot([lo, hi], [lo, hi], "k-", lw=1.2, label="1:1")
     ax.plot([lo, hi], [lo * med_ratio, hi * med_ratio], "r--", lw=1.2,
             label=f"Median ratio = {med_ratio:.2f}")
-    ax.set_xscale("log"); ax.set_yscale("log")
-    ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
     ax.set_xlabel(r"Argo $b_{bp,700}$ [m$^{-1}$]")
     ax.set_ylabel(r"PACE $b_{bp,700}$ [m$^{-1}$]")
     ax.set_title(
@@ -233,7 +235,6 @@ def seasonal(df: pd.DataFrame, out: Path) -> mpl.figure.Figure:
                                 ("SH", "#e07b39", "Southern Hemisphere (shifted +6 mo)")]:
         sub = df[df["hemi"] == hemi]
         med = sub.groupby("local_month")["rel_diff"].median()
-        n_mo = sub.groupby("local_month")["rel_diff"].count()
         ax.plot(med.index, med.values, "o-", color=color, lw=1.5, ms=5, label=label)
         ax.fill_between(
             med.index,
@@ -269,14 +270,16 @@ def by_basin(df: pd.DataFrame, out: Path) -> mpl.figure.Figure:
                    for r in df[["latitude", "longitude"]].itertuples()]
     order = ["Atlantic", "Pacific", "Indian", "Southern"]
     groups = [df[df["basin"] == b]["rel_diff"].dropna().values for b in order]
-    labels = [f"{b}\n(n={len(g):,})" for b, g in zip(order, groups)]
+    labels = [f"{b}\n(n={len(g):,})" for b, g in zip(order, groups, strict=True)]
 
     fig, ax = plt.subplots(figsize=(8, 5))
     parts = ax.violinplot(groups, positions=range(len(order)),
                           showmedians=True, showextrema=False)
     for pc in parts["bodies"]:
-        pc.set_facecolor("#5b8db8"); pc.set_alpha(0.6)
-    parts["cmedians"].set_color("#d6604d"); parts["cmedians"].set_lw(2)
+        pc.set_facecolor("#5b8db8")
+        pc.set_alpha(0.6)
+    parts["cmedians"].set_color("#d6604d")
+    parts["cmedians"].set_lw(2)
     ax.axhline(0, color="k", lw=0.8, ls="--")
     ax.set_xticks(range(len(order)))
     ax.set_xticklabels(labels, fontsize=9)
