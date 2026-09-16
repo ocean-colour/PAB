@@ -1,5 +1,7 @@
 """Stage 5 tests: the BING fitting wrapper (``pab.fit``)."""
 
+import os
+
 import numpy as np
 import pytest
 
@@ -827,3 +829,157 @@ def test_persist_fit_records_the_1_0_configuration_distinctly():
         assert fit["include_chl_fl"] == 0
         assert fit["fit_bp"] == 0
         assert fit["wave_max"] == pytest.approx(700.0)
+
+
+# --- fitted physics everywhere (Prompt 3 Task 5) -----------------------------
+class _SpyModel:
+    """Minimal stand-in for a BING model, enough for reconstruct_rrs."""
+
+    nparam = 3
+    name = "ExpBricaud"
+    wave = np.arange(400.0, 720.0, 20.0)
+
+
+def test_reconstruct_rrs_uses_gordon_for_the_1_0_backend(monkeypatch):
+    import bing.evaluate as ev
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "calc_Rrs_from_models", lambda *a, **k: calls.append(("gordon", k)) or 1.0
+    )
+    monkeypatch.setattr(
+        ev,
+        "calc_Rrs_from_models_robust",
+        lambda *a, **k: calls.append(("robust", k)) or 2.0,
+    )
+    out = run.reconstruct_rrs(
+        [_SpyModel(), _SpyModel()], np.zeros(3), np.zeros(2), {"rt_backend": "gordon"}
+    )
+    assert out == 1.0
+    assert [c[0] for c in calls] == ["gordon"]
+
+
+def test_reconstruct_rrs_uses_the_robust_backend_with_geom_and_bp(monkeypatch):
+    """The task's assertion: a robust fit must reconstruct with robust physics."""
+    import bing.evaluate as ev
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "calc_Rrs_from_models", lambda *a, **k: calls.append(("gordon", k)) or 1.0
+    )
+    monkeypatch.setattr(
+        ev,
+        "calc_Rrs_from_models_robust",
+        lambda *a, **k: calls.append(("robust", k)) or 2.0,
+    )
+    geom = object()
+    out = run.reconstruct_rrs(
+        [_SpyModel(), _SpyModel()],
+        np.zeros(3),
+        np.zeros(2),
+        {"rt_backend": "robust_hybrid", "fit_Bp": True},
+        geom=geom,
+        Bp=0.012,
+    )
+    assert out == 2.0
+    assert [c[0] for c in calls] == ["robust"]
+    assert calls[0][1]["geom"] is geom
+    assert calls[0][1]["Bp"] == 0.012
+
+
+def test_reconstruct_rrs_defaults_to_gordon_for_a_legacy_rt_dict(monkeypatch):
+    """A 1.0 row has no ``rt_backend``; that must mean Gordon, not a crash."""
+    import bing.evaluate as ev
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "calc_Rrs_from_models", lambda *a, **k: calls.append("gordon") or 1.0
+    )
+    run.reconstruct_rrs([_SpyModel(), _SpyModel()], np.zeros(3), np.zeros(2), {})
+    assert calls == ["gordon"]
+
+
+def test_config_from_row_rebuilds_the_2_0_configuration():
+    from pab.plotting.fit_fig import _config_from_row
+
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        artifacts.persist_fit(
+            store,
+            fit_id="F2",
+            matchup_id=matchup_id,
+            pixel_id=pixel_id,
+            result=_fake_result(),
+            config=FitConfig(),
+            chains_path="/tmp/F2.npz",
+        )
+        row = store.query("SELECT * FROM fits WHERE fit_id = 'F2'")[0]
+        cfg = _config_from_row(row)
+        assert cfg.rt_backend == "robust_hybrid"
+        assert cfg.include_Raman is True and cfg.include_Chl_fl is True
+        assert cfg.fit_Bp is True and cfg.wave_max == pytest.approx(720.0)
+
+
+def test_config_from_row_treats_a_legacy_null_row_as_gordon():
+    """v1 rows have the v5 columns NULL — that is the elastic 1.0 fit."""
+    from pab.plotting.fit_fig import _config_from_row
+
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        store.upsert(
+            "fits",
+            {
+                "fit_id": "OLD",
+                "matchup_id": matchup_id,
+                "pixel_id": pixel_id,
+                "model_pair": "ExpBPow",
+                "wave_min": 400.0,
+                "wave_max": 700.0,
+                "nsteps": 10000,
+                "pab_version": "1.0",
+            },
+        )
+        row = store.query("SELECT * FROM fits WHERE fit_id = 'OLD'")[0]
+        cfg = _config_from_row(row)
+        assert cfg.rt_backend == "gordon"
+        assert cfg.include_Raman is False and cfg.fit_Bp is False
+        assert cfg.wave_max == pytest.approx(700.0)
+
+
+def test_geometry_from_row_reads_the_pixel_back():
+    from pab.plotting.fit_fig import _geometry_from_row
+
+    pytest.importorskip("bing")
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        geom = _geometry_from_row(store, {"pixel_id": pixel_id})
+        assert geom.theta_s == pytest.approx(GEOM["theta_s"])
+        assert geom.theta_v == pytest.approx(GEOM["theta_v"])
+        assert geom.dphi == pytest.approx(GEOM["dphi"])
+
+
+def test_worker_init_pins_xla_threads(monkeypatch):
+    """The fit pool runs JAX; without this each worker spawns ncores threads."""
+    from pab.parallel import init_worker
+
+    for var in ("XLA_FLAGS", "OMP_NUM_THREADS"):
+        monkeypatch.delenv(var, raising=False)
+    init_worker()
+    assert os.environ["OMP_NUM_THREADS"] == "1"
+    assert "intra_op_parallelism_threads=1" in os.environ["XLA_FLAGS"]
+    assert "--xla_cpu_multi_thread_eigen=false" in os.environ["XLA_FLAGS"]
+
+
+def test_fit_worker_init_is_the_shared_one(monkeypatch):
+    """The two initialisers must not drift again."""
+    monkeypatch.delenv("XLA_FLAGS", raising=False)
+    run._worker_init()
+    assert "intra_op_parallelism_threads=1" in os.environ["XLA_FLAGS"]
+
+
+def test_init_worker_respects_a_deliberate_setting(monkeypatch):
+    monkeypatch.setenv("XLA_FLAGS", "--custom=1")
+    from pab.parallel import init_worker
+
+    init_worker()
+    assert os.environ["XLA_FLAGS"] == "--custom=1"

@@ -277,6 +277,38 @@ def set_inelastic_Ed(models, geom, rt_dict) -> bool:
     return True
 
 
+def reconstruct_rrs(models, a_params, bb_params, rt_dict, *, geom=None, Bp=None):
+    """Forward-model ``Rrs`` with whichever backend ``rt_dict`` selects.
+
+    **The single place PAB chooses a forward model.** Reconstructing a robust
+    fit with the elastic Gordon relation is a silent error — the numbers come
+    out plausible, they are simply not the physics that was fitted — so both
+    consumers (:func:`_fit_diagnostics` and :mod:`pab.plotting.fit_fig`)
+    dispatch here rather than each calling ``bing.evaluate`` directly.
+
+    Args:
+        models: ``[anw_model, bbnw_model]``.
+        a_params, bb_params: Parameters in the models' own fit space, already
+            split by :func:`_split_flat` (any trailing ``B_p`` peeled off).
+        rt_dict: The RT configuration; ``rt_backend`` selects the branch.
+        geom: ``ObsGeometry`` — required by a robust backend.
+        Bp: The ``B_p`` value(s) a robust forward model needs. Ignored by
+            Gordon, which has no phase-function input.
+
+    Returns:
+        Model ``Rrs``, shape matching the parameter batch.
+    """
+    import bing.evaluate as ev
+
+    if rt_dict.get("rt_backend", "gordon") == "gordon":
+        return ev.calc_Rrs_from_models(
+            models[0], a_params, models[1], bb_params, rt_dict
+        )
+    return ev.calc_Rrs_from_models_robust(
+        models[0], a_params, models[1], bb_params, rt_dict, geom=geom, Bp=Bp
+    )
+
+
 def _split_flat(flat, nparam_a: int, rt_dict):
     """Split a posterior sample matrix into ``(a_params, bb_params, Bp)``.
 
@@ -509,10 +541,11 @@ def fit_spectrum(
 def _fit_diagnostics(models, chains, rt_dict, Rrs, varRrs, config, *, geom=None):
     """Reduced chi-squared, AIC, BIC at the posterior-median parameters.
 
-    ``geom`` is accepted (and the median ``B_p`` peeled) so this stays correct
-    for a 6-parameter robust chain. The **reconstruction** is still BING's
-    elastic Gordon model; dispatching it on ``rt_dict['rt_backend']`` is
-    Prompt 3 Task 4. The parameter count ``k`` counts the free ``B_p``.
+    The reconstruction goes through :func:`reconstruct_rrs`, so a robust fit is
+    scored against the physics it was actually fitted with — χ²/AIC/BIC from a
+    Gordon reconstruction of a robust fit would be a quiet apples-to-oranges
+    comparison. The median ``B_p`` is peeled and forwarded, and the parameter
+    count ``k`` counts it.
     """
     import bing.evaluate as ev
 
@@ -524,7 +557,14 @@ def _fit_diagnostics(models, chains, rt_dict, Rrs, varRrs, config, *, geom=None)
     nparam_a = models[0].nparam
     a_med, bb_med, bp_med = _split_flat(med[None, :], nparam_a, rt_dict)
     pred = np.squeeze(
-        ev.calc_Rrs_from_models(models[0], a_med[0], models[1], bb_med[0], rt_dict)
+        reconstruct_rrs(
+            models,
+            a_med[0],
+            bb_med[0],
+            rt_dict,
+            geom=geom,
+            Bp=None if bp_med is None else float(bp_med[0]),
+        )
     )
     resid2 = np.sum((pred - Rrs) ** 2 / varRrs)
     n, k = Rrs.size, med.size
@@ -624,18 +664,16 @@ def _persist_result(store, inp: dict, result: FitSpectrumResult, config, created
 
 
 def _worker_init():  # pragma: no cover - runs in worker processes
-    """Cap BLAS/OpenMP threads in each worker so N processes don't oversubscribe
-    the cores (matchup-level parallelism is the outer loop; each fit is 1 core)."""
-    import os
+    """Cap a fit worker's thread pools — :func:`pab.parallel.init_worker`.
 
-    for var in (
-        "OMP_NUM_THREADS",
-        "OPENBLAS_NUM_THREADS",
-        "MKL_NUM_THREADS",
-        "NUMEXPR_NUM_THREADS",
-        "VECLIB_MAXIMUM_THREADS",
-    ):
-        os.environ.setdefault(var, "1")
+    This used to be a second, independent copy of the BLAS caps. It was not: it
+    silently diverged the moment ``XLA_FLAGS`` was added to the shared helper,
+    leaving the **fit** stage — the one pool that actually runs JAX — as the
+    only one without the XLA cap. Delegating keeps one implementation.
+    """
+    from pab.parallel import init_worker
+
+    init_worker()
 
 
 def fit_matchup(

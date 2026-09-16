@@ -42,21 +42,36 @@ def picklable(obj) -> bool:
     return True
 
 
-def init_worker() -> None:  # pragma: no cover - runs in worker processes
-    """Cap BLAS/OpenMP threads in a worker so N workers don't oversubscribe.
+#: Thread caps applied in every worker. The pool is the parallelism; each
+#: worker should stay single-threaded or N workers fight over the same cores.
+#:
+#: ``XLA_FLAGS`` is the JAX/XLA equivalent of the BLAS caps and is needed from
+#: 2.0 on, because the ``robust_*`` backends run their forward model under
+#: ``jax.jit``. XLA's CPU backend otherwise spins up its own intra-op thread
+#: pool sized to the whole machine **inside each worker**, so ``--jobs 16``
+#: would ask for 16 × ncores threads. It must be set **before JAX initialises
+#: its backend**, which is why it belongs here in the initialiser rather than
+#: anywhere in the fit code.
+_THREAD_CAPS = {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "VECLIB_MAXIMUM_THREADS": "1",
+    "XLA_FLAGS": ("--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"),
+}
 
-    The pool itself is the parallelism; each worker should stay single-threaded.
+
+def init_worker() -> None:  # pragma: no cover - runs in worker processes
+    """Cap BLAS/OpenMP **and XLA** threads in a worker.
+
+    Applies :data:`_THREAD_CAPS` with ``setdefault``, so a caller who has
+    deliberately set one of these keeps their value.
     """
     import os
 
-    for var in (
-        "OMP_NUM_THREADS",
-        "OPENBLAS_NUM_THREADS",
-        "MKL_NUM_THREADS",
-        "NUMEXPR_NUM_THREADS",
-        "VECLIB_MAXIMUM_THREADS",
-    ):
-        os.environ.setdefault(var, "1")
+    for var, value in _THREAD_CAPS.items():
+        os.environ.setdefault(var, value)
 
 
 def cgroup_mem_gb() -> float | None:
@@ -67,8 +82,10 @@ def cgroup_mem_gb() -> float | None:
     pod died at 15 min" into "memory climbed 3 GB/min from the third chunk", which
     is the difference between diagnosing a leak in one run and in five.
     """
-    for path in ("/sys/fs/cgroup/memory.current",  # cgroup v2
-                 "/sys/fs/cgroup/memory/memory.usage_in_bytes"):  # v1
+    for path in (
+        "/sys/fs/cgroup/memory.current",  # cgroup v2
+        "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+    ):  # v1
         try:
             with open(path) as fh:
                 return int(fh.read().strip()) / 1024**3

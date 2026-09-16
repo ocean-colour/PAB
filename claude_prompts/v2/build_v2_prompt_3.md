@@ -595,6 +595,63 @@ malformed JSON tolerated, `"unknown"` for a non-repo, and the two `persist_fit`
 configuration rows.
 
 
+### Task 5 — fitted physics everywhere (2026-09-15): **done**
+
+**One dispatch point.** `pab.fit.run.reconstruct_rrs(models, a_params,
+bb_params, rt_dict, *, geom=None, Bp=None)` is now the only place PAB chooses a
+forward model: `rt_backend == 'gordon'` → `calc_Rrs_from_models`, anything else
+→ `calc_Rrs_from_models_robust(..., geom=, Bp=)`. A missing `rt_backend` (a
+legacy 1.0 `rt_dict`) means Gordon. Both consumers go through it rather than
+calling `bing.evaluate` themselves — reconstructing a robust fit with the
+elastic relation produces perfectly plausible numbers that are simply not the
+physics that was fitted, which is not a failure mode that announces itself.
+
+**`_fit_diagnostics`** now scores a fit against its own physics. It already
+peeled the median `B_p` (Task 2); it now forwards that and `geom` to the
+dispatch, so χ²/AIC/BIC for a 2.0 fit are no longer a Gordon reconstruction of
+a robust posterior.
+
+**`pab/plotting/fit_fig.py`** reconstructs from the **stored** configuration
+rather than a guess:
+
+- `_config_from_row(row)` rebuilds the `FitConfig` from the schema-v5 columns.
+  Built on `FitConfig.v1()` as the base, deliberately: a legacy 1.0 row has
+  those columns NULL, and NULL must mean *the elastic Gordon fit it actually
+  ran*, not the 2.0 defaults. Tested both ways.
+- `_geometry_from_row(store, row)` reads `theta_s`/`theta_v`/`dphi` back from
+  the fit's `matchup_pixels` row.
+- The posterior is split with `_split_flat`, so the trailing free `B_p` is
+  peeled before the a/bb split and passed to the robust forward model — without
+  that the bb-model would receive an extra parameter.
+- `set_inelastic_Ed` is called on the rebuilt models, so the figure's Raman and
+  fluorescence terms match the fit's rather than silently falling back to a flat
+  `Ed` ratio.
+
+This replaces the `FitConfig.v1()` pin I put in during Task 1, which was
+truthful about what the function did then and is now obsolete.
+
+**XLA thread pinning.** `pab.parallel.init_worker` gained
+`XLA_FLAGS=--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1`
+alongside the BLAS caps, via a `_THREAD_CAPS` mapping, applied with
+`setdefault` so a deliberate setting survives. It must be set before JAX
+initialises its backend, which is exactly what a pool initialiser is for.
+
+**A duplicate that would have defeated the whole point.** `pab/fit/run.py` had
+its **own** `_worker_init` — a second copy of the BLAS caps — and it is the one
+the **fit** pool uses, i.e. the only pool that actually runs JAX. Adding
+`XLA_FLAGS` to `pab.parallel.init_worker` alone would have left the fit stage
+uncapped while the shared helper looked correct. `run._worker_init` now
+delegates to the shared one, and a test asserts they cannot drift again.
+
+**Tests: 334 passed, 1 skipped** (was 325). Nine new: the three dispatch
+branches (Gordon / robust-with-`geom`-and-`Bp` / legacy-defaults-to-Gordon,
+each via a mocked `calc_Rrs_from_models_robust` as the task asks, asserting the
+`geom` object identity and the `Bp` value reach it); `_config_from_row` for a
+2.0 row and a NULL legacy row; `_geometry_from_row`; and three on the thread
+caps, including that `run._worker_init` is the shared one and that a
+deliberate `XLA_FLAGS` is respected.
+
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -814,3 +871,37 @@ What I learned / want to remember:
   DataFrame straight from the mapping, so `git_sha` would have rendered as a
   Python dict repr on the public methods page. Found it by rendering the block
   rather than trusting that the tests passing meant it looked right.
+
+### 2026-09-15 (Prompt 3 Task 5 — one forward model, chosen from the stored row)
+
+χ²/AIC/BIC and the fit figure now reconstruct with the backend the fit actually
+used, read back out of the `fits` row and `matchup_pixels`. 334 tests pass,
+docs clean.
+
+What I learned / want to remember:
+
+- **The duplicate `_worker_init` is the finding here.** `pab/fit/run.py` kept
+  its own copy of the BLAS caps, independent of `pab.parallel.init_worker`.
+  Adding `XLA_FLAGS` to the shared helper — which is what the task literally
+  asked for — would have pinned XLA in `match`, `geometry` and `figure`, and
+  **not** in `fit`: the one pool that runs JAX. The change would have looked
+  complete, the tests would have passed, and 16 workers would each have spun up
+  an ncores-wide XLA thread pool on Nautilus. I only caught it because I grepped
+  for the callers of the function I had just edited instead of assuming the name
+  was unique. Two copies of a "cap the threads" helper is precisely the kind of
+  duplication that stays harmless until the day one of them grows a line.
+- **NULL means "what it was", not "what we default to now".** `_config_from_row`
+  builds on `FitConfig.v1()` rather than `FitConfig()`, because a 1.0 row's v5
+  columns are NULL and the 2.0 defaults would claim Raman, fluorescence and a
+  free `B_p` that row never had. Same shape of error as the `pab_version` note
+  in `db_schema.rst`: a stored row describes the past, and the current defaults
+  are not a safe stand-in for it.
+- **Routing both consumers through one function was worth more than the
+  dispatch itself.** The figure and the diagnostics had independently grown
+  their own `calc_Rrs_from_models` call, and the figure's had also quietly
+  skipped `set_inelastic_Ed` and the `B_p` peel. Centralising made those two
+  omissions obvious; fixing them in two places separately, I would probably have
+  fixed one.
+- The `DomainWarning` is still emitted once per forward call and is now also
+  emitted from the *figure* path. Still correct, still noisy — Task 6 should
+  decide how the production run suppresses it.
