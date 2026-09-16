@@ -60,6 +60,7 @@ def _quiet():
         with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
             yield
 
+
 #: Reference wavelengths (nm) at which derived IOP scalars are reported. 700 nm
 #: is the BGC-Argo ``BBP700`` band — the primary matchup observable.
 REF_WAVES: tuple[float, ...] = (440.0, 700.0)
@@ -169,6 +170,106 @@ def _is_log_param(models) -> list[bool]:
     ]
 
 
+def requires_geometry(config: FitConfig) -> bool:
+    """Whether ``config``'s RT backend needs per-pixel :class:`ObsGeometry`.
+
+    Every backend except BING's own ``'gordon'`` does. ``theta_s`` is never
+    silently defaulted (R3), so a fit without geometry must be refused rather
+    than run on an assumed angle.
+    """
+    return config.rt_backend != "gordon"
+
+
+def obs_geometry(theta_s, theta_v, dphi):
+    """Build a ``bing.rt.geometry.ObsGeometry``, or ``None`` if ``theta_s`` is absent.
+
+    ``theta_v``/``dphi`` fall back to ``ObsGeometry``'s nadir defaults, but
+    ``theta_s`` has no default — without it there is no geometry at all.
+
+    ``dphi`` is passed through **unchanged**: the ``geometry`` stage already
+    wrapped it to (−180, 180] (:func:`pab.pace.l1b.wrap_dphi`), and wrapping a
+    wrapped angle a second time is a silent way to move it.
+    """
+    from bing.rt.geometry import ObsGeometry
+
+    if theta_s is None or not np.isfinite(float(theta_s)):
+        return None
+    kwargs = {"theta_s": float(theta_s)}
+    if theta_v is not None and np.isfinite(float(theta_v)):
+        kwargs["theta_v"] = float(theta_v)
+    if dphi is not None and np.isfinite(float(dphi)):
+        kwargs["dphi"] = float(dphi)
+    return ObsGeometry(**kwargs)
+
+
+def set_inelastic_Ed(models, geom, rt_dict) -> bool:
+    """Attach a downwelling-irradiance spectrum for the inelastic terms.
+
+    BING's Raman and fluorescence kernels need ``Ed(lambda)`` — Raman to form
+    the true ``Ed(lambda')/Ed(lambda)`` ratio, chlorophyll fluorescence to
+    weight the excitation integral. **PACE L2 carries no Ed**, so PAB supplies
+    ``robust``'s packaged Loisel+23 spectrum interpolated at this pixel's
+    solar zenith (``run_full_inelastic.md`` Plan §2 item 3). The table spans
+    350–750 nm at 5 nm, which covers both the 400–720 nm fit window and the
+    Raman excitation grid (~50 nm blueward of the emission edge).
+
+    Two distinct hooks are needed, and BING wires neither automatically
+    (``init_other_bits`` does not touch Ed):
+
+    * ``set_raman_Ed(wave_Ed, Ed)`` — the Raman ratio. Without it BING
+      silently falls back to a flat ratio of 1, which it measures at ~+60 %
+      increment error at 490 nm against the L23 HydroLight pairs. It also
+      stashes the raw pair that the **robust** backend reads to build its own
+      Ed ratio.
+    * ``init_Chl_fluorescence(Ed=...)`` — the excitation integral, with Ed on
+      the **model** wavelength grid. Without it ``a_model.Ed_ex`` stays
+      ``None`` and the fluorescence kernel raises
+      ``IndexError: too many indices for array: array is 0-dimensional``.
+
+    Args:
+        models: ``[anw_model, bbnw_model]``.
+        geom: ``ObsGeometry`` — ``theta_s`` selects the spectrum.
+        rt_dict: The RT config; Ed is only needed by an inelastic process.
+
+    Returns:
+        True if an Ed spectrum was attached.
+    """
+    needs_raman = bool(rt_dict.get("include_Raman", False))
+    needs_fl = bool(
+        rt_dict.get("include_Chl_fl", False) or rt_dict.get("include_CDOM_fl", False)
+    )
+    if not (needs_raman or needs_fl) or geom is None:
+        return False
+    from robust.rt import ed as _robust_ed
+
+    wave_ed, _table = _robust_ed.load_table()
+    wave_ed = np.asarray(wave_ed, dtype=float)
+    ed_vals = np.asarray(_robust_ed.Ed(float(geom.theta_s), wave_ed), dtype=float)
+    if needs_raman:
+        models[0].set_raman_Ed(wave_ed, ed_vals)
+    if needs_fl:
+        model_wave = np.asarray(models[0].wave, dtype=float)
+        models[0].init_Chl_fluorescence(Ed=np.interp(model_wave, wave_ed, ed_vals))
+    return True
+
+
+def _split_flat(flat, nparam_a: int, rt_dict):
+    """Split a posterior sample matrix into ``(a_params, bb_params, Bp)``.
+
+    Under ``rt_dict['fit_Bp']`` the sampled vector is
+    ``[a_params..., bb_params..., B_p]`` — the free ``B_p`` is a **trailing**
+    column, so it must be peeled off *before* splitting at ``nparam_a``.
+    Without the peel it would be handed to the bb-model as an extra parameter.
+
+    Returns:
+        ``(a_params, bb_params, Bp)`` where ``Bp`` is the trailing column or
+        ``None`` when ``B_p`` is held fixed.
+    """
+    if rt_dict is not None and rt_dict.get("fit_Bp", False):
+        return flat[:, :nparam_a], flat[:, nparam_a:-1], flat[:, -1]
+    return flat[:, :nparam_a], flat[:, nparam_a:], None
+
+
 @dataclass
 class FitSpectrumResult:
     """In-memory result of :func:`fit_spectrum` (before persistence)."""
@@ -214,6 +315,7 @@ def extract_quantities(models, chains, rt_dict, *, config: FitConfig):
     names = model_param_names(models)
     is_log = _is_log_param(models)
     nparam_a = models[0].nparam
+    fit_bp = bool(rt_dict is not None and rt_dict.get("fit_Bp", False))
 
     out: list[dict[str, Any]] = []
 
@@ -230,13 +332,20 @@ def extract_quantities(models, chains, rt_dict, *, config: FitConfig):
             }
         )
 
-    # free parameters (linearised where the prior was log10)
+    # free model parameters (linearised where the prior was log10). `names`
+    # covers the model parameters only, so this loop stops before the trailing
+    # B_p column even when the chain carries one.
     for k, name in enumerate(names):
         samples = 10.0 ** flat[:, k] if is_log[k] else flat[:, k]
         _add(name, samples, "")
 
+    # B_p is a trailing column, sampled linearly over [0.004, 0.05]; it is not
+    # a model parameter, so it is reported separately and kept out of the split.
+    a_params, bb_params, bp = _split_flat(flat, nparam_a, rt_dict)
+    if fit_bp:
+        _add("Bp", bp, "")
+
     # derived IOP scalars at the reference wavelengths
-    a_params, bb_params = flat[:, :nparam_a], flat[:, nparam_a:]
     wave = np.asarray(models[1].wave, dtype=float)
     bbnw = models[1].eval_bbnw(bb_params, wave=wave)  # (nsamples, nwave) m^-1
     anw = models[0].eval_anw(a_params)  # (nsamples, nwave) m^-1
@@ -262,6 +371,7 @@ def fit_spectrum(
     *,
     Chl: float | None = None,
     Y: float | None = None,
+    geom=None,
     config: FitConfig | None = None,
 ) -> FitSpectrumResult:
     """Fit one ``Rrs`` spectrum: band prep → LM warm-start → MCMC → posterior.
@@ -276,10 +386,19 @@ def fit_spectrum(
             posterior ``Aph`` (reported as the ``chl`` quantity; see
             :func:`chl_from_aph`).
         Y: Backscattering slope for models that need it (unused by ``Pow``).
+        geom: ``bing.rt.geometry.ObsGeometry`` for this pixel. **Required by
+            every backend except ``'gordon'``** — ``build_models`` raises if a
+            robust backend gets none, rather than assuming a solar angle (R3).
         config: Fit configuration; defaults to :class:`FitConfig`.
 
     Returns:
-        A :class:`FitSpectrumResult`.
+        A :class:`FitSpectrumResult`. Under ``config.fit_Bp`` the chains carry
+        one extra trailing column (``B_p``) and ``param_names`` ends in
+        ``"Bp"``.
+
+    Raises:
+        ValueError: if the RT configuration is illegal for this spectrum — in
+            particular a robust backend with ``geom=None``.
     """
     config = config or FitConfig()
     from bing.fitting import chisq_fit
@@ -287,31 +406,47 @@ def fit_spectrum(
     from bing.models import utils as model_utils
 
     wave_w, Rrs_w, varRrs_w = prepare_spectrum(wave, Rrs, Rrs_unc, config=config)
-    p, rt_dict, models = build_models(config, wave_w)
+    p, rt_dict, models = build_models(config, wave_w, geom=geom)
+    fit_bp = bool(rt_dict.get("fit_Bp", False))
 
     chl_val = Chl if Chl is not None else (0.1 if models[0].uses_Chl else None)
     chl_arr = None if chl_val is None else np.array([chl_val], dtype=float)
     y_arr = None if Y is None else np.array([Y], dtype=float)
     model_utils.init_other_bits(models, Chl=chl_arr, Y=y_arr, Rrs=Rrs_w)
+    set_inelastic_Ed(models, geom, rt_dict)
 
     # initial guess + Levenberg-Marquardt warm-start (fall back to the guess)
     low, high = _prior_bounds(models)
     p0 = np.clip(_initial_guess(models, Rrs_w), low, high)
+    if fit_bp:
+        # B_p is appended as a trailing, **linear-space** dimension over
+        # [BP_PRIOR_PMIN, BP_PRIOR_PMAX]; BING's log_prob applies that prior
+        # itself, but the LM warm-start needs the bound explicitly.
+        from bing.rt import defs as _rt_defs
+
+        p0 = np.append(p0, float(config.Bp_value))
+        low = np.append(low, _rt_defs.BP_PRIOR_PMIN)
+        high = np.append(high, _rt_defs.BP_PRIOR_PMAX)
+        p0 = np.clip(p0, low, high)
     try:
         p_best, _cov, _ = chisq_fit.fit(
-            (Rrs_w, varRrs_w, p0, 0), models, rt_dict, bounds=(low, high)
+            (Rrs_w, varRrs_w, p0, 0, geom), models, rt_dict, bounds=(low, high)
         )
         success = True
     except (RuntimeError, ValueError):
         p_best, success = p0, False
 
-    # MCMC refinement (keep the sampler for the acceptance fraction)
-    pdict = bing_inf.init_mcmc(models, nsteps=config.nsteps, nburn=config.nburn)
+    # MCMC refinement (keep the sampler for the acceptance fraction).
+    # rt_dict must reach init_mcmc: it is what makes ndim (and the walker
+    # count) account for the extra trailing B_p dimension.
+    pdict = bing_inf.init_mcmc(
+        models, nsteps=config.nsteps, nburn=config.nburn, rt_dict=rt_dict
+    )
     pdict["Chl"] = np.array([chl_val if chl_val is not None else 0.0])
     pdict["Y"] = np.array([Y if Y is not None else 0.0])
     with _quiet():  # suppress BING's tqdm bars + status prints (see _quiet)
         sampler, _ = bing_inf.fit_one(
-            (Rrs_w, varRrs_w, p_best, 0),
+            (Rrs_w, varRrs_w, p_best, 0, geom),
             models=models,
             pdict=pdict,
             chains_only=False,
@@ -321,14 +456,19 @@ def fit_spectrum(
     accept_frac = float(np.mean(sampler.acceptance_fraction))
 
     quantities = extract_quantities(models, chains, rt_dict, config=config)
-    chisq, aic, bic = _fit_diagnostics(models, chains, rt_dict, Rrs_w, varRrs_w, config)
+    chisq, aic, bic = _fit_diagnostics(
+        models, chains, rt_dict, Rrs_w, varRrs_w, config, geom=geom
+    )
+    names = model_param_names(models)
+    if fit_bp:
+        names = [*names, "Bp"]
 
     return FitSpectrumResult(
         chains=chains,
         wave=wave_w,
         Rrs=Rrs_w,
         varRrs=varRrs_w,
-        param_names=model_param_names(models),
+        param_names=names,
         quantities=quantities,
         anw_model=models[0].name,
         bbnw_model=models[1].name,
@@ -342,8 +482,14 @@ def fit_spectrum(
     )
 
 
-def _fit_diagnostics(models, chains, rt_dict, Rrs, varRrs, config):
-    """Reduced chi-squared, AIC, BIC at the posterior-median parameters."""
+def _fit_diagnostics(models, chains, rt_dict, Rrs, varRrs, config, *, geom=None):
+    """Reduced chi-squared, AIC, BIC at the posterior-median parameters.
+
+    ``geom`` is accepted (and the median ``B_p`` peeled) so this stays correct
+    for a 6-parameter robust chain. The **reconstruction** is still BING's
+    elastic Gordon model; dispatching it on ``rt_dict['rt_backend']`` is
+    Prompt 3 Task 4. The parameter count ``k`` counts the free ``B_p``.
+    """
     import bing.evaluate as ev
 
     burn = config.analysis_burn
@@ -352,10 +498,9 @@ def _fit_diagnostics(models, chains, rt_dict, Rrs, varRrs, config):
     flat = ev.thin_burn_chains(chains, burn=burn)
     med = np.median(flat, axis=0)
     nparam_a = models[0].nparam
+    a_med, bb_med, bp_med = _split_flat(med[None, :], nparam_a, rt_dict)
     pred = np.squeeze(
-        ev.calc_Rrs_from_models(
-            models[0], med[:nparam_a], models[1], med[nparam_a:], rt_dict
-        )
+        ev.calc_Rrs_from_models(models[0], a_med[0], models[1], bb_med[0], rt_dict)
     )
     resid2 = np.sum((pred - Rrs) ** 2 / varRrs)
     n, k = Rrs.size, med.size
@@ -370,8 +515,14 @@ def _fit_diagnostics(models, chains, rt_dict, Rrs, varRrs, config):
 def _gather_fit_input(store, matchup_id: str, config: FitConfig, rank: int = 1):
     """DB-only inputs for one matchup's fit (no granule I/O, no compute).
 
-    Returns a dict ``{fit_id, matchup_id, pixel_id, source, ix, iy, chl}`` or
-    ``None`` if the matchup has no pixel at ``rank`` (nothing to fit).
+    Returns a dict ``{fit_id, matchup_id, pixel_id, source, ix, iy, chl,
+    theta_s, theta_v, dphi}`` or ``None`` if the matchup has no pixel at
+    ``rank`` (nothing to fit).
+
+    The three angles come straight off ``matchup_pixels`` (schema v5, degrees,
+    filled by the ``geometry`` stage) and are ``None`` on a pixel that stage
+    has not reached. They are **not** re-wrapped: ``dphi`` is already in
+    (−180, 180].
     """
     px = store.query(
         "SELECT * FROM matchup_pixels WHERE matchup_id = ? AND rank = ?",
@@ -404,15 +555,31 @@ def _gather_fit_input(store, matchup_id: str, config: FitConfig, rank: int = 1):
         "ix": int(px["ix"]),
         "iy": int(px["iy"]),
         "chl": chl,
+        "theta_s": finite_or_none(px["theta_s"]),
+        "theta_v": finite_or_none(px["theta_v"]),
+        "dphi": finite_or_none(px["dphi"]),
     }
 
 
-def _fit_only(wave, Rrs, Rrs_unc, chl, config: FitConfig) -> FitSpectrumResult:
+#: Why a matchup was refused before any granule was opened.
+NO_GEOMETRY = (
+    "no viewing geometry on the matchup pixel (matchup_pixels.theta_s is NULL) "
+    "— run the `geometry` stage first; {backend} must not assume a solar angle"
+)
+
+
+def _geometry_or_none(inp):
+    """``ObsGeometry`` for a gathered input, or ``None`` if it has no angles."""
+    return obs_geometry(inp["theta_s"], inp["theta_v"], inp["dphi"])
+
+
+def _fit_only(wave, Rrs, Rrs_unc, chl, config: FitConfig, geom=None):
     """Pure per-spectrum compute (no DB, no I/O) — the unit dispatched to workers.
 
-    Module-level and picklable so it can run in a :class:`ProcessPoolExecutor`.
+    Module-level and picklable so it can run in a :class:`ProcessPoolExecutor`;
+    ``ObsGeometry`` is a plain dataclass, so it pickles to the worker too.
     """
-    return fit_spectrum(wave, Rrs, Rrs_unc, Chl=chl, config=config)
+    return fit_spectrum(wave, Rrs, Rrs_unc, Chl=chl, geom=geom, config=config)
 
 
 def _persist_result(store, inp: dict, result: FitSpectrumResult, config, created):
@@ -478,7 +645,9 @@ def fit_matchup(
         The ``fit_id`` (when ``persist``) else the :class:`FitSpectrumResult`.
 
     Raises:
-        ValueError: if the matchup, pixel, or granule URL is missing.
+        ValueError: if the matchup, pixel, or granule URL is missing, or if the
+            configured RT backend needs per-pixel geometry and the pixel has
+            none (R3 — the granule is not even opened in that case).
     """
     from pab.pace import extract as _extract
 
@@ -489,9 +658,15 @@ def fit_matchup(
     if inp is None:
         raise ValueError(f"matchup {matchup_id!r} has no pixel with rank {rank}")
 
+    geom = _geometry_or_none(inp)
+    if geom is None and requires_geometry(config):
+        raise ValueError(
+            f"{matchup_id!r}: " + NO_GEOMETRY.format(backend=config.rt_backend)
+        )
+
     ds = _open_bounded(inp["source"], opener=opener)
     wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
-    result = _fit_only(wave, rrs, unc, inp["chl"], config)
+    result = _fit_only(wave, rrs, unc, inp["chl"], config, geom=geom)
     if not persist:
         return result
     return _persist_result(store, inp, result, config, created)
@@ -511,6 +686,11 @@ def build_fits(
     Skips a fit already present (by ``fit_id``) unless ``replace=True``. A single
     matchup that fails (granule unavailable, fit diverges) is recorded under
     ``"failed"`` and does **not** abort the batch, so a re-run resumes the rest.
+
+    A matchup whose pixel has **no viewing geometry** is recorded under
+    ``"failed"`` too, and is rejected *before* its granule is opened — the
+    robust backends must not fit an assumed solar angle (R3). Running the
+    ``geometry`` stage and re-running ``fit`` picks those up.
 
     ``jobs > 1`` fits matchups **in parallel across processes** (the heavy MCMC is
     CPU-bound): granules are opened and pixels extracted in the parent (one open
@@ -533,6 +713,7 @@ def build_fits(
     if not replace:
         done_fits = {r["fit_id"] for r in store.query("SELECT fit_id FROM fits")}
 
+    need_geom = requires_geometry(config)
     inputs: list[dict] = []
     for m in store.query("SELECT matchup_id FROM matchups ORDER BY matchup_id"):
         inp = _gather_fit_input(store, m["matchup_id"], config)
@@ -540,6 +721,16 @@ def build_fits(
             continue
         if inp["fit_id"] in done_fits:
             skipped.append(inp["fit_id"])
+            continue
+        # R3: a pixel with no geometry is refused **here**, before any granule
+        # is opened — never fitted on an assumed solar angle.
+        if need_geom and inp["theta_s"] is None:
+            _log.warning(
+                "fit skipped for %s: %s",
+                inp["fit_id"],
+                NO_GEOMETRY.format(backend=config.rt_backend),
+            )
+            failed.append(inp["fit_id"])
             continue
         inputs.append(inp)
 
@@ -558,7 +749,9 @@ def build_fits(
                 wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
             finally:
                 _close_quietly(ds)
-            result = _fit_only(wave, rrs, unc, inp["chl"], config)
+            result = _fit_only(
+                wave, rrs, unc, inp["chl"], config, geom=_geometry_or_none(inp)
+            )
             _persist_result(store, inp, result, config, created)
             written.append(inp["fit_id"])
         except Exception:  # noqa: BLE001 — one bad matchup must not abort the batch
@@ -607,7 +800,9 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
             try:
                 ds = _open_bounded(source, opener=opener)
             except Exception:  # noqa: BLE001 — a bad granule fails its whole group
-                _log.exception("open_granule failed for %s (%d fits)", source, len(group))
+                _log.exception(
+                    "open_granule failed for %s (%d fits)", source, len(group)
+                )
                 failed.extend(inp["fit_id"] for inp in group)
                 continue
             # One open per source shared across its group, then released: an
@@ -629,7 +824,15 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
                 if inp["fit_id"] not in spectra:
                     continue
                 wave, rrs, unc = spectra[inp["fit_id"]]
-                fut = ex.submit(_fit_only, wave, rrs, unc, inp["chl"], config)
+                fut = ex.submit(
+                    _fit_only,
+                    wave,
+                    rrs,
+                    unc,
+                    inp["chl"],
+                    config,
+                    _geometry_or_none(inp),
+                )
                 fut_inp[fut] = inp
                 pending.add(fut)
                 while len(pending) >= 2 * jobs:

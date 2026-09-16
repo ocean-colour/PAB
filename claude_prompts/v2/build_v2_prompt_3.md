@@ -209,7 +209,189 @@ here — bump it first so every row this prompt writes is stamped correctly.
 
 ## Q&A
 
+### Q1 (Task 2, 2026-09-15) — `robust_hybrid`'s emulator is **out of its training domain on every real pixel** — confirm the backend choice
+
+Not a blocker for the code, which runs; a question about whether
+`rt_backend='robust_hybrid'` (Plan Q4/R2) is the right choice for **this**
+dataset. `robust` itself raises a `DomainWarning` on every forward call and
+suggests `mode='ztt'`.
+
+The emulator's training domain (`robust.rt.emulator.load_default().domain`)
+versus the geometry actually measured on 200 real matchup pixels in
+Prompt 2 Task 4:
+
+| axis | trained | our data | |
+|---|---|---|---|
+| `cos_theta_s` | [0.5, 1] → 0–60° | 16.1–42.8° | **inside** |
+| `cos_theta_v` | **[1, 1]** → nadir only | 22.1–59.7° | **OUTSIDE, all pixels** |
+| `cos_dphi` | **[1, 1]** → 0° only | −103.9–81.9° | **OUTSIDE, all pixels** |
+| `B_p` | [0.01026, 0.01800] | prior [0.004, 0.05] | only **17 %** of the prior is inside |
+| wavelength | [350, 750] nm | 400–720 nm | inside |
+
+So the **learned correction that distinguishes `robust_hybrid` from
+`robust_ztt` is being extrapolated on 100 % of pixels**, on two axes it never
+saw vary, and over a `B_p` range it mostly never saw. `robust`'s own wording:
+*"the emulator is being evaluated outside its training range, where M3
+measured its accuracy to be unreliable and occasionally worse than the
+analytic backbone … Consider mode='ztt'."*
+
+**Options:**
+
+1. **Switch to `rt_backend='robust_ztt'`** — the analytic ZTT forward model
+   with no emulator, so no training domain to leave. Loses the learned
+   correction, which was the point of `hybrid`, but the correction is not
+   valid here anyway. One-line change to `FitConfig`.
+2. **Keep `robust_hybrid`** and accept documented extrapolation — defensible
+   only if someone has checked the emulator degrades gracefully off-nadir.
+   Nothing in `robust`'s docs suggests that has been measured.
+3. **Fit both** on the 20-matchup local set (Task 5) and compare `bbp700`
+   before committing the 11,494-granule run.
+
+*My recommendation: option 3 now — Task 5 already fits two configurations, so
+adding a third arm is cheap — then most likely option 1 for the full run.*
+Task 5 is the right place to settle it, but the plan's §2 and the `FitConfig`
+default may need changing, which is why it is raised here rather than there.
+
+**Awaiting JXP.** The code is backend-agnostic either way: `rt_backend` is a
+`FitConfig` field, so switching is one line plus a re-run.
+
+
 ## Reports
+
+### Task 1 — the 2.0 configuration (2026-09-15): **done**
+
+**Version.** `pab_version` `"1.1"` → `"2.0"` in `pab/config.py` and
+`setup.py`, then `pip install -e . --no-deps`. Both now agree:
+
+```
+config.pab_version      : 2.0
+package_versions()[pab] : 2.0
+```
+
+The reinstall mattered exactly as Context bite #2 predicted — without it the
+dist metadata would still have read `1.1` and every 2.0 fit's `pkg_versions`
+JSON would have recorded the wrong version. There is now a test
+(`test_pab_version_is_2_0`) asserting **both** strings, with a failure message
+naming the reinstall, so the two cannot drift again.
+
+**`FitConfig`** — defaults are now the 2.0 configuration, with
+**`FitConfig.v1()`** as the frozen 1.0 one:
+
+| field | 2.0 (default) | `FitConfig.v1()` |
+|---|---|---|
+| `rt_backend` | `'robust_hybrid'` | `'gordon'` |
+| `include_Raman` | `True` | `False` |
+| `include_Chl_fl` | `True` | `False` |
+| `include_CDOM_fl` | `False` | `False` |
+| `fit_Bp` | `True` | `False` |
+| `phi_C` | `0.02` | `0.02` |
+| `Bp_value` | `0.01` | `0.01` |
+| `wave_max` | **720.0** | 700.0 |
+| `wave_min`, `model_pair` | 400.0, `ExpBPow` | same |
+
+`v1()` takes `**overrides` so a test can shorten the chain without losing the
+RT settings that are the point of it.
+
+**`build_models`** forwards all six RT fields to `standard.expb_pow`. Verified
+how that works rather than assuming: `expb_pow(**kwargs)` merges into
+`p_ntuple.gen`, whose namedtuple is built from `params.keys()`, so extra
+keywords **become fields on `p`** — and `rt_dict_from_p` reads them back with
+`getattr(p, key, <default>)`. The round trip produces
+`{'rt_backend': 'robust_hybrid', 'fit_Bp': True, 'Bp_value': 0.01,
+'include_Raman': True, 'include_Chl_fl': True, 'include_CDOM_fl': False,
+'phi_C': 0.02}`.
+
+**`validate_rt_dict` now runs once at setup**, at the end of `build_models`.
+It needed a signature change: `build_models(config, wave, *, geom=None,
+validate=True)`. `validate_rt_dict` **raises** when a robust backend gets
+`geom=None` — it refuses to let `theta_s` be silently defaulted — so the
+geometry has to reach it, which is the Task 2 plumbing. That is R3 enforced at
+the earliest possible point rather than at the first forward-model call.
+
+Also confirmed: **`ROBUST_HYBRID_WAVE_MIN/MAX = 350/750`**, so the new
+`wave_max = 720` is comfortably inside the emulator's training range. A test
+pins that relationship against BING's constants rather than the literal 720,
+so a future narrowing of the emulator range fails loudly here.
+
+**Tests: 298 passed, 1 skipped** (was 287). 11 new, and three existing ones
+adjusted — see below.
+
+**Three existing tests broke, all for the right reason, all fixed honestly:**
+
+1. `test_prepare_spectrum_window_and_variance` — the default window moved to
+   400–720, so 720 nm is now *in*. Rather than just bumping the expectation, it
+   now asserts **both** windows: 2.0 keeps 720, and `FitConfig.v1()` still
+   stops at 700. The published window can no longer move unnoticed.
+2. `test_fit_spectrum_recovers_bbp` — pinned to `FitConfig.v1()` and
+   documented as *the regression guard on the published Gordon path*. It is a
+   5-parameter, Gordon-synthesised test; the 6-parameter robust equivalent is
+   Task 2's, and it needs an `ObsGeometry` the Gordon path has no concept of.
+3. `test_fit_figure_smoke` — same, because `pab/plotting/fit_fig.py`
+   reconstructs a `FitConfig` from the stored row and then calls the **elastic
+   Gordon** `calc_Rrs_from_models` directly. That reconstruction is now
+   explicitly `FitConfig.v1(...)`, with a comment pointing at Task 4, which
+   replaces it with a dispatch on `row["rt_backend"]`. Pinning it is truthful
+   about what the function does today; leaving it on the 2.0 defaults would
+   have claimed a robust reconstruction it does not perform.
+
+
+### Task 2 — free `B_p` + geometry plumbing (2026-09-15): **done**
+
+`pab/fit/run.py` now carries per-pixel geometry end to end and samples `B_p`
+as a sixth, trailing, linear parameter.
+
+**New/changed API**
+
+| | |
+|---|---|
+| `requires_geometry(config)` | True for every backend but `'gordon'` |
+| `obs_geometry(theta_s, theta_v, dphi)` | → `ObsGeometry` or `None`; **does not re-wrap `dphi`** |
+| `_split_flat(flat, nparam_a, rt_dict)` | peels the trailing `B_p` **before** the a/bb split |
+| `set_inelastic_Ed(models, geom, rt_dict)` | attaches Ed for Raman + fluorescence (see below) |
+| `fit_spectrum(..., geom=None)` | forwards geom to `build_models`, appends `B_p` to guess/bounds/names, passes the **5-tuple** to `chisq_fit.fit` and `fit_one`, and passes `rt_dict` to `init_mcmc` |
+| `_fit_diagnostics(..., geom=None)` | peels the median `B_p`; `k` counts it |
+| `_gather_fit_input` | returns `theta_s`/`theta_v`/`dphi` off `matchup_pixels` |
+| `_fit_only(..., geom=None)` | picklable; `ObsGeometry` is a dataclass so it reaches workers |
+
+**R3 enforced, and it opens nothing.** `build_fits` screens a geometry-less
+pixel out **before** the granule open, logs the reason, and records the
+`fit_id` under `"failed"`; `fit_matchup` raises a `ValueError` naming the
+`geometry` stage. A test asserts the opener is called **zero** times in that
+case, and a companion test asserts the same store *with* geometry does reach
+the granule. `FitConfig.v1()` (Gordon) is unaffected — it has no geometry
+concept, so a NULL pixel fits fine, and there is a test for that too.
+
+**Tests: 315 passed, 1 skipped** (was 298). The toy robust fit
+(`importorskip("robust")`) confirms the three things the task asked for: the
+chain has **6 columns**, `param_names[-1] == "Bp"`, the posterior `Bp` sits
+inside `[BP_PRIOR_PMIN, BP_PRIOR_PMAX]`, and `bbp700` is recovered from a
+spectrum synthesised by the **same** robust backend.
+
+#### Two things that were not in the task and had to be fixed
+
+**1. The 2.0 configuration could not run at all without wiring `Ed`.** BING's
+inelastic kernels need a downwelling-irradiance spectrum and `init_other_bits`
+does **not** provide one; the caller must. Two separate hooks, with two
+different failure modes:
+
+- `set_raman_Ed(wave_Ed, Ed)` — missing, Raman silently falls back to a flat
+  ratio of 1. BING measures that at **~+60 % increment error at 490 nm**
+  against the L23 HydroLight pairs. A *silent* wrong answer.
+- `init_Chl_fluorescence(Ed=...)` — missing, `a_model.Ed_ex` stays `None` and
+  the kernel dies with `IndexError: too many indices for array: array is
+  0-dimensional`. That is what the first run of the new test hit.
+
+`set_inelastic_Ed` now supplies both from `robust`'s packaged Loisel+23 table
+interpolated at the pixel's `theta_s` — Plan §2 item 3's "accept the packaged
+`Ed`" made concrete. Verified the table spans **350–750 nm at 5 nm**, which
+covers the 400–720 fit window *and* the Raman excitation grid (~50 nm blueward
+of the emission edge, so a 400 nm edge needs ~352 nm). There is a test pinning
+that coverage against `FitConfig().wave_max`.
+
+**2. `robust_hybrid` is extrapolating on every real pixel — see Q1.** Raised
+as a question rather than decided: the emulator was trained at nadir view and
+zero relative azimuth only, and our pixels run to `theta_v` 59.7°.
+
 
 ## Logging
 
@@ -222,3 +404,111 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-09-15 (Prompt 3 Task 1 — the 2.0 fit configuration)
+
+`pab_version` is `2.0` (and the installed dist agrees), `FitConfig` defaults to
+the inelastic robust configuration, `FitConfig.v1()` preserves the published
+1.0 one, and `build_models` forwards the RT fields and validates the result
+once at setup. 298 tests pass, docs clean, v1 sha unchanged.
+
+What I learned / want to remember:
+
+- **`validate_rt_dict` cannot run at setup without geometry**, and that is
+  deliberate on BING's side: a robust backend with `geom=None` raises rather
+  than defaulting `theta_s`. So "run `validate_rt_dict` at setup" forced
+  `build_models` to grow a `geom` parameter, which in turn is why switching
+  the defaults to robust immediately broke every call path that fits without
+  geometry. That is the design working — the failure is loud and at setup, not
+  a silently wrong forward model — but it means Tasks 1, 2 and 4 are coupled
+  more tightly than the task list suggests.
+- **BING's parameter namedtuple accepts arbitrary keywords.**
+  `expb_pow(**kwargs)` → `p_ntuple.gen(**params)` builds the namedtuple from
+  `params.keys()`, so passing `rt_backend=`/`fit_Bp=`/`Bp_value=` simply
+  creates those fields, and `rt_dict_from_p` reads them with `getattr(p, key,
+  default)`. Convenient, but it also means a **typo in a keyword is silently
+  accepted** — it becomes a field nobody reads, and the RT dict quietly keeps
+  its default. I verified the round trip explicitly instead of trusting the
+  call, and the new `test_build_models_forwards_the_rt_fields` asserts every
+  key, which is the only real protection against that failure mode.
+- **Three failing tests were all correct failures**, and the temptation was to
+  paper over them by loosening assertions. Two are genuinely 1.0-physics
+  regression guards, so pinning them to `FitConfig.v1()` keeps exactly the
+  coverage they had; the window test got *stronger* by asserting both windows
+  rather than swapping 700 for 720. The third exposed something worth knowing:
+  `fit_fig.py` reconstructs a config from the DB row but then calls the
+  elastic Gordon forward model directly, so with 2.0 defaults it would have
+  been building a robust `rt_dict` it never honours. Pinning it to `v1()` with
+  a pointer to Task 4 makes the current behaviour honest instead of
+  accidentally-correct.
+- **`wave_max = 720` is safe** — `ROBUST_HYBRID_WAVE_MIN/MAX` are 350/750. I
+  pinned the test against those constants rather than the literal, so if the
+  emulator's training domain is ever narrowed the failure lands here rather
+  than mid-run.
+- The version bump is three strings in three places (`config.pab_version`,
+  `setup.py`, the installed `.dist-info`) and only a reinstall reconciles the
+  third. `test_pab_version_is_2_0` now asserts the pair with a message naming
+  the fix, so the next bump cannot half-land.
+
+### 2026-09-15 (Prompt 3 Task 2 — free B_p, geometry plumbing, and the Ed that was missing)
+
+Geometry now flows from `matchup_pixels` through `_gather_fit_input` →
+`_fit_only` → `fit_spectrum` → `build_models`/`fit_one`, and `B_p` is sampled
+as a sixth trailing parameter. 315 tests pass. Two things came out of this that
+the task did not anticipate.
+
+**The 2.0 fit could not run at all.** The first execution of the new toy robust
+test died with `IndexError: too many indices for array: array is
+0-dimensional` inside BING's fluorescence kernel. The cause is that BING needs
+an `Ed` spectrum for its inelastic terms and **wires none automatically** —
+`init_other_bits` does not touch it, and the two processes need two *different*
+calls: `set_raman_Ed` for the Raman ratio and `init_Chl_fluorescence` for the
+excitation integral. PAB called neither. The fluorescence one crashes, which is
+the lucky case; **the Raman one fails silently**, falling back to a flat
+`Ed(λ')/Ed(λ) = 1` that BING itself measures at ~+60 % increment error at
+490 nm. Had `include_Chl_fl` been False we would have shipped a quietly wrong
+Raman correction across 146,100 pixels and had no signal at all. Plan §2 item 3
+said "robust falls back to its packaged L23 Ed … Accept", which reads like
+something that happens by itself; it is not — it is a call PAB has to make. Now
+`set_inelastic_Ed` does, from `robust.rt.ed`'s packaged table at the pixel's
+`theta_s`, and I checked the table covers 350–750 nm rather than assuming the
+400–720 window was enough (it needs ~352 nm for the Raman excitation grid).
+
+**`robust_hybrid`'s emulator is out of its training domain on 100 % of our
+pixels.** `robust` emits a `DomainWarning` on every forward call; I read it
+instead of filtering it out, then pulled the emulator's actual domain. Its
+`cos_theta_v` and `cos_dphi` axes are both trained over **[1, 1]** — nadir
+view, zero relative azimuth, never varied — while our measured pixels run
+`theta_v` 22–60° and `dphi` −104 to +82°. Only 17 % of the free `B_p` prior is
+inside the trained `B_p` range too. So the learned correction that is the
+entire difference between `robust_hybrid` and `robust_ztt` is being
+extrapolated everywhere, on axes it never saw move. Raised as Q1 with three
+options rather than silently switching the default, because it questions a
+locked plan decision (Q4/R2).
+
+What I learned / want to remember:
+
+- **Read the warnings the run emits, especially the ones from a dependency you
+  did not write.** The `DomainWarning` was 15 lines of noise in a passing test;
+  it is also the most consequential thing I found today. The instinct to filter
+  warnings to see the failure would have buried it.
+- **Two failure modes for the same missing input, and the loud one is the
+  lucky one.** Fluorescence crashed; Raman would have degraded silently. When a
+  library offers a "sensible fallback" for a physical input, check what the
+  fallback costs — here it is documented in the very docstring of the setter
+  nobody was calling.
+- **`dphi` must not be re-wrapped.** `obs_geometry` passes it through
+  unchanged with a test pinning `81.33`, `−103.92`, `180.0`, `−179.0`. The
+  `geometry` stage already wrapped it; wrapping to (−180, 180] twice is
+  idempotent for most values but the boundary case is not, and re-wrapping is
+  the kind of thing that looks defensive and is actually a bug.
+- **Turning on a gate breaks the fixtures that never needed it**, and that is
+  a signal, not an annoyance: `test_build_fits_parallel_matches_serial` began
+  failing with "no viewing geometry" the moment the R3 screen landed, which is
+  precisely correct. I seeded the shared `_seed_matchup` helper with the real
+  reference pixel's angles (and a `geometry=False` switch), so the fixtures now
+  look like a store whose `geometry` stage has run — which is what every 2.0
+  fit will face.
+- `init_mcmc` needs `rt_dict` passed explicitly or `ndim` stays at 5 and the
+  free `B_p` never gets a dimension. Easy to miss, since the call succeeds and
+  simply samples the wrong thing.

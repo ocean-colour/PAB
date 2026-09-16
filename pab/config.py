@@ -17,7 +17,7 @@ from pathlib import Path
 #: (all BGC-Argo × PACE), provenance-distinct from the ``0.0.dev0`` dev runs.
 #: ``1.1`` = the NASA-GIOP comparison baseline added (new science content, not
 #: a provenance backfill — see ``claude_prompts/pace_giop_gsm.md`` Q4).
-pab_version = "1.1"
+pab_version = "2.0"
 
 #: Packages whose versions are captured per fit for reproducibility.
 _PROVENANCE_PACKAGES = (

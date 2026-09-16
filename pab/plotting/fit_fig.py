@@ -43,7 +43,13 @@ def reconstruct_fit(store, fit_id: str):
     chains = np.asarray(npz["chains"], dtype=float)
     chl = float(npz["Chl"]) if np.isfinite(npz["Chl"]) else None
 
-    config = FitConfig(
+    # Gordon reconstruction only, for now: the code below calls
+    # ``calc_Rrs_from_models`` (the elastic Gordon forward model) directly, so
+    # the config is pinned to 1.0 rather than picking up the 2.0 robust
+    # defaults it would not honour. Prompt 3 Task 4 replaces this with a
+    # dispatch on ``row["rt_backend"]`` plus the geometry read back from
+    # ``matchup_pixels``.
+    config = FitConfig.v1(
         model_pair=row["model_pair"],
         wave_min=float(row["wave_min"]),
         wave_max=float(row["wave_max"]),
