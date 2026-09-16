@@ -28,7 +28,8 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
-PAB_DB_DEFAULT = Path("/Users/alliejames/Documents/summer 2026/data/PAB/pab.db")
+from pab.config import DATA_DIR
+PAB_DB_DEFAULT = Path(DATA_DIR) / "pab.db"
 
 
 def _parse_args(argv=None):

@@ -18,8 +18,9 @@ import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-PAB_DB_DEFAULT = Path("/Users/alliejames/Documents/summer 2026/data/PAB/pab.db")
-OUT_DEFAULT    = Path("/Users/alliejames/Documents/summer 2026/data/PAB/pace_argo_bbp700_clean_map.png")
+from pab.config import DATA_DIR
+PAB_DB_DEFAULT = Path(DATA_DIR) / "pab.db"
+OUT_DEFAULT    = Path(DATA_DIR) / "pace_argo_bbp700_clean_map.png"
 
 
 def _parse_args(argv=None):
