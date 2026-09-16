@@ -2,6 +2,10 @@
 
 Three figures exploring the systematic positive bias between PACE OCI and
 BGC-Argo bbp700 retrievals across 262 valid matchups (March 2024 – May 2026).
+Of 273 total matchups, nine are excluded for NaN Argo bbp700 and two for
+|rel_diff| > 1.5 (extreme outliers where PACE retrieved near-zero bbp), leaving
+n = 262. The bias-analysis report uses n = 264, which excludes only NaN values
+without the outlier clip; the difference is minor and does not affect any conclusion.
 
 Relative difference: `(bbp_bing − bbp_argo) / bbp_bing`
 

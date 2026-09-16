@@ -45,8 +45,11 @@ which joins five tables:
 rel_diff = (bbp700_PACE − bbp700_Argo) / bbp700_PACE
 ```
 where `bbp700_PACE` is the BING posterior median and `bbp700_Argo` is the Argo
-mixed-layer mean from `mld_summary`. Nine matchups with NaN Argo values are excluded,
-leaving n = 264 for all figures.
+mixed-layer mean from `mld_summary`. Normalizing by the satellite value (rather than
+the in-situ value) bounds the positive tail to [0, 1) — which aids visualization on
+a common color scale — but note that a median δ of +0.35 corresponds to PACE
+retrieving approximately 54% more than Argo (i.e., PACE/Argo ≈ 1/(1−0.35) ≈ 1.54).
+Nine matchups with NaN Argo values are excluded, leaving n = 264 for all figures.
 
 ---
 
@@ -159,19 +162,24 @@ Taken together, the four figures support the following interpretation:
    nor spatial separation (0–5 km) shows a clear systematic trend in the bin medians.
    A geometry-driven bias would increase monotonically with Δt or distance; it does not.
 
-3. **Depth mismatch is the leading hypothesis.** PACE Rrs and the BING bbp700
-   retrieval are most sensitive to the upper few metres of the water column. Argo's
-   mixed-layer average integrates over a much deeper layer (typically 20–60 m). If
-   backscattering decreases with depth — as expected below the surface optical maximum
-   — PACE will systematically exceed the Argo MLD mean, producing the observed
-   positive bias that is constant with Δt and distance.
+3. **Depth mismatch is a plausible but insufficient explanation.** PACE Rrs is
+   sensitive to the upper few metres of the water column, while Argo averages over
+   the full mixed layer (typically 20–60 m). However, the δ vs. MLD analysis shows
+   flat quintile medians regardless of mixed-layer depth — if depth mismatch were
+   the primary driver, deeper MLDs should produce larger bias. This argues against
+   depth mismatch as the dominant cause, though it may contribute.
 
-4. **Alternative causes are not ruled out.** Systematic offsets in the BING prior
-   set, uncertainty in Argo bbp700 calibration (particularly the dark count
-   correction), or the mismatch between the PACE pixel spatial resolution (~1 km)
-   and the Argo point measurement could all contribute. The clean-subset analysis
-   (cloud cover < 50%, χ²ᵣ < 1.0) showed the bias strengthens to +0.49 in the
-   highest-quality matchups, ruling out PACE data quality as the primary driver.
+4. **Residual aerosol contamination is the current leading hypothesis.** A comparison
+   of BING and GIOP retrievals on the same Rrs spectra (full run, n = 13,965) shows
+   that both algorithms exhibit a positive bias (GIOP median δ = +0.097, BING median
+   δ = +0.360) with high inter-algorithm correlation (Spearman ρ = 0.88). Because the
+   two independent inversions agree on which matchups are biased, the source is likely
+   in the shared Rrs(λ) input — consistent with residual aerosol contamination in
+   PACE atmospheric correction inflating Rrs across all wavelengths. BING amplifies
+   this Rrs-level signal more than GIOP, suggesting algorithm-specific priors also
+   contribute. The clean-subset analysis (cloud cover < 50%, χ²ᵣ < 1.2; n = 39)
+   showed the bias strengthens to +0.51 in the highest-quality matchups, ruling out PACE data
+   quality as the primary driver.
 
 ---
 
