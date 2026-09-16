@@ -397,6 +397,135 @@ as a question rather than decided: the emulator was trained at nadir view and
 zero relative azimuth only, and our pixels run to `theta_v` 59.7°.
 
 
+### Task 3 — Improve RoB (2026-09-15): **done — it was an inference bug, not a training gap**
+
+**Headline: `robust_hybrid` was applying a silent −22 % flat bias to `Rrs` at
+real PACE geometry. Fixed in `robust`, with regression tests. No retraining was
+needed, and none would have helped.**
+
+#### What was actually wrong
+
+`cos_theta_v` and `cos_dphi` are **constant in L23** (nadir view, zero
+azimuth), so their stored training `std` is the `_STD_FLOOR = 1e-8` guard.
+`Emulator._standardise` divided by it, so a 54.6° sensor zenith became
+
+```
+(cos 54.6° − 1.0) / 1e-8  =  −4.2e7
+```
+
+which saturates every `tanh` in the network. Measured, on the packaged
+emulator with a real L23 IOP state:
+
+| geometry | δ(λ) min | max | mean |
+|---|---:|---:|---:|
+| nadir (trained) | −0.0590 | +0.0342 | −0.0104 |
+| `theta_v`=22.1°, `dphi`=0 | **+0.0455** | **+0.0455** | +0.0455 |
+| `theta_v`=59.7°, `dphi`=0 | **+0.0455** | **+0.0455** | +0.0455 |
+| `theta_v`=54.6°, `dphi`=81.3° **(real pixel)** | **−0.2189** | **−0.2189** | −0.2189 |
+
+At nadir the correction is spectrally structured. Off-nadir it **collapses to
+one constant across all 81 wavelengths** — and 22.1° and 59.7° return the
+*identical* value, which is the signature of full saturation, not of a model
+responding to view angle. At the real pixel that is a **−21.9 % multiplicative
+error on `Rrs` at every wavelength**, applied silently to every 2.0 fit.
+
+This is the exact pathology `emulator.py`'s own `_STD_FLOOR` comment describes
+having hit once before ("saturated every tanh, and collapsed the correction to
+a flat +0.046 at all 81 wavelengths"). The **domain check** was fixed then; the
+**standardisation** was not.
+
+#### The fix
+
+`robust/rt/emulator.py::Emulator._standardise` — a feature that was constant
+over the training split now standardises to exactly `0` instead of being
+divided by the guard:
+
+```python
+z = (x - self.mean) / self.std
+return jnp.where(self.std > _STD_FLOOR, z, 0.0)
+```
+
+Zero is the only defensible value: the network never saw the feature vary, so
+it has no information about it. The correct behaviour is to apply the
+correction it *did* learn, not an arbitrary extrapolation. **The analytic ZTT
+backbone still carries the real geometry dependence** — only the learned
+residual is held geometry-blind.
+
+Verified after the fix:
+
+| geometry | δ range | max abs diff vs nadir |
+|---|---|---:|
+| `theta_v` 22.1° / 59.7° / 54.6°+81.3° / 59.7°−103.9° | −0.0590 … +0.0342 | **0.00e+00** |
+| `theta_s` 0° → 30° → 60° (a *trained* axis) | mean −0.049 → −0.010 → +0.053 | 0.083 |
+
+So off-nadir now reuses the trained, wavelength-varying correction, while the
+genuinely trained solar-zenith axis still moves it. The M5 seam is intact: once
+off-nadir data exists, that feature's `std` exceeds the floor and it activates
+automatically, with no interface or weights change.
+
+#### Why no retraining
+
+I ran the real training anyway to check the fix costs nothing at nadir
+(`design/py/train_emulator.py --dry-run`, 9960 samples, 147 s):
+
+| | rRMS |
+|---|---:|
+| hybrid, train | **0.30 %** |
+| hybrid, held-out scenes | **0.30 %** |
+| hybrid, held-out scenes @60° | 0.32 % |
+| ZTT alone | 5.95 % |
+| Gordon | 7.21 % |
+
+Unchanged from the shipped weights, as expected — a constant feature
+contributes `x − mean = 0` during training too, so training never saw the bug.
+**Retraining fixes nothing here and would only churn a committed binary
+artifact** (a fresh random draw with the same 0.30 %), so the shipped weights
+are left alone.
+
+This also settles the backend question underlying Q1 in PAB's favour: the
+correction is worth **20×** (0.30 % vs 5.95 %) at nadir, so `robust_hybrid` is
+worth keeping now that it is not corrupted — rather than falling back to
+`robust_ztt`.
+
+#### What genuine off-nadir training would require, and why it is blocked
+
+Training the emulator to actually *know* about view angle needs off-nadir
+truth, and **there is none on this machine**. I checked the source data rather
+than assuming: `$OS_COLOR/Loisel2023/Hydrolight*.nc` have dims
+`(IOP_Scenario: 3320, Lambda: 81)` and carry `Rrs`, `Lw`, `Lu_0+` — **no
+view-angle dimension at all**, no radiance distribution. L23 is nadir-only by
+construction. That is precisely what the design's **M5** is
+("*future; detailed once M4 results are in*", "M5's HydroLight runs"), and it
+needs new radiative-transfer simulations, not a training run.
+
+So the honest position is: the emulator is now **geometry-blind by explicit
+assumption** rather than **geometry-corrupted by numerical accident**, and the
+`DomainWarning` still fires to say the correction is unvalidated off-nadir.
+
+#### Files changed (in `retrieve-or-bust`, for JXP to commit)
+
+- `robust/rt/emulator.py` — the `_standardise` fix + a docstring recording the
+  measured collapse and the reasoning.
+- `robust/tests/test_emulator.py` — three regression tests: constant features
+  standardise to zero **and** `delta` stays spectrally structured off-nadir; a
+  trained feature (`cos_theta_s`) still moves the correction; off-nadir is
+  **still reported** out of domain (silencing the corruption must not silence
+  the warning).
+
+**Tests: `robust` 535 passed, 5 skipped** (was 532); **PAB 315 passed,
+1 skipped** — unchanged.
+
+#### One thing for Task 6 to handle
+
+The `DomainWarning` now fires once per forward call on every pixel and is
+correct but noisy at 146,100 fits. Note also that `on_out_of_domain="ztt"`
+(robust's other policy) would be **degenerate** here: since the geometry
+features are recorded as trained over `[1, 1]`, every pixel counts as out of
+domain, so that policy zeroes the correction everywhere and is equivalent to
+plain `robust_ztt`. The production run should suppress the warning explicitly
+rather than reach for that policy expecting selective fallback.
+
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -516,3 +645,61 @@ What I learned / want to remember:
 - `init_mcmc` needs `rt_dict` passed explicitly or `ndim` stays at 5 and the
   free `B_p` never gets a dimension. Easy to miss, since the call succeeds and
   simply samples the wrong thing.
+
+### 2026-09-15 (Prompt 3 Task 3 — "improve RoB": found and fixed a silent −22 % bias)
+
+JXP added this task after Q1. The answer turned out not to be training at all:
+`robust_hybrid` had an **inference** bug that was corrupting every off-nadir
+evaluation, and no amount of training would have touched it.
+
+`cos_theta_v`/`cos_dphi` are constant in L23, so their stored `std` is the
+`1e-8` guard. `_standardise` divided by it, turning a 54.6° sensor zenith into
+a standardised −4.2e7, saturating every `tanh`. The measured consequence: at
+nadir the correction runs −0.059…+0.034 across the band; at a real PACE pixel
+it collapses to a **flat −0.219 at all 81 wavelengths** — a silent −22 %
+multiplicative bias on `Rrs`. Two different view angles (22° and 60°) returned
+byte-identical output, which is what convinced me it was saturation rather than
+a model responding to geometry.
+
+The fix is three lines: a feature that was constant in training standardises to
+exactly 0, because the network has no information about it. Off-nadir then
+reuses the trained correction (verified: max abs difference vs nadir is exactly
+0.0), while `cos_theta_s` — genuinely varied in L23 — still moves the
+correction across 0/30/60°. Three regression tests added in `robust`.
+
+I ran the real training anyway and got 0.30 % rRMS train and held-out, matching
+the shipped weights, and did **not** reship: a constant feature contributes
+`x − mean = 0` during training too, so training never saw the bug, and a fresh
+random draw would only churn a committed artifact.
+
+What I learned / want to remember:
+
+- **"Do the training" was the wrong frame, and checking the data settled it in
+  ten minutes.** I opened `$OS_COLOR/Loisel2023/Hydrolight200.nc` instead of
+  reasoning about it: dims `(IOP_Scenario, Lambda)`, no view-angle axis at all.
+  There is no off-nadir truth on this machine, so the emulator *cannot* learn
+  view geometry here — that is the design's own M5 and it needs new HydroLight
+  runs. Had I started training something I would have burned hours producing a
+  model with exactly as much view-angle information as the one we have.
+- **A guard against division-by-zero became a silent corruption.**
+  `max(std, 1e-8)` is the obvious way to avoid 0/0 on a constant feature, and
+  it is right *inside* the training distribution where the numerator is also
+  exactly 0. It is catastrophic outside it, because the tiny denominator
+  amplifies any excursion by 1e8. The repo had already been bitten by this once
+  and fixed the *domain check* — judging the excursion in the units the network
+  sees — without fixing the standardisation that produced the number. Fixing
+  the detector and not the fault is a very easy thing to do.
+- **Identical outputs from different inputs is the cheapest saturation test
+  there is.** `theta_v` 22° and 60° returning the same value to the last bit
+  was more diagnostic than any magnitude check, and it is the assertion I put
+  in the regression test.
+- **The warning was right and the code was wrong.** `robust` told me on every
+  single forward call that it was out of domain and suggested `mode='ztt'`.
+  Following that advice (option 1 in Q1) would have "worked" — and thrown away
+  a correction that is worth 20× at nadir (0.30 % vs 5.95 % rRMS) to dodge a
+  three-line bug. Worth remembering when a dependency's own advice is to use
+  the less capable path.
+- The `DomainWarning` deliberately still fires: the correction is now
+  geometry-**blind** by explicit assumption, which is defensible, rather than
+  geometry-**corrupted**, which was not — but it is still unvalidated
+  off-nadir, and that should keep being said until M5 data exists.
