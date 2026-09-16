@@ -66,7 +66,8 @@ def plot_bbp_matchup_map(df, *, outfile=None, dpi: int = 200):
     # -- compute relative difference ----------------------------------------
     bbp_pace = np.asarray(df["bbp_bing"], dtype=float)
     bbp_argo = np.asarray(df["bbp_argo"], dtype=float)
-    rel_diff = (bbp_pace - bbp_argo) / bbp_pace   # (PACE - Argo) / PACE
+    valid_denom = np.isfinite(bbp_pace) & (bbp_pace > 0)
+    rel_diff = np.where(valid_denom, (bbp_pace - bbp_argo) / bbp_pace, np.nan)
 
     lon = np.asarray(df["longitude"], dtype=float)
     lat = np.asarray(df["latitude"], dtype=float)
@@ -112,8 +113,11 @@ def plot_bbp_matchup_map(df, *, outfile=None, dpi: int = 200):
     )
 
     # -- label each point with cycle number (above dot) ---------------------
+    import pandas as pd
     if "cycle" in df.columns:
         for _, row in df.iterrows():
+            if pd.isna(row["cycle"]):
+                continue
             ax.annotate(
                 f"c{int(row['cycle'])}",
                 xy=(row["longitude"], row["latitude"]),
@@ -190,8 +194,10 @@ def main(argv=None):
 
     print(f"Found {len(df)} matchup(s):")
     for _, row in df.iterrows():
-        rd = (row["bbp_bing"] - row["bbp_argo"]) / row["bbp_bing"]
-        print(f"  WMO {row['wmo']} cycle {row['cycle']:>3d}  "
+        bbp_b = float(row["bbp_bing"])
+        rd = (bbp_b - row["bbp_argo"]) / bbp_b if bbp_b > 0 else float("nan")
+        cyc = int(row["cycle"]) if not pd.isna(row["cycle"]) else "?"
+        print(f"  WMO {row['wmo']} cycle {str(cyc):>3s}  "
               f"lat={row['latitude']:.3f}  lon={row['longitude']:.3f}  "
               f"bbp_pace={row['bbp_bing']:.6f}  bbp_argo={row['bbp_argo']:.6f}  "
               f"relDiff={rd:+.3f}")

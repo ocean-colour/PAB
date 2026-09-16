@@ -2,7 +2,7 @@
 
 Quality filter applied:
   - granule cloud cover < 50 %
-  - BING reduced chi-squared < 1.0
+  - BING reduced chi-squared < 1.2
   - valid (non-NaN) Argo bbp700
 
 Usage
@@ -35,13 +35,14 @@ def _parse_args(argv=None):
     return p.parse_args(argv)
 
 
-def plot_clean_map(df, *, cc_thresh=50.0, chisq_thresh=1.0, outfile=None, dpi=200):
+def plot_clean_map(df, *, cc_thresh=50.0, chisq_thresh=1.2, outfile=None, dpi=200):
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
 
     bbp_pace = np.asarray(df["bbp_bing"],    dtype=float)
     bbp_argo = np.asarray(df["bbp_argo"],    dtype=float)
-    rd  = (bbp_pace - bbp_argo) / bbp_pace
+    valid_denom = np.isfinite(bbp_pace) & (bbp_pace > 0)
+    rd  = np.where(valid_denom, (bbp_pace - bbp_argo) / bbp_pace, np.nan)
     cc  = np.asarray(df["cloud_cover"],      dtype=float)
     chi = np.asarray(df["chisq"],            dtype=float)
     lon = np.asarray(df["longitude"],        dtype=float)
