@@ -234,7 +234,7 @@ def set_inelastic_Ed(models, geom, rt_dict) -> bool:
     weight the excitation integral. **PACE L2 carries no Ed**, so PAB supplies
     ``robust``'s packaged Loisel+23 spectrum interpolated at this pixel's
     solar zenith (``run_full_inelastic.md`` Plan §2 item 3). The table spans
-    350–750 nm at 5 nm, which covers both the 400–720 nm fit window and the
+    350–750 nm at 5 nm, which covers both the 400–700 nm fit window and the
     Raman excitation grid (~50 nm blueward of the emission edge).
 
     Two distinct hooks are needed, and BING wires neither automatically

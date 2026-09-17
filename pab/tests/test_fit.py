@@ -46,22 +46,24 @@ def test_fit_ids_of_the_two_generations_do_not_collide():
 
 
 def test_prepare_spectrum_window_and_variance():
-    """The 2.0 window reaches 720 nm; 1.0's stopped at 700 (the red edge, R4)."""
+    """Both 1.0 and 2.0 fit 400-700 nm; 719/720 is excluded (the red edge, R4).
+
+    2.0 briefly used 720 to reach the red shoulder, but ``Rrs(719)`` is
+    negative or noise-dominated on 40% of real matchups
+    (``build_v2_prompt_3.md`` Q2), so JXP moved it back.
+    """
     wave = np.array([380.0, 400.0, 500.0, 600.0, 700.0, 720.0])
     rrs = np.array([9.0, 0.01, 0.008, np.nan, 0.002, 0.001])
     unc = np.array([1.0, 0.001, 0.0008, 0.0, 0.0002, 0.0001])
+    expected_w = [400.0, 500.0, 700.0]
+    expected_r = [0.01, 0.008, 0.002]
+    expected_var = np.array([0.001, 0.0008, 0.0002]) ** 2
 
-    # 2.0 default: 400-720, so 720 is now IN window; 380 out; 600 NaN -> dropped
-    w, r, var = run.prepare_spectrum(wave, rrs, unc, config=FitConfig())
-    assert w.tolist() == [400.0, 500.0, 700.0, 720.0]
-    assert r.tolist() == [0.01, 0.008, 0.002, 0.001]
-    assert np.allclose(var, np.array([0.001, 0.0008, 0.0002, 0.0001]) ** 2)
-
-    # 1.0 stays 400-700 -- the published window must not move under us
-    w1, r1, var1 = run.prepare_spectrum(wave, rrs, unc, config=FitConfig.v1())
-    assert w1.tolist() == [400.0, 500.0, 700.0]
-    assert r1.tolist() == [0.01, 0.008, 0.002]
-    assert np.allclose(var1, np.array([0.001, 0.0008, 0.0002]) ** 2)
+    for label, config in (("2.0", FitConfig()), ("1.0", FitConfig.v1())):
+        w, r, var = run.prepare_spectrum(wave, rrs, unc, config=config)
+        assert w.tolist() == expected_w, label  # 380 and 720 out of window
+        assert r.tolist() == expected_r, label  # 600 is NaN -> dropped
+        assert np.allclose(var, expected_var), label
 
 
 def test_prepare_spectrum_noise_floor_without_unc():
@@ -377,7 +379,7 @@ def test_fitconfig_defaults_are_the_2_0_configuration():
     assert c.fit_Bp is True
     assert c.phi_C == 0.02
     assert c.Bp_value == 0.01
-    assert c.wave_max == 720.0
+    assert c.wave_max == 700.0
     assert c.wave_min == 400.0
 
 
@@ -392,6 +394,8 @@ def test_fitconfig_v1_is_the_frozen_1_0_configuration():
     # unchanged between the two configurations
     assert c.model_pair == FitConfig().model_pair == "ExpBPow"
     assert c.wave_min == FitConfig().wave_min == 400.0
+    # since Q2 the window is identical too: 2.0 differs by RT, not by band
+    assert c.wave_max == FitConfig().wave_max == 700.0
 
 
 def test_fitconfig_v1_accepts_overrides_without_losing_the_rt_settings():
@@ -468,7 +472,7 @@ def test_build_models_rejects_robust_hybrid_outside_its_training_range():
 
 
 def test_the_2_0_window_stays_inside_the_emulator_range():
-    """720 nm must remain below ``ROBUST_HYBRID_WAVE_MAX`` (750)."""
+    """The fit window must stay inside the emulator's 350-750 nm range."""
     defs = pytest.importorskip("bing.rt.defs")
     assert FitConfig().wave_max <= defs.ROBUST_HYBRID_WAVE_MAX
     assert FitConfig().wave_min >= defs.ROBUST_HYBRID_WAVE_MIN
@@ -705,7 +709,7 @@ def test_set_inelastic_Ed_needs_geometry_for_theta_s():
 
 
 def test_packaged_ed_covers_the_fit_window_and_raman_excitation():
-    """350–750 nm: the 400 nm edge needs Ed to ~352, and 2.0 fits to 720."""
+    """350-750 nm: the 400 nm edge needs Ed down to ~352 nm."""
     pytest.importorskip("robust")
     from robust.rt import ed as robust_ed
 
@@ -803,7 +807,7 @@ def test_persist_fit_writes_the_v5_rt_columns():
         assert fit["include_cdom_fl"] == 0
         assert fit["fit_bp"] == 1
         assert fit["phi_c"] == pytest.approx(0.02)
-        assert fit["wave_max"] == pytest.approx(720.0)
+        assert fit["wave_max"] == pytest.approx(700.0)
         assert fit["pab_version"] == "2.0"
         # the git SHAs ride along in the provenance JSON
         pkg = json.loads(fit["pkg_versions"])
@@ -837,7 +841,7 @@ class _SpyModel:
 
     nparam = 3
     name = "ExpBricaud"
-    wave = np.arange(400.0, 720.0, 20.0)
+    wave = np.arange(400.0, 700.0, 20.0)
 
 
 def test_reconstruct_rrs_uses_gordon_for_the_1_0_backend(monkeypatch):
@@ -917,7 +921,7 @@ def test_config_from_row_rebuilds_the_2_0_configuration():
         cfg = _config_from_row(row)
         assert cfg.rt_backend == "robust_hybrid"
         assert cfg.include_Raman is True and cfg.include_Chl_fl is True
-        assert cfg.fit_Bp is True and cfg.wave_max == pytest.approx(720.0)
+        assert cfg.fit_Bp is True and cfg.wave_max == pytest.approx(700.0)
 
 
 def test_config_from_row_treats_a_legacy_null_row_as_gordon():

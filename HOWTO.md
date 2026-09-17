@@ -128,7 +128,7 @@ pab --db data/pab.db --download
 | `discover` | Find in-window PACE granules per profile (earthaccess; parallel via `--discover-jobs`). A profile is skipped only if the store already holds a granule **whose footprint covers that profile's own position** in its time window. | → `granules` |
 | `match` | Build PACE↔Argo matchups (Stage 4 spatial/temporal gate). Candidates come from an in-memory `GranuleIndex` (time window **+** footprint bounding box padded by `MatchupConfig.footprint_pad_deg`), so only granules that plausibly cover the float are opened. | → `matchups` |
 | `geometry` | Read each matchup pixel's solar/sensor geometry (`theta_s`, `theta_v`, `dphi`) from the co-temporal **PACE L1B** granule. Grouped **by granule** — 146,100 pixels sit on 11,494 granules, so it is one 1.8 GB lazy open per granule, not per pixel. Parallel via `--jobs`. | → `matchup_pixels.theta_s`/`theta_v`/`dphi`/`geom_source` |
-| `fit` | Run BING spectral fits per matchup (needs BING + emcee). **From 2.0 the defaults are the inelastic configuration** — `rt_backend='robust_hybrid'`, Raman + Chl fluorescence on, free `B_p`, 400–720 nm — which *requires* `geometry` to have run. A pixel with no geometry is recorded under `failed` and its granule is never opened. | → `fit_results` |
+| `fit` | Run BING spectral fits per matchup (needs BING + emcee). **From 2.0 the defaults are the inelastic configuration** — `rt_backend='robust_hybrid'`, Raman + Chl fluorescence on, free `B_p` — which *requires* `geometry` to have run. A pixel with no geometry is recorded under `failed` and its granule is never opened. | → `fit_results` |
 | `figure` | Render per-matchup fit + scene figures (best-effort; needs Loisel data; parallel via `--jobs` — the costliest stage per matchup at ~42 s serial). | → `outdir/figures` |
 | `report` | Build the static site + a release manifest (Stage 7). | → `outdir/site`, `outdir/release` |
 
@@ -164,7 +164,11 @@ setup and `FitConfig.v1()` reproduces the published 1.0 one:
 | `include_Raman` / `include_Chl_fl` | `True` / `True` | `False` / `False` |
 | `include_CDOM_fl` | `False` | `False` |
 | `fit_Bp` (free `B_p`) | `True` | `False` |
-| `wave_max` | **720 nm** | 700 nm |
+| `wave_max` | 700 nm | 700 nm |
+
+2.0 and 1.0 fit the **same 400–700 nm band** — they differ by radiative
+transfer, not by window. (2.0 briefly used 720 nm; the PACE 719 nm band turned
+out to be negative or noise-dominated on 40% of matchups, so it was dropped.)
 
 Use `FitConfig.v1()` for any 1.0-vs-2.0 comparison rather than re-typing the six
 keywords — that is the whole point of it. Details, including the free-`B_p`

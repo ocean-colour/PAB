@@ -91,13 +91,27 @@ cannot drift from it by accident.
      - 0.02 / 0.01
      - 0.02 / 0.01
    * - ``wave_max``
-     - **720 nm**
+     - 700 nm
      - 700 nm
 
 ``rt_backend`` selects the forward model that turns ``(a, bb)`` into ``Rrs``:
 ``'gordon'`` is BING's own elastic Gordon (1988) relation; ``'robust_hybrid'``
 is retrieve-or-bust's analytic ZTT model plus a learned emulator correction,
-valid over 350–750 nm — which is why ``wave_max = 720`` is safe. Every backend
+valid over 350–750 nm, comfortably containing the 400–700 nm window.
+
+.. note::
+
+   2.0 briefly defaulted to ``wave_max = 720`` to reach the red shoulder for
+   the inelastic terms. It was moved back to **700** after the first real
+   fits: the PACE 719 nm band is unusable on a large fraction of matchups —
+   ``Rrs(719)`` came back **negative on 6 of 20** local matchups and
+   noise-dominated on 2 more, and the χ² degradation of 2.0 against 1.0 was
+   concentrated entirely on those (1.84× versus 1.24× where the band was
+   usable). The chlorophyll-fluorescence peak (~685 nm) is inside 700, so the
+   inelastic physics is unaffected. **2.0 and 1.0 therefore fit the same
+   band** — they differ by radiative transfer, not by window.
+
+Every backend
 except ``'gordon'`` **requires per-pixel geometry**: ``theta_s`` is never
 silently defaulted, so a fit whose pixel has no ``theta_s``/``theta_v``/``dphi``
 is refused before the granule is even opened, and recorded under ``"failed"``.

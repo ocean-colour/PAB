@@ -38,6 +38,13 @@ class FitConfig:
         nburn: emcee burn-in steps (discarded by ``run_emcee`` before
             production).
         wave_min, wave_max: Fit window (nm); the spectrum is restricted to it.
+            **400–700 for both 1.0 and 2.0.** 2.0 briefly defaulted to 720 to
+            reach the red shoulder, but the 719 nm PACE band is unusable on a
+            large fraction of matchups — ``Rrs(719)`` came back *negative* on
+            6 of 20 local matchups and noise-dominated on 2 more, and the
+            resulting χ² degradation was concentrated entirely on those (JXP,
+            ``build_v2_prompt_3.md`` Q2). The chlorophyll-fluorescence peak
+            (~685 nm) is inside 700, so the inelastic physics is unaffected.
         variable_Gordon: Use wavelength-dependent Gordon coefficients (PAB keeps
             the constant-coefficient default, ``False``).
         include_Raman: Include the Raman-scattering term. **Default ``True``
@@ -76,7 +83,7 @@ class FitConfig:
     nsteps: int = 10000
     nburn: int = 1000
     wave_min: float = 400.0
-    wave_max: float = 720.0
+    wave_max: float = 700.0
     variable_Gordon: bool = False
     include_Raman: bool = True
     # --- radiative transfer (2.0) ---
@@ -109,6 +116,8 @@ class FitConfig:
             ``wave_max=700.0``.
         """
         v1 = {
+            # Same as the 2.0 default since Q2 moved 2.0 back to 700; kept
+            # explicit so v1() stays pinned if the default ever moves again.
             "wave_max": 700.0,
             "rt_backend": "gordon",
             "include_Raman": False,
