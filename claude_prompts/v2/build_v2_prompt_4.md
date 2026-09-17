@@ -591,6 +591,48 @@ The gate asserts 700, and the fit persisted 700.
 116 M, 46 G of 500 G used.
 
 
+### Task 5 — `build_v2_prompt_5.md` updated + `:2.0.1` rebuilt (2026-09-17): **done**
+
+**`:2.0.1` built** (Q4 answer: option (a)). The PAB tree was **clean at
+`8c7ab8a`** before staging — checked deliberately, because the build rsyncs the
+*working tree* while `git_shas()` reads `git rev-parse HEAD`: an uncommitted fix
+would have produced an image whose provenance names a commit that does not
+contain it, which is exactly the lie the SHA exists to prevent.
+
+All guards passed again, including the off-nadir regression test
+(`ROBUST OK … std 0.0245`) and `PAB 2.0 OK robust_hybrid 400.0 700.0`. Baked
+provenance now `{"PAB":"8c7ab8a", …,"retrieve-or-bust":"e1f4289"}`. Pushing
+`:2.0.1` + `:latest`.
+
+**`build_v2_prompt_5.md` updated.** Every number checked against the live
+store rather than carried forward.
+
+- **Image `:2.0.0` → `:2.0.1`** in Task 2, with the reason in the agreements —
+  `:2.0.0`'s `figure` stage fails for every 2.0 fit.
+- **`PYTHONWARNINGS=ignore` is now a stated requirement for every 2.0 job.**
+  Not cosmetic: the `DomainWarning` flood buried the figure traceback in the
+  Prompt 4 validation until it was suppressed.
+- **The as-built PVC and database state** — `/data/v2/pab.db` sha, schema v5,
+  the counts, and the one that matters here: **0 of 146,100 pixels have
+  geometry**, so Task 5 owns the entire backlog. Plus `/data/v1`'s layout and
+  the absent `v1/pab.db`.
+- **The measured in-pod costs, labelled as upper bounds.** 47 s/granule and
+  226 s/fit are each a *single* startup-dominated measurement; the workstation
+  figures disagree 5× and 2×. I wrote the naive projections out (geometry 4–22 h,
+  fit 29–66 h) specifically so the *spread* is visible, and changed Task 5's
+  geometry step to **measure a ~200-granule slice before committing** rather
+  than book a day-long job off one data point.
+- **Two findings about the `geometry` stage**, verified in the code:
+  it issues **one uncached CMR query per granule** (~13.5 k searches), so
+  Task 5's `--jobs 16` would mean 16 concurrent CMR searches against the same
+  shared infrastructure the doc's own agreements cap at `--discover-jobs 8` —
+  **recommended `--jobs 8`**, flagged rather than silently changed; and it is
+  idempotent on `theta_s IS NULL`, so the gate's "sweep re-run" is simply
+  running the stage again, with zero network work for filled pixels.
+- Confirmed by query that the existing granule count is **11,494**.
+- Added a Task 6 ("update `build_v2_prompt_6.md`"), flagged as removable.
+
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -688,3 +730,34 @@ What I learned / want to remember:
 - The `PYTHONWARNINGS=ignore` in the manifest did its job: no `DomainWarning`
   flood, and the log stayed readable enough that the figure traceback was
   visible at a glance.
+
+### 2026-09-17 (Prompt 4 Task 5 — rebuilt :2.0.1 and handed Prompt 5 the measured state)
+
+`:2.0.1` built from a clean tree at `8c7ab8a` with the `B_p` fix, and
+`build_v2_prompt_5.md` updated with what Prompts 1–4 actually established.
+
+What I learned / want to remember:
+
+- **Check the tree is clean before baking a SHA into an image.** The build
+  stages the *working tree* by rsync, but `git_shas()` records
+  `git rev-parse HEAD`. Build with an uncommitted fix and the image's
+  provenance names a commit that does not contain the code inside it — a
+  precisely wrong answer, worse than `"unknown"`, and undetectable later. It
+  happened to be clean; it was worth the one command to find out.
+- **The most useful thing I put in Prompt 5 was a spread, not a number.** I
+  have two cost measurements that disagree 5× (geometry) and 2× (fit), both
+  from single startup-dominated samples. Writing "47 s/granule" alone would
+  have been treated as a rate and turned into a cluster booking. Writing
+  "4–22 h depending on which measurement you believe, so measure a 200-granule
+  slice first" is honest about what is actually known and converts the
+  uncertainty into a cheap action.
+- **`--jobs 16` on `geometry` is a manners problem, not just a speed knob.**
+  The stage does an uncached CMR lookup per granule, so the job's parallelism
+  is also its CMR concurrency — ~13.5 k searches, 16 at a time, against shared
+  NASA infrastructure that the same document already agrees to hit 8-wide. I
+  flagged it with the reasoning instead of quietly editing the number, because
+  it is the kind of thing the author may have decided deliberately.
+- Carried forward the small operational facts that are invisible until they
+  bite: `PYTHONWARNINGS=ignore` (a correct warning, thousands of lines per
+  fit), the gate-script-exits-non-zero pattern, and that `/data/v1/pab.db`
+  deliberately does not exist.
