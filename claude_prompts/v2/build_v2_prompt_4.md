@@ -256,6 +256,102 @@ say so in the report.
 
 >A. I have answered the question in the prompt_3.md doc.  Read that an proceed accordingly.
 
+### Q2 (Task 2, 2026-09-17) — confirm the PVC re-layout, and what to do with the **stale** DB it renames to `v1/pab.db`
+
+**Survey first** (read-only helper pod, already run and deleted). `pab-data`
+holds **45 G of 500 G**, 456 G free, and **neither `/data/v1` nor `/data/v2`
+exists yet** — a clean slate:
+
+| path | size | note |
+|---|---:|---|
+| `/data/full` | **27 G** | `pab.db` (138,854,400 B, **stale**), `pipeline/`, `run.log` (66 MB), 2 probe logs, a `pab.db.tmp-journal` |
+| `/data/fit_chains` | **19 G** | **14,633** files (the doc said 18.09 GiB / 14,654 — close, now measured) |
+| `/data/run1k` | 507 M | leave |
+| `/data/val` | 2.3 M | leave |
+| `/data/valj1` | 577 K | **not mentioned in the task** — leaving it |
+| `/data/src` | 2.9 M | retired checkout → delete |
+| loose top-level files | ~3 M | `coverage_check.py`, `fitdbg.log`, `full_profiles.csv`, `rediscover_csv.py`, `rediscover_profiles.csv` — **not mentioned** → leaving them |
+
+**The judgement call.** The task says `mv /data/full /data/v1`. But
+`/data/full/pab.db` is the **stale** database — 138,854,400 B, pre-`cdom_chl`,
+pre-NASA-GIOP — and it is *not* the published v1 release:
+
+| | bytes | |
+|---|---:|---|
+| PVC `/data/full/pab.db` | 138,854,400 | stale |
+| workstation `v1/pab.db` | 169,938,944 | **the published 1.0**, sha `09de0a6d…` |
+| workstation `v2/pab.db` | 120,635,392 | the v2 build |
+
+Renaming it to `/data/v1/pab.db` would put a *different* database at the one
+path `HOWTO.md` §5b defines by sha256. Anyone later checking "is the PVC's v1
+the released v1?" gets a mismatch and has to re-derive why.
+
+So I propose renaming the file as part of the move:
+`/data/v1/pab.db` → **`/data/v1/pab_stale_2026-08-20.db`**, leaving
+`/data/v1/pab.db` **absent** rather than wrong. The 19 G of chains under
+`/data/v1/fit_chains/` *are* genuine 1.0 chains, so the directory is still
+honestly named.
+
+**Full proposed plan** (one short-lived helper pod, `mv` only — no `rm -rf`):
+
+1. `mv /data/full /data/v1`
+2. `mv /data/v1/pab.db /data/v1/pab_stale_2026-08-20.db`  ← the call above
+3. `mv /data/fit_chains /data/v1/fit_chains`
+4. `mkdir -p /data/v2/fit_chains /data/v2/pipeline`
+5. `rm -rf /data/src` (retired checkout, 2.9 M) — **the only deletion**
+6. `du -sh` per directory afterwards
+
+All renames are within one CephFS volume, so they are metadata-only and
+instant even for the 19 G of chains.
+
+**Questions:**
+
+- **(a)** Go ahead with the plan?
+- **(b)** Rename the stale DB as proposed, or leave it at `/data/v1/pab.db`?
+- **(c)** Delete `/data/src`, or leave it?
+- **(d)** Should Prompt 4 also upload the *real* `v1/pab.db` to
+  `/data/v1/pab.db`? Not in the task, and not needed for the v2 run — but it
+  would make the PVC match the documented layout. It is a 170 MB transfer.
+
+*My recommendation: (a) yes, (b) rename, (c) delete, (d) not now — the v2 run
+does not read v1, and Prompt 7's comparison can pull it from `s3://pab/v1/`.*
+
+
+### Q3 (Task 1, 2026-09-17) — confirm the `docker push` of `pab:2.0.0`
+
+The image is **built and verified locally**; only the outward-facing push is
+held. `gitlab-registry.nrp-nautilus.io` credentials are already stored in
+`~/.docker/config.json`, so no fresh `docker login` should be needed.
+
+| | |
+|---|---|
+| tags | `:2.0.0` **and** `:latest` |
+| size | **9.21 GB** (1.0.3 was 7.71 GB; +1.5 GB is the JAX stack) |
+| local id | `sha256:414480445fce78aa1143510c3633bb335cf4676ef1b2fa6836eccdb6d009786f` |
+| registry | `gitlab-registry.nrp-nautilus.io/profx/pab` — **public** |
+| baked provenance | `{"PAB":"3efc987","bing":"bf56f6d","ocpy":"c3132a6","remote_sensing":"2b85c65","retrieve-or-bust":"e1f4289"}` |
+
+Build guards all passed, including the off-nadir regression test that proves
+the fixed `robust` is inside (`ROBUST OK off-nadir delta 0.0116..0.0926
+std 0.0245` — spectrally varying, not the flat constant a stale `robust`
+would give). A real 2.0 fit runs inside the container: chains `(300, 16, 6)`,
+`Bp` 0.0498 inside its prior.
+
+**What makes this outward-facing:** it publishes a 9.2 GB public image, and it
+**moves `:latest` off `1.0.3`**, so anything pulling `:latest` gets 2.0 code
+with the new inelastic defaults.
+
+**Questions:**
+
+- **(a)** Push `:2.0.0`?
+- **(b)** Also move `:latest`, or push only the version tag and leave
+  `:latest` on `1.0.3` until the in-pod validation (Task 4) passes?
+
+*My recommendation: (a) yes; (b) push both — the manifests here pin an explicit
+tag, `:latest` is a convenience, and leaving it on 1.0.3 after 2.0 ships is the
+more confusing state.*
+
+
 ## Reports
 
 ## Logging
