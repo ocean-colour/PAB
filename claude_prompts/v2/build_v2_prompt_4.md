@@ -398,6 +398,7 @@ figure failures and produce no per-matchup figures for the report site. I would
 also re-run the validation job, since the point of it is to gate the image that
 actually runs.
 
+>A. Let's go with your recommendation.
 
 ## Reports
 
