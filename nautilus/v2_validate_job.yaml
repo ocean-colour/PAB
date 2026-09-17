@@ -1,0 +1,73 @@
+# End-to-end validation of the pab:2.0.0 image on Nautilus (5 profiles).
+#
+# What this proves that validate_job.yaml (1.0.3) did not:
+#   * the new `geometry` stage runs in-pod — a live CMR lookup plus a lazy read
+#     of a ~1.8 GB PACE L1B granule per granule, the one NEW external
+#     dependency 2.0 introduces (needs the earthdata-netrc secret + egress);
+#   * the robust/JAX fit path works, including JAX compiling inside SPAWNED
+#     worker processes (--jobs 4);
+#   * the schema-v5 RT columns and the version-aware fit_id are persisted;
+#   * PAB_GIT_SHAS baked into the image reaches the running process, so a fit's
+#     provenance records real commits rather than "unknown".
+#
+# PAB_DATA_DIR=/data/v2val is deliberate and load-bearing: chains_path() keys
+# off the ROOT of PAB_DATA_DIR, not off --db, so this is what puts the chains
+# under /data/v2val/fit_chains rather than beside the production ones.
+#
+# PYTHONWARNINGS suppresses robust's DomainWarning, which is correct but fires
+# once per forward model call (thousands of lines per fit) and would otherwise
+# bury the log. The emulator IS unvalidated off-nadir; that is recorded in
+# docs/fitting.rst, not something this log needs to repeat per sample.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars create configmap pab-validate-csv \
+#     --from-file=profiles.csv=nautilus/val_profiles.csv --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl -n sea-meets-the-stars delete job pab-v2-validate --ignore-not-found
+#   kubectl apply -f nautilus/v2_validate_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v2-validate
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v2-validate
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.0
+        imagePullPolicy: Always
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data/v2val}
+        - {name: PYTHONWARNINGS, value: "ignore"}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            rm -rf /data/v2val && mkdir -p /data/v2val
+            echo "=== IMAGE PROVENANCE ==="
+            python -c "import json; from pab.config import package_versions, pab_version; pv=package_versions(); print('pab_version', pab_version); print('git_sha', json.dumps(pv['git_sha'])); print('robust', pv['robust'])"
+            echo "=== RUN start $(date -Is) ==="
+            pab --db /data/v2val/pab.db --outdir /data/v2val/pipeline \
+                --profiles-csv /cfg/profiles.csv --jobs 4 2>&1 | tee /data/v2val/run.log
+            echo "=== GATES ==="
+            python /cfg/gates.py /data/v2val/pab.db /data/v2val
+            echo V2_VALIDATE_DONE
+        resources:
+          requests: {cpu: "4", memory: "12Gi", ephemeral-storage: "8Gi"}
+          limits: {cpu: "4", memory: "12Gi", ephemeral-storage: "16Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+        - {name: csv, mountPath: /cfg/profiles.csv, subPath: profiles.csv}
+        - {name: gates, mountPath: /cfg/gates.py, subPath: gates.py}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}
+      - {name: csv, configMap: {name: pab-validate-csv}}
+      - {name: gates, configMap: {name: pab-v2-gates}}
