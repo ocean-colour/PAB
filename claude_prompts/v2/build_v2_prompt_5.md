@@ -185,7 +185,114 @@ shape is visible:
 
 ## Q&A
 
+### Q1 (Task 1, 2026-09-17) — the backfill yield is **~1,250 matchups, not ~2,200**; confirm how to handle the two causes
+
+Task 1's selections are built and staged. Two measured facts cut the expected
+yield roughly in half, and both need a decision before Tasks 2–4 run.
+
+#### (i) PACE's forward stream ends **2026-08-01** — 6.5 weeks behind today
+
+CMR, queried now: `PACE_OCI_L2_AOP` has 8,571 granules in
+2026-06-01…2026-12-31, latest acquisition **2026-08-01T20:50:06Z**. The
+Context anticipated this ("if it still lags, gap A/B profiles newer than the
+stream can only be matched later"). It does lag:
+
+| | profiles | matchable now (≤ 2026-08-01) | not yet |
+|---|---:|---:|---:|
+| **A** (2026-06-01…07-06) | 2,409 | **2,403** | 6 |
+| **B** (2026-07-06…09-17) | 5,187 | **1,944** | **3,238** |
+
+So **63 % of gap B cannot be matched yet**, no matter what we run.
+
+**Question (a):** ingest all 5,187 of B anyway, or only the 1,944 that are
+currently matchable? Ingesting all costs ~1.5 h of GDAC time for 3,238
+profiles that cannot produce a matchup until PACE catches up — but they are
+real BGC profiles, the ingest is the slow part, and a later `discover`/`match`
+sweep would then pick them up for free.
+*My recommendation: ingest all of B.* The profiles are the durable asset and
+re-ingesting later costs the same; only `discover`/`match` should be
+restricted to the matchable window (which they effectively self-restrict to
+anyway, since no granules exist beyond it).
+
+#### (ii) Gap D is **78 % position-less**, and that predicts failure
+
+Of D's 475 never-ingested profiles, **372 have no lat/lon** in the original
+selection CSV. That is not incidental — it is close to the reason they were
+never ingested. Evidence from the rows that *were* ingested: 807 original CSV
+rows had a blank position, 435 of them ingested, and in a 200-row sample only
+**27 (13.5 %)** ended up with a position from argopy. A profile with no
+position is recorded by `match` as "no position to match against" and can
+never yield a matchup.
+
+**Question (b):** re-attempt ingest on all 475 of D, or only the 103 with
+positions? *My recommendation: all 475* — ingest is cheap at this size, and
+the 13.5 % that do recover a position are free matchups — but expect ~29 new
+matchups from D, not the plan's ~130.
+
+#### Revised expectation for Plan §4
+
+| gap | matchable & positioned | × 28 % |
+|---|---:|---:|
+| A | 2,403 | ~673 |
+| B | 1,944 | ~544 |
+| D | 103 | ~29 |
+| **total** | | **~1,246** |
+
+against Plan §4's **~2,200**. That puts v2 at roughly **15.9 k matchups**, not
+16.8 k — which also lowers the fit-cost projection Task 5 is asked to update.
+
+**Question (c):** should Plan §4 be amended now with these numbers, or left
+as-is until the jobs actually report?
+*My recommendation: amend it* — the gap between 2,200 and 1,246 is large
+enough that a later reader would otherwise treat the shortfall as a failure.
+
+
 ## Reports
+
+### Task 1 — backfill selections (2026-09-17): **done, and the yield estimate halves**
+
+Five CSVs built under `$PAB_DATA_DIR/v2/` and staged to `/data/v2/`, **all
+five md5-verified** on the PVC. The DBs were only read (the workstation copy
+is `chmod a-w` anyway).
+
+| file | rows | floats | with position | matchable now | date span |
+|---|---:|---:|---:|---:|---|
+| `backfill_A.csv` | 2,409 | 655 | 2,403 | 2,403 | 2026-06-01 … 07-06 |
+| `backfill_B.csv` | 5,187 | 691 | 5,082 | **1,944** | 2026-07-06 … 09-17 |
+| `backfill_D.csv` | 475 | 29 | **103** | 103 | 2024-03-07 … 2026-06-21 |
+| `backfill_BD.csv` *(Task 2 ingest)* | 5,662 | 702 | 5,185 | 2,047 | |
+| `backfill_AB.csv` *(Task 3 discover)* | 7,596 | 708 | 7,485 | 4,347 | |
+
+A, B and D are disjoint; the union is 8,071 profiles. Lat spans −66.7…78.8,
+lon −179.8…180.0 — global, as expected.
+
+**Against Plan §4's sizing:** A is 2,409 (planned 2,356), B is 5,187 (planned
+4,981 as of 09-14 — re-queried today, per R5, so it grew as expected), D is
+475 (planned ~475). The *counts* are close. The **yield** is not, for two
+measured reasons — both raised as **Q1**:
+
+1. **PACE's `PACE_OCI_L2_AOP` forward stream ends 2026-08-01**, 6.5 weeks
+   behind today. 3,238 of B's 5,187 profiles (63 %) have no PACE data to match
+   against yet.
+2. **Gap D is 78 % position-less** — 372 of 475 have no lat/lon, and the
+   evidence says a blank position predicts both ingest failure and no position
+   after ingest (of 807 such rows originally, 435 ingested and only 13.5 % of
+   a 200-sample recovered a position). A profile with no position can never
+   produce a matchup.
+
+Revised: **~1,246 new matchups**, not ~2,200 → v2 ends around **15.9 k**
+matchups rather than 16.8 k. That also lowers the fit-cost projection Task 5
+is asked to update.
+
+**Method note.** Gap B was rebuilt from the live `bgc-s` index (408,062 rows,
+loaded in 5 s), token-filtered on `parameters` for `BBP700`/`CHLA` (194,884),
+asc/desc-deduped to one row per `(wmo, cycle)` (189,080), cut to
+`date > 2026-07-06` (5,206), then deduped against the 54,031 profiles already
+in the store (5,187). Gap A is "ingested, no matchup, `time > 2026-06-01`" —
+2,409, against the plan's 2,356; the difference is definitional (no *matchup*
+versus no *candidate granule*) and A is re-`discover`ed with `--replace`
+regardless.
+
 
 ## Logging
 
@@ -198,3 +305,36 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-09-17 (Prompt 5 Task 1 — backfill selections, and a halved yield estimate)
+
+Built and staged the five backfill CSVs. The counts match Plan §4 closely; the
+expected *yield* does not, and two measurements explain why.
+
+What I learned / want to remember:
+
+- **Ask what fraction of a selection can actually succeed, not just how big it
+  is.** Gap B is 5,187 profiles — slightly *more* than planned, which looks
+  like good news. But PACE's forward stream ends 2026-08-01, so 63 % of them
+  have no satellite data to match against. The Context told me to check CMR
+  for exactly this; it would have been easy to report "B = 5,187, on target"
+  and let the shortfall surface later as an unexplained miss.
+- **A blank column can be a diagnosis, not just missing data.** Gap D is 78 %
+  position-less, and rather than assume that was harmless (ingest fetches
+  position from argopy, after all) I checked the historical rows: of 807
+  blank-position rows in the original selection, 435 ingested and only 13.5 %
+  of a sample recovered a position. So the blank predicts the failure it looks
+  like it should be independent of. D's realistic yield is ~29 matchups, not
+  the planned ~130.
+- **Re-deriving the estimate was the point of the task, not a by-product.**
+  Plan §4's ~2,200 was sized read-only on 2026-09-13 from counts alone. With
+  matchability and position folded in it is ~1,246. Both are honest; the
+  difference is entirely in what the estimate conditions on. I raised amending
+  the plan as Q1(c), because a later reader comparing 1,246 actual against
+  2,200 planned would reasonably read it as something having gone wrong.
+- Staged via `kubectl cp` and verified with md5 on both ends rather than
+  trusting the copy — the same discipline as the database staging, and it cost
+  one extra command for five files.
+- The live `bgc-s` index loads in 5 s for 408 k rows, which makes re-querying
+  the selection at run time (R5) genuinely cheap — worth knowing before anyone
+  plans around a stale CSV.
