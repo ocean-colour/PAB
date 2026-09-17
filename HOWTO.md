@@ -260,7 +260,7 @@ v1, attach v1 read-only rather than copying rows into it.
 | | v1 (frozen, published 1.0) | v2 (the inelastic-RT run) |
 | --- | --- | --- |
 | workstation | `$PAB_DATA_DIR/v1/pab.db` — the old `full/pab.db`, renamed. `$PAB_DATA_DIR/full` is now a **symlink to `v1`**, so existing commands and docs that say `full/pab.db` keep working. | `$PAB_DATA_DIR/v2/pab.db`, `$PAB_DATA_DIR/v2/fit_chains/` |
-| PVC (Nautilus) | `/data/v1/pab.db` | `/data/v2/pab.db`, `/data/v2/fit_chains/`, `/data/v2/pipeline/` — set `PAB_DATA_DIR=/data/v2` so chains key there |
+| PVC (Nautilus) | `/data/v1/` — the 1.0 run's outputs, re-laid out 2026-09-17. **`/data/v1/pab.db` does not exist**: the database that was at `/data/full/pab.db` is the *stale* pre-`cdom_chl`, pre-NASA-GIOP one (138,854,400 B), so it was renamed `/data/v1/pab_stale_2026-08-20.db` rather than left at a path the sha256 above defines. The 14,633 chain files under `/data/v1/fit_chains/` **are** the genuine 1.0 chains — but `fits.chains_path` in the v1 database still records the old `/data/fit_chains/...` paths, deliberately not rewritten because v1 is frozen; prepend `/data/v1` when resolving them. | `/data/v2/pab.db`, `/data/v2/fit_chains/`, `/data/v2/pipeline/` — set `PAB_DATA_DIR=/data/v2` so chains key there |
 | S3 | `s3://pab/v1/pab.db` (public, immutable). The **`s3://pab/full/` objects stay put** — the live site's download links point at them, and `full/pab.db` is byte-identical to `v1/pab.db`. | `s3://pab/v2/pab.db` + `v2/matchup_summary.*` |
 | backup | `AIOcean:PAB/` | `AIOcean:PAB/pab_v2_<date>.db` (dated copy, not a sync) |
 

@@ -305,8 +305,40 @@ def reconstruct_rrs(models, a_params, bb_params, rt_dict, *, geom=None, Bp=None)
             models[0], a_params, models[1], bb_params, rt_dict
         )
     return ev.calc_Rrs_from_models_robust(
-        models[0], a_params, models[1], bb_params, rt_dict, geom=geom, Bp=Bp
+        models[0],
+        a_params,
+        models[1],
+        bb_params,
+        rt_dict,
+        geom=geom,
+        Bp=_broadcast_bp(Bp, models),
     )
+
+
+def _broadcast_bp(Bp, models):
+    """Put ``Bp`` in the ``(nsamples, nwave)`` layout the robust backends want.
+
+    ``robust``'s batched-``B_p`` convention is one value per *sample and
+    wavelength* (``robust/rt/validation.py``; BING does the same broadcast in
+    ``evaluate.reconstruct_from_chains``). A per-sample 1-D array — which is
+    exactly what peeling the chain's trailing column gives you — does **not**
+    broadcast against the ``(nsamples, nwave)`` IOPs, and fails deep inside JAX
+    with ``Incompatible shapes for broadcasting: [(48000, 136), (48000,)]``.
+    That surfaced only in the in-pod validation's ``figure`` stage, because the
+    diagnostics path passes a scalar (which broadcasts fine) and the unit tests
+    mocked the forward model.
+
+    A scalar or ``None`` is passed through untouched.
+    """
+    if Bp is None:
+        return None
+    Bp = np.asarray(Bp)
+    if Bp.ndim == 0:
+        return Bp
+    if Bp.ndim == 1:
+        nwave = len(models[0].wave)
+        return np.broadcast_to(Bp[:, None], (Bp.shape[0], nwave))
+    return Bp
 
 
 def _split_flat(flat, nparam_a: int, rt_dict):

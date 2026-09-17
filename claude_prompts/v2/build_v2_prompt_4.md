@@ -355,7 +355,240 @@ more confusing state.*
 >A. Let's use your Recommendations
 
 
+### Q4 (Task 4, 2026-09-17) — the in-pod run found a real bug; confirm a **`:2.0.1`** rebuild
+
+The validation passed every gate, but the `figure` stage **failed** on the one
+robust fit — and my gates did not notice, because they only inspected the
+database and a stage that produces nothing leaves no row to check. Both are
+now fixed; the question is what to do about the image.
+
+**The bug.** `fit_fig` peels the chain's trailing `B_p`, giving one value per
+posterior sample, and passed it straight to the robust forward model. `robust`
+wants `B_p` in its batched **`(nsamples, nwave)`** layout (the same broadcast
+`bing.evaluate.reconstruct_from_chains` does), so JAX died with
+`Incompatible shapes for broadcasting: [(48000, 136), (48000,)]`.
+
+It escaped every local test for a specific reason worth recording: the *other*
+caller (`_fit_diagnostics`) passes a **scalar**, which broadcasts fine, and the
+dispatch unit tests **mock** `calc_Rrs_from_models_robust`, so nothing ever put
+a real batch through the real backend. Prompt 3 Task 6 never caught it either —
+it fitted 60 spectra but never rendered a figure.
+
+**Fixed and verified:** `reconstruct_rrs` now normalises `B_p` via
+`_broadcast_bp` (scalar and `None` pass through untouched), proven by
+**rendering a figure from a real `robust_hybrid` fit** off the Prompt 3 Task 6
+store — 54,561 bytes, under the 100 KB budget. Two regression tests added, one
+of which pushes a genuine batch through the **unmocked** backend. Suite now
+**336 passed**. The gate script gained a figure check.
+
+**So `:2.0.0` on the registry contains a `figure` stage that fails for every
+2.0 fit.** Everything else in it is good — geometry, fit, provenance, schema
+all validated in-pod.
+
+**Questions:**
+
+- **(a)** Rebuild and push **`:2.0.1`** (and move `:latest`), then re-run the
+  validation against it?
+- **(b)** Or leave `:2.0.0` and run the full production run with
+  `--no-figures`, deferring figures to a later image?
+
+*My recommendation: (a).* The fix is three lines with tests behind it, the
+rebuild is ~10 minutes, and Prompt 5's full run would otherwise log 14,610
+figure failures and produce no per-matchup figures for the report site. I would
+also re-run the validation job, since the point of it is to gate the image that
+actually runs.
+
+
 ## Reports
+
+### Task 1 — image `pab:2.0.0` (2026-09-17): **built, pushed, verified**
+
+**Q2's answer landed first and changed the build.** JXP chose option 2 —
+"drop back to 700nm for 2.0" — so before building I moved
+`FitConfig.wave_max` 720 → **700.0** in code, tests and docs. 2.0 and 1.0 now
+fit the **same 400–700 nm band** and differ only by radiative transfer. That
+was the whole point of raising Q1 here: the image freezes the configuration,
+and settling it after the build would have meant a rebuild and re-push.
+
+| | |
+|---|---|
+| tags | `:2.0.0`, `:latest` |
+| **registry digest** | **`sha256:1afd4cc9cd97943a5a0b078e1daccbb6e83d794ee715b9824738430a3fab14c1`** (both tags) |
+| local image id | `sha256:414480445fce78aa1143510c3633bb335cf4676ef1b2fa6836eccdb6d009786f` |
+| size | **9.21 GB** (1.0.3 was 7.71 GB; +1.5 GB = the JAX stack) |
+| baked provenance | `{"PAB":"3efc987","bing":"bf56f6d","ocpy":"c3132a6","remote_sensing":"2b85c65","retrieve-or-bust":"e1f4289"}` as both `PAB_GIT_SHAS` env and an OCI `image.revision` label |
+
+**Build guards, all passing:**
+
+```
+FIT DEPS OK / LOISEL OK          (unchanged from 1.0.3)
+ED OK 350 750 (3, 81)
+ROBUST OK off-nadir delta 0.0116..0.0926 std 0.0245
+PAB 2.0 OK robust_hybrid 400.0 700.0 | git_sha {...}
+PROVENANCE OK (all five SHAs non-"unknown")
+STAGES OK ('ingest','discover','match','geometry','fit','figure','report')
+```
+
+The `ROBUST OK` line is the one that matters: it is a **regression test, not a
+smoke test**. A stale `robust` (< `e1f4289`) imports fine and returns a number
+from the forward call — the same number at every wavelength. Asserting the
+correction *varies* (std 0.0245) is what proves the off-nadir fix is inside.
+
+Beyond `pab --dry-run`, I ran a **real 2.0 fit inside the container** (no
+network): chains `(300, 16, 6)`, `param_names[-1] == 'Bp'`, `Bp` 0.0498 inside
+its prior. The image can fit, not merely import.
+
+**One blocker had to be solved: the build was broken for everyone.**
+`bing/setup.py` pins
+`retrieve-or-bust @ git+https://github.com/ocean-colour/retrieve-or-bust.git@cdom-rt`,
+and that branch was merged (PR #21 → `5ca740d`) and **deleted from the
+remote** — `git ls-remote` returns nothing. pip died with
+`error: pathspec 'cdom-rt' did not match any file(s) known to git`.
+
+I did **not** edit `bing`. That pin exists so ReadTheDocs can build without a
+local checkout, and re-pointing it is bing's call (its own comment says
+"re-point or drop the @cdom-rt once robust/rt merges to main"). Instead
+`nautilus/build_image.sh` now strips that single line from the **staged copy
+only**, guarded by a `grep` so it reports if the pin is ever fixed upstream.
+`retrieve-or-bust` is installed from staged source in the same pip command, so
+the requirement is redundant here. A blanket `--no-deps` would have silently
+dropped bing's other ~25 dependencies (`timm`, `umap-learn`, `astropy`, …).
+
+**Also changed:** `retrieve-or-bust` added to the staging rsync (excluding
+`context/` 16 MB, `notebooks/`, `reports/`); three staging guards that fail the
+build if the emulator weights, the `Ed` table, or the off-nadir fix are missing
+from the staged tree; `jax flax optax jaxtyping` in the pip install; `TAG=2.0.0`.
+
+### Task 2 — PVC re-layout (2026-09-17): **done**
+
+Executed exactly as approved in Q2 — (a) yes, (b) rename, (c) delete, (d) not
+now. One short-lived pod, `mv` only, with preconditions that refuse to run if
+`/data/v1` or `/data/v2` already exist.
+
+| | before | after |
+|---|---|---|
+| `/data/full` (27 G) | stale `pab.db`, `pipeline/`, `run.log` | → **`/data/v1`** |
+| `/data/full/pab.db` | 138,854,400 B, **stale** | → **`/data/v1/pab_stale_2026-08-20.db`** |
+| `/data/fit_chains` (19 G) | 14,633 files | → **`/data/v1/fit_chains`** (14,633, verified) |
+| — | — | **`/data/v2/{fit_chains,pipeline}`** created |
+| `/data/src` (2.9 M) | retired checkout | **deleted** |
+| `/data/run1k`, `/data/val`, `/data/valj1`, 5 loose files | | untouched |
+
+`du -sh`: `/data/v1` **45 G**, `/data/v2` **116 M**, `/data/run1k` 507 M,
+`/data/val` 2.3 M, `/data/valj1` 577 K. Volume **46 G of 500 G, 455 G free** —
+ample for the ~17 GB of v2 chains.
+
+**Two corrections to the doc's stated layout**, now measured: `fit_chains` is
+**14,633** files (the doc said 14,654), and `/data/valj1` (577 K) plus five
+loose top-level files exist that the task did not mention. Left alone, as they
+were outside the instruction.
+
+**The rename is the substantive decision.** `/data/full/pab.db` was never the
+published v1 — it is 138,854,400 B against the release's 169,938,944 B and
+sha `09de0a6d…`. Renaming it to `/data/v1/pab.db` would have put a *different*
+database at the one path `HOWTO.md` §5b pins by checksum. `/data/v1/pab.db`
+is now **absent** rather than wrong. Recorded in `HOWTO.md`, along with the
+fact that `fits.chains_path` in the v1 DB still records the old
+`/data/fit_chains/...` paths — deliberately not rewritten, since v1 is frozen,
+so prepend `/data/v1` when resolving them.
+
+### Task 3 — stage v2 on the PVC (2026-09-17): **done**
+
+`/data/v2/pab.db` in place and **verified byte-identical**:
+
+| check | result |
+|---|---|
+| size | 120,635,392 B, both ends |
+| **sha256 in-pod** | **`ef552419174507eb25c77da7ea72484646d3ce162dc2f51259b438d8c127b735`** |
+| sha256 workstation | **identical** |
+| `PRAGMA user_version` | **5** |
+| `matchup_pixels` v5 columns | all four present |
+| `fits` v5 columns | all six present |
+| `PRAGMA integrity_check` | `ok` |
+
+Contents: 881 floats / 54,031 profiles / 67,435 granules / 14,610 matchups /
+146,100 pixels / 14,609 `NASA_GIOP` fits / 116,872 `fit_results` /
+14,586 non-null `scene_path`. **0 BING fits and 0 filled geometry** — expected,
+and Prompt 5's first job.
+
+The in-pod schema check was worth doing rather than trusting the checksum
+alone: a matching sha proves the bytes arrived, but `user_version = 5` plus the
+column lists is what proves the *right* database was staged. A v4 copy would
+have been fitted without the geometry columns and failed much later.
+
+**The workstation copy is now `chmod a-w`** (`-r--r--r--`), verified: a
+`CREATE TABLE` against it raises `attempt to write a readonly database`, while
+read-only opens still work. `/data/v2/pab.db` is the single writer's copy until
+Prompt 7 brings it back.
+
+
+### Task 4 — in-pod validation of `pab:2.0.0` (2026-09-17): **gates passed; one real bug found and fixed**
+
+New `nautilus/v2_validate_job.yaml` + `nautilus/v2_validate_gates.py` (mounted
+as a ConfigMap). The gate script **exits non-zero** on failure rather than
+printing numbers to be eyeballed — a validation job should go red when 2.0 is
+wrong.
+
+**Job succeeded.** 5 profiles → 12 granules → 1 matchup → 10 pixels → 1 fit.
+Every gate passed:
+
+```
+PASS schema is v5 / matchups exist / fits exist
+PASS every pixel has geometry — 10/10
+PASS geom_source is L1B_V3
+     geometry ranges: theta_s 41.38..41.42  theta_v 31.41..31.62  dphi 14.57..14.94
+PASS theta_s / theta_v / dphi physical and wrapped
+PASS fits.rt_backend='robust_hybrid' include_raman=1 include_chl_fl=1
+     include_cdom_fl=0 fit_bp=1 phi_c=0.02 wave_max=700.0 pab_version='2.0'
+PASS fit_id is version-aware — …_ExpBPow_v2.0
+PASS pkg_versions has robust — 0.0.dev0
+PASS git_sha has all five repos, none "unknown"
+PASS bbp700 4.376e-04 / Bp 0.0108 / chisq 0.58 / accept_frac 0.257
+PASS chains under /data/v2val/fit_chains — shape (10000, 16, 6), 0.97 MB
+PASS chain filename is version-aware
+```
+
+**The provenance chain is proven end to end**: the SHAs went image build →
+`PAB_GIT_SHAS` env → running process → `pkg_versions` JSON on the persisted
+row, with no `"unknown"`. The geometry stage worked in-pod on a live CMR lookup
+plus a 1.8 GB L1B read — 2.0's one new external dependency.
+
+**In-pod timings** (single fit, `--jobs 4`, whole run ~8 min):
+
+| stage | wall |
+|---|---:|
+| ingest (5 profiles) | 73 s |
+| discover | 15 s |
+| match | 75 s |
+| **geometry** (1 granule, 10 px) | **47 s** |
+| **fit** (1 fit) | **226 s** |
+| figure | 10 s (failed — see below) |
+
+**`s/fit` in-pod is ~226 s**, above the workstation's ~101 s uncontended and
+~181 s under 3-way contention. Prompt 5 should size from 226 s, not the
+workstation numbers — but note this is **one** fit including JAX's first
+compile, so it is an upper bound and the amortised figure over thousands will
+be lower. Likewise the 47 s geometry is one granule including pool startup
+against the workstation's ~9 s/granule; worth re-measuring on a bigger slice
+before committing to an 11,494-granule budget.
+
+**The bug the run found.** The `figure` stage failed for the fit, and — the
+part that matters — **my gates reported ALL PASSED anyway**, because they only
+queried the database and a stage that writes nothing leaves nothing to query.
+Full detail and the rebuild question in **Q4**; in short, `fit_fig` passed a
+per-sample `B_p` array where `robust` wants its `(nsamples, nwave)` batched
+layout. Fixed in `reconstruct_rrs::_broadcast_bp`, verified by rendering a
+figure from a real `robust_hybrid` fit, two regression tests added (one through
+the **unmocked** backend), and the gate script now checks the figures exist and
+that `fits.figure_path` was recorded. Suite **336 passed**.
+
+**One stale gate in this doc, corrected in the script:** the task text says
+`wave_max=720.0`, but JXP's Q2 answer in Prompt 3 moved 2.0 back to **700**.
+The gate asserts 700, and the fit persisted 700.
+
+`/data/v2val` deleted as instructed. PVC back to `/data/v1` 45 G + `/data/v2`
+116 M, 46 G of 500 G used.
+
 
 ## Logging
 
@@ -368,3 +601,89 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-09-17 (Prompt 4 Tasks 1–3 — image 2.0.0 built and pushed, PVC re-laid out, v2 staged)
+
+`pab:2.0.0` is on the registry at digest `sha256:1afd4cc9…`, the PVC is
+`/data/v1` + `/data/v2`, and `/data/v2/pab.db` is staged and checksum-verified.
+
+What I learned / want to remember:
+
+- **The image build was broken for everyone and nobody knew.** `bing/setup.py`
+  pins `retrieve-or-bust @ git+…@cdom-rt`; that branch was merged and deleted
+  from the remote, so `pip install ./bing` now fails with
+  `pathspec 'cdom-rt' did not match any file(s)`. It worked five weeks ago at
+  1.0.3. A direct-reference dependency on a *branch* is a time bomb: it is
+  fine until someone tidies up the branch list, and then an unrelated build
+  fails with a message that points at git rather than at the pin. I fixed it in
+  the staged copy only — the live pin serves ReadTheDocs, where there is no
+  local checkout, and that is bing's call to change.
+- **"Fix it in the staging copy" beat both alternatives.** Editing bing would
+  have broken its ReadTheDocs build; `--no-deps` on bing would have silently
+  dropped ~25 real dependencies. Modifying the *artifact of a build step*,
+  with a `grep` guard that reports when the upstream pin is repaired, keeps the
+  blast radius to this image.
+- **A smoke test that only asserts "no exception" cannot catch a wrong
+  number.** The prompt originally asked for a guard that imports `robust.rt`
+  and runs one forward call — which passes happily on the broken emulator,
+  because a saturated network still returns a float. Asserting the correction
+  *varies across the band* costs the same and is the actual regression test. It
+  passed (std 0.0245), so the shipped image demonstrably contains `e1f4289`.
+- **Renaming the stale DB was the right call and worth the question.** Doing
+  what the task literally said — `mv /data/full /data/v1` — would have created
+  `/data/v1/pab.db` holding a database that is *not* the v1 release, at the one
+  path `HOWTO.md` defines by sha256. Absent beats wrong: someone checking the
+  PVC against the documented checksum now gets "no such file" rather than a
+  mismatch they have to explain.
+- **Verify the schema, not just the checksum.** The sha proves the bytes
+  survived the wire; `PRAGMA user_version = 5` and the column lists prove the
+  *right* file was sent. Those are different failures, and only the second
+  catches "you staged last month's copy".
+- CephFS renames within one volume are metadata-only: 19 G of chains (14,633
+  files) moved instantly. Worth knowing before anyone plans a maintenance
+  window for a PVC re-layout.
+- Measured, not assumed: `fit_chains` holds **14,633** files, not the 14,654
+  the doc carried forward, and there are two directories plus five loose files
+  on the PVC that no task mentions. I left everything unmentioned alone.
+
+### 2026-09-17 (Prompt 4 Task 4 — in-pod validation: every gate green, and a real bug underneath)
+
+`pab:2.0.0` ran the full seven-stage pipeline on Nautilus. Geometry, fit,
+schema v5, version-aware ids, chains and provenance all validated in-pod. The
+`figure` stage failed, my gates did not notice, and that is the most useful
+thing that happened today.
+
+What I learned / want to remember:
+
+- **A gate set that only queries the database cannot see a stage that produced
+  nothing.** Every one of my ~25 checks passed while `figure` failed for the
+  only fit in the run, because a failed stage writes no row to contradict. The
+  job even exited 0. I have added a figures-on-disk check and a
+  `fits.figure_path` check, but the general lesson is the one to keep: when
+  validating a pipeline, assert on **artefacts produced**, not only on rows
+  that exist — "nothing was written" and "nothing was checked" look identical.
+- **The bug was invisible locally for two compounding reasons.** The other
+  caller of `reconstruct_rrs` (`_fit_diagnostics`) passes a *scalar* `B_p`,
+  which broadcasts fine; and my dispatch unit tests **mocked**
+  `calc_Rrs_from_models_robust` to assert routing. So nothing ever pushed a
+  real *batch* through the real backend — and Prompt 3 Task 6 fitted 60
+  spectra without rendering a single figure. Mocking the thing you are
+  integrating with tests the call, not the contract. The new regression test
+  deliberately uses the unmocked backend.
+- **BING had already solved it, and I hand-rolled instead.**
+  `evaluate.reconstruct_from_chains` does the same peel-and-broadcast, with the
+  `(nsamples, nwave)` convention documented in its own docstring. Had I looked
+  for an existing helper when writing `fit_fig`'s reconstruction in Task 5, the
+  shape question would never have arisen. I fixed it at my dispatch point
+  rather than switching wholesale, because `reconstruct_from_chains` returns
+  ±σ bands while the figure draws 5–95 percentiles — but the reuse instinct
+  should have fired first.
+- **In-pod is ~2× slower per fit than the workstation** (226 s vs ~101 s
+  uncontended). I am reporting it as an upper bound rather than a cost model:
+  it is a single fit including JAX's first compile, and the geometry figure
+  (47 s for one granule vs ~9 s locally) is similarly startup-dominated. One
+  sample is a data point, not a rate — Prompt 5 should re-measure on a real
+  slice before booking cluster time.
+- The `PYTHONWARNINGS=ignore` in the manifest did its job: no `DomainWarning`
+  flood, and the log stayed readable enough that the figure traceback was
+  visible at a glance.

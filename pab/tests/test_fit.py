@@ -987,3 +987,53 @@ def test_init_worker_respects_a_deliberate_setting(monkeypatch):
 
     init_worker()
     assert os.environ["XLA_FLAGS"] == "--custom=1"
+
+
+# --- Bp batch shape (the in-pod figure-stage failure, 2026-09-17) ------------
+def test_broadcast_bp_shapes():
+    """robust's batched-B_p layout is (nsamples, nwave), not (nsamples,)."""
+
+    class _M:
+        wave = np.arange(400.0, 700.0, 10.0)  # 30 bands
+
+    models = [_M(), _M()]
+    assert run._broadcast_bp(None, models) is None
+    assert (
+        run._broadcast_bp(np.float64(0.012), models).ndim == 0
+    )  # scalar passes through
+    out = run._broadcast_bp(np.full(7, 0.012), models)
+    assert out.shape == (7, 30)
+    already = np.full((7, 30), 0.012)
+    assert run._broadcast_bp(already, models).shape == (7, 30)
+
+
+def test_reconstruct_rrs_accepts_a_per_sample_bp_against_the_real_backend():
+    """The regression test for the in-pod `figure` failure.
+
+    ``fit_fig`` peels the chain's trailing ``B_p`` column, giving one value per
+    posterior sample. Passed through unbroadcast, the robust backend died with
+    ``Incompatible shapes for broadcasting: [(48000, 136), (48000,)]`` — deep
+    inside JAX, and only in the pod, because the other caller passes a scalar
+    and the dispatch unit tests mock the forward model. This exercises the
+    **real** backend with a batch.
+    """
+    pytest.importorskip("bing")
+    pytest.importorskip("robust")
+    geom = _geom()
+    wave = np.arange(410.0, 700.0, 20.0)
+    _, rt_dict, models = run.build_models(FitConfig(), wave, geom=geom)
+    from bing.models import utils as model_utils
+
+    model_utils.init_other_bits(models, Chl=np.array([0.1]), Y=None, Rrs=None)
+    run.set_inelastic_Ed(models, geom, rt_dict)
+
+    n = 5
+    a_params = np.tile(np.array([np.log10(0.02), 0.017, np.log10(0.03)]), (n, 1))
+    bb_params = np.tile(np.array([np.log10(0.004), 1.0]), (n, 1))
+    bp = np.full(n, 0.012)
+
+    out = np.asarray(
+        run.reconstruct_rrs(models, a_params, bb_params, rt_dict, geom=geom, Bp=bp)
+    )
+    assert out.shape == (n, models[0].wave.size)
+    assert np.all(np.isfinite(out))
