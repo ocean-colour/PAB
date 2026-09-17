@@ -316,6 +316,7 @@ instant even for the 19 G of chains.
 *My recommendation: (a) yes, (b) rename, (c) delete, (d) not now — the v2 run
 does not read v1, and Prompt 7's comparison can pull it from `s3://pab/v1/`.*
 
+>A. (a) yes, (b) rename, (c) delete, (d) not now — the v2 run does not read v1, and Prompt 7's comparison can pull it from `s3://pab/v1/`.
 
 ### Q3 (Task 1, 2026-09-17) — confirm the `docker push` of `pab:2.0.0`
 
@@ -350,6 +351,8 @@ with the new inelastic defaults.
 *My recommendation: (a) yes; (b) push both — the manifests here pin an explicit
 tag, `:latest` is a convenience, and leaving it on 1.0.3 after 2.0 ships is the
 more confusing state.*
+
+>A. Let's use your Recommendations
 
 
 ## Reports
