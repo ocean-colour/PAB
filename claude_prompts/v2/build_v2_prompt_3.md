@@ -260,6 +260,60 @@ default may need changing, which is why it is raised here rather than there.
 
 >A. Yes, let's use option 3.  We will accept B_p lying outside its training range. I am adding a new task to the list.
 
+### Q2 (Task 6, 2026-09-17) — `wave_max = 720` pulls in a band that is **negative or noise-dominated on 40 % of matchups** — confirm R4
+
+The R4 red-edge check on all 20 local matchups, at the 719 nm band the 2.0
+window newly includes:
+
+| | count | |
+|---|---:|---|
+| `Rrs(719)` **negative** | **6 / 20** | −1.5e−4 … −3.2e−4 sr⁻¹ |
+| `Rrs(719)` positive but `unc > signal` | 2 / 20 | ratios 1.95 and 3.85 |
+| **unusable either way** | **8 / 20 = 40 %** | |
+| usable | 12 / 20 | median `unc/Rrs` = **0.30** |
+
+Even the *good* band carries ~30 % relative uncertainty — the best case here is
+a noisy point, not a constraint.
+
+**And it shows up in the fits.** Splitting the 20 matchups by red-edge quality:
+
+| group | n | χ² 2.0 | χ² 1.0 | 2.0/1.0 |
+|---|---:|---:|---:|---:|
+| 719 nm usable | 12 | 0.48 | 0.39 | **1.24×** |
+| 719 nm negative / noise-dominated | 8 | 1.12 | 0.61 | **1.84×** |
+
+The four worst 2.0 χ² in the whole set — 2.38, 2.36, 2.05, 1.37 — are **exactly
+the four matchups with the most negative `Rrs(719)`**. The 2.0 fit is being
+asked to reproduce a negative reflectance, and the χ² degradation is
+concentrated there rather than spread across the set.
+
+**Options:**
+
+1. **Keep `wave_max = 720`** and accept it. The inelastic terms (Chl
+   fluorescence peaks ~685 nm) are the reason for going red, and a noisy band
+   is still information when it is weighted by its variance — which
+   `prepare_spectrum` does. But a *negative* `Rrs` is not noise around a small
+   positive value the model can reach; the model is non-negative by
+   construction, so those points can only ever contribute a floor of
+   mismatch.
+2. **Drop back to `wave_max = 700`** for 2.0. Keeps the inelastic physics
+   (fluorescence peak is inside 700) and removes the pathological band.
+   Loses the red shoulder the 720 window was chosen for.
+3. **Keep 720 but screen the band per matchup** — drop non-positive `Rrs`
+   points in `prepare_spectrum` (it already drops NaNs), so a matchup with a
+   good red edge keeps it and one with a negative 719 nm simply fits 400–710.
+   Costs a few lines and makes the window adaptive rather than global.
+
+*My recommendation: option 3.* It is the only one that does not throw away
+good data or keep bad data, and the existing NaN-dropping in
+`prepare_spectrum` is the natural place. Worth noting a non-positive `Rrs` is
+unphysical at **any** wavelength, so this arguably belongs there regardless of
+the 720 decision — I checked, and no band below 700 nm is non-positive in
+these 20, so it would be a no-op for 1.0.
+
+**Awaiting JXP.** Nothing is blocked: the 2.0 fits all completed, and this is
+about whether they should have been asked to fit that band.
+
 ## Reports
 
 ### Task 1 — the 2.0 configuration (2026-09-15): **done**
@@ -652,6 +706,124 @@ caps, including that `run._worker_init` is the shared one and that a
 deliberate `XLA_FLAGS` is respected.
 
 
+### Task 6 — real end-to-end check (2026-09-17): **done — 60/60 fits, 0 failures**
+
+**This is the first time 2.0 has fitted real data.** Three arms × 20 matchups,
+every fit succeeded.
+
+**Setup.** Scratch `v2` via `split_version.copy_database`, pruned to the 10
+pilot `V3_2` granules → **20 matchups / 200 pixels**, schema v5.
+`--stage geometry --jobs 8` filled **all 200 pixels, 0 failures, 28.6 s**.
+`PAB_DATA_DIR` pointed at the *scratch* `v2/`, so the layout mirrors production
+exactly (`$PAB_DATA_DIR/fit_chains/`) without writing into the real
+`v2/fit_chains/`. `build_fits` fits the rank-1 pixel per matchup, so the subset
+used is **all 20 matchups (20 fits per arm)**, not all 200 pixels.
+
+**A third arm.** Per Q1 (JXP: option 3) I added `robust_ztt` alongside 2.0 and
+`FitConfig.v1()`, to measure what the emulator correction is now worth after
+Task 3's fix. Each arm ran serially in its own database — necessary, because
+`make_fit_id` distinguishes *versions*, not *configurations*, so hybrid and
+ztt at `pab_version = 2.0` produce identical ids.
+
+#### Per-matchup results
+
+| matchup | s/fit 2.0 | s/fit 1.0 | bbp700 2.0 | bbp700 1.0 | ratio | Bp | chl | χ² 2.0 | χ² 1.0 | acc 2.0 | acc 1.0 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1902370_80 | 194.5 | 37.8 | 0.001162 | 0.001335 | 0.871 | 0.0221 | 0.123 | 0.45 | 0.37 | 0.321 | 0.494 |
+| 1902380_134 | 207.6 | 38.5 | 0.001821 | 0.001613 | 1.129 | 0.0216 | 0.073 | 1.12 | 0.72 | 0.346 | 0.446 |
+| 1902381_134 | 197.1 | 37.3 | 0.000411 | 0.000530 | 0.776 | 0.0043 | 0.147 | 0.78 | 0.69 | 0.381 | 0.480 |
+| 1902722_36 | 183.4 | 33.9 | 0.000851 | 0.001113 | 0.765 | 0.0280 | 0.143 | 0.42 | 0.32 | 0.350 | 0.483 |
+| 2902912_68 | 185.1 | 36.3 | 0.000932 | 0.001233 | 0.756 | 0.0305 | 0.119 | 0.34 | 0.32 | 0.380 | 0.490 |
+| 2902912_69 | 177.1 | 32.8 | 0.001070 | 0.001381 | 0.775 | 0.0317 | 0.115 | 0.38 | 0.34 | 0.385 | 0.478 |
+| 2903451_85 | 207.8 | 36.5 | 0.001024 | 0.001410 | 0.726 | 0.0410 | 0.120 | 1.37 | 0.59 | 0.293 | 0.463 |
+| 2903919_3 | 177.9 | 39.3 | 0.000413 | 0.000663 | 0.623 | 0.0055 | 0.139 | 0.82 | 0.58 | 0.358 | 0.474 |
+| 2903919_4 | 166.1 | 46.3 | 0.000446 | 0.000692 | 0.644 | 0.0087 | 0.114 | 0.87 | 0.62 | 0.210 | 0.474 |
+| 2903920_1 | 173.7 | 39.3 | 0.000654 | 0.000928 | 0.706 | 0.0325 | 0.124 | 2.05 | 1.02 | 0.319 | 0.458 |
+| 2903920_2 | 194.4 | 33.4 | 0.000634 | 0.000911 | 0.696 | 0.0333 | 0.124 | 2.38 | 1.14 | 0.310 | 0.459 |
+| 2903920_3 | 184.2 | 33.2 | 0.000634 | 0.000907 | 0.699 | 0.0367 | 0.122 | 2.36 | 1.14 | 0.339 | 0.457 |
+| 3902343_37 | 173.9 | 37.4 | 0.001153 | 0.001272 | 0.906 | 0.0347 | 0.097 | 0.44 | 0.37 | 0.359 | 0.460 |
+| 3902615_25 | 178.6 | 33.5 | 0.001395 | 0.001348 | 1.035 | 0.0202 | 0.085 | 0.89 | 0.54 | 0.326 | 0.455 |
+| 5906343_162 | 187.2 | 33.9 | 0.000508 | 0.000660 | 0.770 | 0.0193 | 0.078 | 0.45 | 0.21 | 0.239 | 0.452 |
+| 5906471_143 | 187.4 | 35.9 | 0.000614 | 0.000909 | 0.675 | 0.0057 | 0.129 | 0.54 | 0.44 | 0.291 | 0.497 |
+| 5906476_142 | 175.9 | 38.1 | 0.001040 | 0.001342 | 0.775 | 0.0193 | 0.243 | 0.42 | 0.44 | 0.348 | 0.502 |
+| 5906490_108 | 166.0 | 37.5 | 0.000782 | 0.001132 | 0.691 | 0.0346 | 0.064 | 0.51 | 0.41 | 0.333 | 0.461 |
+| 5906521_119 | 159.7 | 34.1 | 0.000469 | 0.001016 | 0.462 | 0.0374 | 0.133 | 0.76 | 0.47 | 0.300 | 0.469 |
+| 6904187_157 | 148.3 | 32.7 | 0.000541 | 0.000797 | 0.679 | 0.0193 | 0.185 | 0.26 | 0.24 | 0.288 | 0.463 |
+
+#### Headline numbers
+
+| | median | min | max |
+|---|---:|---:|---:|
+| **`bbp700` 2.0 / 1.0** | **0.741** | 0.462 | 1.129 |
+| `bbp700` hybrid / ztt | 0.886 | 0.810 | 1.230 |
+| `Bp` (prior 0.004–0.05) | 0.0250 | 0.0043 | 0.0410 |
+| `Rrs_unc(719)/Rrs(719)` | 0.236 | −0.558 | 3.849 |
+| s/fit 2.0 `robust_hybrid` | 181.0 | 148.3 | 207.8 |
+| s/fit 2.0 `robust_ztt` | 178.2 | 151.5 | 204.9 |
+| s/fit 1.0 `gordon` | 36.4 | 32.7 | 46.3 |
+| χ² 2.0 / `robust_ztt` / 1.0 | 0.65 / 0.58 / 0.45 | | |
+
+**The 2.0 fit retrieves ~26 % less `b_bp`(700) than 1.0** (median ratio 0.741),
+systematically — 18 of 20 matchups are below 1.0. That is the single most
+important number here, and it is far larger than the `Rrs` uncertainties.
+Whether it is an improvement is the Prompt 4+ comparison against the float
+`BBP700`; this task only establishes that the shift is large and consistent.
+
+**The emulator correction is worth ~11 %** (`hybrid/ztt` median 0.886) and costs
+essentially nothing in time (181 vs 178 s/fit). After Task 3's fix that is a
+real, bounded contribution rather than the flat −22 % collapse it was applying
+before — which is the empirical vindication of that fix.
+
+**`B_p` is well determined but sits outside the emulator's trained range on
+every fit.** `0/20` land inside `[0.01026, 0.018]`; JXP accepted that in Q1.
+Worth recording: `3/20` press against the **lower prior bound** (0.0043,
+0.0055, 0.0057 against a floor of 0.004), i.e. the data wants a smaller `B_p`
+than the prior allows on those. Not acting on it, but it is the kind of
+pile-up that should not go unnoticed.
+
+**Cost.** 2.0 is **~5× slower** than 1.0 per fit (181 s vs 36 s). At 14,610
+matchups that is ~735 core-hours for the 2.0 arm versus ~146 for 1.0 — the
+number Prompt 5's Nautilus sizing needs. Note these s/fit were measured with
+three arms running concurrently; the uncontended `--jobs 2` run came out at
+~101 s/fit of wall per worker-pair, so the contended figures are conservative.
+
+#### `--jobs 2` (spawned workers → JAX JIT in a worker)
+
+`pab --db … --stage fit --jobs 2` on a 6-matchup copy: **6 written, 0 failed,
+304 s**. JAX compiles per worker process without trouble. Results match the
+serial arm to **0.1–1.6 %** (MCMC is unseeded, so that is sampling noise, not
+a discrepancy).
+
+#### Persistence checks — all 20/20
+
+`pab_version='2.0'`, `rt_backend='robust_hybrid'`, `include_raman=1`,
+`include_chl_fl=1`, `include_cdom_fl=0`, `fit_bp=1`, `phi_c=0.02`,
+`wave_max=720.0`, `fit_id` ending `_v2.0`, `chains_path` non-null. The 20
+`NASA_GIOP` baseline rows are untouched. Example id:
+
+```
+1902370_80_PACE_OCI.20251004T014456.L2.OC_AOP.V3_2.nc_292_979_ExpBPow_v2.0
+```
+
+**Chains**: 20 NPZ, 23 MB, in `$PAB_DATA_DIR/fit_chains/` — i.e. exactly where
+pointing `PAB_DATA_DIR` at the version directory puts them (~1.15 MB/fit →
+**~17 GB** for 14,610 matchups, close to v1's 18.09 GiB).
+
+**Frozen data intact**: `v1/pab.db` sha256 still `09de0a6d…f978273`; the real
+`v2/pab.db` still has **0** BING fits and **0** filled pixels; the real
+`v2/fit_chains/` is still empty. All 60 fits stayed in scratch.
+
+**Docs**: `docs/fitting.rst` gained an RT-configuration section (the 2.0 vs
+`v1()` table, the free-`B_p` chain layout, the `Ed` requirement, the
+reconstruction dispatch) and updated `fit_id`/provenance sections;
+`HOWTO.md` gained the 2.0 defaults, the geometry prerequisite on the `fit`
+stage row, and the chains-path warning. Sphinx clean; **334 tests pass**.
+
+**One finding raised as Q2**: `wave_max = 720` pulls in a band that is negative
+or noise-dominated on **40 %** of these matchups, and that is where the 2.0 χ²
+degradation is concentrated.
+
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -905,3 +1077,49 @@ What I learned / want to remember:
 - The `DomainWarning` is still emitted once per forward call and is now also
   emitted from the *figure* path. Still correct, still noisy — Task 6 should
   decide how the production run suppresses it.
+
+### 2026-09-17 (Prompt 3 Task 6 — 2.0 fits real data for the first time)
+
+Three arms × 20 real matchups, 60/60 fits succeeded. The headline: **2.0
+retrieves ~26 % less b_bp(700) than 1.0**, systematically (median ratio 0.741,
+18/20 below unity). Everything asked for verified — `pab_version`, the six v5
+columns, the `_v2.0` id, chains in `$PAB_DATA_DIR/fit_chains/`, v1 sha
+unchanged, production `v2` untouched.
+
+What I learned / want to remember:
+
+- **The red edge is the story of this run, and I only found it because R4 asked
+  for one number.** `Rrs_unc(719)/Rrs(719)` was on the checklist as a sanity
+  value; computing it showed `Rrs(719)` is **negative on 6 of 20 matchups** and
+  swamped by its own uncertainty on 2 more — 40 % unusable. Then the χ² split
+  fell out: the four worst 2.0 fits in the whole set are exactly the four most
+  negative `Rrs(719)`, and the bad-red-edge group degrades 1.84× against 1.0
+  while the good group degrades 1.24×. A single requested diagnostic turned
+  into the explanation for the one number that looked wrong. Raised as Q2 with
+  a recommendation to screen non-positive bands per matchup rather than move
+  the global window.
+- **Task 3's fix is now empirically justified, not just argued.** The emulator
+  correction is worth a median 11 % on `bbp700` and costs 3 s/fit out of 181.
+  Before the fix it was applying a flat −22 % to `Rrs`. "Worth 11 % when
+  correct, −22 % when broken" is the kind of thing that is only visible once
+  real fits exist.
+- **Concurrency inflated my s/fit numbers and I nearly reported them as clean.**
+  I ran the three arms simultaneously to save wall time, which is fine for the
+  science but means every s/fit was measured under 3-way contention. The
+  uncontended `--jobs 2` run came out ~45 % faster per fit. I labelled the
+  figures rather than quietly presenting them as the cost model Prompt 5 will
+  size Nautilus from — a projection built on contended timings would over-book
+  the cluster.
+- **`make_fit_id` distinguishes versions, not configurations**, so the three
+  arms needed three databases: hybrid and ztt both stamp `_v2.0` and would
+  have overwritten each other. Fine for the production run, which has one
+  configuration, but it is a real constraint on any comparison study and it is
+  now written into `docs/fitting.rst`.
+- **`B_p` piles up on its lower prior bound for 3 of 20 matchups** (0.0043
+  against a floor of 0.0040). Not acted on, but prior pile-up means the data
+  wants something the prior forbids, and it is worth watching whether that
+  fraction grows over 14,610.
+- The background arms outlived the session that launched them and completed
+  normally; the results were waiting in the scratch JSON. Worth knowing that a
+  detached `nohup` run survives a session boundary here — and worth checking
+  the output files rather than assuming a stopped watcher means lost work.

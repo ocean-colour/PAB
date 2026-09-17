@@ -55,8 +55,73 @@ PAB defaults to ``nsteps=10000``, ``nburn=1000``, ``nwalkers=max(16, 2·ndim)`` 
 lighter than BING's research default but adequate for these retrievals. Posterior
 statistics drop ``analysis_burn`` (7000) production steps; the reconstruction
 falls back to ``nsteps // 2`` when a chain is shorter, so quick test/CI runs at
-toy size still yield samples. ``variable_Gordon`` and ``include_Raman`` are off
-by default (the constant-coefficient elastic Gordon model).
+toy size still yield samples. ``variable_Gordon`` stays off (the
+constant-coefficient Gordon coefficients).
+
+Radiative-transfer configuration: 2.0 vs 1.0
+--------------------------------------------
+
+As of ``pab_version = "2.0"`` the :class:`~pab.fit.models.FitConfig` **defaults
+are the inelastic configuration**, and the published 1.0 configuration is kept
+as the named constructor :meth:`~pab.fit.models.FitConfig.v1` so comparisons
+cannot drift from it by accident.
+
+.. list-table::
+   :header-rows: 1
+
+   * - field
+     - 2.0 (default)
+     - ``FitConfig.v1()``
+   * - ``rt_backend``
+     - ``'robust_hybrid'``
+     - ``'gordon'``
+   * - ``include_Raman``
+     - ``True``
+     - ``False``
+   * - ``include_Chl_fl``
+     - ``True``
+     - ``False``
+   * - ``include_CDOM_fl``
+     - ``False``
+     - ``False``
+   * - ``fit_Bp``
+     - ``True``
+     - ``False``
+   * - ``phi_C`` / ``Bp_value``
+     - 0.02 / 0.01
+     - 0.02 / 0.01
+   * - ``wave_max``
+     - **720 nm**
+     - 700 nm
+
+``rt_backend`` selects the forward model that turns ``(a, bb)`` into ``Rrs``:
+``'gordon'`` is BING's own elastic Gordon (1988) relation; ``'robust_hybrid'``
+is retrieve-or-bust's analytic ZTT model plus a learned emulator correction,
+valid over 350–750 nm — which is why ``wave_max = 720`` is safe. Every backend
+except ``'gordon'`` **requires per-pixel geometry**: ``theta_s`` is never
+silently defaulted, so a fit whose pixel has no ``theta_s``/``theta_v``/``dphi``
+is refused before the granule is even opened, and recorded under ``"failed"``.
+Run the ``geometry`` stage first (see ``HOWTO.md`` §4).
+
+**Free** ``B_p``. Under ``fit_Bp`` the sampled vector gains a **trailing**
+``B_p`` dimension — ``[a_params…, bb_params…, B_p]``, ``ndim = 6`` for
+``ExpBPow`` — sampled **linearly** over ``[0.004, 0.05]``. It is reported as the
+``Bp`` quantity. Anything splitting a posterior must peel that trailing column
+*before* the ``a``/``bb`` split (:func:`pab.fit.run._split_flat`).
+
+**Downwelling irradiance.** BING's Raman and fluorescence kernels need
+``Ed(λ)`` and PACE L2 carries none, so
+:func:`pab.fit.run.set_inelastic_Ed` supplies ``robust``'s packaged Loisel+23
+spectrum interpolated at the pixel's solar zenith (350–750 nm, covering both the
+fit window and the Raman excitation grid). This is not optional: without it
+Raman silently falls back to a flat ``Ed(λ')/Ed(λ) = 1`` (~+60 % increment error
+at 490 nm) and chlorophyll fluorescence raises ``IndexError`` on a 0-d
+``Ed_ex``.
+
+**Reconstruction must match the fit.** :func:`pab.fit.run.reconstruct_rrs` is
+the single dispatch point — χ²/AIC/BIC and the fit figure both use it, so a
+robust fit is scored and drawn with ``calc_Rrs_from_models_robust`` rather than
+the elastic relation.
 
 Provenance & artifacts
 ----------------------
@@ -65,14 +130,39 @@ Every ``fits`` row carries ``pab_version``, ``created``, and ``pkg_versions``
 (a JSON snapshot from :func:`pab.config.package_versions`), plus the fit
 diagnostics (reduced ``chisq``, ``aic``, ``bic``, ``accept_frac``, ``success``)
 and the configuration (``anw_model``/``bbnw_model``/``prior_set``/``nsteps``/…).
+Schema v5 adds the RT configuration itself — ``rt_backend``, ``include_raman``,
+``include_chl_fl``, ``include_cdom_fl``, ``phi_c``, ``fit_bp`` — which is what
+distinguishes a 2.0 row from a 1.0 one, since ``model_pair`` is identical
+between them.
+
+``pkg_versions`` also carries a ``git_sha`` map for ``PAB``, ``bing``, ``ocpy``,
+``remote_sensing`` and ``retrieve-or-bust``. Four of those are editable installs
+permanently reporting ``0.0.dev0``, so the **commit** is the only thing that
+identifies the code a fit ran under. In a container (no ``.git``) the build
+supplies them through the ``PAB_GIT_SHAS`` environment variable as a JSON
+object, which takes precedence over anything ``git`` reports.
+
 The bulky MCMC chains are **not** in the DB — they are written to
 ``PAB_DATA_DIR/fit_chains/<fit_id>.npz`` and referenced by ``fits.chains_path``.
+Note that path keys off the **root** of ``PAB_DATA_DIR``, not off ``--db``: to
+put a v2 run's chains in ``…/PAB/v2/fit_chains/`` you must set
+``PAB_DATA_DIR=…/PAB/v2``.
 
 How a fit links back to its matchup
 -----------------------------------
 
-A fit's deterministic id is ``"{matchup_id}_{ix}_{iy}_{model_pair}"``
-(:func:`pab.fit.run.make_fit_id`), and the ``fits`` row carries ``matchup_id`` +
+A fit's deterministic id is
+``"{matchup_id}_{ix}_{iy}_{model_pair}_v{pab_version}"``
+(:func:`pab.fit.run.make_fit_id`). The **version suffix** is load-bearing:
+``build_fits`` resumes by skipping any ``fit_id`` already in the store, so
+without it a 2.0 run over a store holding 1.0 fits would skip every matchup as
+"already done", and ``--replace`` would overwrite the published 1.0 rows instead
+of adding to them. Ids written under 1.0 keep their original, unsuffixed form.
+Note the suffix distinguishes *versions*, not *configurations*: two
+configurations run at the same ``pab_version`` (e.g. a ``robust_ztt``
+comparison arm) collide, and belong in separate databases.
+
+The ``fits`` row carries ``matchup_id`` +
 ``pixel_id`` FKs. :func:`pab.fit.run.fit_matchup` re-reads the pixel ``Rrs`` from
 the granule (spectra are not stored in ``matchup_pixels``), fits it, and
 persists; :func:`pab.fit.run.build_fits` runs the nearest pixel of every matchup,

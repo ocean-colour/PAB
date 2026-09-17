@@ -128,7 +128,7 @@ pab --db data/pab.db --download
 | `discover` | Find in-window PACE granules per profile (earthaccess; parallel via `--discover-jobs`). A profile is skipped only if the store already holds a granule **whose footprint covers that profile's own position** in its time window. | → `granules` |
 | `match` | Build PACE↔Argo matchups (Stage 4 spatial/temporal gate). Candidates come from an in-memory `GranuleIndex` (time window **+** footprint bounding box padded by `MatchupConfig.footprint_pad_deg`), so only granules that plausibly cover the float are opened. | → `matchups` |
 | `geometry` | Read each matchup pixel's solar/sensor geometry (`theta_s`, `theta_v`, `dphi`) from the co-temporal **PACE L1B** granule. Grouped **by granule** — 146,100 pixels sit on 11,494 granules, so it is one 1.8 GB lazy open per granule, not per pixel. Parallel via `--jobs`. | → `matchup_pixels.theta_s`/`theta_v`/`dphi`/`geom_source` |
-| `fit` | Run BING spectral fits per matchup (needs BING + emcee). | → `fit_results` |
+| `fit` | Run BING spectral fits per matchup (needs BING + emcee). **From 2.0 the defaults are the inelastic configuration** — `rt_backend='robust_hybrid'`, Raman + Chl fluorescence on, free `B_p`, 400–720 nm — which *requires* `geometry` to have run. A pixel with no geometry is recorded under `failed` and its granule is never opened. | → `fit_results` |
 | `figure` | Render per-matchup fit + scene figures (best-effort; needs Loisel data; parallel via `--jobs` — the costliest stage per matchup at ~42 s serial). | → `outdir/figures` |
 | `report` | Build the static site + a release manifest (Stage 7). | → `outdir/site`, `outdir/release` |
 
@@ -154,6 +154,27 @@ network work for pixels already filled, and a granule that fails transiently is
 simply retried by the next run (it is recorded in the summary's `failed` list,
 never raised). Per-pixel grid-check failures land in `mismatched` and leave that
 pixel NULL; they do not cost the granule's other pixels.
+
+**The 2.0 fit configuration.** `FitConfig()` now defaults to the inelastic
+setup and `FitConfig.v1()` reproduces the published 1.0 one:
+
+| | 2.0 (default) | `FitConfig.v1()` |
+| --- | --- | --- |
+| `rt_backend` | `robust_hybrid` | `gordon` |
+| `include_Raman` / `include_Chl_fl` | `True` / `True` | `False` / `False` |
+| `include_CDOM_fl` | `False` | `False` |
+| `fit_Bp` (free `B_p`) | `True` | `False` |
+| `wave_max` | **720 nm** | 700 nm |
+
+Use `FitConfig.v1()` for any 1.0-vs-2.0 comparison rather than re-typing the six
+keywords — that is the whole point of it. Details, including the free-`B_p`
+chain layout and the `Ed` the inelastic terms need, are in
+[`docs/fitting.rst`](docs/fitting.rst).
+
+**Chains do not follow `--db`.** `fits.chains_path` is
+`$PAB_DATA_DIR/fit_chains/<fit_id>.npz` — keyed off the **root** of
+`PAB_DATA_DIR`. For a v2 run whose chains should land in
+`…/PAB/v2/fit_chains/`, set `PAB_DATA_DIR=…/PAB/v2` (see §5b).
 
 **Provenance.** Records carry the `pab_version` and a `created` timestamp.
 Re-running under a *new* `pab_version` **adds** records rather than overwriting,
