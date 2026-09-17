@@ -314,6 +314,8 @@ these 20, so it would be a no-op for 1.0.
 **Awaiting JXP.** Nothing is blocked: the 2.0 fits all completed, and this is
 about whether they should have been asked to fit that band.
 
+>A. Let's drop back to 700nm for 2.0
+
 ## Reports
 
 ### Task 1 — the 2.0 configuration (2026-09-15): **done**

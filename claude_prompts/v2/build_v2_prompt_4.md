@@ -254,6 +254,8 @@ the current defaults (`wave_max = 720`) — nothing is blocked, every fit
 succeeded — but **do not treat the image as final** until Q2 is settled, and
 say so in the report.
 
+>A. I have answered the question in the prompt_3.md doc.  Read that an proceed accordingly.
+
 ## Reports
 
 ## Logging
