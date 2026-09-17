@@ -824,6 +824,76 @@ or noise-dominated on **40 %** of these matchups, and that is where the 2.0 χ²
 degradation is concentrated.
 
 
+### Task 7 — `build_v2_prompt_4.md` updated (2026-09-17): **done**
+
+Everything added is checked against the repos and the store as they stand
+today. Both source repos are now **committed** — PAB `eeda46f`,
+retrieve-or-bust `e1f4289` ("off nadir") — so the SHAs in the doc are real.
+
+**The one that would have cost the most: the image must be built from
+`retrieve-or-bust` ≥ `e1f4289`.** An image staged from `5ca740d` or earlier
+ships the emulator saturation bug, which applies a **flat −22 % bias to `Rrs`
+at every off-nadir pixel with no error**. A container is exactly where that
+would go unnoticed — there is no test suite in the image and the pod logs look
+normal. So Task 1 now (a) says to check out that commit before staging and
+(b) requires a **build guard that is a regression test, not an import check**:
+one `robust_hybrid` forward call at off-nadir geometry asserting the
+correction is spectrally varying rather than a flat constant. That guard fails
+loudly on a stale `robust`.
+
+**`robust`'s data files are runtime-critical and easy to rsync away.** Task 1's
+original wording — "rsync `robust/` + `setup.py`, minus `.git`/notebooks/
+reports" — is right in spirit, but the doc now names
+`robust/rt/files/emulator_l23.npz` **and** `robust/rt/data/ed_l23.npz` as
+must-keep. The second is the one that would surprise: PAB's
+`set_inelastic_Ed` reads that `Ed` table on **every** 2.0 fit, because PACE L2
+carries no `Ed`. Lose it and fluorescence raises `IndexError … 0-dimensional`
+while Raman degrades silently. `context/` (16 MB) and `notebooks/` (3.3 MB)
+are the things actually worth excluding from a 62 MB repo.
+
+**Corrections and hard numbers added:**
+
+- Task 1 cited "Prompt 3 Task 3's seam" — the SHA seam is Prompt 3 **Task 4**.
+  JXP inserted "Improve RoB" as Task 3, shifting the numbering; noted inline so
+  the next reader is not sent to the emulator task.
+- The five `PAB_GIT_SHAS` keys are spelled out (the fifth is
+  **`retrieve-or-bust`**, the repo name — not `robust`, the import name), with
+  today's values and the env-wins-over-git precedence.
+- Task 3 gained the actual staging target: sha256
+  `ef552419…c127b735`, 120,635,392 B, **schema v5**, plus an in-pod
+  `PRAGMA user_version = 5` check — a v4 copy would be fitted without the
+  geometry columns and nobody would notice until the fits came back empty.
+- Recorded that the staged DB has **0 of 146,100 pixels** with geometry, so
+  that reads as expected rather than as a staging failure, and flagged the
+  11,494-granule `geometry` budget as Prompt 5's problem.
+- Task 4's gates went from "the fit succeeds" to the concrete v5 column values,
+  the `_v2.0` id, 6-column chains, the `git_sha` map being non-`"unknown"`
+  (the real check that the label reached the process), and **numeric sanity
+  bands** from the 20 real fits — `bbp700` 1e−4–2e−3, `Bp` in [0.004, 0.05],
+  χ² order-unity, acceptance 0.2–0.4.
+- Noted that `geometry` in-pod is a **live CMR lookup + 1.8 GB L1B read per
+  granule** — the one new external dependency 2.0 introduces, and something a
+  Nautilus job needs credentials and egress for.
+- Noted the thread caps are automatic now (`init_worker` sets `XLA_FLAGS`), and
+  that the `DomainWarning` fires **once per forward call** and must be
+  suppressed or the pod log is unusable — with the warning that
+  `on_out_of_domain="ztt"` is not the fix, since it degenerates to plain
+  `robust_ztt`.
+- The measured cost table (2.0 ~5× 1.0; ~17 GB of chains) with an explicit
+  caveat that the workstation s/fit was measured under contention, so Prompt 5
+  should size from Task 4's in-pod number instead.
+
+**Raised as Prompt 4 Q1: `wave_max` must be settled before the image is
+built.** Prompt 3 Q2 is still open, and it is now on the critical path — if the
+answer changes `FitConfig.wave_max` or adds a non-positive-band screen, the
+change has to be in the code before `:2.0.0`, or the image is rebuilt and
+re-pushed. The doc says to proceed with the current defaults if there is no
+answer, but not to treat the image as final.
+
+**Also added a Task 5 to Prompt 4** ("update `build_v2_prompt_5.md`"),
+mirroring the pattern, flagged as removable.
+
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -1123,3 +1193,43 @@ What I learned / want to remember:
   normally; the results were waiting in the scratch JSON. Worth knowing that a
   detached `nohup` run survives a session boundary here — and worth checking
   the output files rather than assuming a stopped watcher means lost work.
+
+### 2026-09-17 (Prompt 3 Task 7 — handed three prompts' findings to `build_v2_prompt_4.md`)
+
+Updated the containerisation prompt. Prompt 4 is where a mistake becomes
+invisible — an image has no test suite and its logs look fine — so the edits
+concentrate on turning "it built" into "it built the right thing".
+
+What I learned / want to remember:
+
+- **The highest-value edit was turning a build guard into a regression test.**
+  The original asked for a guard that "imports `robust.rt`, runs one
+  `robust_hybrid` forward call". That passes perfectly happily on the *broken*
+  emulator — the saturated network returns a number, just a constant one. The
+  guard now runs the forward call at off-nadir geometry and asserts the
+  correction is spectrally varying. Same cost, and it is the difference between
+  a check that confirms the import graph and one that confirms the physics.
+  Generally: a smoke test that only asserts "no exception" cannot catch a bug
+  whose symptom is a plausible wrong number.
+- **Data files are the thing rsync excludes by accident.** Two `.npz` files
+  totalling 8 KB decide whether every 2.0 fit works. They live under
+  `robust/rt/files/` and `robust/rt/data/`, neither of which looks like
+  "source", and the existing build script's exclude list is written as
+  "everything except the package". Naming them explicitly in the prompt costs
+  two lines and removes a failure that would only appear in-pod.
+- **The task numbering drifted the moment JXP inserted a task**, and Prompt 4
+  already pointed at the wrong one ("Prompt 3 Task 3's seam" now means the
+  emulator work, not the SHA seam). Cross-references between prompt docs are
+  fragile in exactly this way; I fixed the pointer and said why inline rather
+  than silently renumbering.
+- **I checked `git status` rather than assuming my changes were uncommitted.**
+  They had been committed between sessions — `e1f4289` "off nadir" — which
+  changed two of the five SHAs I was about to write into the doc. Had I copied
+  the values from my earlier report, Prompt 4 would have baked a stale
+  `retrieve-or-bust` SHA into the image label, and the provenance would have
+  pointed at the commit *without* the emulator fix, which is precisely the
+  thing the SHA exists to disambiguate.
+- Carrying the open Q2 forward as Prompt 4 Q1 mattered more than it looked: it
+  is a science question in Prompt 3, but in Prompt 4 it becomes a *sequencing*
+  constraint, because the image freezes the configuration. Same question,
+  different consequence, and worth restating in the place where the cost lands.
