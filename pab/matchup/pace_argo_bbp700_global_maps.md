@@ -11,7 +11,7 @@
 ## Figures
 
 ### Static map (cartopy)
-![Global PACE–Argo bbp700 relative difference](pace_argo_bbp700_global_map.png)
+![Global PACE–Argo bbp700 relative difference](../../docs/figures/pace_argo_bbp700_global_map.png)
 
 *Mollweide projection. Color = (PACE − Argo) / PACE, clipped to ±1. Red = PACE exceeds Argo. Blue = Argo exceeds PACE.*
 
@@ -32,10 +32,13 @@ Color scale is clipped at ±1. Points with no valid Argo bbp700 (NaN) are exclud
 
 **Key result:** 222 of 264 valid matchups (84%) are positive — PACE systematically
 exceeds Argo bbp700 by a median of +0.35. The bias is global and appears across
-all ocean basins, suggesting a systematic rather than regional cause. Leading
-hypothesis: depth mismatch — PACE integrates over ~1 optical depth (~few metres),
-while Argo averages over the full mixed layer (typically 20–60 m); if bbp700
-decreases with depth within the mixed layer, PACE will exceed the MLD mean.
+all ocean basins, suggesting a systematic rather than regional cause. The current
+leading hypothesis is residual aerosol contamination in PACE atmospheric correction:
+both BING and GIOP retrievals show a positive bias against Argo (GIOP median δ = +0.10,
+BING median δ = +0.36), and their biases are highly correlated (ρ = 0.88), pointing
+to a shared upstream signal in Rrs(λ). Depth mismatch (PACE vs. Argo sampling depth)
+was an early hypothesis but is weakened by the observation that δ shows no dependence
+on mixed-layer depth.
 
 ---
 

@@ -9,7 +9,7 @@
 
 ## Figure
 
-![PACE – Argo bbp700 relative difference map](pace_argo_bbp700_relDiff_map.png)
+![PACE – Argo bbp700 relative difference map](../../docs/figures/pace_argo_bbp700_relDiff_map.png)
 
 *Each dot is one PACE–Argo matchup. Color encodes the relative difference
 (PACE − Argo) / PACE: red = PACE exceeds Argo, blue = Argo exceeds PACE,

@@ -9,7 +9,7 @@
 
 ## Figure
 
-![Argo MLD bbp700 vs. temperature](bbp700_vs_temp.png)
+![Argo MLD bbp700 vs. temperature](../../docs/figures/bbp700_vs_temp.png)
 
 *Each point is one BGC-Argo profile. Error bars are ±1 standard deviation of
 bbp700 within the mixed layer. Filled markers = cycles with a PACE matchup;
