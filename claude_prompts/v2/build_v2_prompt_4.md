@@ -601,8 +601,31 @@ contain it, which is exactly the lie the SHA exists to prevent.
 
 All guards passed again, including the off-nadir regression test
 (`ROBUST OK … std 0.0245`) and `PAB 2.0 OK robust_hybrid 400.0 700.0`. Baked
-provenance now `{"PAB":"8c7ab8a", …,"retrieve-or-bust":"e1f4289"}`. Pushing
-`:2.0.1` + `:latest`.
+provenance now `{"PAB":"8c7ab8a", …,"retrieve-or-bust":"e1f4289"}`.
+
+**Pushed and verified (2026-09-17):**
+
+| tag | registry digest |
+|---|---|
+| **`:2.0.1`** | **`sha256:d586afb204f53247dc946464c4b08f5d9fb54123135b9421d0d3168fc9b2222b`** |
+| **`:latest`** | **same digest** — moved off `:2.0.0` |
+
+(`:2.0.0` remains on the registry at `sha256:1afd4cc9…` for reference; do not
+run it — its `figure` stage fails for every 2.0 fit.)
+
+**The push stalled, and the cause is worth recording: IPv6 to the registry is
+broken from this workstation.** `gitlab-registry.nrp-nautilus.io` resolves to
+both `137.164.28.180` and `2607:f380:4:4007::30`; `curl -6` to it fails
+instantly (`HTTP 000`) while `curl -4` reaches it (`HTTP 401`). The first push
+attempt sat for **66 minutes** in `futex_wait_queue` at 0 % CPU with **no
+ESTABLISHED connection to the registry at all** and 0 bytes transmitted over a
+60 s sample — alive, but parked, with no retry. Killing it and re-running
+pushed `:2.0.1` immediately, since Docker skips layers already uploaded.
+
+Worth knowing for Prompts 6–9: a `docker push` here can hang silently rather
+than fail. The diagnostic that settled it in one command was checking for an
+established socket to the registry — "process alive" and "push progressing"
+are different questions, and only the second one matters.
 
 **`build_v2_prompt_5.md` updated.** Every number checked against the live
 store rather than carried forward.
