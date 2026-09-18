@@ -214,6 +214,8 @@ re-ingesting later costs the same; only `discover`/`match` should be
 restricted to the matchable window (which they effectively self-restrict to
 anyway, since no granules exist beyond it).
 
+>A. Yes, ingest all of B.
+
 #### (ii) Gap D is **78 % position-less**, and that predicts failure
 
 Of D's 475 never-ingested profiles, **372 have no lat/lon** in the original
@@ -224,10 +226,13 @@ rows had a blank position, 435 of them ingested, and in a 200-row sample only
 position is recorded by `match` as "no position to match against" and can
 never yield a matchup.
 
+
 **Question (b):** re-attempt ingest on all 475 of D, or only the 103 with
 positions? *My recommendation: all 475* — ingest is cheap at this size, and
 the 13.5 % that do recover a position are free matchups — but expect ~29 new
 matchups from D, not the plan's ~130.
+
+>A. Yes, re-attempt ingest on all 475 of D.  For those that fail again, provide a list in a separate file that I can try to hunt down with colleagues.
 
 #### Revised expectation for Plan §4
 
@@ -246,6 +251,7 @@ as-is until the jobs actually report?
 *My recommendation: amend it* — the gap between 2,200 and 1,246 is large
 enough that a later reader would otherwise treat the shortfall as a failure.
 
+>A. Ok, amend it.
 
 ## Reports
 
