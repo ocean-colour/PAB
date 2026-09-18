@@ -26,6 +26,11 @@ Read these before running — plus the **hard-won operational lessons** below.
 3. Execute the 3rd task in Tasks below
 4. Execute the 4th task in Tasks below
 
+5. Execute the 1st task in PR below
+
+### PR
+
+1. I have issued a PR on GitHub and then pulled in `origin/develop`.  There is a conflict.  Please suggest a resolution in Q&A below.  Log your work. Use Opus 5.
 
 
 ### Tasks
@@ -397,6 +402,72 @@ semantics — `rclone copy`, which never deletes — but a same-named `pab.db`
 would still be replaced.)
 
 **Your answer:**  I'm not sure.  You are encouraged to backup to AIOcean:PAB/ on your own and maybe name it differently.
+
+### PR Task 1 — merge conflict with `origin/develop` (2026-09-18)
+
+**The conflict, in one line:** exactly one path is unmerged —
+`pab/matchup/plot_chl_matchup_scatter.py`, status **`DU` (deleted by us,
+modified by them)**. Everything else in the `origin/develop` → `pace_giop_gsm`
+merge (PR #12, `pace_giop_gsm` → `develop`) auto-merged cleanly.
+
+**Why it conflicted.** Both sides fixed the *same* problem independently:
+
+- **Our side** (commit `5257434`, `chl_cdom_prompt_2.md` Task 1) **absorbed**
+  the script into the new `pab/matchup/chl/` package and deleted the original —
+  precisely what its Q6 asked for ("absorb `plot_chl_matchup_scatter.py`"). It
+  now lives as `pab/matchup/chl/plot_chl_scatter.py` on top of the shared
+  `pab/matchup/chl/data.py` loader, and the absorption is already recorded in
+  `docs/design/PAB_implementation.md:952`.
+- **Develop's side** (commits `e1e000f`, `a14b2b6`) **edited the original in
+  place**, doing the same migration a different way: parquet → `Store` +
+  `gather_matchups`, hardcoded `/Users/alliejames/...` defaults →
+  `pab.config.DATA_DIR`, plus an `mpl.rc_context` and a `CHl_MAX = 100`
+  ceiling.
+
+So git is not flagging a lost feature — it is flagging that develop improved a
+file we had already retired in favour of a strictly larger replacement.
+
+**Recommended resolution: keep the deletion.**
+
+```
+git rm pab/matchup/plot_chl_matchup_scatter.py
+git commit          # the merge commit; message is already staged in .git/MERGE_MSG
+```
+
+The replacement is a superset of develop's version — same statistics (Spearman
+ρ, log-bias, log-RMS, median ratio), same log-log 1:1 framing, same DB source
+and `DATA_DIR` defaults — and additionally colors points by relative
+difference, reports `n`, and shares the enriched loader with the other eight
+figures in the package. Nothing on `develop` imports the old module (`git grep`
+on `MERGE_HEAD` finds only its own docstring), so deleting it breaks no
+caller.
+
+**The one thing genuinely unique to develop's version** is the `CHl_MAX = 100`
+mg m⁻³ ceiling; `pab/matchup/chl/data.py::valid_chl` screens for finite and
+positive values but has no upper bound. Measured on the real
+`pab.db` (n = 13,839 valid Chl-a matchups):
+
+| | n | ρ | log-bias | log-RMS | axis span |
+|---|---|---|---|---|---|
+| no ceiling | 13,839 | 0.523 | −0.287 | 0.856 | 7.84 decades |
+| 100 mg m⁻³ ceiling | 13,834 | 0.522 | −0.289 | 0.855 | 6.14 decades |
+
+Five rows exceed it, all on the PACE/BING side (max `chl_bing` = 1642 mg m⁻³;
+`chla_argo` never exceeds 33). It is therefore **cosmetic, not scientific** —
+the headline numbers move in the third decimal, but those five points stretch
+the log axes by ~1.7 empty decades. My suggestion: carry it over as an
+*optional* screen rather than a silent default, e.g. a `chl_max: float | None =
+None` keyword on `valid_chl`, passed as `100.0` from `plot_chl_scatter.main`
+with the ceiling stated in the axis/caption text. Say the word and I will make
+that edit; it is independent of the merge and can also land afterwards.
+
+**Not recommended:** `git checkout --theirs` to resurrect the file. That would
+re-create a second, unreferenced Chl-a scatter path with a hardcoded
+`CHl_MAX` and no strata joins, sitting next to the package that replaced it —
+exactly the duplication `chl_cdom_prompt_2.md` Q6 set out to remove, and a
+guaranteed source of "which scatter made this figure?" confusion later.
+
+**Your answer:**
 
 ## Reports
 
@@ -1000,3 +1071,45 @@ activated, so `/en/develop/` + `/en/latest/` still serve the pre-NASA build
 (re-verified this session). Merge or activate, and the published site goes
 live; that final look at the live page is the only unfinished box on this
 prompt doc. Ran directly on Fable 5.
+
+### 2026-09-18 (PR Task 1 — diagnosed the `origin/develop` merge conflict; resolution posted)
+
+**Scope.** PR #12 (`pace_giop_gsm` → `develop`) is open; JXP merged
+`origin/develop` back into the branch and hit a conflict. Read-only git
+inspection only (per CLAUDE.md, JXP runs all state-changing git commands) —
+the merge is still in progress, `MERGE_HEAD` present, nothing resolved by me.
+
+**What I found.** Exactly one unmerged path:
+`pab/matchup/plot_chl_matchup_scatter.py`, `DU` — deleted by us, modified by
+them. Everything else auto-merged. Tracing both sides from the merge-base
+(`2e97d1c`) showed a *convergent-fix* conflict rather than a real semantic
+one: our commit `5257434` deleted the script because the `chl_cdom_prompt_2`
+work absorbed it into `pab/matchup/chl/plot_chl_scatter.py` (its Q6 asked for
+exactly that; recorded in `PAB_implementation.md:952`), while develop's
+`e1e000f`/`a14b2b6` fixed the original in place — the same parquet→DB and
+`/Users/alliejames/...`→`DATA_DIR` migration, arrived at independently.
+
+**Recommendation: keep the deletion** (`git rm` the path, then commit the
+merge). The package version is a superset — identical statistics and framing,
+plus rel-diff coloring, `n` in the title, and the shared enriched loader —
+and `git grep` on `MERGE_HEAD` shows nothing on develop imports the old
+module, so no caller breaks.
+
+**The one thing I did not want to lose silently** was develop's `CHl_MAX =
+100` mg m⁻³ ceiling, which `valid_chl` has no equivalent for. Rather than
+assert it either way, I ran the real `pab.db` (n = 13,839 valid Chl-a
+matchups) both ways: only **5 rows** exceed 100, all on the BING side (max
+1642; Argo tops out at 33), ρ moves 0.523 → 0.522 and log-bias −0.287 →
+−0.289 — but those five stretch the log axes from 6.1 to **7.8 decades**. So
+it is a cosmetic axis guard, not a QC filter, and the honest port is an
+*optional* `chl_max` keyword on `valid_chl` (default `None`, passed as `100.0`
+by the scatter CLI and stated in the caption), not a silent default. Left as a
+follow-up for JXP to green-light since it is independent of the merge.
+
+**Lesson worth keeping.** A `DU` conflict on a file one side deleted is almost
+always a scope question, not a text question: git cannot tell "retired in
+favour of a replacement" from "lost by accident". The useful diff is not the
+conflict hunk but *develop's diff against the merge-base* read side-by-side
+with the replacement module — that is what surfaced the `CHl_MAX` line as the
+only content not already carried over. Posted as `### PR Task 1` under **Q&A**.
+Ran on Opus 5.
