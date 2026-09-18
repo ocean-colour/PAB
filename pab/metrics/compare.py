@@ -126,6 +126,54 @@ def gather_matchups(store, *, model_pair: str = "ExpBPow"):
     return store.query_df(sql, (model_pair, bbp_q, chl_q))
 
 
+def gather_nasa_giop(store, *, model_pair: str = "ExpBPow"):
+    """Assemble the "BING vs NASA GIOP" comparison table from the DB.
+
+    One row per matchup that has **both** a BING fit (for ``model_pair``) and
+    a NASA-GIOP ingest (``pab.fit.nasa_giop.build_nasa_giop``): BING's
+    ``b_bp(700)`` alongside NASA's ``bbp_442``, plus NASA's ``adg_442`` and
+    ``aph_442`` for reference. NASA's ``bbp`` is reported at 442 nm only,
+    while BING's headline ``bbp`` is at 700 nm — this wavelength offset is a
+    known, deliberately-unadjusted mismatch (design *Comparison & metrics*;
+    ``claude_prompts/pace_giop_gsm.md`` Q3), so any comparison built on this
+    frame must carry that caveat rather than treating the two as directly
+    equivalent.
+
+    Args:
+        store: An open :class:`pab.db.store.Store`.
+        model_pair: Which BING fit to pull (default ``"ExpBPow"``).
+
+    Returns:
+        A :class:`pandas.DataFrame` (empty when no matchup has both fits).
+    """
+    bbp_q = f"BING_{model_pair}_{DEFAULT_BBP_QUANTITY}"
+    sql = """
+        SELECT m.matchup_id, p.wmo, p.cycle, p.latitude, p.longitude, p.time,
+               fbing.fit_id AS bing_fit_id,
+               fb.value AS bbp_bing,
+               fb.value_lo AS bbp_bing_lo, fb.value_hi AS bbp_bing_hi,
+               fnasa.fit_id AS nasa_fit_id,
+               fn_bbp.value AS bbp_442_nasa,
+               fn_bbp.value_lo AS bbp_442_nasa_lo, fn_bbp.value_hi AS bbp_442_nasa_hi,
+               fn_adg.value AS adg_442_nasa,
+               fn_aph.value AS aph_442_nasa
+        FROM matchups m
+        JOIN profiles p ON p.profile_id = m.profile_id
+        JOIN fits fbing ON fbing.matchup_id = m.matchup_id AND fbing.model_pair = ?
+        JOIN fit_results fb
+               ON fb.fit_id = fbing.fit_id AND fb.quantity = ?
+        JOIN fits fnasa ON fnasa.matchup_id = m.matchup_id AND fnasa.algorithm = 'NASA_GIOP'
+        LEFT JOIN fit_results fn_bbp
+               ON fn_bbp.fit_id = fnasa.fit_id AND fn_bbp.quantity = 'NASA_GIOP_bbp_442'
+        LEFT JOIN fit_results fn_adg
+               ON fn_adg.fit_id = fnasa.fit_id AND fn_adg.quantity = 'NASA_GIOP_adg_442'
+        LEFT JOIN fit_results fn_aph
+               ON fn_aph.fit_id = fnasa.fit_id AND fn_aph.quantity = 'NASA_GIOP_aph_442'
+        ORDER BY m.matchup_id
+    """
+    return store.query_df(sql, (model_pair, bbp_q))
+
+
 def add_oc_chl(df, store, *, opener=None, rank: int = 1):
     """Add an ``chl_oc`` column: an OC4 band-ratio Chl from each matchup's pixel.
 

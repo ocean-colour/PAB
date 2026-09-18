@@ -147,6 +147,30 @@ Run a single stage (e.g. just rebuild the report after a fit run):
 pab --db data/pab.db --stage report
 ```
 
+### NASA-GIOP baseline ingest (separate driver, not a pipeline stage)
+
+The "BING vs NASA GIOP" comparison ingests NASA's own retrieval — the
+`PACE_OCI_L2_IOP` product (GIOP algorithm; the only L2 IOP suite NASA
+distributes for PACE, there is **no** GSM product) — at the *same pixel* used
+for each BING fit, as a **parallel** `fits` row (`algorithm = 'NASA_GIOP'`,
+`pab_version = "1.1"`) plus namespaced `NASA_GIOP_*` `fit_results`. It runs
+through its own thin driver, not a `pab` stage:
+
+```bash
+python -m pab.fit.nasa_giop --db "$PAB_DATA_DIR/full/pab.db" \
+    --cache-dir "$PAB_DATA_DIR/full/iop_granules" \
+    --log-file nasa_giop.log [--limit N] [--replace]
+```
+
+Idempotent and resumable (skip is keyed on `matchup_id`); `--db` must exist
+(the driver never creates a database); restricted to matchups with a completed
+BING fit. Full-mission scale (2026-09-09/10): 14,609 matchups ≈ 17 h serial,
+~0.5 TB of IOP granules in `--cache-dir` (safe to delete afterwards — a re-run
+re-downloads only what it needs). The comparison surfaces on the report's
+Comparisons page (`pab.report.rst.nasa_giop_section`) with the 442 nm-vs-700 nm
+`b_bp` wavelength caveat labelled throughout. Decision record + run report:
+`claude_prompts/pace_giop_gsm.md`.
+
 
 ## 5. Outputs
 
@@ -257,6 +281,36 @@ local. The full DB is now **published** at
 `https://s3-west.nrp-nautilus.io/pab/full/pab.db` (public-read), and the whole
 dataset (`pab.db`, `fit_chains/` = 18.09 GiB, `site/`) is also backed up off-site to
 the Google shared drive **`AIOcean:PAB/`** (Nautilus PVCs are not backed up).
+
+**Chl-a/CDOM provenance backfill (2026-09-05/06, still `pab_version = 1.0`).**
+`pab.db` was re-ingested in place (schema v4 — see `docs/db_schema.rst`) to add
+**CDOM** (`mld_summary.cdom`), `CHLA_ADJUSTED` (`chla_adjusted`), per-**parameter**
+Argo data-mode fields (`chla_data_mode`/`cdom_data_mode`/`bbp700_data_mode` —
+`profiles.data_mode` is unpopulated for BGC data, see `docs/argo_ingestion.rst`),
+and float processing-DAC provenance (`floats.project_name`/`data_center`), all
+previously missing from the schema or never threaded through. 52,844 of 54,031
+profiles re-fetched successfully (2.2% transient argopy failures, unchanged from
+before); no analysis method changed and pre-existing fields (`chla`, `bbp700`,
+`mld`, …) are unaffected beyond a handful of profiles picking up newly-available
+Argo delayed-mode values (see `claude_prompts/chl_cdom_prompt_1.md` Task 4 for the
+full verification). Published to S3 and re-backed-up to `AIOcean:PAB/` under the
+**same** `pab_version = "1.0"` — a deliberate, documented exception to the
+"a new version adds records" convention above, since this is a provenance/schema
+backfill, not a re-analysis (JXP's call, `chl_cdom_prompt_1.md` Q2).
+
+**NASA-GIOP addition + `cdom_chl` merge (2026-09-10/11, `pab_version = 1.1`).**
+The published `pab.db` is now the **merged union** of two divergent descendants
+of the mission DB: the `cdom_chl` re-ingest (CDOM, `CHLA_ADJUSTED`,
+per-parameter data modes — pushed to S3 from the laptop) **plus** the 14,609
+NASA-GIOP baseline rows (`algorithm = 'NASA_GIOP'`, stamped `"1.1"`; the BING
+`1.0` records unchanged — the normal "new version adds records" convention).
+Verified as a strict union (hash-compared per table) before publishing;
+sha256-checked at the public URL. Also backed up as
+`AIOcean:PAB/pab_merged_nasa_giop_2026-09-10.db`. **Lesson recorded:** with two
+machines writing descendants of the same DB, check the published object before
+pushing — the S3 key is last-writer-wins, and the NASA rows are re-graftable
+into any sibling with two `INSERT`s (see `claude_prompts/pace_giop_gsm.md`,
+Full Run Task 5/6 entries).
 
 > **Remaining follow-on:** publish the **bulk artifacts** (chains + figures) to
 > `s3://pab` via `publish_release(..., backend=NautilusS3Backend(...))` so the

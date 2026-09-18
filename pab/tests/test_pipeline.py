@@ -483,6 +483,9 @@ def _stub_iter_profiles(ds):
         "latitude": 10.0,
         "longitude": -40.0,
         "time": "2025-05-01T12:00:00",
+        "data_mode": "R",
+        "project_name": "Test Project",
+        "data_center": "AO",
     }
     variables = {
         "PRES": np.linspace(0.0, 100.0, 12),
@@ -501,6 +504,26 @@ def stub_iter_profiles(monkeypatch):
     from pab.argo import fetch as argo_fetch
 
     monkeypatch.setattr(argo_fetch, "iter_profiles", _stub_iter_profiles)
+
+
+def test_ingest_persists_dac_and_project_provenance(stub_iter_profiles):
+    """Regression test: ``ingest()`` must forward ``data_mode``/``project_name``/
+    ``data_center`` to ``persist_summary`` — previously dropped even though
+    ``iter_profiles`` already extracted them, leaving ``floats.project_name``/
+    ``data_center`` and ``profiles.data_mode`` NULL for every float in the full
+    production run (the bug found while planning the chl-a/CDOM deep dive)."""
+    profiles = _live_profiles(2)
+    cfg = pipeline.PipelineConfig(profiles=profiles, make_figures=False)
+    with Store.open(":memory:") as store:
+        out = pipeline.ingest(store, cfg, fetcher=_dataset_fetcher())
+        assert out["failed"] == []
+        floats = store.query("SELECT wmo, project_name, data_center FROM floats")
+        profs = store.query("SELECT wmo, data_mode FROM profiles")
+    assert len(floats) == 2
+    assert all(f["project_name"] == "Test Project" for f in floats)
+    assert all(f["data_center"] == "AO" for f in floats)
+    assert len(profs) == 2
+    assert all(p["data_mode"] == "R" for p in profs)
 
 
 def test_ingest_parallel_matches_serial(stub_iter_profiles):

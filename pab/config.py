@@ -15,7 +15,9 @@ from pathlib import Path
 #: & versioning). Bumped as the analysis pipeline evolves; distinct from the
 #: packaging version in ``setup.py``. ``1.0`` = the first full-pipeline release
 #: (all BGC-Argo × PACE), provenance-distinct from the ``0.0.dev0`` dev runs.
-pab_version = "1.0"
+#: ``1.1`` = the NASA-GIOP comparison baseline added (new science content, not
+#: a provenance backfill — see ``claude_prompts/pace_giop_gsm.md`` Q4).
+pab_version = "1.1"
 
 #: Packages whose versions are captured per fit for reproducibility.
 _PROVENANCE_PACKAGES = (

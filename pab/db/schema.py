@@ -35,7 +35,7 @@ from collections.abc import Callable
 
 #: Bumped whenever the DDL changes; stored in ``PRAGMA user_version`` so a
 #: database file knows which schema it was created under (see ``migrate``).
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 #: Ordered list of ``CREATE TABLE``/``CREATE INDEX`` statements. ``IF NOT
 #: EXISTS`` keeps ``create_all`` idempotent.
@@ -74,6 +74,16 @@ TABLES: tuple[str, ...] = (
         temp        REAL,            -- mixed-layer mean (degC)
         n_points    INTEGER,         -- samples within the MLD
         qa_path     TEXT,            -- per-profile Q&A figure on disk (not in DB)
+        cdom            REAL,        -- mixed-layer mean, raw (ppb QSDE); v4
+        cdom_std        REAL,        -- v4
+        chla_adjusted   REAL,        -- mixed-layer mean of CHLA_ADJUSTED when
+                                     -- present (mg m^-3); NULL if Argo has not
+                                     -- delayed-mode/adjusted this profile; v4
+        chla_data_mode  TEXT,        -- Argo per-parameter mode for CHLA
+                                     -- (R/A/D, distinct from profiles.data_mode
+                                     -- which is unpopulated for BGC); v4
+        cdom_data_mode  TEXT,        -- per-parameter mode for CDOM; v4
+        bbp700_data_mode TEXT,       -- per-parameter mode for BBP700; v4
         created     TEXT,
         pab_version TEXT
     )
@@ -231,11 +241,36 @@ def _v2_to_v3(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE matchups ADD COLUMN scene_path TEXT")
 
 
+def _v3_to_v4(conn: sqlite3.Connection) -> None:
+    """v3 → v4: add CDOM ingestion + per-parameter Argo provenance to
+    ``mld_summary`` (``cdom``, ``cdom_std``, ``chla_adjusted``,
+    ``chla_data_mode``, ``cdom_data_mode``, ``bbp700_data_mode``).
+
+    Added planning the chl-a/CDOM deep dive (``claude_prompts/
+    chl_cdom_matchups.md``, Stage 10 of the coding plan): the coarse
+    whole-profile ``profiles.data_mode`` turned out to be unpopulated for BGC
+    fetches (Argo BGC files carry per-**parameter** modes instead), and CDOM
+    was not ingested at all. No ``cdom_adjusted`` column yet — JXP wants to
+    consult BGC-Argo colleagues on the Sea-Bird calibration correction before
+    computing one (see ``chl_cdom_prompt_1.md`` Task 1/Q1).
+    """
+    for ddl in (
+        "ALTER TABLE mld_summary ADD COLUMN cdom REAL",
+        "ALTER TABLE mld_summary ADD COLUMN cdom_std REAL",
+        "ALTER TABLE mld_summary ADD COLUMN chla_adjusted REAL",
+        "ALTER TABLE mld_summary ADD COLUMN chla_data_mode TEXT",
+        "ALTER TABLE mld_summary ADD COLUMN cdom_data_mode TEXT",
+        "ALTER TABLE mld_summary ADD COLUMN bbp700_data_mode TEXT",
+    ):
+        conn.execute(ddl)
+
+
 # Forward migrations: map a *starting* version to a callable that upgrades the
 # database by one step.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _v1_to_v2,
     2: _v2_to_v3,
+    3: _v3_to_v4,
 }
 
 

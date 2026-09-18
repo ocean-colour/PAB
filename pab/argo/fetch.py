@@ -26,7 +26,12 @@ from typing import Any
 import numpy as np
 
 #: Default BGC variables PAB requests for the matchup/summary.
-DEFAULT_PARAMS = ("CHLA", "BBP700", "PSAL", "TEMP", "PRES")
+DEFAULT_PARAMS = ("CHLA", "BBP700", "CDOM", "PSAL", "TEMP", "PRES")
+
+#: BGC parameters whose per-parameter Argo data mode (``<PARAM>_DATA_MODE``,
+#: R/A/D) :func:`iter_profiles` records — distinct from ``profiles.data_mode``,
+#: which BGC fetches leave unpopulated (see :func:`iter_profiles`).
+_PER_PARAM_MODE_VARS = ("CHLA", "CDOM", "BBP700")
 
 #: Default QC flags retained (1 = good, 2 = probably good).
 DEFAULT_QC = (1, 2)
@@ -116,7 +121,20 @@ def iter_profiles(ds) -> Iterator[tuple[dict[str, Any], dict[str, np.ndarray]]]:
     Bridges the fetched ``N_POINTS`` dataset to the array-based summary
     functions: reshapes with ``ds.argo.point2profile()`` and, for each profile,
     yields its metadata (``wmo``, ``cycle``, ``latitude``, ``longitude``,
-    ``time``, ``data_mode``) and a dict of its 1-D variable arrays.
+    ``time``, ``data_mode``, ``project_name``, ``data_center``,
+    ``chla_data_mode``, ``cdom_data_mode``, ``bbp700_data_mode``) and a dict of
+    its 1-D variable arrays (including ``CDOM`` and ``CHLA_ADJUSTED`` when
+    present, alongside ``PRES``/``BBP700``/``CHLA``/``PSAL``/``TEMP``).
+
+    ``data_mode`` is extracted defensively but is a no-op on a real BGC/GDAC
+    fetch as of argopy 1.4.0 — a bare ``DATA_MODE`` variable was not observed
+    there (confirmed: ``'DATA_MODE' in ds.variables`` is ``False``). BGC files
+    instead carry a **per-parameter** ``<PARAM>_DATA_MODE`` for each BGC
+    variable (e.g. ``CHLA`` and ``PSAL`` on the same profile can be in
+    different modes) — ``chla_data_mode``/``cdom_data_mode``/
+    ``bbp700_data_mode`` capture that. ``project_name``/``data_center`` (from
+    Argo's ``PROJECT_NAME``/``DATA_CENTRE``) are per-float and were confirmed
+    present on real BGC/GDAC profiles.
 
     Args:
         ds: An argopy ``xarray.Dataset`` (point collection).
@@ -126,7 +144,11 @@ def iter_profiles(ds) -> Iterator[tuple[dict[str, Any], dict[str, np.ndarray]]]:
         :func:`pab.argo.summary.summarize_profile`.
     """
     prof = ds.argo.point2profile()
-    var_names = [v for v in ("PRES", "BBP700", "CHLA", "PSAL", "TEMP") if v in prof]
+    var_names = [
+        v
+        for v in ("PRES", "BBP700", "CHLA", "CHLA_ADJUSTED", "CDOM", "PSAL", "TEMP")
+        if v in prof
+    ]
     n_prof = prof.sizes.get("N_PROF", 0)
     for i in range(n_prof):
         one = prof.isel(N_PROF=i)
@@ -141,5 +163,13 @@ def iter_profiles(ds) -> Iterator[tuple[dict[str, Any], dict[str, np.ndarray]]]:
         }
         if "DATA_MODE" in one:
             meta["data_mode"] = str(one["DATA_MODE"].values)
+        if "PROJECT_NAME" in one:
+            meta["project_name"] = str(one["PROJECT_NAME"].values).strip()
+        if "DATA_CENTRE" in one:
+            meta["data_center"] = str(one["DATA_CENTRE"].values).strip()
+        for p in _PER_PARAM_MODE_VARS:
+            mode_var = f"{p}_DATA_MODE"
+            if mode_var in one:
+                meta[f"{p.lower()}_data_mode"] = str(one[mode_var].values).strip()
         variables = {v: np.asarray(one[v].values, dtype=float) for v in var_names}
         yield meta, variables

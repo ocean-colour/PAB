@@ -141,6 +141,24 @@ def test_aggregate_healpix():
         assert np.allclose(hp["median_ratio"], 2.0)
 
 
+def test_aggregate_healpix_tolerates_retracted_positions():
+    # An Argo delayed-mode refresh can NULL a matched profile's lat/lon
+    # (seen in production: float 2903938); healpy must not be handed NaN.
+    pytest.importorskip("healpy")
+    from pab.metrics import compare
+
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        store.execute(
+            "UPDATE profiles SET latitude = NULL, longitude = NULL WHERE wmo = ?",
+            (7902226,),
+        )
+        df = compare.gather_matchups(store)
+        hp = aggregate.aggregate_healpix(df, cell_size_deg=5.0)
+        assert len(hp) == 1  # the unpositioned matchup is dropped, not fatal
+        assert int(hp["n"].iloc[0]) == 1
+
+
 # -- rst generation ---------------------------------------------------------
 def test_build_site_fixed_pages_no_per_matchup(tmp_path):
     with Store.open(":memory:") as store:
@@ -393,6 +411,96 @@ def test_comparisons_page_static_figures_at_scale(tmp_path):
         assert (tmp_path / "_static" / "comparisons" / "bbp_scatter.png").is_file()
         assert "suppressed at this scale" in out
         assert ".. raw:: html" not in out  # no multi-MB inline Bokeh embed
+
+
+def _seed_nasa_giop(store, matchup_id, *, bbp_442=3e-3):
+    """Add the parallel NASA_GIOP sibling fit + namespaced results (the
+    ``pab.fit.nasa_giop`` shape) for an already-seeded matchup."""
+    fit_id = f"{matchup_id}_2_2_NASA_GIOP"
+    store.upsert(
+        "fits",
+        {
+            "fit_id": fit_id,
+            "matchup_id": matchup_id,
+            "algorithm": "NASA_GIOP",
+            "model_pair": None,
+            "pab_version": "1.1",
+        },
+    )
+    for q, v in (("bbp_442", bbp_442), ("adg_442", 0.007), ("aph_442", 0.013)):
+        store.upsert(
+            "fit_results",
+            {
+                "fit_id": fit_id,
+                "quantity": f"NASA_GIOP_{q}",
+                "value": v,
+                "value_lo": v * 0.9,
+                "value_hi": v * 1.1,
+                "unit": "m^-1",
+            },
+        )
+    return fit_id
+
+
+def test_nasa_giop_section_stats_and_caveat():
+    pytest.importorskip("bokeh")
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        _seed_nasa_giop(store, "M1", bbp_442=3e-3)
+        _seed_nasa_giop(store, "M2", bbp_442=6e-3)
+        out = rst.nasa_giop_section(store)
+        assert "BING vs NASA GIOP" in out
+        # the explicit wavelength caveat (Q3) travels with the figure/stats
+        assert "442 nm" in out and "700 nm" in out
+        assert "no spectral adjustment" in out
+        # log_comparison stats: both ratios are 1.5 -> median 1.5
+        assert "n = 2" in out and "1.5" in out
+        # the interactive Bokeh embed is present below the interactive cap
+        assert ".. raw:: html" in out
+
+
+def test_nasa_giop_section_empty_without_ingest():
+    with Store.open(":memory:") as store:
+        _two_matchups(store)  # BING fits only, no NASA_GIOP rows
+        assert rst.nasa_giop_section(store) == ""
+
+
+def test_nasa_giop_section_static_at_scale(tmp_path):
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        _seed_nasa_giop(store, "M1")
+        _seed_nasa_giop(store, "M2")
+        out = rst.nasa_giop_section(store, outdir=tmp_path, max_interactive=1)
+        assert ".. figure:: _static/comparisons/nasa_giop_bbp_scatter.png" in out
+        png = tmp_path / "_static" / "comparisons" / "nasa_giop_bbp_scatter.png"
+        assert png.is_file()
+        assert "differing wavelengths" in out
+        assert ".. raw:: html" not in out  # no giant Bokeh embed at scale
+
+
+def test_build_site_includes_nasa_giop_everywhere(tmp_path):
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        _seed_nasa_giop(store, "M1")
+        _seed_nasa_giop(store, "M2")
+        written = rst.build_site(store, tmp_path, sortable=False)
+        assert "BING vs NASA GIOP" in written["comparisons"].read_text()
+        summary = written["summary"].read_text()
+        assert "BING vs NASA GIOP (b_bp)" in summary
+        assert "wavelengths differ by design" in summary
+        # the parallel NASA_GIOP fits rows must not inflate the BING fit count
+        assert "**BING fits:** 2" in summary
+        methods = written["methods"].read_text()
+        assert "GSM" in methods and "GIOP" in methods
+        assert 'pab_version = "1.1"' in methods
+
+
+def test_build_site_no_nasa_giop_section_without_ingest(tmp_path):
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        written = rst.build_site(store, tmp_path, sortable=False)
+        assert "BING vs NASA GIOP" not in written["comparisons"].read_text()
+        assert "BING vs NASA GIOP (b_bp)" not in written["summary"].read_text()
 
 
 def test_provenance_block_lists_versions():

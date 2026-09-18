@@ -76,8 +76,9 @@ def test_create_is_idempotent(store):
 
 
 def test_migrations_add_figure_path_columns(tmp_path):
-    # a v1 database migrates forward, adding mld_summary.qa_path (v2) and
-    # matchups.scene_path (v3) without touching existing data.
+    # a v1 database migrates all the way forward: mld_summary.qa_path (v2),
+    # matchups.scene_path (v3), and the CDOM/provenance columns (v4) — without
+    # touching existing data.
     import sqlite3
 
     db = tmp_path / "v1.db"
@@ -91,7 +92,49 @@ def test_migrations_add_figure_path_columns(tmp_path):
     mch_cols = {r[1] for r in conn.execute("PRAGMA table_info(matchups)")}
     assert "qa_path" in mld_cols
     assert "scene_path" in mch_cols
-    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 3
+    assert {
+        "cdom",
+        "cdom_std",
+        "chla_adjusted",
+        "chla_data_mode",
+        "cdom_data_mode",
+        "bbp700_data_mode",
+    } <= mld_cols
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 4
+
+
+def test_v3_to_v4_migration_is_idempotent(tmp_path):
+    # A genuine v3-shaped database (the real pab.db's state before this pass)
+    # migrates to v4 once; calling migrate() again (a resumed/rerun ingest)
+    # must be a safe no-op, not a duplicate-column error.
+    import sqlite3
+
+    db = tmp_path / "v3.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE mld_summary (profile_id INTEGER PRIMARY KEY, mld REAL, "
+        "qa_path TEXT)"
+    )
+    conn.execute("CREATE TABLE matchups (matchup_id TEXT PRIMARY KEY, scene_path TEXT)")
+    conn.execute("PRAGMA user_version = 3")
+    conn.commit()
+
+    schema.migrate(conn)
+    assert schema.get_version(conn) == 4
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(mld_summary)")}
+    assert {
+        "cdom",
+        "cdom_std",
+        "chla_adjusted",
+        "chla_data_mode",
+        "cdom_data_mode",
+        "bbp700_data_mode",
+    } <= cols
+
+    schema.migrate(conn)  # already at SCHEMA_VERSION -> must not re-run _v3_to_v4
+    assert schema.get_version(conn) == 4
+    cols_after = [r[1] for r in conn.execute("PRAGMA table_info(mld_summary)")]
+    assert cols_after.count("cdom") == 1  # no duplicate column from a double-migrate
     conn.close()
 
 

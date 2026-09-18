@@ -26,11 +26,18 @@ def comparison_scatter(
     unit: str = "m$^{-1}$",
     outfile=None,
     dpi: int = 100,
+    xlabel: str | None = None,
+    ylabel: str | None = None,
 ):
     """Log-log scatter of ``sat_col`` vs ``insitu_col`` with 1:1 + median-ratio.
 
     Annotates the panel with the :func:`~pab.metrics.compare.log_comparison`
     summary (n, median ratio, Spearman ρ, log bias/RMS).
+
+    Args:
+        xlabel, ylabel: Full axis-label overrides for pairings that are not
+            satellite-vs-in-situ (e.g. BING vs NASA GIOP); default to
+            ``"in-situ {label} [{unit}]"`` / ``"satellite {label} [{unit}]"``.
 
     Returns:
         The Matplotlib ``Figure`` (or the written ``Path`` when ``outfile``).
@@ -59,8 +66,8 @@ def comparison_scatter(
             )
         ax.set_xlim(lo, hi)
         ax.set_ylim(lo, hi)
-    ax.set_xlabel(f"in-situ {label} [{unit}]")
-    ax.set_ylabel(f"satellite {label} [{unit}]")
+    ax.set_xlabel(xlabel or f"in-situ {label} [{unit}]")
+    ax.set_ylabel(ylabel or f"satellite {label} [{unit}]")
     ax.set_title(
         f"n={stats['n']}  ρ={stats['spearman']:.2f}  "
         f"bias={stats['log_bias']:+.2f}  RMS={stats['log_rms']:.2f} (log10)",
