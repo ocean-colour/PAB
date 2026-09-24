@@ -357,7 +357,11 @@ def _open_with_timeout(source, *, opener=None, timeout_s: float = 0.0, open_fn=N
             return open_fn(source)
         return cloud.open_granule(source, opener=opener)
 
-    if timeout_s and timeout_s > 0 and threading.current_thread() is threading.main_thread():
+    if (
+        timeout_s
+        and timeout_s > 0
+        and threading.current_thread() is threading.main_thread()
+    ):
 
         def _timed_out(signum, frame):  # pragma: no cover - signal path
             raise TimeoutError(f"granule read exceeded {timeout_s:.0f}s: {source}")
@@ -615,6 +619,7 @@ def build_matchups(
     replace: bool = False,
     created: str | None = None,
     jobs: int = 1,
+    selection: set[tuple[int, int]] | None = None,
 ) -> dict[str, list[str]]:
     """Match every qualifying profile against the stored granules and persist.
 
@@ -637,6 +642,18 @@ def build_matchups(
         replace: Re-write matchups that already exist.
         created: Timestamp to stamp on written rows.
         jobs: Profile-level parallel processes (1 = serial).
+        selection: ``{(wmo, cycle)}`` to restrict to, or ``None`` for the whole
+            store. ``None`` is distinct from an empty set: a bare
+            ``pab --stage match`` keeps sweeping every profile.
+
+            This exists because ``match`` re-attempts **every** unmatched
+            profile on every run, and an unmatched profile is usually unmatched
+            for a permanent reason — no granule covers it. The v2 backfill made
+            the cost concrete: 45,010 profiles would have been attempted when
+            only 7,592 could possibly gain a matchup, because every newly
+            discovered granule postdated the other 36,966 (~35 h against ~6 h).
+            ``discover`` already took a selection for the same reason; this
+            removes the asymmetry.
 
     Returns:
         ``{"written": [...], "skipped": [...], "unmatched": [...]}`` — matchup
@@ -662,7 +679,15 @@ def build_matchups(
     if not replace:
         for row in store.query("SELECT profile_id, matchup_id FROM matchups"):
             done.setdefault(row["profile_id"], row["matchup_id"])
-    for profile in qualifying_profiles(store):
+    profiles = qualifying_profiles(store)
+    if selection is not None:
+        profiles = [
+            p for p in profiles if (int(p["wmo"]), int(p["cycle"])) in selection
+        ]
+        _log.info(
+            "match: selection restricts to %d of the store's profiles", len(profiles)
+        )
+    for profile in profiles:
         if profile["profile_id"] in done:
             skipped.append(done[profile["profile_id"]])
             continue
@@ -686,8 +711,16 @@ def build_matchups(
 
     if jobs and int(jobs) > 1 and inputs and picklable(opener):
         return _build_matchups_parallel(
-            store, inputs, config, created, int(jobs), replace,
-            written, skipped, unmatched, opener=opener,
+            store,
+            inputs,
+            config,
+            created,
+            int(jobs),
+            replace,
+            written,
+            skipped,
+            unmatched,
+            opener=opener,
         )
 
     for profile, candidates in inputs:
@@ -708,8 +741,17 @@ def build_matchups(
 
 
 def _build_matchups_parallel(
-    store, inputs, config, created, jobs, replace, written, skipped, unmatched,
-    *, opener=None,
+    store,
+    inputs,
+    config,
+    created,
+    jobs,
+    replace,
+    written,
+    skipped,
+    unmatched,
+    *,
+    opener=None,
 ):
     """Parallel backend for :func:`build_matchups`. Mutates the result lists.
 

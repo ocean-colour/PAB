@@ -1,0 +1,91 @@
+# Prompt 5 Task 2 — backfill ingest of gaps B + D into the v2 database.
+#
+# Selection: /data/v2/backfill_BD.csv — 5,662 profiles (B 5,187 + D 475,
+# disjoint). Per JXP (build_v2_prompt_5.md Q1a/b) this is ALL of B and ALL of
+# D, not just the currently-matchable subsets: 3,238 of B sit beyond PACE's
+# forward stream (which ends 2026-08-01) and cannot be matched yet, but the
+# profiles are the durable asset and a later discover/match sweep picks them
+# up for free.
+#
+# Two passes in one Job. argopy fails ~2-3% of fetches transiently, and the
+# ingest stage is idempotent (it skips profiles already in the store), so the
+# second pass is a cheap sweep that only retries the gaps. Anything still
+# missing after pass 2 is a real failure and lands in ingest_failures.csv for
+# JXP to chase with colleagues (Q1b).
+#
+# Differences from full_ingest_job.yaml that matter:
+#   * image :2.0.1 (NOT :2.0.0 — its figure stage fails for every 2.0 fit)
+#   * PAB_DATA_DIR=/data/v2, RUN=/data/v2 — the v2 database is the single
+#     writer's copy
+#   * NO PYTHONPATH=/data/src: that directory was DELETED in the Prompt 4
+#     PVC re-layout. Carrying it over would put a stale 1.0 package ahead of
+#     the image's 2.0 one on sys.path — silently running the wrong code.
+#   * ingest only (discover is Task 3, against a different CSV)
+#   * PYTHONWARNINGS=ignore for robust's per-call DomainWarning
+#
+# Sizing: ~2.1 s/profile at 32 procs (measured on the 1k pilot, latency-bound
+# to the GDAC) -> 5,662 profiles ~= 3.3 h for pass 1, plus a short sweep.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars create configmap pab-v2-ingest-fail \
+#     --from-file=failures.py=nautilus/v2_ingest_failures.py --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl -n sea-meets-the-stars delete job pab-v2-ingest --ignore-not-found
+#   kubectl apply -f nautilus/v2_ingest_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v2-ingest
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v2-ingest
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4          # preemption-tolerant; ingest resumes from the DB
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.1
+        imagePullPolicy: Always
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data/v2}
+        - {name: PYTHONWARNINGS, value: "ignore"}
+        - {name: RUN, value: /data/v2}
+        - {name: CSV, value: /data/v2/backfill_BD.csv}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/ingest.log; }
+            counts() { python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('profiles','mld_summary','granules','matchups','fits')})" 2>&1 | tee -a $RUN/ingest.log; }
+            log "PROVENANCE"
+            python -c "import json; from pab.config import package_versions, pab_version; pv=package_versions(); print('pab_version', pab_version); print('git_sha', json.dumps(pv['git_sha']))" 2>&1 | tee -a $RUN/ingest.log
+            log "SELECTION"
+            wc -l $CSV | tee -a $RUN/ingest.log
+            counts
+            for pass in 1 2; do
+              log "INGEST pass $pass start"
+              pab --db $RUN/pab.db --outdir $RUN/pipeline \
+                  --profiles-csv $CSV --stage ingest --ingest-jobs 32 2>&1 \
+                | tee -a $RUN/ingest.log
+              log "INGEST pass $pass end"
+              counts
+            done
+            log "FAILURE LIST"
+            python /cfg/failures.py $RUN/pab.db $CSV $RUN/ingest_failures.csv $RUN/ingest.log 2>&1 | tee -a $RUN/ingest.log
+            log "disk"
+            du -sh $RUN 2>/dev/null | tee -a $RUN/ingest.log
+            log "V2_INGEST_DONE"
+        resources:
+          requests: {cpu: "34", memory: "48Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "34", memory: "48Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+        - {name: fail, mountPath: /cfg/failures.py, subPath: failures.py}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}
+      - {name: fail, configMap: {name: pab-v2-ingest-fail}}

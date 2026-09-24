@@ -304,14 +304,20 @@ def test_candidate_granules_filters_on_footprint():
         # no position given -> time-only, both offered (back-compatible)
         assert len(engine.candidate_granules(store, t, dtime_max_hours=24.0)) == 2
         # outside both swaths -> nothing
-        assert engine.candidate_granules(
-            store, t, dtime_max_hours=24.0, latitude=-40.0, longitude=100.0
-        ) == []
+        assert (
+            engine.candidate_granules(
+                store, t, dtime_max_hours=24.0, latitude=-40.0, longitude=100.0
+            )
+            == []
+        )
 
 
 def test_granule_index_respects_the_time_window():
     with Store.open(":memory:") as store:
-        for gid, t in (("g_in", "2025-05-01T11:30:00"), ("g_out", "2025-05-03T11:30:00")):
+        for gid, t in (
+            ("g_in", "2025-05-01T11:30:00"),
+            ("g_out", "2025-05-03T11:30:00"),
+        ):
             store.upsert("granules", {"granule_id": gid, "time_start": t})
         idx = engine.GranuleIndex.load(store)
         assert len(idx) == 2
@@ -432,9 +438,7 @@ def test_build_matchups_survives_a_wedged_worker(tmp_path):
             },
         )
         cfg = engine.MatchupConfig(stall_timeout_s=3.0)
-        out = engine.build_matchups(
-            store, opener=_hanging_opener, config=cfg, jobs=2
-        )
+        out = engine.build_matchups(store, opener=_hanging_opener, config=cfg, jobs=2)
         # returned rather than hanging, and the profile is reported as stalled
         assert out["stalled"] == ["7902226_5"]
         assert out["written"] == []
@@ -475,9 +479,7 @@ def test_find_matchup_closes_the_granule_it_opened():
         {"granule_id": "GFAR", "time": "2025-05-01T12:00:00", "source": "far"},
         {"granule_id": "GNEAR", "time": "2025-05-01T13:00:00", "source": "near"},
     ]
-    m = engine.find_matchup(
-        prof, cands, opener=lambda s: TrackingDataset(opened[s])
-    )
+    m = engine.find_matchup(prof, cands, opener=lambda s: TrackingDataset(opened[s]))
     assert m is not None and m.granule_id == "GNEAR"
     assert len(closed) == 2  # rejected and accepted granules are both released
 
@@ -540,9 +542,9 @@ def test_build_matchups_reuses_one_pool_across_chunks(tmp_path, monkeypatch):
     # contention (observed on GitHub's 2-core runners) — that is the stall
     # detector in _build_matchups_parallel doing exactly its job, not a bug.
     # What this test actually guards is pool *reuse*, asserted below.
-    assert len(out["written"]) + len(out["stalled"]) == 20   # all chunks ran
+    assert len(out["written"]) + len(out["stalled"]) == 20  # all chunks ran
     assert len(created) == 1, f"one pool expected, got {len(created)}"
-    assert created[0] == eng.MAX_TASKS_PER_CHILD   # workers are recycled
+    assert created[0] == eng.MAX_TASKS_PER_CHILD  # workers are recycled
 
 
 def test_find_matchup_prefers_the_temporally_closest_covering_granule():
@@ -554,8 +556,8 @@ def test_find_matchup_prefers_the_temporally_closest_covering_granule():
     the temporally closest *covering* granule wins.
     """
     opens = []
-    centred = make_granule(center=(20.0, -50.0), span=0.04)   # distance ~0, 4 h away
-    offset = make_granule(center=(20.01, -50.0), span=0.04)   # ~1.1 km, 1 h away
+    centred = make_granule(center=(20.0, -50.0), span=0.04)  # distance ~0, 4 h away
+    offset = make_granule(center=(20.01, -50.0), span=0.04)  # ~1.1 km, 1 h away
 
     def opener(source):
         opens.append(source)
@@ -568,7 +570,88 @@ def test_find_matchup_prefers_the_temporally_closest_covering_granule():
     ]
     m = engine.find_matchup(prof, cands, opener=opener)
     assert m is not None
-    assert m.granule_id == "GOFFSET"          # 1 h beats 4 h; both cover the float
+    assert m.granule_id == "GOFFSET"  # 1 h beats 4 h; both cover the float
     assert m.dtime_hours == pytest.approx(1.0)
-    assert 0.0 < m.distance_km <= 5.0         # inside the gate, not the minimum
-    assert opens == ["offset"]                # early stop: the 4 h granule is unread
+    assert 0.0 < m.distance_km <= 5.0  # inside the gate, not the minimum
+    assert opens == ["offset"]  # early stop: the 4 h granule is unread
+
+
+# --- match honours an explicit selection (Prompt 5 Q5) ----------------------
+def _seed_two_profiles(store):
+    """Two positioned profiles with summaries and **no** granules.
+
+    With an empty granule table every profile falls out as ``unmatched``
+    without any granule being opened, which isolates the selection logic from
+    the matching logic.
+    """
+    from pab.argo.summary import persist_summary
+
+    for cycle, lat in ((1, 20.0), (2, 21.0)):
+        persist_summary(
+            store,
+            wmo=7900001,
+            cycle=cycle,
+            summary={"mld": 30.0, "mld_method": "x", "chla": 0.1, "n_points": 5},
+            latitude=lat,
+            longitude=-50.0,
+            time="2025-05-01T12:00:00",
+        )
+
+
+def test_build_matchups_without_a_selection_sweeps_every_profile():
+    """``None`` must keep the historical behaviour: the whole store."""
+    from pab.db import Store
+    from pab.matchup import engine
+
+    with Store.open(":memory:") as store:
+        _seed_two_profiles(store)
+        out = engine.build_matchups(store, selection=None)
+        assert sorted(out["unmatched"]) == ["7900001_1", "7900001_2"]
+
+
+def test_build_matchups_with_a_selection_restricts_to_it():
+    from pab.db import Store
+    from pab.matchup import engine
+
+    with Store.open(":memory:") as store:
+        _seed_two_profiles(store)
+        out = engine.build_matchups(store, selection={(7900001, 1)})
+        assert out["unmatched"] == ["7900001_1"]
+
+
+def test_build_matchups_with_an_empty_selection_does_nothing():
+    """An empty set is not ``None``: it means 'no profiles', not 'all'."""
+    from pab.db import Store
+    from pab.matchup import engine
+
+    with Store.open(":memory:") as store:
+        _seed_two_profiles(store)
+        out = engine.build_matchups(store, selection=set())
+        assert out["unmatched"] == [] and out["written"] == []
+
+
+def test_match_stage_passes_the_selection_through(monkeypatch):
+    """``pipeline.match`` must forward ``config.selection_keys()``."""
+    from pab.matchup import engine
+    from pab.pipeline import PipelineConfig, match
+
+    captured = {}
+
+    def _fake(store, **kw):
+        captured.update(kw)
+        return {"written": [], "skipped": [], "unmatched": []}
+
+    monkeypatch.setattr(engine, "build_matchups", _fake)
+    cfg = PipelineConfig(
+        profiles=[
+            {
+                "wmo": 7900001,
+                "cycle": 1,
+                "latitude": 20.0,
+                "longitude": -50.0,
+                "time": "2025-05-01T12:00:00",
+            }
+        ]
+    )
+    match(object(), cfg)
+    assert captured["selection"] == {(7900001, 1)}

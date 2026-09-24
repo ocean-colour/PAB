@@ -1,0 +1,88 @@
+# Prompt 5 Task 3 — CMR discover for the backfilled profiles (gaps A + B).
+#
+# Selection: /data/v2/backfill_AB.csv — 7,596 profiles (A 2,409 + B 5,187).
+#
+# Two flags carry the whole point (same reasoning as rediscover_job.yaml):
+#   --profiles-csv  restricts discover to this subset. Without it discover
+#       sweeps every profile in the store — now 59,620, not 54,031.
+#   --replace       REQUIRED. discover skips a profile when some already-stored
+#       granule covers it in space and time, and that test is exactly what left
+#       gap A without its own search. Omit --replace and gap A gets skipped a
+#       second time, silently, and the job "succeeds" having done nothing for
+#       2,409 of its 7,596 profiles.
+#
+# Expect ~3,222 of the 7,596 searches to return nothing: PACE's L2 AOP forward
+# stream ends 2026-08-01 (measured in Task 1) and those gap-B profiles are
+# newer than it. That is not a failure — they are searched again for free when
+# PACE catches up, because a profile with no granules is never skipped by the
+# coverage test.
+#
+# Sizing: MEASURED 2026-09-19 — 7,535 searches in 63 min = ~0.50 s/search
+# wall at 8 threads, 0 failed. (The 2026-08 rediscover measured 0.66 s/search;
+# CMR was slightly faster this time.) Note the rate is NOT flat from the start:
+# the first 100 searches ran at 1.09 s/search while the thread pool warmed, so
+# an early-sample projection over-estimates by ~2x. Take the rate from a few
+# hundred searches in, not the first fifty.
+#
+# --discover-jobs 8 is the CMR etiquette cap in the working agreements, not a
+# performance choice.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars delete job pab-v2-discover --ignore-not-found
+#   kubectl apply -f nautilus/v2_discover_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v2-discover
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v2-discover
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4          # resumable: discover re-runs what is missing
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.1
+        imagePullPolicy: Always
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data/v2}
+        - {name: PYTHONWARNINGS, value: "ignore"}
+        - {name: RUN, value: /data/v2}
+        - {name: CSV, value: /data/v2/backfill_AB.csv}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/discover.log; }
+            counts() { python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('profiles','granules','matchups','fits')})" 2>&1 | tee -a $RUN/discover.log; }
+            log "PROVENANCE"
+            python -c "import json; from pab.config import package_versions, pab_version; pv=package_versions(); print('pab_version', pab_version); print('git_sha', json.dumps(pv['git_sha']))" 2>&1 | tee -a $RUN/discover.log
+            log "SELECTION"
+            wc -l $CSV | tee -a $RUN/discover.log
+            counts
+            log "DISCOVER start (--replace, --discover-jobs 8)"
+            pab --db $RUN/pab.db --outdir $RUN/pipeline \
+                --profiles-csv $CSV --stage discover --replace --discover-jobs 8 2>&1 \
+              | tee -a $RUN/discover.log
+            log "DISCOVER end"
+            counts
+            log "COVERAGE CHECK (store-only, no CMR)"
+            python /cfg/coverage_check.py $RUN/pab.db 2>&1 | tee -a $RUN/discover.log
+            log "disk"
+            du -sh $RUN 2>/dev/null | tee -a $RUN/discover.log
+            log "V2_DISCOVER_DONE"
+        resources:
+          requests: {cpu: "8", memory: "24Gi", ephemeral-storage: "10Gi"}
+          limits: {cpu: "8", memory: "24Gi", ephemeral-storage: "20Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+        - {name: cov, mountPath: /cfg/coverage_check.py, subPath: coverage_check.py}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}
+      - {name: cov, configMap: {name: pab-v2-coverage}}

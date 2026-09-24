@@ -1,0 +1,85 @@
+# Prompt 5 Task 4 — `match` for the v2 backfill.
+#
+# RESTRICTED to the backfill selection. As of 2.0, `match` honours an explicit
+# --profiles-csv exactly as `discover` does (JXP, build_v2_prompt_5.md Q5).
+#
+# Why that matters here: unrestricted, match sweeps every profile with an
+# mld_summary and would attempt **45,010** (59,620 minus the 14,610 already
+# matched). But 36,966 of those were already attempted in the 1.0 run and their
+# candidate pool is UNCHANGED by the Task 3 discover — every newly discovered
+# granule starts 2026-06-01 or later, and the match window is +/-24 h, so only
+# profiles from 2026-05-31 onward can possibly see one. Those 36,966 would open
+# the same granules and fail the same way.
+#
+# Sizing from the 1.0 run: ~7 s/profile at 16 workers, 42 h for 50,292 profiles.
+#   45,010 attempted (unrestricted) -> ~35 h
+#    7,937 attempted (this manifest) -> ~6 h
+# Expect ~1,350 new matchups (build_v2_prompt_5.md Task 3's per-gap table) —
+# NOT the ~15,406 coverage_check.py's closing line projects, which applies 28%
+# to every candidate-bearing profile including those already rejected.
+#
+# Protections carried over from the 1.0 run, all still active and all earned:
+#   * per-granule read timeout (120 s) — a wedged HTTPS read once hung fit 8.6 h
+#   * chunked pools + 120 s stall guard — kills a wedged chunk and continues
+#   * resume pre-filter — matched profiles skipped BEFORE any granule is opened
+#   * footprint pre-filter — ~6 candidate opens/profile instead of ~291
+#   * 16 workers / 100Gi — 32 workers on 80Gi OOM-killed six times; each worker
+#     holds a granule's nav arrays (~43 MB) plus fsspec read-ahead, ~2.5 GB
+#     resident, so this ratio is a memory constraint, not a speed choice.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars delete job pab-v2-match --ignore-not-found
+#   kubectl apply -f nautilus/v2_match_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v2-match
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v2-match
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4          # resumable: matched profiles are skipped on re-run
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.1
+        imagePullPolicy: Always
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data/v2}
+        - {name: PYTHONWARNINGS, value: "ignore"}
+        - {name: RUN, value: /data/v2}
+        - {name: CSV, value: /data/v2/backfill_ABD.csv}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/match.log; }
+            counts() { python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('profiles','granules','matchups','matchup_pixels','fits')})" 2>&1 | tee -a $RUN/match.log; }
+            ulimit -n 65536 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
+            log "FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+            log "PROVENANCE"
+            python -c "import json; from pab.config import package_versions, pab_version; pv=package_versions(); print('pab_version', pab_version); print('git_sha', json.dumps(pv['git_sha']))" 2>&1 | tee -a $RUN/match.log
+            counts
+            log "MATCH start (backfill selection A+B+D, jobs=16)"
+            wc -l $CSV | tee -a $RUN/match.log
+            pab --db $RUN/pab.db --outdir $RUN/pipeline \
+                --profiles-csv $CSV --stage match --jobs 16 2>&1 \
+              | tee -a $RUN/match.log
+            log "MATCH end"
+            counts
+            log "disk"
+            du -sh $RUN 2>/dev/null | tee -a $RUN/match.log
+            log "V2_MATCH_DONE"
+        resources:
+          requests: {cpu: "16", memory: "100Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "16", memory: "100Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}

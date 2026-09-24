@@ -262,6 +262,52 @@ only (`python -m pab.fit.nasa_giop --db v2/pab.db`, ~2.2k × 4 s ≈ 2.5 h,
 ~100 GB scratch cache), and `figure` for the 2.0 fit figures (+ scenes for
 the new matchups only).
 
+#### Amended 2026-09-17 — the selections were rebuilt and the yield is **~1,250, not ~2,200** (JXP, `build_v2_prompt_5.md` Q1c)
+
+The sizing above counted profiles. Building the actual CSVs
+(`build_v2_prompt_5.md` Task 1) and asking what fraction can *succeed* halves
+it. The gap **counts** were close; two conditions the read-only sizing did not
+apply are what changed:
+
+1. **PACE's forward stream ends 2026-08-01** — 6.5 weeks behind the run date.
+   Queried live: `PACE_OCI_L2_AOP` has 8,571 granules in 2026-06-01…12-31,
+   latest acquisition `2026-08-01T20:50:06Z`. **63 % of gap B has no satellite
+   data to match against yet.**
+2. **Gap D is 78 % position-less** — 372 of its 475 profiles have no lat/lon,
+   and a blank position predicts the failure rather than being incidental: of
+   807 such rows in the original selection, 435 ingested and only **13.5 %** of
+   a 200-row sample recovered a position from argopy. A profile with no
+   position can never yield a matchup.
+
+| Gap | selected | **ingested** | positioned | **matchable now** | ≈ new matchups (28 %) |
+|---|---:|---:|---:|---:|---:|
+| **A** | 2,409 *(sized 2,356)* | 2,409 | 2,403 | 2,403 | **~673** |
+| **B** | 5,187 *(sized 4,981)* | 5,187 | 5,132 | **1,971** | **~552** |
+| **D** | 475 *(sized ~475)* | **402** | 402 | 402 | **~113** |
+| **total** | 8,071 | **7,998** | 7,937 | 4,776 | **~1,338** |
+
+→ **~+1,340 matchups, ~15.9k fits** — not 16.8k. NASA-GIOP for the new
+matchups scales down with it (~1.34k × 4 s ≈ 1.5 h).
+
+> **Corrected 2026-09-18 after the ingest actually ran.** An earlier version of
+> this table put gap D at 103 usable profiles and ~29 matchups, on the
+> reasoning that 372 of D's 475 had no position in the selection CSV and that
+> historically only ~13.5 % of such profiles ever acquire one. **That
+> inference was wrong.** It came from sampling rows ingested during the
+> *original* 2026 run, which had failed for their own reasons; a fresh fetch
+> behaves quite differently. Of D's 372 position-less profiles, **368 ingested
+> and all 368 gained a position from argopy** — 99 %, not 13.5 %. D is worth
+> ~113 matchups, close to the original ~130 sizing. Gap B's 105 position-less
+> profiles did split roughly as expected (50 of 105 recovered a position),
+> which is why the error was confined to D. The lesson: a blank field in a
+> *stale* CSV says little about what a *fresh* fetch will return.
+
+**Decisions (JXP, Q1a/b):** ingest **all** of B (5,187) and **all** of D (475)
+regardless of current matchability — the profiles are the durable asset, and a
+later `discover`/`match` sweep picks up the 3,238 B profiles for free once
+PACE catches up. Gap D profiles that **fail ingest a second time** are to be
+written to a separate list for JXP to chase with colleagues.
+
 ### 5. Sequence
 
 0. **Code + env** (§3 a–k) on the workstation; fit 3–5 real matchups from

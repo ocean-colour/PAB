@@ -318,7 +318,16 @@ def _ingest_executor(fetcher, workers: int):
     **Processes** for the live path. Measured on real GDAC profiles: serial
     6.2 s/profile, 12 threads 2.75, **12 processes 0.97** — the fetch is not
     network-bound but bound by argopy's Python-side parsing, so the GIL, not the
-    servers, is the ceiling. Processes need a picklable ``fetcher``
+    servers, is the ceiling.
+
+    **That ceiling is not permanent.** The 2026-09-18 v2 backfill measured a
+    flat **~11 s/profile at 32 processes** over 16 h, with each worker at ~1.5 %
+    CPU and the pod drawing 24 millicores of a 34-core request — i.e. blocked on
+    the GDAC, not parsing, and almost certainly rate-limited (the rate did not
+    vary by more than 10 % across 5,662 profiles). When the remote side is the
+    bottleneck, adding processes buys nothing; size a run from a fresh
+    measurement rather than from the numbers above. Processes need a picklable
+    ``fetcher``
     (``None`` = the live fetch, or a module-level seam); anything else (a
     lambda/closure test seam) falls back to **threads**, which still concurrent
     the I/O and keeps the datasets in-process.
@@ -640,7 +649,14 @@ def _search_with_retry(searcher, lat, lon, t0, t1, config, *, attempts: int = 3)
 
 
 def match(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
-    """Stage 4: build matchups (idempotent/resumable)."""
+    """Stage 4: build matchups (idempotent/resumable).
+
+    Honours an **explicit** ``--profiles-csv`` selection, like ``discover``.
+    Without one it sweeps the whole store, unchanged. The asymmetry it removes
+    was expensive: ``match`` re-attempts every unmatched profile each run, and
+    those are usually unmatched permanently, so a targeted backfill would have
+    re-derived ~37 k known-negative results.
+    """
     from pab.matchup.engine import build_matchups
 
     return build_matchups(
@@ -649,6 +665,7 @@ def match(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
         config=config.matchup,
         replace=config.replace,
         jobs=config.jobs,
+        selection=config.selection_keys(),
     )
 
 
