@@ -15,26 +15,68 @@ ENV MPLBACKEND=Agg PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1 OS_COLOR=/opt/os_color
 RUN pip install --upgrade pip
 
 WORKDIR /opt/src
-# deps first (PAB depends on them); each is a trimmed local checkout
-COPY remote_sensing/ remote_sensing/
-COPY ocpy/ ocpy/
-COPY bing/ bing/
-COPY retrieve-or-bust/ retrieve-or-bust/
-COPY PAB/ PAB/
-# The BING backscatter models init bb_w from a Loisel+2023 Hydrolight run
-# (ocpy.hydrolight.loisel23.load_ds(4,0) -> $OS_COLOR/Loisel2023/Hydrolight400.nc).
-# Every fit needs it; ship just that one 18 MB file (not the full 19 GB dataset).
-COPY os_color/ /opt/os_color/
 
+# ---------------------------------------------------------------------------
+# LAYER 1 -- third-party dependencies ONLY, deliberately BEFORE any COPY of our
+# own source. This is the ~7.7 GB layer (jax, scipy, matplotlib, healpy, ...).
+#
+# Until 2026-09-26 the source COPYs sat above a single combined pip install, so
+# editing one line of PAB invalidated all 7.7 GB and every rebuild pushed ~2.5 GB
+# for what was really a ~175 MB change. The registry also does not resume a
+# partial layer, so a stalled push re-sent the whole thing from zero -- that is
+# what cost 66 min on :2.0.1 and a restart on :2.0.2 (JXP, Q8a).
+#
+# Keep this list in sync with the five local packages' requirements. It does NOT
+# need to be exhaustive: layer 2 installs the local packages *with* deps, so
+# anything missed here is simply installed there instead of being dropped. That
+# is why this is not `--no-deps`, which would silently discard the ~25 real
+# dependencies bing/setup.py declares.
+# ---------------------------------------------------------------------------
+# CPU-ONLY torch, installed FIRST and from PyTorch's cpu index (JXP, Q12 -> (2)).
+#
+# Nothing in PAB or bing imports torch or timm; `bing/setup.py:31` declares
+# `timm==0.3.2`, which requires torch, and the default PyPI torch wheel bundles
+# the NVIDIA CUDA stack: 1.2 GB torch + 3.2 GB nvidia/ + 0.9 GB triton = ~5.3 GB,
+# over half the image -- on a cluster with no GPUs. Installing the cpu build
+# first means the later `timm` requirement is already satisfied, so pip never
+# reaches for the CUDA wheels.
+#
+# `--index-url` here replaces PyPI for THIS command only; the general install
+# below is a separate `pip install` that still uses PyPI. Keep them separate.
+RUN pip install --index-url https://download.pytorch.org/whl/cpu \
+      torch torchvision
+
+# `timm==0.3.2` is named here even though nothing imports it, so that its
+# closure lands in this cached layer rather than in layer 2 above the source
+# COPYs. Measured both ways: without it layer 2 was 6.35 GB (5.27 GB of it this
+# closure) and a source edit rebuilt ~7.96 GB; with it, layer 2 is 712 MB and a
+# source edit rebuilds ~934 MB -- an 8.5x reduction.
 RUN pip install \
-      ./remote_sensing ./ocpy ./bing ./retrieve-or-bust ./PAB \
       numpy scipy pandas xarray pyarrow matplotlib \
       h5netcdf h5py netcdf4 \
       earthaccess "argopy==1.4.0" "erddapy==3.2.1" gsw healpy emcee bokeh boto3 \
       jax flax optax jaxtyping \
       sphinx sphinx-rtd-theme \
- && python -c "import pab, bing, ocpy, remote_sensing, robust; print('pab', pab.pab_version)" \
+      "timm==0.3.2" \
  && python -c "from erddapy.erddapy import _quote_string_constraints; print('erddapy/argopy compat OK')"
+
+# ---------------------------------------------------------------------------
+# LAYER 2 -- our own code. COPYs are ordered by how often each changes, least
+# first, so editing PAB invalidates as little as possible.
+#
+# The BING backscatter models init bb_w from a Loisel+2023 Hydrolight run
+# (ocpy.hydrolight.loisel23.load_ds(4,0) -> $OS_COLOR/Loisel2023/Hydrolight400.nc).
+# Every fit needs it; ship just that one 18 MB file (not the full 19 GB dataset).
+# ---------------------------------------------------------------------------
+COPY os_color/ /opt/os_color/
+COPY remote_sensing/ remote_sensing/
+COPY ocpy/ ocpy/
+COPY bing/ bing/
+COPY retrieve-or-bust/ retrieve-or-bust/
+COPY PAB/ PAB/
+
+RUN pip install ./remote_sensing ./ocpy ./bing ./retrieve-or-bust ./PAB \
+ && python -c "import pab, bing, ocpy, remote_sensing, robust; print('pab', pab.pab_version)"
 
 # bing/ocpy use find_packages() with no package_data, so `pip install ./pkg`
 # drops their data/ dirs (gordon_coefficients, Bricaud tables, adg .mat). Those

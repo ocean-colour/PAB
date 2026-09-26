@@ -43,7 +43,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: pab
-        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.1
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.2   # sha256:3400742e0f97509122ba0565dad7741cc5131a2ccac6f398f1bb98abc6145185 (PAB dacefa1)
         imagePullPolicy: Always
         env:
         - {name: HOME, value: /root}

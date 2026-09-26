@@ -1,0 +1,87 @@
+# Prompt 5 Task 5 — per-pixel viewing geometry from PACE L1B, whole v2 DB.
+#
+# Fills theta_s / theta_v / dphi / geom_source on every matchup_pixels row.
+# Runs BETWEEN match and fit: the 2.0 inelastic RT backend needs the angles at
+# fit time, and the read is per GRANULE, so grouping turns ~160k potential
+# 1.8 GB L1B opens into ~13.5k.
+#
+# --jobs 8, NOT 16. This stage issues one UNCACHED CMR query per granule on
+# top of the L1B read, so --jobs 16 would mean 16 concurrent CMR searches
+# against the same NASA infrastructure the working agreements already cap at
+# --discover-jobs 8. This is an etiquette cap, not a performance choice.
+#
+# SIZING IS UNMEASURED AT LAUNCH — deliberately. The two single-granule
+# numbers in hand disagree 5x (47 s in-pod, ~9 s on the workstation) and both
+# are startup-dominated, so neither is a rate; the spread is the difference
+# between a 4 h job and a 22 h one. Rather than build a synthetic 200-granule
+# slice, this job IS the measurement: it logs "geometry progress: N/M
+# granules" every 50 (pab.parallel.PROGRESS_EVERY), and the stage is
+# idempotent on `theta_s IS NULL` with zero network work for filled pixels, so
+# killing it after a few hundred granules costs nothing and resuming is just
+# re-running it. Take the rate from ~200-400 granules in, NOT the first 50:
+# the discover pool warmed for ~100 searches and an early sample over-projected
+# by 2.2x (Prompt 5 Task 3).
+#
+# Gates (run automatically at the end, and safe to re-run):
+#   - every matchup_pixels row has theta_s
+#   - geom_source = 'L1B_V3' throughout
+#   - theta_v spans 0..~60 deg; dphi inside (-180, 180]
+#   - failures listed with causes (L1B missing from CMR, grid-check failure)
+#
+# The sweep for this stage is simply running it again.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars delete job pab-v2-geometry --ignore-not-found
+#   kubectl apply -f nautilus/v2_geometry_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v2-geometry
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v2-geometry
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4          # resumable: filled pixels are skipped before any open
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.2   # sha256:3400742e0f97509122ba0565dad7741cc5131a2ccac6f398f1bb98abc6145185 (PAB dacefa1)
+        imagePullPolicy: Always
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data/v2}
+        - {name: PYTHONWARNINGS, value: "ignore"}
+        - {name: RUN, value: /data/v2}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            ulimit -n 65536 || true
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/geometry.log; }
+            log "FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+            log "PROVENANCE"
+            python -c "import json; from pab.config import package_versions, pab_version; pv=package_versions(); print('pab_version', pab_version); print('git_sha', json.dumps(pv['git_sha']))" 2>&1 | tee -a $RUN/geometry.log
+            log "BEFORE"
+            python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); q=lambda s: c.execute(s).fetchone()[0]; print('pixels', q('SELECT COUNT(*) FROM matchup_pixels')); print('with theta_s', q('SELECT COUNT(*) FROM matchup_pixels WHERE theta_s IS NOT NULL')); print('granules in pixels', q('SELECT COUNT(DISTINCT granule_id) FROM matchups'))" 2>&1 | tee -a $RUN/geometry.log
+            log "GEOMETRY start (--jobs 8, whole v2 DB)"
+            pab --db $RUN/pab.db --outdir $RUN/pipeline \
+                --stage geometry --jobs 8 2>&1 \
+              | tee -a $RUN/geometry.log
+            log "GEOMETRY end"
+            log "GATES"
+            python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); q=lambda s: c.execute(s).fetchone(); n=q('SELECT COUNT(*) FROM matchup_pixels')[0]; f=q('SELECT COUNT(*) FROM matchup_pixels WHERE theta_s IS NULL')[0]; print('pixels', n, 'missing theta_s', f, 'GATE', 'PASS' if f==0 else 'FAIL'); print('geom_source', c.execute('SELECT geom_source, COUNT(*) FROM matchup_pixels GROUP BY 1').fetchall()); print('theta_s', q('SELECT MIN(theta_s), MAX(theta_s) FROM matchup_pixels')); print('theta_v', q('SELECT MIN(theta_v), MAX(theta_v) FROM matchup_pixels')); print('dphi', q('SELECT MIN(dphi), MAX(dphi) FROM matchup_pixels')); d=q('SELECT COUNT(*) FROM matchup_pixels WHERE dphi IS NOT NULL AND (dphi <= -180.0 OR dphi > 180.0)')[0]; print('dphi out of (-180,180]', d, 'GATE', 'PASS' if d==0 else 'FAIL')" 2>&1 | tee -a $RUN/geometry.log
+            log "disk"
+            du -sh $RUN 2>/dev/null | tee -a $RUN/geometry.log
+            log "V2_GEOMETRY_DONE"
+        resources:
+          requests: {cpu: "8", memory: "64Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "8", memory: "64Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}

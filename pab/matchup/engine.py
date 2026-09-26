@@ -416,12 +416,15 @@ def find_matchup(
     Raises:
         ValueError: if the profile has no ``latitude``/``longitude``.
     """
+    from pab.parallel import portable_errors
+
     config = config or MatchupConfig()
     if profile.get("latitude") is None or profile.get("longitude") is None:
         raise ValueError(
             f"profile {profile.get('wmo')}/{profile.get('cycle')} has no "
             "latitude/longitude; cannot match it to a granule"
         )
+    pid = f"{profile.get('wmo')}_{profile.get('cycle')}"
     lat = float(profile["latitude"])
     lon = float(profile["longitude"])
     p_time = profile["time"]
@@ -441,9 +444,13 @@ def find_matchup(
         if dtime_hours > config.dtime_max_hours:
             break  # sorted, so everything after is further out in time too
         try:
-            ds = _open_with_timeout(
-                g["source"], opener=opener, timeout_s=config.open_timeout_s
-            )
+            # portable_errors leaves TimeoutError (picklable) alone, so the
+            # handler below still fires; it only flattens exceptions that would
+            # be destroyed crossing the process boundary -- see pab.parallel.
+            with portable_errors(f"{pid} granule {g['granule_id']}"):
+                ds = _open_with_timeout(
+                    g["source"], opener=opener, timeout_s=config.open_timeout_s
+                )
         except TimeoutError:
             # A dropped HTTPS connection can leave the read waiting forever (no
             # timeout in fsspec/aiohttp): observed as a worker with unestablished
@@ -456,9 +463,12 @@ def find_matchup(
             )
             continue
         try:
-            pixels = _extract.extract_matchup_spectra(
-                ds, lat, lon, n=config.n_spectra, mask_flags=config.mask_flags
-            )
+            # The extract is where the lazy HTTP reads actually happen, so a
+            # 503 can surface here rather than at open.
+            with portable_errors(f"{pid} granule {g['granule_id']}"):
+                pixels = _extract.extract_matchup_spectra(
+                    ds, lat, lon, n=config.n_spectra, mask_flags=config.mask_flags
+                )
         finally:
             # Release the granule immediately. `extract_matchup_spectra` returns
             # materialised numpy (every read goes through `.values`), so nothing

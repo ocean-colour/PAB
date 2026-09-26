@@ -112,9 +112,15 @@ def geometry_for_granule(
         ``[(pixel_id, theta_s, theta_v, dphi), ...]`` and ``mismatched`` is
         ``[(pixel_id, reason), ...]``.
     """
+    from pab.parallel import portable_errors
+
     filled: list[tuple] = []
     mismatched: list[tuple] = []
-    ds = open_geolocation(source, opener=opener, timeout_s=timeout_s)
+    # An unpicklable exception (e.g. aiohttp's ClientResponseError, which holds
+    # a CIMultiDictProxy) would otherwise reach the parent as an unrelated
+    # pickling TypeError and hide the real cause -- see pab.parallel.
+    with portable_errors(f"granule {source}"):
+        ds = open_geolocation(source, opener=opener, timeout_s=timeout_s)
     try:
         for px in pixels:
             try:

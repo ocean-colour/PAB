@@ -1,0 +1,84 @@
+# Prompt 5 Task 8 / Q10(a) — sweep for the 350 profiles that STALLED in the
+# main match run (2026-09-25/26).
+#
+# WHY THIS IS NOT JUST A BARE RE-RUN OF v2_match_job.yaml.
+# Q10(a) described the sweep as "the manifest unchanged", on the reasoning that
+# already-matched profiles are pre-skipped so only the stalled ones cost
+# anything. That reasoning is WRONG and the estimate with it. `build_matchups`
+# pre-skips on three tests (already matched / no position / no candidate
+# granule); a profile that came back `unmatched` because no pixel qualified
+# still HAS candidate granules, so a re-run re-opens them at full price:
+#
+#   manifest unchanged   ~3,545 profiles  ~10.6 h
+#   restricted to stalled    350 profiles  ~1 h     <- what Q10(a) promised
+#
+# So the sweep uses --profiles-csv (the mechanism added in Q5) over exactly the
+# 350 stalled profile ids, recovered from the run summary in /data/v2/match.log
+# and written to /data/v2/sweep_stalled.csv. All 350 verified present in the
+# store and none already matched.
+#
+# Expect ~100 new matchups at the measured 28.6 % yield -> ~15,987. That number
+# is to be MEASURED here, not reported from the estimate (the Q9 commitment).
+#
+# activeDeadlineSeconds: a safety net for the exit hang documented in Q10(c).
+# The main run finished its work at 04:36 and then blocked forever in
+# concurrent.futures' atexit join on an abandoned pool, holding 16 CPU / 100 Gi
+# for 8+ hours. match commits as it goes and is resumable, so a deadline kill
+# costs nothing but the tail. 6 h against a ~1 h expectation.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars delete job pab-v2-match-sweep --ignore-not-found
+#   kubectl apply -f nautilus/v2_match_sweep_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v2-match-sweep
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v2-match-sweep
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 21600      # 6 h; see Q10(c) exit-hang note above
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.2   # sha256:3400742e0f97509122ba0565dad7741cc5131a2ccac6f398f1bb98abc6145185 (PAB dacefa1)
+        imagePullPolicy: Always
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data/v2}
+        - {name: PYTHONWARNINGS, value: "ignore"}
+        - {name: RUN, value: /data/v2}
+        - {name: CSV, value: /data/v2/sweep_stalled.csv}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            ulimit -n 65536 || true
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/match_sweep.log; }
+            counts() { python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('profiles','granules','matchups','matchup_pixels','fits')})" 2>&1 | tee -a $RUN/match_sweep.log; }
+            log "FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+            log "PROVENANCE"
+            python -c "import json; from pab.config import package_versions, pab_version; pv=package_versions(); print('pab_version', pab_version); print('git_sha', json.dumps(pv['git_sha']))" 2>&1 | tee -a $RUN/match_sweep.log
+            log "SELECTION (stalled profiles from the main run)"
+            wc -l $CSV | tee -a $RUN/match_sweep.log
+            log "BEFORE"; counts
+            log "SWEEP start (--profiles-csv sweep_stalled.csv, jobs=16)"
+            pab --db $RUN/pab.db --outdir $RUN/pipeline \
+                --profiles-csv $CSV --stage match --jobs 16 2>&1 \
+              | tee -a $RUN/match_sweep.log
+            log "SWEEP end"
+            log "AFTER"; counts
+            log "V2_MATCH_SWEEP_DONE"
+        resources:
+          requests: {cpu: "16", memory: "100Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "16", memory: "100Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}

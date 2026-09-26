@@ -8,12 +8,16 @@ are what they share.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 __all__ = [
     "picklable",
     "init_worker",
     "PROGRESS_EVERY",
     "cgroup_mem_gb",
     "mem_breakdown",
+    "WorkerError",
+    "portable_errors",
 ]
 
 #: How often a long stage emits a progress line (records). A stage that runs for
@@ -72,6 +76,57 @@ def init_worker() -> None:  # pragma: no cover - runs in worker processes
 
     for var, value in _THREAD_CAPS.items():
         os.environ.setdefault(var, value)
+
+
+
+class WorkerError(RuntimeError):
+    """A worker-side failure flattened to a picklable message.
+
+    Carries ``origin`` (the original exception's class name) so a caller can
+    still branch on what went wrong, even though the original object did not
+    survive the process boundary.
+    """
+
+    def __init__(self, message: str, *, origin: str = "") -> None:
+        super().__init__(message)
+        self.origin = origin
+
+
+@contextmanager
+def portable_errors(context: str):
+    """Re-raise an **unpicklable** worker exception as a :class:`WorkerError`.
+
+    A ``ProcessPoolExecutor`` returns a worker's exception by pickling it. When
+    the exception cannot be pickled, the pool raises a *different* error from
+    ``Future.result()`` and the real cause is lost. That is not hypothetical:
+    the 2026-09-25 ``match`` run logged
+
+    .. code-block:: text
+
+        TypeError: can't pickle multidict._multidict.CIMultiDictProxy objects
+
+    whose actual cause, two frames up, was a NASA **503 Service Unavailable**
+    on an OB.DAAC granule. ``aiohttp``'s ``ClientResponseError`` holds the HTTP
+    headers as a ``CIMultiDictProxy``, which pickle refuses — so a transient
+    server error was reported as a serialization bug in our own code. The next
+    person to hit it would debug pickling instead of reading NASA's status
+    page.
+
+    Picklable exceptions are re-raised **unchanged**, so callers that branch on
+    a specific type keep working; only the ones that would be destroyed in
+    transit are flattened to ``"<context>: <OriginalType>: <message>"``.
+
+    Args:
+        context: What was being attempted, e.g. the granule source.
+    """
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001 — re-raised either way
+        if picklable(exc):
+            raise
+        raise WorkerError(
+            f"{context}: {type(exc).__name__}: {exc}", origin=type(exc).__name__
+        ) from None
 
 
 def cgroup_mem_gb() -> float | None:
