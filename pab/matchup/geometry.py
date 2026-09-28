@@ -290,6 +290,8 @@ def _geometry_parallel(
     import multiprocessing as mp
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
+    from pab.matchup.engine import MAX_TASKS_PER_CHILD
+
     fut_src: dict = {}
     pending: set = set()
     total = len(by_granule)
@@ -309,7 +311,17 @@ def _geometry_parallel(
             _log.info("geometry progress: %d/%d granules", done_count, total)
 
     with ProcessPoolExecutor(
-        max_workers=jobs, mp_context=mp.get_context("spawn"), initializer=init_worker
+        max_workers=jobs,
+        mp_context=mp.get_context("spawn"),
+        initializer=init_worker,
+        # Recycle a worker after N granules. Without this, each worker's
+        # fsspec/HDF5 caches grow without bound: measured 2026-09-27 in-pod,
+        # workers went from ~2.5 GB each at 200 granules to ~6.8 GB each at
+        # 750 (~7.8 MB per granule per worker), so a 12,251-granule run would
+        # need ~113 GB and instead OOM-restarted repeatedly. `match` has had
+        # this guard since the 1.0 run for exactly the same reason; geometry
+        # was written without it.
+        max_tasks_per_child=MAX_TASKS_PER_CHILD,
     ) as ex:
         for source, pixels in by_granule.items():
             fut = ex.submit(

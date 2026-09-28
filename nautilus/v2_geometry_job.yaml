@@ -40,13 +40,248 @@ metadata:
   name: pab-v2-geometry
   namespace: sea-meets-the-stars
 spec:
-  backoffLimit: 4          # resumable: filled pixels are skipped before any open
+  # backoffLimit 30, NOT 4, because this stage OOMs and resumes by design until
+  # the max_tasks_per_child fix lands (Q15). `build_geometry` builds its pool
+  # WITHOUT max_tasks_per_child, which `match` sets precisely to bound
+  # per-worker fsspec/HDF5 growth. Measured 2026-09-27 on the Fresno node:
+  #
+  #   granule  200   workers ~2.5 GB each   cgroup 16 GB
+  #   granule  750   workers ~6.8 GB each   cgroup 43 GB
+  #   => ~7.8 MB per granule per worker; 64 Gi is reached near granule ~1,090
+  #
+  # Unbounded, the whole run would need ~113 GB. Rather than request that, we
+  # let it OOM: progress is written per granule by the parent, and every
+  # restart re-queries `theta_s IS NULL` and resumes, so each pod clears
+  # ~1,100 granules. 12,251 granules therefore needs ~11 restarts; 30 is margin.
+  backoffLimit: 30         # resumable: filled pixels are skipped before any open
+  # Bounded lifetime, for the exit hang in Q10(c): the match job finished its
+  # work then blocked forever in concurrent.futures' atexit join on an
+  # abandoned pool, holding 16 CPU / 100 Gi for 8.5 h. geometry uses the same
+  # pattern. It is idempotent on `theta_s IS NULL`, so a deadline kill costs
+  # only the tail and re-running resumes.
+  activeDeadlineSeconds: 108000   # 30 h; see the backoffLimit note
   template:
     spec:
       restartPolicy: Never
+      # PINNED TO WEST-COAST NODES. This stage is pure network I/O against
+      # NASA OB.DAAC in AWS us-west-2, and node placement dominates it:
+      #
+      #   8 workers on moff.sdstate.edu   13.7 s/granule  -> 0.073 granules/s
+      #   1 worker  on humboldt.edu        7.7 s/granule  -> 0.13  granules/s
+      #   1 worker  on the workstation     4.7-7.4 s      (Santa Cruz)
+      #
+      # i.e. ONE California worker beat the entire 8-worker South Dakota pod by
+      # ~1.8x, and the 8 workers there bought nothing because they contend for
+      # the node's bandwidth (CPU sat at 74 millicores across all 8). Measured
+      # 2026-09-27 with an identical CMR-lookup + L1B-open probe.
+      #
+      # CMR is NOT the bottleneck: the lookup is 0.4-1.4 s, ~1% of the cost. So
+      # --jobs 8 is kept purely as the CMR etiquette cap from the working
+      # agreements, not because 8 is a throughput choice.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                - bw6600-01.ts.fresnostate.edu
+                - bw6600-02.ts.fresnostate.edu
+                - controller0.calit2.optiputer.net
+                - controller0.sdsc.optiputer.net
+                - controller1.sdsc.optiputer.net
+                - cph-blade10.humboldt.edu
+                - cph-blade11.humboldt.edu
+                - cph-blade12.humboldt.edu
+                - cph-blade13.humboldt.edu
+                - cph-blade14.humboldt.edu
+                - cph-blade15.humboldt.edu
+                - cph-blade16.humboldt.edu
+                - cph-dgx-node1.humboldt.edu
+                - cph-dgx-node2.humboldt.edu
+                - cph-dgx-node4.humboldt.edu
+                - cph-dgx-node5.humboldt.edu
+                - cph-dgx-node6.humboldt.edu
+                - cph-dgx-node7.humboldt.edu
+                - cph-dgx-node8.humboldt.edu
+                - cph-dgx-node9.humboldt.edu
+                - cph-perfsonar.humboldt.edu
+                - edex.calit2.optiputer.net
+                - exp-19-09.sdsc.optiputer.net
+                - exp-19-10.sdsc.optiputer.net
+                - exp-19-11.sdsc.optiputer.net
+                - exp-19-12.sdsc.optiputer.net
+                - gateway.calit2.optiputer.net
+                - hd200-01.ts.fresnostate.edu
+                - jump.sdsc.optiputer.net
+                - jupyter.calit2.optiputer.net
+                - k8s-100g-dtn-6.ucsc.edu
+                - k8s-4090-01.calit2.optiputer.net
+                - k8s-4090-02.calit2.optiputer.net
+                - k8s-bf2-01.sdsc.optiputer.net
+                - k8s-chase-ci-01.calit2.optiputer.net
+                - k8s-chase-ci-02.calit2.optiputer.net
+                - k8s-chase-ci-04.calit2.optiputer.net
+                - k8s-chase-ci-07.calit2.optiputer.net
+                - k8s-chase-ci-10.calit2.optiputer.net
+                - k8s-epyc-01.sdsc.optiputer.net
+                - k8s-gen4-03.calit2.optiputer.net
+                - k8s-gen4-05.calit2.optiputer.net
+                - k8s-gen5-01.sdsc.optiputer.net
+                - k8s-gen5-02.sdsc.optiputer.net
+                - k8s-gpu-01.calit2.optiputer.net
+                - k8s-gpu-1.ucsc.edu
+                - k8s-gpu-2.ucsc.edu
+                - k8s-gpu-6.ucsc.edu
+                - k8s-haosu-03.sdsc.optiputer.net
+                - k8s-haosu-05.sdsc.optiputer.net
+                - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-haosu-11.sdsc.optiputer.net
+                - k8s-haosu-15.sdsc.optiputer.net
+                - k8s-haosu-18.sdsc.optiputer.net
+                - k8s-haosu-19.sdsc.optiputer.net
+                - k8s-haosu-22.sdsc.optiputer.net
+                - k8s-haosu-24.sdsc.optiputer.net
+                - k8s-haosu-25.sdsc.optiputer.net
+                - k8s-haosu-26.sdsc.optiputer.net
+                - k8s-haosu-27.sdsc.optiputer.net
+                - k8s-haosu-28.sdsc.optiputer.net
+                - k8s-haosu-29.sdsc.optiputer.net
+                - k8s-igrok-01.calit2.optiputer.net
+                - k8s-igrok-02.calit2.optiputer.net
+                - k8s-igrok-03.calit2.optiputer.net
+                - k8s-igrok-04.calit2.optiputer.net
+                - k8s-igrok-05.calit2.optiputer.net
+                - k8s-igrok-06.calit2.optiputer.net
+                - k8s-nvme-01.sdsc.optiputer.net
+                - k8s-ravi-01.calit2.optiputer.net
+                - k8s-s-00.sdsc.optiputer.net
+                - k8s-stratix-10-02.sdsc.optiputer.net
+                - k8s-u200-00.calit2.optiputer.net
+                - k8s-usra-01.calit2.optiputer.net
+                - k8s-usra-02.calit2.optiputer.net
+                - nautilus-ext-gpu01.fullerton.edu
+                - nautilus-it-cpu01.fullerton.edu
+                - nautilus-it-cpu02.fullerton.edu
+                - nautilus-it-cpu03.fullerton.edu
+                - nautilus-it-cpu04.fullerton.edu
+                - nautilus-it-cpu05.fullerton.edu
+                - nautilus-it-cpu06.fullerton.edu
+                - nautilus-it-cpu07.fullerton.edu
+                - nautilus-it-cpu08.fullerton.edu
+                - nautilus-it-cpu09.fullerton.edu
+                - nautilus-it-cpu11.fullerton.edu
+                - nautilus-it-cpu12.fullerton.edu
+                - nautilus-it-cpu13.fullerton.edu
+                - nautilus-it-cpu14.fullerton.edu
+                - nautilus-it-cpu15.fullerton.edu
+                - nautilus-it-cpu16.fullerton.edu
+                - nautilus-it-cpu17.fullerton.edu
+                - nautilus-it-gpu01.fullerton.edu
+                - nautilus-it-gpu02.fullerton.edu
+                - nautilus-it-gpu03.fullerton.edu
+                - nautilus-it-gpu04.fullerton.edu
+                - nautilus-it-gpu05.fullerton.edu
+                - nautilus-it-gpu06.fullerton.edu
+                - nautilus-it-gpu07.fullerton.edu
+                - nautilus-it-gpu08.fullerton.edu
+                - nautilus-it-storage01.fullerton.edu
+                - nautilus-it-storage02.fullerton.edu
+                - nautilus-it-storage03.fullerton.edu
+                - node-1-1.sdsc.optiputer.net
+                - node-1-2.sdsc.optiputer.net
+                - node-1-3.sdsc.optiputer.net
+                - node-1-5.sdsc.optiputer.net
+                - node-1-6.sdsc.optiputer.net
+                - node-2-1.sdsc.optiputer.net
+                - node-2-10.sdsc.optiputer.net
+                - node-2-11.sdsc.optiputer.net
+                - node-2-12.sdsc.optiputer.net
+                - node-2-2.sdsc.optiputer.net
+                - node-2-3.sdsc.optiputer.net
+                - node-2-4.sdsc.optiputer.net
+                - node-2-5.sdsc.optiputer.net
+                - node-2-6.sdsc.optiputer.net
+                - node-2-7.sdsc.optiputer.net
+                - node-2-8.sdsc.optiputer.net
+                - node-2-9.sdsc.optiputer.net
+                - node-3-5.sdsc.optiputer.net
+                - node-3-6.sdsc.optiputer.net
+                - nrp-ai-100-01.sdsc.optiputer.net
+                - nrp-s63-25.sdsc.optiputer.net
+                - nrp-s63-27.sdsc.optiputer.net
+                - patternlab.calit2.optiputer.net
+                - proc-01.ts.fresnostate.edu
+                - proc-02.ts.fresnostate.edu
+                - prp-perfsonar-1.ucsc.edu
+                - rci-nrp-cpu-01.sdsu.edu
+                - rci-nrp-cpu-02.sdsu.edu
+                - rci-nrp-cpu-03.sdsu.edu
+                - rci-nrp-cpu-04.sdsu.edu
+                - rci-nrp-dtn-01.sdsu.edu
+                - rci-nrp-dtn-02.sdsu.edu
+                - rci-nrp-dtn-03.sdsu.edu
+                - rci-nrp-gpu-01.sdsu.edu
+                - rci-nrp-gpu-02.sdsu.edu
+                - rci-nrp-gpu-03.sdsu.edu
+                - rci-nrp-gpu-04.sdsu.edu
+                - rci-nrp-gpu-05.sdsu.edu
+                - rci-nrp-gpu-06.sdsu.edu
+                - rci-nrp-gpu-07.sdsu.edu
+                - rci-nrp-gpu-08.sdsu.edu
+                - rci-tide-cpu-01.sdsu.edu
+                - rci-tide-cpu-02.sdsu.edu
+                - rci-tide-cpu-03.sdsu.edu
+                - rci-tide-cpu-04.sdsu.edu
+                - rci-tide-cpu-05.sdsu.edu
+                - rci-tide-cpu-06.sdsu.edu
+                - rci-tide-dtn-01.sdsu.edu
+                - rci-tide-dtn-02.sdsu.edu
+                - rci-tide-dtn-03.sdsu.edu
+                - rci-tide-gpu-01.sdsu.edu
+                - rci-tide-gpu-02.sdsu.edu
+                - rci-tide-gpu-03.sdsu.edu
+                - rci-tide-gpu-04.sdsu.edu
+                - rci-tide-gpu-05.sdsu.edu
+                - rci-tide-gpu-06.sdsu.edu
+                - rci-tide-gpu-07.sdsu.edu
+                - rci-tide-gpu-08.sdsu.edu
+                - rci-tide-gpu-09.sdsu.edu
+                - rci-tide-gpu-10.sdsu.edu
+                - rci-tide-gpu-11.sdsu.edu
+                - rci-tide-gpu-12.sdsu.edu
+                - rci-tide-gpu-13.sdsu.edu
+                - rci-tide-gpu-14.sdsu.edu
+                - rci-tide-gpu-15.sdsu.edu
+                - rci-tide-gpu-16.sdsu.edu
+                - rci-tide-gpu-17.sdsu.edu
+                - ry-gpu-01.sdsc.optiputer.net
+                - ry-gpu-02.sdsc.optiputer.net
+                - ry-gpu-03.sdsc.optiputer.net
+                - ry-gpu-04.sdsc.optiputer.net
+                - ry-gpu-06.sdsc.optiputer.net
+                - ry-gpu-07.sdsc.optiputer.net
+                - ry-gpu-08.sdsc.optiputer.net
+                - ry-gpu-09.sdsc.optiputer.net
+                - ry-gpu-10.sdsc.optiputer.net
+                - ry-gpu-11.sdsc.optiputer.net
+                - ry-gpu-12.sdsc.optiputer.net
+                - ry-gpu-13.sdsc.optiputer.net
+                - ry-gpu-14.sdsc.optiputer.net
+                - ry-gpu-15.sdsc.optiputer.net
+                - ry-gpu-16.sdsc.optiputer.net
+                - ry-storage-01.sdsc.optiputer.net
+                - ry-storage-02.sdsc.optiputer.net
+                - ry-storage-03.sdsc.optiputer.net
+                - ry-storage-04.sdsc.optiputer.net
+                - siderea.ucsc.edu
+                - storage-01.ts.fresnostate.edu
+                - storage-02.ts.fresnostate.edu
+                - storage-03.ts.fresnostate.edu
       containers:
       - name: pab
-        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.2   # sha256:3400742e0f97509122ba0565dad7741cc5131a2ccac6f398f1bb98abc6145185 (PAB dacefa1)
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.3   # PAB 99c37ef -- carries the Q8b portable_errors fix
         imagePullPolicy: Always
         env:
         - {name: HOME, value: /root}

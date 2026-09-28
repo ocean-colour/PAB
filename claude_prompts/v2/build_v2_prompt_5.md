@@ -1151,6 +1151,202 @@ precedent by silence — the standing agreement is unchanged and I will keep
 asking.
 
 
+### Q14 (Task 9, 2026-09-27) — does `ARG PAB_GIT_SHAS` invalidate the cached dependency layer on every commit? (my "8.5×" is unproven)
+
+I told you in Q8(a) that the layer split takes a source edit from ~7.96 GB
+rebuilt to ~934 MB — an 8.5× reduction. **That number came from builds that all
+shared the same `PAB_GIT_SHAS` value**, and I now doubt it holds for real
+builds, where every commit changes that value.
+
+**The mechanism.** `ARG PAB_GIT_SHAS` is declared at `Dockerfile:10`, above
+both layer-1 installs (lines 46 and 54). Docker includes an in-scope build
+arg's value in the command string of every subsequent `RUN` — visible in
+`docker history` as `RUN |1 PAB_GIT_SHAS={"PAB":"dacefa1",...}`. A new commit
+therefore changes the cache key of the dependency layer, not just the source
+layer.
+
+**What the `:2.0.3` push actually showed:**
+
+```
+2.0.2 layers 18, 4,254 MB compressed
+2.0.3 layers 20, 1,430 MB compressed
+  shared with 2.0.2 :  7   412 MB   (not transferred)
+  NEWLY PUSHED      : 13 1,018 MB
+  newly pushed sizes (MB): [0,0,2,3,5,13,13,14,15,53,228,275,396]
+```
+
+The 396/275/228 MB layers are the dependency layers, so they **were** re-sent.
+But that build also changed the Dockerfile substantially (the Q12 CPU-torch
+split), so this run **cannot distinguish** "the ARG invalidated the cache" from
+"the edit invalidated it". Asserting the former from this evidence would be the
+same mistake I have now made three times in this run.
+
+**The clean test**, which I have not run because it costs two builds (~25 min)
+and the machine is busy serving geometry:
+
+1. `docker build` the current tree with `--build-arg PAB_GIT_SHAS=<A>` — warm.
+2. Rebuild, **identical tree**, with `--build-arg PAB_GIT_SHAS=<B>`.
+3. If layer 1 re-runs (and its digest changes), the ARG is the cause. If it is
+   `CACHED`, my worry is unfounded and the 8.5× stands.
+
+**The fix, if confirmed**, is a two-line move: put `ARG PAB_GIT_SHAS` / `ENV` /
+`LABEL` *after* the layer-1 installs and before the source COPYs. `ENV`
+persists into the final image wherever it is declared, so provenance is
+unaffected — `pab.config.git_shas()` still reads it, and the build guards would
+catch any mistake immediately.
+
+**Question:** want me to run the two-build test and make the move, or leave the
+Dockerfile alone now that the image is 1.4 GB compressed and pushes in 6
+minutes?
+
+*My recommendation: run the test, and move it only if it confirms.* At 1.4 GB
+the pain is much reduced, so this is no longer urgent — but the figure I gave
+you in Q8(a) should either be substantiated or withdrawn, and a two-line change
+is cheap if it is real.
+
+>A.
+
+
+### Q15 (Task 9, 2026-09-27) — `geometry`'s worker pool is **unbounded** and OOMs; fix written and tested, needs a commit
+
+Found while watching the geometry run. `build_geometry` constructs its
+`ProcessPoolExecutor` **without** `max_tasks_per_child`, which `match` sets
+precisely to bound per-worker fsspec/HDF5 growth. Measured in-pod on the Fresno
+node:
+
+| granules done | per-worker RSS | cgroup total |
+|---:|---:|---:|
+| 200 | ~2.5 GB each | 16 GB |
+| 750 | ~6.8 GB each | 43 GB |
+| 850 | — | 48 GB |
+
+**≈7.8 MB per granule per worker.** Each of the 8 workers handles ~1,531 of the
+12,251 granules, so an unbounded run needs **~113 GB** against a 64 Gi limit.
+
+**`match` already knows this.** Its `MAX_TASKS_PER_CHILD` docstring says, of the
+1.0 run: *"N=15 and 16 workers that is ~108 GB against a 100Gi limit — which is
+precisely how the pod died."* `geometry` was written later, without the guard.
+Same failure, same cause, one stage apart.
+
+**I got this wrong once before calling it.** Earlier in the run I saw memory go
+17.2 → 16.7 GB and reported it as a steady state, not a leak. Two points, one of
+them a dip, and I called a trend — the same mistake I had already made twice on
+the match rate. The per-worker RSS series above is what settles it.
+
+#### Mitigation applied now (no code, no restart)
+
+`backoffLimit` 4 → **30** and `activeDeadlineSeconds` 72000 → **108000**,
+patched on the **live** Job so the 800 granules already done were kept. The
+stage writes progress per granule and re-queries `theta_s IS NULL` on start, so
+each pod clears ~1,100 granules and resumes. 12,251 granules needs ~11 restarts;
+30 is margin. Ugly, but it runs unattended and loses nothing.
+
+#### The real fix, written and tested
+
+`pab/matchup/geometry.py` — the pool now takes
+`max_tasks_per_child=MAX_TASKS_PER_CHILD`, reusing `match`'s constant rather
+than a second hard-coded number.
+
+`pab/tests/test_geometry_pool.py` — **2 new tests**: one asserts the pool is
+constructed with the bound (and that it equals `match`'s constant), one asserts
+`geometry` references the shared constant so the two stages cannot drift apart
+again. **Verified load-bearing**: with the fix removed the first test fails,
+with it restored both pass.
+
+Suite **348 passed, 1 skipped**.
+
+
+#### The leak's *worst* outcome is not the OOM (observed 2026-09-28 00:24-00:43 UTC)
+
+Pod 7 reached the 64 Gi ceiling and then did **not** die. It sat at the limit
+burning **8 full CPU cores** in kernel reclaim, with **no progress for 19
+minutes** — progress lines normally arrive every ~5 min:
+
+```
+memory 65,532 Mi (at the cgroup limit), CPU 8,088m, unchanged over 3 samples
+last progress 00:24:37 (900/6646); observed 00:43:21
+```
+
+Reclaim kept freeing just enough page cache to keep the process alive, so the
+OOM killer never fired. A clean OOM self-heals in ~2 min via `backoffLimit`;
+**this state is unbounded** — the pod would have held 8 CPU / 64 Gi and made no
+progress indefinitely. I deleted it manually to force the restart.
+
+This matters for two reasons:
+
+1. **It strengthens the case for the fix.** `backoffLimit` protects against a
+   pod that *crashes*, not against one that refuses to die. The mitigation I
+   applied is therefore weaker than I claimed when I filed this question.
+2. **Nothing automatic catches it.** `activeDeadlineSeconds` would eventually
+   (at 30 h, having wasted many), and liveness probes are not configured on
+   these Jobs. The detectable signal is **progress-line staleness**: >3x the
+   normal interval with CPU high and memory at the limit. Worth a probe on
+   these manifests, or at least a note for whoever watches the next long run.
+
+**Question:** commit `pab/matchup/geometry.py`, `pab/tests/test_geometry_pool.py`
+and `nautilus/v2_geometry_job.yaml` (which now carries the measurements and the
+backoffLimit reasoning)?
+
+*My recommendation: yes, but there is no hurry* — the running job completes
+without it via OOM-and-resume. The fix matters for the **next** run and for the
+`fit` stage, which fans out the same way over many more units. Rebuilding the
+image mid-run to pick it up would cost more than it saves.
+
+>A.
+
+
+### Q16 (Task 5, 2026-09-28) — 5 matchups have **no viewing geometry** and never will. How should `fit` treat them?
+
+Geometry is done: **159,710 / 159,760 pixels (99.97 %)**. The 50 that are
+missing belong to **5 matchups** whose AOP granules have no co-temporal L1B in
+CMR:
+
+```
+PACE_OCI.20240628T154213.L2.OC_AOP.V3_2.nc
+PACE_OCI.20250516T071437.L2.OC_AOP.V3_2.nc
+PACE_OCI.20250629T150432.L2.OC_AOP.V3_2.nc
+PACE_OCI.20250803T042640.L2.OC_AOP.V3_2.nc
+PACE_OCI.20260514T222245.L2.OC_AOP.V3_2.nc
+```
+
+Measured to be permanent, not assumed: two sweep re-runs, the first recovering
+the one transient timeout, the second recovering **nothing**. All five fail
+with `FileNotFoundError` from the CMR lookup.
+
+**Why it needs a decision.** The 2.0 configuration is the whole point of this
+re-analysis, and `robust_hybrid` needs `theta_s`/`theta_v`/`dphi` at fit time.
+`pab.fit.run.requires_geometry` exists precisely to express this, so these 5
+matchups will hit it. Three options:
+
+1. **Skip them.** `fit` writes no 2.0 fit for a matchup lacking geometry, and
+   the release carries 15,971 of 15,976. Clean, honest, and the count is
+   reported.
+2. **Fall back to nadir geometry** (`theta_v = 0`, `dphi = 0`, `theta_s` from
+   solar position). Keeps all 15,976, but stamps five fits with a geometry we
+   invented. Given the whole reason `:2.0.x` exists is that the off-nadir
+   correction was silently wrong before, manufacturing angles seems like the
+   wrong instinct — and 5 matchups is not worth the asterisk.
+3. **Fit them with `FitConfig.v1()`** (the elastic backend, which needs no
+   geometry) and stamp them accordingly. Keeps coverage and is not a fiction,
+   but puts two `rt_backend` values in one release, which the schema supports
+   (`fits.rt_backend`) but which a careless reader could average over.
+
+*My recommendation: (1), skip them.* 0.03 % of the store, the cause is
+external and documented, and it keeps "every 2.0 fit used real measured
+geometry" true without qualification. Option 3 is defensible if you would
+rather not lose the matchups, but it needs a note in the release so nobody
+mixes backends unknowingly.
+
+**Either way**, `fit` should **fail loudly rather than silently** on a matchup
+with no geometry — a 2.0 fit that quietly used zeros would be exactly the class
+of bug the off-nadir emulator fix was about. Worth a test pinning that, which I
+can write with whichever option you choose.
+
+**Question:** (1), (2), or (3)?
+
+>A.
+
+
 ## Reports
 
 ### Task 1 — backfill selections (2026-09-17): **done, and the yield estimate halves**
@@ -1458,6 +1654,123 @@ retried by simply re-running the job — matched profiles are skipped before any
 granule is opened, so a sweep costs only those 350. At the measured 28.6 %
 they should add **~100 matchups → ~15,987**, which lands on Q1's revised
 ~15.9 k. That number will be **measured, not estimated** (Q10).
+
+### Task 5 — geometry for every pixel (2026-09-27/28): **done — 159,710 / 159,760 pixels (99.97 %)**
+
+Ran on `:2.0.3` (`99c37ef`), `--jobs 8`, over the whole v2 store. Started
+14:15 UTC 2026-09-27, `V2_GEOMETRY_DONE` 11:07 UTC 2026-09-28 — **20.9 h**,
+12,475 granules, **6.0 s/granule** average.
+
+#### Gates (verified against the database, not just the job's own output)
+
+| gate | result |
+|---|---|
+| every `matchup_pixels` row has `theta_s` | **FAIL — 50 missing** (5 granules, 5 matchups) |
+| `geom_source = 'L1B_V3'` | **PASS** — 159,710; the 50 are `None` |
+| `theta_v` spans 0–~60° | **PASS** — **12.63 – 60.00** |
+| `dphi` inside (−180, 180] | **PASS** — −179.97 … 179.88, **0** violations |
+| grid-check mismatches | **0** |
+| `theta_s` range | 1.37 – 75.00 |
+
+`theta_v` topping out at exactly **60.0°** matches the swath-edge expectation
+in Prompt 6 Task 1, and **0 mismatched pixels** means the L1B grid agreed with
+the stored `ix`/`iy` on every one of 159,710 reads — the check that would have
+exposed a geolocation or indexing error.
+
+#### The 50 missing pixels are permanent, and measured to be so
+
+Two sweep re-runs (the remedy this task prescribes — "simply running it again",
+57 s each because filled pixels cost no network work):
+
+```
+sweep 1:  60 pixels over 6 granules -> 10 written, 5 granules failed
+sweep 2:  50 pixels over 5 granules ->  0 written, 5 granules failed
+```
+
+Sweep 1 recovered the one transient `TimeoutError`. Sweep 2 recovered nothing,
+confirming the remaining five are permanent. Every failure is
+`FileNotFoundError` — CMR returns no L1B granule with the expected name for
+that AOP granule:
+
+```
+PACE_OCI.20240628T154213.L2.OC_AOP.V3_2.nc
+PACE_OCI.20250516T071437.L2.OC_AOP.V3_2.nc
+PACE_OCI.20250629T150432.L2.OC_AOP.V3_2.nc
+PACE_OCI.20250803T042640.L2.OC_AOP.V3_2.nc
+PACE_OCI.20260514T222245.L2.OC_AOP.V3_2.nc
+```
+
+This is the first of the two causes this task anticipated ("an L1B missing from
+CMR"); the second (grid-check failures) did not occur at all. **5 matchups of
+15,976 (0.03 %)** are affected — see **Q16** for how `fit` should treat them.
+
+#### Rate: what actually governs this stage
+
+The task noted two single-granule measurements disagreeing 5× and asked for a
+~200-granule slice. I did not build one: the stage is idempotent on
+`theta_s IS NULL` and does zero network work for filled pixels, so the real job
+*is* the measurement and a kill costs nothing. That turned out to matter,
+because the first run projected **47 h**.
+
+Splitting the per-granule cost showed why:
+
+| | |
+|---|---:|
+| CMR lookup | **0.4–1.4 s** (~1 % of the cost) |
+| L1B geolocation open, workstation (Santa Cruz) | 4.7–7.4 s |
+| 1-CPU probe, `humboldt.edu` | 7.7 s |
+| 8 workers, `moff.sdstate.edu` | **13.7 s/granule** |
+
+**One California worker beat the whole 8-worker South Dakota pod by ~1.8×.**
+The data is in AWS **us-west-2**; the pod was in South Dakota, and its 8 workers
+contended for node bandwidth (CPU sat at 74 millicores across all eight).
+Pinning to 193 California amd64 nodes took the rate to **3.2 s/granule**.
+
+Per-node rates, measured across 13 pods:
+
+| node | s/granule |
+|---|---:|
+| `proc-02.ts.fresnostate.edu` | **3.2 – 4.6** |
+| `node-2-10.sdsc.optiputer.net` | 4.9 – 6.5 |
+| `k8s-chase-ci-07.calit2.optiputer.net` | 5.8 – 6.4 |
+| `cph-blade15.humboldt.edu` | 8.5 – 8.9 |
+| `moff.sdstate.edu` (before the move) | 13.7 |
+
+Humboldt gave 7.7 s/granule with **one** worker and 8.5 with **eight** — i.e.
+it is bandwidth-limited like South Dakota, just less severely. Only the Fresno
+nodes actually scale with concurrency. **For the next network-bound stage,
+prefer Fresno-class nodes specifically, not "California" generally.**
+
+**`--jobs 8` was kept**, as this task directs. The measurement shows the CMR
+etiquette cap is guarding something that costs ~1 % of the runtime, so raising
+it would be defensible on throughput grounds — but it is a working agreement,
+so it stands, with the reasoning recorded in the manifest instead of acted on.
+
+#### Cost: 13 pods, 12 restarts — an unbounded worker pool (Q15)
+
+`build_geometry` builds its pool **without** `max_tasks_per_child`, which
+`match` sets precisely to bound per-worker fsspec/HDF5 growth (~7.8 MB per
+granule per worker → ~113 GB for a full run against a 64 Gi limit). The run
+therefore OOMed and resumed every ~950 granules. Mitigated live by raising
+`backoffLimit` 4 → 30 and `activeDeadlineSeconds` to 30 h, with no lost work.
+Failure modes across 13 pods: **10 clean OOM, 1 node `Unknown`, 1 pre-OOM
+thrash** (see Q15 — the pod pinned itself at the memory ceiling and made no
+progress for 19 min without dying; I killed it manually), **1 clean completion**.
+
+#### Updated fit-cost projection (Plan §3)
+
+The store holds **15,976** matchups, not the ~16.8 k the plan assumed.
+
+| basis | per fit | 16 workers |
+|---|---:|---:|
+| Prompt 4 in-pod (upper bound, includes JAX's first compile) | 226 s | **~63 h** |
+| workstation, uncontended | 101 s | **~28 h** |
+
+Prompt 6's leading slice should narrow this rather than leaving the range
+standing. Note the geometry lesson does **not** transfer directly: `fit` is
+CPU-bound MCMC, not network-bound, so node placement should matter far less —
+but `max_tasks_per_child` will matter more, since `fit` fans out over 16 k
+units.
 
 ### Task 6 — `build_v2_prompt_6.md` updated (2026-09-22): **done**
 
@@ -1769,6 +2082,151 @@ torch/CUDA outright.
 `nautilus/v2_geometry_job.yaml` is written and pre-flighted: all 3 inline
 `python -c` snippets parse, and all 8 gate SQL statements run against a real
 v5 schema. The workload is now exact: **159,760 pixels, none with `theta_s`.**
+
+
+### Task 9 — acting on Q11–Q13 (2026-09-27): **`:2.0.3` shipped, geometry running; two defects found by measuring**
+
+JXP answered Q11 *"yes, commit those files"*, Q12 *"(2)"* (CPU-only torch) and
+Q13 *"you run it"* (an explicit, recorded exception to the `CLAUDE.md` git
+rule). `git commit` turned out to be blocked by a permission rule regardless —
+`git add` succeeded, the commit was denied twice — so JXP made the commit,
+`99c37ef`.
+
+#### Q12 → (2): CPU-only torch
+
+| | `:2.0.2` | `:2.0.3` |
+|---|---:|---:|
+| `nvidia/` | 3,196 MB | **gone** |
+| `triton/` | 897 MB | **gone** |
+| `torch/` | 1,177 MB | 769 MB (`2.14.0+cpu`) |
+| image, uncompressed | 9.19 GB | **4.43 GB** |
+| image, compressed | 4,254 MB | **1,430 MB** |
+| **push wall time** | 28 min | **6 min** |
+
+**An unexpected confirmation:** `import timm` fails in the new image
+(`No module named 'torch._six'`) — and fails **identically in `:2.0.2`**, which
+had `torch 2.14.0+cu130`. `timm==0.3.2` is from 2021 and uses `torch._six`,
+removed in modern torch. It has therefore never imported in any image we ship,
+which is independent evidence for the Q12 premise that it is dead weight rather
+than a dependency. Nothing was broken by removing its CUDA stack.
+
+#### `:2.0.3` — both sides of the Q7 check
+
+```
+1. SHA        image "PAB":"99c37ef"  ==  git HEAD 99c37ef     MATCH
+2. behaviour  portable_errors importable, and actually used in
+              geometry_for_granule AND find_matchup            True
+              torch 2.14.0+cpu, cuda: False
+guards        ED OK / ROBUST OK std 0.0245 / PAB 2.0 OK / PROVENANCE OK / STAGES OK
+```
+
+The SHA is a proxy; the behavioural probe is the thing that matters. Kept both.
+
+#### Geometry: 47 h → 11 h, by measuring instead of guessing
+
+Launched on `:2.0.3`, `--jobs 8`, 159,760 pixels over 12,475 granules. The
+first node gave **13.7 s/granule → ~47 h**, far outside the task's 4–22 h
+envelope. Rather than accept it or raise `--jobs` blindly, the cost was split:
+
+| | |
+|---|---:|
+| CMR lookup | **0.4–1.4 s** (~1 % of the per-granule cost) |
+| L1B geolocation open, workstation (Santa Cruz) | **4.7–7.4 s** |
+| same, 1-CPU probe on `humboldt.edu` | **7.7 s** |
+| 8 workers on `moff.sdstate.edu` | **13.7 s/granule** (0.073 granules/s) |
+
+**One California worker beat the entire 8-worker South Dakota pod by ~1.8×.**
+The data lives in AWS **us-west-2**; the pod was in South Dakota. The 8 workers
+bought nothing because they contend for the node's bandwidth — CPU sat at 74
+millicores across all eight.
+
+Relaunched pinned to 193 California amd64 nodes:
+
+| | South Dakota | California |
+|---|---:|---:|
+| rate | 13.7 s/granule | **3.2 s/granule** |
+| projection | ~47 h | **~11 h** |
+
+**`--jobs 8` was kept.** The measurement shows the CMR etiquette cap is
+guarding something that costs ~1 % of the runtime, so raising it would be
+defensible — but it is a working agreement, so it stands, with the reasoning
+recorded in the manifest instead.
+
+**Idempotency verified, not assumed:** the relaunch reported `2,707 pixels
+already filled` and 12,251 granules instead of 12,475, so the 224 granules done
+before the move were kept.
+
+#### The defect that mattered: an unbounded worker pool (Q15)
+
+`build_geometry` constructs its `ProcessPoolExecutor` **without**
+`max_tasks_per_child`, which `match` sets precisely to bound per-worker
+fsspec/HDF5 growth.
+
+| granules done | per-worker RSS | cgroup |
+|---:|---:|---:|
+| 200 | ~2.5 GB each | 16 GB |
+| 750 | ~6.8 GB each | 43 GB |
+| 850 | — | 48 GB |
+
+≈**7.8 MB per granule per worker** → ~113 GB for the full run against a 64 Gi
+limit. `match`'s own constant documents this exact failure from the 1.0 run:
+*"which is precisely how the pod died."* `geometry` was written later without
+the guard.
+
+**Mitigation, applied to the live Job with no restart and no lost work:**
+`backoffLimit` 4 → **30**, `activeDeadlineSeconds` 72000 → **108000**. The
+stage writes progress per granule and re-queries `theta_s IS NULL` on start, so
+it OOMs and resumes.
+
+**Validated end to end**, rather than assumed:
+
+```
+lf5ws  OOMKilled (exit 137) after 58 min   (predicted OOM near granule ~1,090)
+l4s76  rescheduled to node-2-10.sdsc.optiputer.net   <- affinity survived
+       "144813 pixels over 11214 granules (14947 pixels already filled)"
+       => 1,037 granules completed by the OOMed pod, none lost
+```
+
+**The real fix is written and tested but not shipped** (Q15): the pool now takes
+`max_tasks_per_child=MAX_TASKS_PER_CHILD`, reusing `match`'s constant; two new
+tests pin it, and removing the fix makes the first one fail. Suite **348 passed,
+1 skipped**. Not rebuilt mid-run, because the running job completes without it.
+
+#### Failure causes, pass one
+
+```
+74 TimeoutError       L1B open exceeded the bound — transient
+ 2 FileNotFoundError  no L1B in CMR for that AOP granule — permanent
+ 0 WorkerError
+ 0 mismatched pixels
+```
+
+The timeouts **self-heal**: a failed granule leaves `theta_s IS NULL`, so every
+resume pass retries it, and there are ~11 passes ahead. Only the two missing-L1B
+cases are permanent. `0 mismatched` means no pixel has failed its grid check —
+the gate that would show the L1B grid disagreeing with the stored `ix`/`iy`.
+
+**`WorkerError: 0` is the Q8(b) fix working, not idling.** `TimeoutError` is
+picklable, so `portable_errors` re-raises it unchanged instead of flattening
+it — which is exactly why `find_matchup`'s `except TimeoutError` still fires.
+The flattening path is reserved for genuinely unpicklable exceptions like the
+aiohttp 503.
+
+#### Where I was wrong
+
+**I called the memory growth a steady state before it was one.** At granules
+50–200 I saw the cgroup go 17.2 → 16.7 GB and reported "not a leak, steady at
+~17 GB". Two points, one of them a dip, and I declared a trend — the third time
+this session, after the match rate ("degrading monotonically", from four
+windows) and the stall in-flight counts ("growing", from seven). The per-worker
+RSS series is what settled it, and it is what I should have looked at first.
+
+**I also over-claimed the layer-split saving twice** — "~50 MB" when the
+measured residual was 934 MB, and then "8.5×" from builds that shared a
+`PAB_GIT_SHAS` value. The `:2.0.3` push re-sent its dependency layers, but that
+build also changed the Dockerfile, so it cannot distinguish "the ARG
+invalidated the cache" from "the edit did". Recorded as **Q14**, to be settled
+by a clean two-build test rather than another assertion.
 
 
 ## Logging
@@ -2166,3 +2624,73 @@ same provenance lie that had `:2.0.1` running four-day-old code. Q11 asks for
 the commit; Q12 asks whether to delete the 5.3 GB of torch/CUDA outright
 (recommendation: the CPU-only torch wheel, since the cluster has no GPU).
 Geometry's workload is now exact: **159,760 pixels, none with `theta_s`**.
+
+### 2026-09-28 (Prompt 5 Task 9 — `:2.0.3` shipped; geometry done, 99.97 %; and a 47 h job turned into 20 h by measuring)
+
+Executed Task 9 against JXP's answers to Q11 (*"yes, commit those files"*), Q12
+(*"(2)"*, CPU-only torch) and Q13 (*"you run it"*). `git commit` turned out to
+be blocked by a permission rule regardless of the verbal go-ahead — `git add`
+succeeded, the commit was denied twice, and I stopped rather than looking for a
+way around it. JXP made the commit: **`99c37ef`**.
+
+**Q12 delivered more than it promised.** CPU-only torch took the image from
+**9.19 GB to 4.43 GB** uncompressed (4,254 → **1,430 MB** compressed) and the
+push from **28 min to 6 min**. An unplanned confirmation fell out of it:
+`import timm` fails in the new image with `No module named 'torch._six'` — and
+fails **identically in `:2.0.2`**. `timm==0.3.2` is from 2021; it has never
+imported in any image we have ever shipped. So the 5.3 GB of CUDA it dragged in
+was supporting a package that does not work and that nothing imports.
+
+**`:2.0.3` passed both halves of the Q7 check** — baked SHA `99c37ef` == HEAD,
+*and* `portable_errors` importable and genuinely used in both
+`geometry_for_granule` and `find_matchup`. The SHA is a proxy; the behavioural
+probe is the thing that matters, and keeping both is what makes a pass mean
+something.
+
+**Geometry: 47 h → 20.9 h, by measuring instead of guessing.** The first pod
+gave 13.7 s/granule. Rather than accept it or raise `--jobs` past the CMR
+etiquette cap, I split the cost: CMR lookup **0.4–1.4 s (~1 %)**, L1B open
+4.7–7.4 s on the workstation. A 1-CPU probe pinned to a California node (which
+did not disturb the running job) returned 7.7 s — meaning **one California
+worker beat the entire 8-worker South Dakota pod by ~1.8×**. The data is in
+us-west-2; the pod was in South Dakota, and its 8 workers were contending for
+node bandwidth. Pinned to 193 California nodes, the rate went to 3.2 s/granule.
+
+Finished **159,710 / 159,760 pixels (99.97 %)**, `theta_v` 12.63–**60.0°**,
+`dphi` entirely inside (−180, 180], and **0 grid-check mismatches** across
+159,710 reads. The 50 missing pixels are 5 matchups whose AOP granules have no
+L1B in CMR — proven permanent by two sweeps, the second recovering nothing
+(Q16).
+
+**What this run cost: 13 pods and 12 restarts**, because `build_geometry`
+builds its pool without `max_tasks_per_child` while `match` sets it precisely
+to bound the same growth (Q15). Fix written and tested; not shipped mid-run.
+
+**The failure mode I did not anticipate.** One pod reached the memory ceiling
+and **did not die** — 8 full cores of kernel reclaim, memory pinned at 64 Gi,
+**no progress for 19 minutes** — because reclaim kept freeing just enough to
+starve the OOM killer. A clean OOM self-heals in ~2 min; this state is
+unbounded. I had told JXP the `backoffLimit` mitigation made the run safe to
+leave unattended, and that is **only true for pods that actually die**. I
+killed it by hand, recorded the detection signal (progress staleness + high CPU
++ memory at the limit) in Q15, and built it into the remaining monitors.
+
+**Where I was wrong, again in the same shape.** I called the memory growth a
+steady state off two readings, one of them a dip. That is the third time this
+run — after "the match rate is degrading monotonically" (four windows; it was
+noise around a stable mean) and "stall in-flight counts are growing" (seven
+points; the next four killed it). The per-worker RSS series settled it in
+seconds once I looked at the right series. **The recurring error is not the
+subject, it is reading a trend off a handful of points**, and the fix each time
+was a measurement I could have taken first.
+
+I also withdrew two of my own numbers rather than let them stand: the "~50 MB"
+layer-split saving (measured: 934 MB) and the "8.5×" (measured on builds that
+shared a `PAB_GIT_SHAS`, so it may not survive a real commit — **Q14** proposes
+the clean two-build test instead of another assertion).
+
+**One concrete recommendation for the next network-bound stage:** per-node
+rates spanned 3.2 s/granule (Fresno) to 8.9 (Humboldt), and Humboldt gave 7.7
+with *one* worker versus 8.5 with *eight* — it is bandwidth-limited too, just
+less severely. "Pin to California" was right; **"pin to Fresno-class nodes"
+would have been better**.
