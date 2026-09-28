@@ -1204,7 +1204,7 @@ the pain is much reduced, so this is no longer urgent — but the figure I gave
 you in Q8(a) should either be substantiated or withdrawn, and a two-line change
 is cheap if it is real.
 
->A.
+>A.  Leave it
 
 
 ### Q15 (Task 9, 2026-09-27) — `geometry`'s worker pool is **unbounded** and OOMs; fix written and tested, needs a commit
@@ -1292,7 +1292,7 @@ without it via OOM-and-resume. The fix matters for the **next** run and for the
 `fit` stage, which fans out the same way over many more units. Rebuilding the
 image mid-run to pick it up would cost more than it saves.
 
->A.
+>A.  Yes
 
 
 ### Q16 (Task 5, 2026-09-28) — 5 matchups have **no viewing geometry** and never will. How should `fit` treat them?
@@ -1344,7 +1344,7 @@ can write with whichever option you choose.
 
 **Question:** (1), (2), or (3)?
 
->A.
+>A.  (1)
 
 
 ## Reports
