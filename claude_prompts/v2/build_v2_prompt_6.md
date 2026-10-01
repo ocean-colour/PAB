@@ -350,7 +350,7 @@ decision, and I would rather say that than produce the number for completeness.
 send is exactly the run where you cannot afford to be blind. I have not done it
 because it is outside Task 3's scope and would need another image.
 
->A.
+>A. (a) yes; (b) skip and fold into Prompt 7; (c) add logging and per-fit timing to `build_fits` before Prompt 7.
 
 
 ## Reports
