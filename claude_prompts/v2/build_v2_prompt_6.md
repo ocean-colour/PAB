@@ -280,7 +280,272 @@ generalises.
 >A.
 
 
+### Q2 (Tasks 2/3, 2026-10-01) — confirm the `B_p` attribution launch; plus two gaps I am not papering over
+
+Tasks 1 and 2 are done and written up. Both Q12 pause triggers are clear
+(**1 % failures**, **164 s/fit**) and `bbp700` 2.0/1.0 reproduces Prompt 3
+almost exactly (**0.7375** against 0.741). The new result is that the shift is
+**swath-edge dependent**: 0.577 at `theta_v ≥ 55` against ~0.78 elsewhere.
+
+#### (a) Launch the `B_p` attribution run?
+
+`nautilus/v2_bp_attribution_job.yaml` + `nautilus/v2_bp_attribution.py` are
+written and validated.
+
+| | |
+|---|---|
+| image | `:2.0.4` (PAB `2da2e09`) — manifest asserted against the verified image |
+| config | `FitConfig(fit_Bp=False)`, `Bp_value=0.01`, otherwise 2.0 |
+| selection | the same 100 matchups, `/data/v2/slice_100.csv` |
+| database | **scratch copy** at `/scratch/pab_bpfix.db` |
+| chains | `PAB_DATA_DIR=/scratch` → `/scratch/fit_chains`, **not** v2's |
+| writes to the PVC | one new file, `/data/v2/bp_attribution.csv`, plus a log |
+| est. | ~25 min (164 s/fit × 100 ÷ 32 + ~11 min JAX compile); 2 h deadline |
+
+**Why the scratch copy is not optional, concretely.** `make_fit_id` is
+`{matchup}_{ix}_{iy}_{model_pair}_v{version}` and does **not** encode
+`fit_Bp`. So a B_p-fixed fit has the *same* fit_id as the free-B_p fit already
+stored: without `replace=True` every matchup is skipped as "already done", and
+**with** `replace=True` against the real store it would overwrite the 99 real
+2.0 fits with diagnostic ones. On a scratch copy that is harmless. The script
+refuses to start unless `SCRATCH_DB` is under `/scratch` and `PAB_DATA_DIR` is
+not `/data/v2`, and the job re-checks v2's fit counts afterwards.
+
+*My recommendation: yes.* It is the last measurement the go/no-go gate needs,
+and it answers a question the slice raised rather than confirming something
+already known — Task 2 found `B_p` has **no** `theta_v` dependence (medians
+0.0218–0.0263 across the four bands), which suggests the swath-edge `bbp700`
+shift is the emulator rather than `B_p` absorbing geometry. This run tests that
+directly instead of leaving it as an inference.
+
+#### (b) R4 band residuals — deferred, not estimated
+
+Task 2 asks for per-band residuals at 685 / 713 / 719 nm and
+`Rrs_unc(719)/Rrs(719)`. These need the observed granule spectra plus a
+reconstructed fit, i.e. another granule-reading pass over 100 matchups — the
+slice job did not retain the spectra. They are also now a diagnostic on a band
+**outside** the 400–700 fit window, so they cannot be a fit residual in any
+case.
+
+**Question:** worth a separate ~20 min job, or skip for the gate? *My
+recommendation: skip for the gate and fold it into Prompt 7 if wanted.* Prompt 3
+already did this check on 20 matchups and it is what moved `wave_max` to 700;
+re-measuring a band we deliberately excluded is unlikely to change a go/no-go
+decision, and I would rather say that than produce the number for completeness.
+
+#### (c) `build_fits` logs nothing — recommend fixing before the full send
+
+`build_fits` emits **no progress and no per-fit timing**. Consequences:
+
+- Task 2's requested "s/fit median, p90" is not directly answerable. I
+  reconstructed the figures from `created` timestamps, which is why I can
+  separate the 11.4 min compile from the 164 s/fit steady state at all.
+- A **15–23 h** full send would log nothing between start and finish. Every
+  other long stage has `PROGRESS_EVERY` (`match`, `geometry`, `discover`), and
+  the value of that was proven repeatedly in Prompt 5 — progress staleness is
+  how I caught the geometry pre-OOM thrash.
+
+*My recommendation: add `PROGRESS_EVERY` logging plus per-fit elapsed time to
+`build_fits` before Prompt 7.* Small, matches the other stages, and the full
+send is exactly the run where you cannot afford to be blind. I have not done it
+because it is outside Task 3's scope and would need another image.
+
+>A.
+
+
 ## Reports
+
+### Task 1 — slice selection + mechanism (2026-09-30/10-01): **done — 99/100 fits in 21 min**
+
+#### The slice
+
+Eligibility needed correcting mid-task. **The v1 BING fits are not in the v2
+store** — it carries only the 14,609 `NASA_GIOP` 1.1 fits; the 14,609 `BING`
+1.0 fits exist solely in the frozen `v1/pab.db`. My first query tested
+`rt_backend IS NULL`, which the NASA_GIOP rows satisfy, and returned a
+*plausible* 14,604. The real pool, joined against the frozen database, is
+**14,573**. A wrong query giving a believable answer is the hard kind to catch.
+
+100 matchups, fixed seed 20260930 (reproducible), staged to
+`/data/v2/slice_100.csv`, md5 `61e04c7bbb33acbcdc04bdb18ed348ff`:
+
+| stratum | |
+|---|---|
+| `theta_v` | 25 / 25 / 25 / 25 across <30, 30–45, 45–55, **≥55 (swath edge)** |
+| basin | Pacific 32, Atlantic 19, Indian 17, Southern 16, N-high 16 |
+| season | MAM 28, DJF 24, JJA 24, SON 24 |
+| range | `theta_v` 22.1–**60.0**, 9 pixels ≥58°; `theta_s` 5.1–72.7 |
+
+The swath edge is over-weighted on purpose (25 % of the slice against ~11 % of
+the pool). That decision paid off — see Task 2.
+
+#### The mechanism
+
+Mirrored Prompt 5 Q5's `match` seam rather than inventing one:
+`PipelineConfig.matchup_ids()` → `set[str] | None`, forwarded by
+`pipeline.fit()`, filtered in `build_fits(selection=...)` **before any granule
+is opened**. `--matchup ID` repeatable (as `pab.fit.nasa_giop` already had)
+plus `--matchups-csv` for the bulk form. **8 tests**; suite **356 passed, 1
+skipped**. `HOWTO.md`'s selection row corrected — it has been wrong twice, and
+the fix is that `fit` selects by *matchup*, not profile.
+
+#### The launch, and an error of mine worth recording
+
+The pre-launch check refused `:2.0.3`:
+
+```
+image :2.0.3 baked PAB : 99c37ef      git HEAD : 2da2e09
+build_fits accepts selection : False
+```
+
+So: commit `2da2e09` → build `:2.0.4` → push → launch. The push then failed
+with `denied`, which took a diagnosis: the stored credential was
+`gitlab+deploy-token-1383`, the deploy token for a **different project**
+(`profx/keck-etcs`). GitLab deploy tokens are per-project, so it read fine and
+could never write to `profx/pab`. A new project-scoped token (`pab-push`, 1384)
+fixed it. Worth knowing because the symptom — pulls work, pushes denied — looks
+like a registry problem rather than a credential-scope one.
+
+**Then I launched a manifest still pointing at `:2.0.3`.** I had verified the
+*image* exhaustively and never checked that the *manifest referenced it*. The
+job ran for 12 s and died:
+
+```
+pab: error: unrecognized arguments: --matchups-csv /data/v2/slice_100.csv
+```
+
+Two lessons, and the second matters more:
+
+1. **"Is the image right?" is not "does the manifest point at the right
+   image?"** The Prompt 5 Task 4 failure was the latter and I had built a check
+   for the former. A manifest-level assertion is now part of the sequence.
+2. **The blast radius was luck.** Here the flag was *new*, so argparse rejected
+   it and the job failed loudly. In Prompt 5 Task 4 the flag (`--profiles-csv`)
+   already existed in the stale image, was silently ignored, and the job did
+   the unrestricted thing. The difference between a hard failure and a silent
+   wrong answer was purely whether the flag name already existed — not
+   anything I did.
+
+Database verified unchanged after the abort (14,609 fits). Relaunched on
+`:2.0.4`; gate passed: `fit: selection restricts to 100 of the store's
+matchups`.
+
+---
+
+### Task 2 — measuring the slice (2026-10-01): **both pause triggers clear; the swath-edge signal is the new result**
+
+99 of 100 fits, 21 min wall, `robust_hybrid` / `fit_Bp` / `phi_C=0.02` /
+400–700 nm / 10 000 steps / 16 walkers. 99 chains, **116.0 MB** (the ~115 MB
+estimate was almost exact).
+
+#### Cost — and why the obvious number is wrong
+
+```
+stage start -> first fit persisted   11.4 min   worker spawn + JAX compile, zero fits
+first -> last fit                     8.5 min   all 99
+steady state                        164 s/fit   worker time
+naive total-wall / fits             385 s/fit
+```
+
+**164 s/fit, comfortably under Q12's 240 s trigger.** The naive aggregate is
+**385 s/fit and would have tripped it** — inflated by an 11.4-minute one-time
+compile amortised over only ~3 fits per worker. In the full send each worker
+does ~320 fits and that cost disappears. Reporting the aggregate alone would
+have produced a false *pause*.
+
+**A gap this exposed:** `build_fits` logs **no per-fit timing and no progress
+at all**. The "median, p90" this task asks for is not directly answerable; the
+figures above are reconstructed from `created` timestamps. A 15–23 h full send
+that logs nothing is also undiagnosable while it runs. Recommend adding
+progress + per-fit timing before Prompt 7.
+
+**Failures: 1 of 100 (1 %)**, under the 2 % trigger — `open_granule failed`
+on `PACE_OCI.20260521T150812`, the same transient class as the geometry
+timeouts, recoverable on a re-run.
+
+**Projection (15,976 matchups):**
+
+| workers | steady state | chains |
+|---:|---:|---:|
+| 32 | **22.9 h** | ~19 GB |
+| 50 | **14.7 h** | ~19 GB |
+
+#### Physics — 2.0 vs the same matchups' v1 BING fits
+
+| | 2.0 | 1.0 |
+|---|---:|---:|
+| χ² median | **0.404** | 0.428 |
+| acceptance median | **0.340** | 0.451 |
+
+χ² is slightly **better** under 2.0, and acceptance drops as expected for six
+parameters against five (Prompt 3 measured ~0.33 / ~0.47 — reproduced). Note
+Prompt 3 reported χ² 0.65 / 0.45, i.e. 2.0 *worse*; at 5× the sample 2.0 is
+marginally better. The 20-matchup χ² comparison did not generalise.
+
+**`bbp700` 2.0 / 1.0 — the headline:**
+
+```
+median 0.7375      (Prompt 3, n=20: 0.741 — reproduced almost exactly)
+96/99 below 1.0    (Prompt 3: 18/20)
+p10 0.454   p90 0.927
+```
+
+**The new result is the swath-edge dependence:**
+
+| `theta_v` band | median `bbp700` 2.0/1.0 |
+|---|---:|
+| <30° | 0.794 |
+| 30–45° | 0.757 |
+| 45–55° | 0.782 |
+| **≥55° (swath edge)** | **0.577** |
+
+At the swath edge the 2.0 backscatter is **~42 % below 1.0**, against ~21 %
+elsewhere. That is exactly where the off-nadir emulator correction should bite
+hardest, and it is only visible because the slice deliberately over-weighted
+`theta_v ≥ 55`. A proportionally-sampled slice would have had ~11 of these
+instead of 25 and the effect would have been far weaker.
+
+Other parameters: `bbp440` 0.683, `anw440` 1.157.
+
+**`chl` 2.0 / 1.0 — median 1.229, but read the tail carefully.** `p95` is 87
+and the max is 371, which looks alarming until you look at what drives it:
+
+```
+ratio   chl_2.0   chl_1.0
+370.9    0.282     0.0008
+297.2    0.304     0.0010
+283.1    0.556     0.0020
+```
+
+The extremes come from the **1.0** fit collapsing chl to ~0.001–0.002 mg/m³ —
+an order of magnitude below anything physical in the open ocean — not from 2.0
+misbehaving; the 2.0 values are entirely plausible. 7 of 99 are affected. So
+this is evidence of 1.0 failing on those seven rather than a 2.0 problem, and
+the honest summary is "chl ~23 % higher, with seven cases where the 1.0 fit was
+not usable".
+
+**`B_p` posterior (free, prior 0.004–0.05):**
+
+```
+median 0.0234   (Prompt 3, n=20: 0.0250)   68 % width median 0.0324
+pinned LOW  (<=0.0045): 2/99  (2 %)
+pinned HIGH (>=0.0495): 0/99  (0 %)
+```
+
+Prompt 3 flagged pinning to the lower bound on **~15 %** (3 of 20) and asked
+whether that fraction grows. **It does not — it falls to 2 %.** The small-sample
+figure was pessimistic. `B_p` shows no systematic `theta_v` dependence
+(medians 0.0218 / 0.0260 / 0.0234 / 0.0263 across the four bands), which is
+reassuring: the swath-edge `bbp700` shift is therefore **not** `B_p` absorbing
+the geometry — Task 3's `fit_Bp=False` run tests that directly.
+
+#### Not measured: R4 band residuals
+
+Per-band residuals at 685 / 713 / 719 nm and `Rrs_unc(719)/Rrs(719)` need the
+observed granule spectra and a reconstructed fit, i.e. another granule-reading
+pass. They are now a diagnostic on a band **outside** the 400–700 fit window,
+so they cannot be a fit residual. Deferred rather than guessed — see Q2.
+
 
 ## Logging
 
@@ -346,3 +611,69 @@ And the slice cannot settle it either way: ~3 fits per worker, where geometry
 needed ~950 to fail. The job samples cgroup memory every 60 s so Task 2 can
 reason from a trace instead of from the assumption that the last stage's lesson
 transfers.
+
+### 2026-10-01 (Prompt 6 Tasks 1–2 — slice fitted, 99/100; both pause triggers clear; the swath edge is the finding)
+
+Built and ran the leading slice, then measured it. Both Q12 triggers are clear
+and the physics reproduces Prompt 3 closely — with one genuinely new result.
+
+**The number that nearly produced a false alarm.** Dividing total wall by fits
+gives **385 s/fit**, over Q12's 240 s pause trigger. The steady-state cost is
+**164 s/fit**: the stage spent **11.4 min** spawning workers and compiling JAX
+before persisting a single fit, then did all 99 in 8.5 min. With ~3 fits per
+worker that one-time compile dominates; in the full send (~320 fits/worker) it
+vanishes. Had I reported the aggregate I would have recommended *pause* on an
+artefact of slice size.
+
+**`bbp700` 2.0/1.0 median 0.7375**, against Prompt 3's 0.741 on 20 matchups —
+reproduced almost exactly at 5× the sample, 96/99 below 1.0.
+
+**The new result is that the shift is swath-edge dependent:** 0.577 at
+`theta_v >= 55` against ~0.78 elsewhere, i.e. **~42 % below 1.0 at the edge
+versus ~21 % in the middle**. That is precisely where the off-nadir emulator
+correction should matter most, and it is only visible because the slice
+deliberately over-weighted the swath edge (25 % of the slice against ~11 % of
+the pool). A proportional sample would have had ~11 such matchups instead of 25
+and the effect would have been much weaker. The stratification choice in Task 1
+is what made this measurable.
+
+**Two small-sample figures from Prompt 3 did not hold**, and both moved in the
+reassuring direction:
+
+- `B_p` pinning to its lower prior bound: **15 % (3/20) → 2 % (2/99)**.
+- χ²: Prompt 3 had 2.0 *worse* (0.65 vs 0.45); here 2.0 is marginally **better**
+  (0.404 vs 0.428).
+
+Acceptance reproduced exactly (0.340 vs 0.451, six parameters against five).
+
+**A scary-looking number that is the opposite of what it seems.** `chl` 2.0/1.0
+has p95 = 87 and max = 371. The cause is the **1.0** fit collapsing chl to
+~0.001–0.002 mg/m³ on 7 of 99 — an order of magnitude below anything physical —
+while the 2.0 values (0.28–0.56) are entirely plausible. Reported as "chl ~23 %
+higher, with seven cases where the 1.0 fit was not usable", because "371× higher"
+would have read as a 2.0 defect.
+
+**`B_p` shows no `theta_v` dependence** (medians 0.0218–0.0263 across the four
+bands), so the swath-edge `bbp700` shift is not `B_p` quietly absorbing the
+geometry. Task 3's `fit_Bp=False` run tests that directly.
+
+**Two gaps recorded rather than papered over.** `build_fits` logs no per-fit
+timing and no progress at all, so the "median, p90" this task asks for is not
+directly answerable — I reconstructed it from `created` timestamps, and a
+15–23 h full send that logs nothing would be undiagnosable while running. And
+the R4 band residuals need another granule-reading pass, so they are deferred
+(Q2) rather than estimated.
+
+**An error of mine worth keeping.** After verifying the image exhaustively I
+launched a manifest that still pointed at the *old* one. "Is the image right?"
+is not "does the manifest point at the right image?" — and the latter is what
+bit Prompt 5 Task 4. It failed loudly here only because the flag was new, so
+argparse rejected it; in Prompt 5 the flag already existed and was silently
+ignored, which is why that run did the unrestricted thing. The difference
+between a crash and a silent wrong answer was luck, not care. A manifest-level
+assertion is now in the pre-launch sequence.
+
+**Also diagnosed:** the registry push failure was a **per-project** GitLab
+deploy token — `gitlab+deploy-token-1383` belongs to `profx/keck-etcs`, so it
+could read `profx/pab` but never write it. Symptom (pulls fine, pushes denied)
+points at the registry; cause is credential scope.
