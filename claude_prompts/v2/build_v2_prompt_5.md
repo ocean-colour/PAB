@@ -1346,6 +1346,34 @@ can write with whichever option you choose.
 
 >A.  (1)
 
+#### Outcome: already implemented, and already tested — no change made
+
+Checked before writing anything. `fit` enforces option (1) on both paths:
+
+```python
+# build_fits (bulk) -- refused BEFORE any granule is opened
+if need_geom and inp["theta_s"] is None:
+    _log.warning("fit skipped for %s: %s", inp["fit_id"], NO_GEOMETRY...)
+    failed.append(inp["fit_id"]); continue
+
+# fit_matchup (single)
+raise ValueError(f"{matchup_id!r}: " + NO_GEOMETRY.format(...))
+```
+
+and four existing tests pin it: `test_requires_geometry_is_backend_dependent`,
+`test_fit_matchup_raises_a_clear_error_without_geometry`,
+`test_build_fits_without_geometry_fails_every_pixel_and_opens_nothing` (which
+also asserts the granule is never opened), and
+`test_gordon_config_fits_without_geometry` (the 1.0 backend is unaffected).
+
+So the "fail loudly rather than silently" property I flagged as the thing that
+mattered is already guaranteed — `requires_geometry`'s docstring states it as
+R3: *"``theta_s`` is never silently defaulted, so a fit without geometry must
+be refused rather than run on an assumed angle."* **No code was written for
+this answer.** Expect Prompt 6's full send to report **5 matchups under
+`failed`** with the `no viewing geometry` reason; that is correct behaviour,
+not a regression.
+
 
 ## Reports
 

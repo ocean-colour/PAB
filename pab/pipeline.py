@@ -71,6 +71,8 @@ class PipelineConfig:
 
     profiles: list[dict[str, Any]] | None = None
     profiles_csv: str | Path | None = None
+    matchups: list[str] | None = None  # explicit matchup_ids for the fit stage
+    matchups_csv: str | Path | None = None  # ...or a CSV with a matchup_id column
     argo_src: str = "gdac"
     argo_mode: str = "expert"
     short_name: str = "PACE_OCI_L2_AOP"
@@ -137,6 +139,31 @@ class PipelineConfig:
         if self.profiles is None and self.profiles_csv is None:
             return None
         return {(int(r["wmo"]), int(r["cycle"])) for r in self.profile_rows()}
+
+    def matchup_ids(self) -> set[str] | None:
+        """``{matchup_id}`` of an **explicitly requested** slice, else ``None``.
+
+        The ``fit``-stage twin of :meth:`selection_keys`. ``None`` means "no
+        selection was given" — distinct from an empty one — so a bare
+        ``pab --stage fit`` still fits every matchup in the store rather than
+        silently narrowing.
+
+        ``fit`` is selected by **matchup**, not profile, which is why this is a
+        separate seam from ``--profiles-csv`` rather than a reuse of it.
+        """
+        if self.matchups is None and self.matchups_csv is None:
+            return None
+        ids: set[str] = set(self.matchups or ())
+        if self.matchups_csv is not None:
+            import csv as _csv
+
+            with open(self.matchups_csv, newline="") as fh:
+                ids.update(
+                    row["matchup_id"].strip()
+                    for row in _csv.DictReader(fh)
+                    if row.get("matchup_id", "").strip()
+                )
+        return ids
 
     def profile_rows(self) -> list[dict[str, Any]]:
         """The profile selection — inline ``profiles`` or the dev-set CSV rows."""
@@ -701,6 +728,7 @@ def fit(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
         config=config.fit,
         replace=config.replace,
         jobs=config.jobs,
+        selection=config.matchup_ids(),
     )
 
 
@@ -962,6 +990,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--outdir", default=None, help="Output dir (default DATA_DIR/pipeline)."
     )
     p.add_argument("--profiles-csv", default=None, help="Profile-selection CSV.")
+    p.add_argument(
+        "--matchup",
+        action="append",
+        default=None,
+        dest="matchups",
+        help="Explicit matchup_id for the fit stage (repeatable). Mirrors "
+        "pab.fit.nasa_giop's flag of the same name.",
+    )
+    p.add_argument(
+        "--matchups-csv",
+        default=None,
+        help="CSV with a matchup_id column selecting the fit stage's slice "
+        "(the bulk form of --matchup).",
+    )
     p.add_argument("--replace", action="store_true", help="Re-do completed work.")
     p.add_argument("--no-figures", action="store_true", help="Skip the figure stage.")
     p.add_argument(
@@ -1034,6 +1076,8 @@ def main(argv=None) -> int:
     )
     config = PipelineConfig(
         profiles_csv=args.profiles_csv,
+        matchups=args.matchups,
+        matchups_csv=args.matchups_csv,
         outdir=args.outdir,
         replace=args.replace,
         make_figures=not args.no_figures,

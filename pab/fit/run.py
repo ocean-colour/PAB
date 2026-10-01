@@ -774,6 +774,7 @@ def build_fits(
     replace: bool = False,
     created: str | None = None,
     jobs: int = 1,
+    selection: set[str] | None = None,
 ) -> dict[str, list[str]]:
     """Fit the nearest pixel of every matchup and persist (idempotent, resumable).
 
@@ -785,6 +786,12 @@ def build_fits(
     ``"failed"`` too, and is rejected *before* its granule is opened — the
     robust backends must not fit an assumed solar angle (R3). Running the
     ``geometry`` stage and re-running ``fit`` picks those up.
+
+    ``selection`` restricts the run to those ``matchup_id``s (the leading-slice
+    seam, mirroring ``build_matchups``' parameter of the same name). ``None``
+    means the whole store; an **empty set** means nothing, not everything — the
+    distinction that makes a bare ``pab --stage fit`` safe. Filtering happens
+    before any granule is opened.
 
     ``jobs > 1`` fits matchups **in parallel across processes** (the heavy MCMC is
     CPU-bound): granules are opened and pixels extracted in the parent (one open
@@ -809,7 +816,12 @@ def build_fits(
 
     need_geom = requires_geometry(config)
     inputs: list[dict] = []
-    for m in store.query("SELECT matchup_id FROM matchups ORDER BY matchup_id"):
+    matchup_rows = store.query("SELECT matchup_id FROM matchups ORDER BY matchup_id")
+    if selection is not None:
+        matchup_rows = [m for m in matchup_rows if m["matchup_id"] in selection]
+        _log.info("fit: selection restricts to %d of the store's matchups",
+                  len(matchup_rows))
+    for m in matchup_rows:
         inp = _gather_fit_input(store, m["matchup_id"], config)
         if inp is None:
             continue

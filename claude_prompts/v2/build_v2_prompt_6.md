@@ -171,6 +171,115 @@ not the `--db` directory. `PAB_DATA_DIR=/data/v2` is what puts them in
 
 ## Q&A
 
+### Q1 (Task 1, 2026-09-30) — slice is built and staged; needs a **commit + `:2.0.4`** before it can launch, and one open question about `fit`'s worker pool
+
+Task 1 is done except "Run it", which is blocked the same way Prompt 5 Task 4
+was — and the pre-launch check caught it rather than the job doing so.
+
+#### The slice: 100 matchups, staged and verified
+
+Eligibility, which needed correcting mid-task: **the v1 BING fits are not in
+the v2 store.** `/data/v2/pab.db` carries only the 14,609 `NASA_GIOP` 1.1
+fits; the 14,609 `BING` 1.0 fits live solely in the frozen `v1/pab.db`. My
+first eligibility query matched `rt_backend IS NULL`, which the NASA_GIOP rows
+satisfy, and reported "14,604 with a 1.0 fit" — a **false positive**. The real
+join is against the frozen database, which is also what Task 2's comparison
+will need.
+
+```
+pool: v2 matchups with a rank-1 pixel carrying geometry, no 2.0 fit : 14,604
+        ...AND a successful BING 1.0 fit in frozen v1/pab.db        : 14,573
+```
+
+Selected 100 (fixed seed 20260930, so it is reproducible):
+
+| stratum | |
+|---|---|
+| `theta_v` band | 25 / 25 / 25 / 25 across <30, 30–45, 45–55, **≥55 (swath edge)** |
+| basin | Pacific 32, Atlantic 19, Indian 17, Southern 16, N-high 16 |
+| season | MAM 28, DJF 24, JJA 24, SON 24 |
+| `theta_v` | 22.1 – 45.3 – **60.0**; **9 pixels at ≥58°** |
+| `theta_s` | 5.1 – 36.7 – 72.7 |
+
+The swath edge is **over-weighted on purpose** — 25 % of the slice against
+~11 % of the pool — per Task 1's note that those pixels are where the emulator
+is furthest from its nadir-only training domain. Worth flagging that the real
+`theta_s` span (5.1–72.7°) is much wider than the 200-pixel sample in Prompt 2
+Task 4 suggested (16.1–42.8°), so the slice probes more geometry than that
+figure implied.
+
+Staged to `/data/v2/slice_100.csv`, md5 `61e04c7bbb33acbcdc04bdb18ed348ff`,
+verified identical on the PVC.
+
+#### The mechanism: `--matchup` / `--matchups-csv`, mirroring Q5
+
+"Pick the least code" pointed at the `match` seam from Prompt 5 Q5, so `fit`
+now has the same shape: `PipelineConfig.matchup_ids()` returns
+`set[str] | None` (the `None`-vs-empty distinction that keeps a bare
+`pab --stage fit` safe), `pipeline.fit()` forwards it, and
+`build_fits(selection=...)` filters **before any granule is opened**.
+`--matchup ID` is repeatable, mirroring `pab.fit.nasa_giop`; `--matchups-csv`
+is its bulk form, because 100 ids on a command line makes an unreadable
+manifest.
+
+**8 new tests** (`pab/tests/test_fit_selection.py`), including one asserting
+`fit()` actually forwards the selection — the Prompt 5 Task 4 failure was a
+flag that existed and was ignored. Suite **356 passed, 1 skipped**.
+`HOWTO.md`'s selection row updated (it has been wrong twice): `fit` now takes
+a selection, but by **matchup**, not profile.
+
+#### Why it cannot launch yet
+
+```
+image :2.0.3 baked PAB : 99c37ef      git HEAD : 7ecafff
+build_fits accepts selection : False
+PipelineConfig.matchup_ids   : False
+```
+
+`:2.0.3` predates the seam. Launching on it would have fitted **the whole
+store — 15,976 matchups — instead of 100**, and reported success. That is
+precisely the Prompt 5 Task 4 failure, and the **behavioural** probe is what
+caught it: the SHA diff only said the image was older, not that the feature
+was missing. Keeping both halves of that check earned its keep again.
+
+So it needs: commit → build `:2.0.4` → push → launch.
+
+**Question (a):** commit `pab/pipeline.py`, `pab/fit/run.py`,
+`pab/tests/test_fit_selection.py`, `HOWTO.md`,
+`nautilus/v2_fit_slice_job.yaml` (and the Dockerfile/doc caveats still
+outstanding from Q14/Q16)? Then I build, push and launch.
+
+**Question (b):** confirm the launch — `nautilus/v2_fit_slice_job.yaml`,
+`:2.0.4`, `--jobs 32`, 100 Gi, DB-local wrapper, 12 h deadline. Expected
+~1–2 h at the Prompt 4 in-pod upper bound of 226 s/fit (100 fits / 32 workers
+≈ 4 rounds), ~115 MB of chains.
+
+#### (c) `fit`'s worker pool has no `max_tasks_per_child` either — but the geometry fix does **not** transfer
+
+`pab/fit/run.py:890` builds `ProcessPoolExecutor(max_workers=jobs,
+mp_context=ctx, initializer=_worker_init)` — the same gap that cost `geometry`
+12 OOM restarts (Q15). I have **not** applied the fix, for a reason worth
+stating:
+
+- **The slice cannot detect the problem.** 100 fits over 32 workers is ~3 fits
+  per worker; `geometry` needed ~950 per worker before it hit 64 Gi.
+- **The fix could be actively harmful here.** Recycling a worker every N tasks
+  forces JAX to re-JIT the forward model in the fresh process. Prompt 4's
+  226 s/fit is explicitly "including JAX's first compile", so
+  `max_tasks_per_child=5` (the value `match` uses) could add that cost to
+  **every fifth fit**. For `geometry` a respawn cost ~10–15 s of imports; for
+  `fit` it could cost minutes.
+
+So the slice job **samples cgroup memory every 60 s** into
+`/data/v2/fit_slice.log`, and Task 2 will report the trend. If memory is flat
+across ~3 fits/worker that is weak evidence either way, and the honest answer
+for the full send is to size `max_tasks_per_child` from a longer run rather
+than copy `match`'s 5. I would rather say that than assume the geometry lesson
+generalises.
+
+>A.
+
+
 ## Reports
 
 ## Logging
@@ -184,3 +293,56 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-09-30 (Prompt 6 Task 1 — slice selected and staged; mechanism added; launch blocked on a commit)
+
+Built the 100-matchup leading slice, added the `fit`-stage selection seam, and
+stopped at "Run it" because the pre-launch check refused the current image.
+
+**A correction I had to make mid-task.** I assumed the v2 store carried the v1
+fits, because it has 14,609 of them. It does not — those are **`NASA_GIOP`
+1.1** fits; the **`BING` 1.0** fits exist only in the frozen `v1/pab.db`. My
+eligibility query tested `rt_backend IS NULL`, which the NASA_GIOP rows
+satisfy, so it reported "14,604 matchups with a 1.0 fit" — entirely false
+positives. The real pool, joined against the frozen database, is **14,573**.
+The number barely moved, which is exactly why the error was easy to miss: a
+plausible answer from the wrong query. It also means Task 2's 1.0 comparison
+genuinely needs the frozen DB, as the prompt's Context said.
+
+**Selection:** 100 matchups, seed 20260930, stratified 25/25/25/25 across
+`theta_v` bands with the **swath edge deliberately over-weighted** (25 % of the
+slice against ~11 % of the pool), spanning 5 basins and all 4 seasons.
+`theta_v` reaches the full 60.0°, and `theta_s` spans 5.1–72.7° — considerably
+wider than the 16.1–42.8° the 200-pixel sample in Prompt 2 Task 4 suggested, so
+the slice exercises more of the geometry space than that figure implied.
+
+**Mechanism:** mirrored Prompt 5 Q5's `match` seam rather than inventing one —
+`matchup_ids()` returning `set | None`, forwarded by `pipeline.fit()`, filtered
+in `build_fits` before any granule opens. `--matchup` repeatable (as
+`nasa_giop` already had) plus `--matchups-csv` for the bulk form. 8 tests,
+suite **356 passed, 1 skipped**. `HOWTO.md`'s selection row corrected — it has
+now been wrong twice, and the fix is to say `fit` selects by *matchup*, not
+profile.
+
+**The check earned its keep.** Before launching I ran the two-sided probe:
+
+```
+image :2.0.3 baked PAB : 99c37ef      git HEAD : 7ecafff
+build_fits accepts selection : False
+```
+
+`:2.0.3` predates the seam, so the job would have fitted **all 15,976
+matchups instead of 100** and reported success — the Prompt 5 Task 4 failure
+exactly. Worth noting *which* half caught it: the SHA diff only said the image
+was older, which is true after every commit and easy to wave through. The
+**behavioural** probe said the feature was absent. I would not keep the SHA
+check alone.
+
+**Flagged, not fixed (Q1c):** `fit`'s pool also lacks `max_tasks_per_child`.
+I did **not** copy the geometry fix across, because recycling a worker forces
+JAX to re-JIT the forward model — Prompt 4's 226 s/fit is "including JAX's
+first compile" — so `match`'s value of 5 could add that to every fifth fit.
+And the slice cannot settle it either way: ~3 fits per worker, where geometry
+needed ~950 to fail. The job samples cgroup memory every 60 s so Task 2 can
+reason from a trace instead of from the assumption that the last stage's lesson
+transfers.

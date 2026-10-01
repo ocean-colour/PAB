@@ -1,0 +1,123 @@
+# Prompt 6 Task 1 — the 100-matchup LEADING SLICE under the 2.0 configuration.
+#
+# Go/no-go gate before committing ~16k fits. These fits are REAL: they land in
+# /data/v2/pab.db and the full run skips them idempotently.
+#
+# Selection: /data/v2/slice_100.csv, 100 matchups chosen (fixed seed 20260930)
+# from the 14,573 that have geometry, no 2.0 fit, and a **successful BING 1.0
+# fit in the frozen v1 database**. Stratified 25/25/25/25 across theta_v bands,
+# deliberately over-weighting the swath edge (tv>=55 is 25 % of the slice
+# against ~11 % of the pool) because that is where the emulator is furthest
+# from its nadir-only training domain. Spans 5 basins and all 4 seasons;
+# theta_v 22.1-60.0 deg, theta_s 5.1-72.7 deg.
+#
+# NOTE the v1 BING fits are NOT in the v2 store — it carries only the 14,609
+# NASA_GIOP 1.1 fits. The 1.0 comparison in Task 2 must read the frozen
+# v1/pab.db (read-only; it is schema v4 and chmod a-w, so Store.open needs
+# create=False or a read-only URI ATTACH).
+#
+# *** DB-LOCAL, inherited from full_fit_job.yaml and NOT optional. ***
+# SQLite on CephFS wedged four pods in the 1.0 run: the gather phase does tens
+# of thousands of small locked reads, which thrashes the Ceph MDS and hangs the
+# process uninterruptibly (state D). Measured 12+ min (hang) on CephFS vs 0.6 s
+# on a local copy. So: copy the DB to emptyDir, run there, and checkpoint back
+# by local sqlite3.backup() + plain file copy every 2 min. Never
+# sqlite3.backup() onto CephFS.
+#
+# Chains go to $PAB_DATA_DIR/fit_chains -- the ROOT of PAB_DATA_DIR, not the
+# --db directory -- so PAB_DATA_DIR=/data/v2 puts them in /data/v2/fit_chains.
+# At the measured ~1.15 MB/chain that is ~115 MB for the slice.
+#
+# MEMORY SAMPLER: fit's ProcessPoolExecutor is built WITHOUT
+# max_tasks_per_child, which is exactly the gap that cost `geometry` 12 OOM
+# restarts (Prompt 5 Q15). It may not matter here -- 100 fits over 32 workers
+# is ~3 fits per worker, far too few to reveal a leak -- and the geometry fix
+# does NOT transfer naively, because recycling a worker forces JAX to re-JIT
+# the forward model (the Prompt 4 figure of 226 s/fit is "including JAX's first
+# compile"). So this job SAMPLES memory every 60 s instead of guessing, and
+# Task 2 uses the trace to decide what the full send needs. See Q1.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars delete job pab-v2-fit-slice --ignore-not-found
+#   kubectl apply -f nautilus/v2_fit_slice_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v2-fit-slice
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v2-fit-slice
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4          # preemption-tolerant; a resume skips finished fits
+  activeDeadlineSeconds: 43200   # 12 h; the slice should need ~1-2 h
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.3   # PAB 99c37ef
+        imagePullPolicy: IfNotPresent
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data/v2}   # chains -> /data/v2/fit_chains
+        - {name: RUN, value: /data/v2}
+        - {name: PYTHONWARNINGS, value: "ignore"}  # robust emits a DomainWarning per forward call
+        - {name: MALLOC_ARENA_MAX, value: "2"}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            ulimit -n 65536 2>/dev/null || true
+            LOG=$RUN/fit_slice.log
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $LOG; }
+            LOCAL=/scratch/pab.db
+            BKUP="import sqlite3,os,shutil; s=sqlite3.connect('/scratch/pab.db'); d=sqlite3.connect('/scratch/pab.bak'); s.backup(d); d.close(); s.close(); shutil.copy('/scratch/pab.bak','/data/v2/pab.db.tmp'); os.replace('/data/v2/pab.db.tmp','/data/v2/pab.db')"
+            counts() { python -c "import sqlite3; c=sqlite3.connect('$LOCAL'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('matchups','fits')}, 'fits_2.0:', c.execute(\"SELECT COUNT(*) FROM fits WHERE rt_backend LIKE 'robust%'\").fetchone()[0])" 2>&1 | tee -a $LOG; }
+            log "FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+            log "PROVENANCE"
+            python -c "import json; from pab.config import package_versions, pab_version; pv=package_versions(); print('pab_version', pab_version); print('git_sha', json.dumps(pv['git_sha']))" 2>&1 | tee -a $LOG
+            log "SLICE"
+            wc -l $RUN/slice_100.csv | tee -a $LOG
+            log "DB-local: copy $RUN/pab.db -> $LOCAL"
+            cp $RUN/pab.db $LOCAL
+            counts
+            ( while true; do sleep 120; python -c "$BKUP" 2>>$LOG && echo "=== DB backup $(date -Is) ===" >>$LOG || true; done ) &
+            BGPID=$!
+            # Memory sampler: cgroup total + worker count, every 60 s. This is
+            # the trace Task 2 needs to decide whether `fit` wants
+            # max_tasks_per_child for the full send (Q1).
+            ( while true; do
+                M=$(cat /sys/fs/cgroup/memory.current 2>/dev/null || echo 0)
+                N=$(ls /proc | grep -c '^[0-9]*$')
+                echo "MEMSAMPLE $(date -Is) cgroup_gb=$(python -c "print(f'{$M/1073741824:.1f}')") procs=$N" >> $LOG
+                sleep 60
+              done ) &
+            MEMPID=$!
+            log "FIT SLICE start (--matchups-csv, jobs=32, 2.0 config)"
+            if ! pab --db $LOCAL --outdir $RUN/pipeline --stage fit --jobs 32 \
+                     --matchups-csv $RUN/slice_100.csv 2>&1 | tee -a $LOG; then
+              log "FIT SLICE FAILED — final DB sync + stopping (re-apply to resume)"
+              python -c "$BKUP" 2>>$LOG || true
+              kill $BGPID $MEMPID 2>/dev/null || true
+              counts; exit 1
+            fi
+            log "FIT SLICE end — final DB sync to CephFS"
+            python -c "$BKUP" 2>>$LOG || true
+            kill $BGPID $MEMPID 2>/dev/null || true
+            counts
+            log "CHAINS"
+            ls /data/v2/fit_chains 2>/dev/null | wc -l | tee -a $LOG
+            du -sh /data/v2/fit_chains 2>/dev/null | tee -a $LOG
+            log "V2_FIT_SLICE_DONE"
+        resources:
+          requests: {cpu: "32", memory: "100Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "32", memory: "100Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: scratch, mountPath: /scratch}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: scratch, emptyDir: {sizeLimit: 5Gi}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}

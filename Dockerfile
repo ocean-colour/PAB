@@ -51,6 +51,12 @@ RUN pip install --index-url https://download.pytorch.org/whl/cpu \
 # COPYs. Measured both ways: without it layer 2 was 6.35 GB (5.27 GB of it this
 # closure) and a source edit rebuilt ~7.96 GB; with it, layer 2 is 712 MB and a
 # source edit rebuilds ~934 MB -- an 8.5x reduction.
+#
+# CAVEAT, not established: those builds all shared one PAB_GIT_SHAS value.
+# `ARG PAB_GIT_SHAS` is declared above these installs, so its value is part of
+# every subsequent RUN's cache key -- a new commit may well invalidate this
+# layer anyway, making the 8.5x unachievable in practice. JXP chose to leave it
+# (Q14); the two-build test that would settle it is written up there.
 RUN pip install \
       numpy scipy pandas xarray pyarrow matplotlib \
       h5netcdf h5py netcdf4 \
