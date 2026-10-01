@@ -54,7 +54,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: pab
-        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.3   # PAB 99c37ef
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.4   # PAB 2da2e09 -- carries the --matchups-csv selection seam
         imagePullPolicy: IfNotPresent
         env:
         - {name: HOME, value: /root}
