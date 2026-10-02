@@ -547,6 +547,99 @@ pass. They are now a diagnostic on a band **outside** the 400–700 fit window,
 so they cannot be a fit residual. Deferred rather than guessed — see Q2.
 
 
+### Task 3 — attribution + the go/no-go gate (2026-10-02): **GO**
+
+#### Attribution: the `bbp700` shift is the emulator, not the free `B_p`
+
+Refit the same 100 matchups with `fit_Bp=False` (`Bp_value=0.01`), otherwise
+2.0, on a scratch copy. **100 written, 0 failed** — including the one matchup
+whose granule open failed in the slice, confirming that failure was transient.
+`v2` verified untouched afterwards (14,708 fits / 99 2.0 fits, unchanged).
+
+| `bbp700` ratio | median | p10 | p90 |
+|---|---:|---:|---:|
+| free `B_p` / 1.0 — the 2.0 fit | **0.7375** | 0.454 | 0.927 |
+| **fixed `B_p` / 1.0 — emulator + inelastic only** | **0.7363** | 0.439 | 0.942 |
+| free / fixed — what the free `B_p` adds | **1.0050** | 0.972 | 1.069 |
+
+**Freeing `B_p` moves `bbp700` by 0.5 %.** Essentially the whole ~26 %
+reduction comes from the emulator + inelastic terms.
+
+By `theta_v` band:
+
+| band | free/1.0 | fixed/1.0 |
+|---|---:|---:|
+| <30° | 0.794 | 0.792 |
+| 30–45° | 0.757 | 0.753 |
+| 45–55° | 0.782 | 0.748 |
+| **≥55° (swath edge)** | **0.577** | **0.560** |
+
+The swath-edge effect is **entirely** the emulator — fixing `B_p` makes it
+marginally *stronger*. This confirms by direct measurement what Task 2 could
+only infer from `B_p` having no `theta_v` dependence (medians 0.0218–0.0263
+across the four bands).
+
+**A question this raises, which is JXP's to answer (Q3).** The free `B_p` is
+the 6th parameter. It costs acceptance (0.340 against 1.0's 0.451) and it
+contributes **0.5 %** to the headline quantity. That does not make it wrong —
+it may matter for honest posterior widths or for other parameters — but
+"we freed `B_p` and `b_bp` fell 26 %" would be the wrong story, and it is the
+story the Prompt 3 numbers invited.
+
+#### The gate, against Q12's three triggers
+
+| trigger | threshold | measured | |
+|---|---|---|---|
+| median s/fit | > 4 min (240 s) | **164 s** | **clear** |
+| failure rate | > 2 % | **1 %** (1 of 100, transient granule open; succeeded on the attribution re-run) | **clear** |
+| a `b_bp` shift JXP considers implausible | judgement | **0.7375**, reproducing Prompt 3's 0.741 at 5× the sample | **JXP's call** |
+
+The s/fit figure needs its caveat stated once more because it is the one that
+could have gone the other way: **total wall ÷ fits = 385 s/fit**, which breaches
+the trigger. The true steady-state cost is 164 s; the difference is an 11.4 min
+one-time JAX compile amortised over ~3 fits per worker. In the full send
+(~320 fits/worker) it disappears. Reporting the aggregate would have produced a
+*pause* recommendation on an artefact of slice size.
+
+#### Supporting evidence
+
+- **χ² is slightly better under 2.0** (0.404 vs 0.428). Prompt 3 had 2.0 *worse*
+  (0.65 vs 0.45) on 20 matchups; that did not generalise.
+- **Acceptance reproduced exactly** (0.340 vs 0.451) — six parameters vs five.
+- **`B_p` prior-edge pinning fell from 15 % (3/20) to 2 % (2/99)**, and never
+  pins high. The small-sample concern was pessimistic.
+- **`chl` 2.0/1.0 median 1.229**, with a tail to 371× caused by the **1.0** fit
+  collapsing chl to ~0.001–0.002 mg/m³ on 7 of 99 — physically impossible —
+  while the 2.0 values (0.28–0.56) are plausible. Evidence of 1.0 failing on
+  those seven, not of a 2.0 defect.
+- **96/99 matchups have `bbp700` below 1.0**, against 18/20 in Prompt 3.
+
+#### Recommendation: **GO**
+
+Two of three triggers are measured clear with margin, and the third reproduces
+a number already in hand rather than discovering a new one. The physics is
+coherent: the reduction scales with `theta_v` exactly as an off-nadir
+correction should, and the attribution shows it is the emulator rather than an
+extra free parameter soaking up signal.
+
+**Full send:** 15,976 matchups, **14.7 h at 50 workers** (22.9 h at 32),
+~19 GB of chains.
+
+**Three things to carry into Prompt 7**, none of which block the go:
+
+1. **`fit`'s pool still has no `max_tasks_per_child`** (Q1c). The slice could
+   not settle it — ~3 fits per worker, where `geometry` needed ~950 to OOM —
+   and memory climbed 0.3 → 20.0 GB without plateauing in 21 min. The geometry
+   fix does **not** transfer naively: recycling a worker re-pays the JAX
+   compile, which the slice measured at 11.4 min per pool. Size it from the
+   full send's own trace, now that `build_fits` reports memory (see 2).
+2. **`build_fits` now logs progress, per-fit median and memory** (Q2c, done) —
+   with startup reported separately so the 385-vs-164 confusion cannot recur.
+   This needs an image newer than `:2.0.4` to take effect.
+3. **R4 band residuals** (685 / 713 / 719 nm, `Rrs_unc(719)/Rrs(719)`) deferred
+   per Q2b, to fold into Prompt 7 if wanted.
+
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -677,3 +770,78 @@ assertion is now in the pre-launch sequence.
 deploy token — `gitlab+deploy-token-1383` belongs to `profx/keck-etcs`, so it
 could read `profx/pab` but never write it. Symptom (pulls fine, pushes denied)
 points at the registry; cause is credential scope.
+
+### 2026-10-02 (Prompt 6 Task 3 — attribution: the shift is the emulator, not the free B_p; gate says GO)
+
+Refit the slice's 100 matchups with `fit_Bp=False` on a scratch copy. **100
+written, 0 failed** — including the matchup whose granule open failed in the
+slice, which settles that failure as transient. The guard worked: `v2` verified
+untouched at 14,708 fits / 99 2.0 fits.
+
+**The result is cleaner than I expected.** Fixing `B_p` at 0.01 gives
+`bbp700`/1.0 = **0.7363** against the free-`B_p` **0.7375** — the free
+parameter moves the headline quantity by **0.5 %**. At the swath edge, fixing
+`B_p` gives **0.560** against 0.577, i.e. slightly *more* shift. So the entire
+`theta_v` dependence is the emulator, and none of it is `B_p` absorbing
+geometry. Task 2 inferred this from `B_p` showing no `theta_v` dependence; this
+measures it.
+
+**Worth stating plainly because the Prompt 3 framing invited the opposite
+reading:** "we freed `B_p` and `b_bp` fell 26 %" would be wrong. The free `B_p`
+costs a parameter and acceptance (0.340 vs 0.451) and contributes 0.5 % to
+`bbp700`. That is not an argument against keeping it — posterior honesty is a
+reason on its own — but it is an argument against describing it as the cause.
+Raised as Q3.
+
+**Gate: GO.** Two of three Q12 triggers measured clear with margin (164 s/fit
+against 240; 1 % failures against 2 %), and the third reproduces Prompt 3's
+0.741 rather than discovering anything new.
+
+**The trigger that nearly went the other way, recorded once more because it is
+the single most important measurement lesson of this prompt:** total wall ÷
+fits = **385 s/fit**, which breaches the 240 s trigger. The real steady-state
+cost is **164 s/fit**. The gap is an 11.4 min one-time JAX compile spread over
+~3 fits per worker, which vanishes at ~320 fits/worker in the full send. The
+aggregate was not a wrong calculation — it was the right calculation of the
+wrong quantity, and it would have produced a *pause* on an artefact of how
+small the slice is. `build_fits` now reports startup separately for exactly
+this reason.
+
+**Several Prompt 3 small-sample figures did not survive 5× the sample**, all in
+the reassuring direction: `B_p` edge-pinning 15 % → 2 %; χ² went from 2.0 being
+worse (0.65/0.45) to marginally better (0.404/0.428). The ones that *did* hold
+were the two central physics numbers — `bbp700` 0.741 → 0.7375 and acceptance
+~0.33/~0.47 → 0.340/0.451. Encouraging: the parameter estimates were stable at
+n=20 and the goodness-of-fit summaries were not.
+
+**Carried into Prompt 7, not blocking:** `fit`'s pool still lacks
+`max_tasks_per_child` and the slice cannot settle it (~3 fits/worker vs the
+~950 geometry needed to OOM), with memory climbing 0.3 → 20.0 GB without
+plateauing; the new `build_fits` logging needs an image past `:2.0.4`; and the
+R4 band residuals are deferred per Q2b.
+
+### 2026-10-02 (Prompt 6 Task 4 — `build_v2_prompt_7.md` updated from the gate)
+
+Updated Prompt 7 with what the gate established, and corrected two things in it
+that were already stale.
+
+**Corrected:** it specified image `:2.0.0`, which Prompt 6's own working
+agreements list as the one image that must never be used (its `figure` stage
+fails for every 2.0 fit). Now `:2.0.4` or later. And its cost basis pointed at
+Plan §3's ~16.8 k matchups; the store holds **15,976**, of which **99 already
+have a 2.0 fit** (the slice, idempotently skipped) and **5 have no geometry and
+will be refused by R3** per Prompt 5 Q16. So **~15,872** fits to attempt.
+
+**Added:** the measured 164 s/fit with an explicit warning not to quote
+total-wall ÷ fits (385 s/fit, which breaches the pause trigger); the attribution
+result; the two pre-launch checks, both of which have now caught a real error;
+and the `max_tasks_per_child` decision framed as "size it from this run's own
+trace" rather than "copy geometry's value" — because recycling a worker re-pays
+an 11 min JAX compile, so the fix that was right for geometry could be actively
+harmful here.
+
+**Added as Task 4:** the R4 band diagnostics deferred from Q2b, with the
+framing that matters — 713/719 nm are *outside* the fit window, so the question
+is whether excluding the red edge was right, not whether the fits are good
+there. Suggested running it on the slice's 100 rather than all ~16 k, since it
+needs a granule-reading pass.

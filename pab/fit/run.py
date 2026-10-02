@@ -877,6 +877,8 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
     from collections import defaultdict
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
+    from pab.parallel import PROGRESS_EVERY, mem_breakdown
+
     from pab.pace import extract as _extract
 
     # 'spawn' avoids fork-in-a-multithreaded-parent deadlocks (Py3.13 warns on
@@ -888,16 +890,54 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
         by_source[inp["source"]].append(inp)
 
     fut_inp: dict = {}
+    fut_submitted: dict = {}
     pending: set = set()
 
+    # Progress + per-fit timing. `fit` was the only long stage with neither:
+    # the Prompt 6 slice ran 21 min in silence, and its "s/fit" had to be
+    # reconstructed afterwards from `created` timestamps. That reconstruction is
+    # also what showed the naive total-wall figure (385 s/fit) was inflated by a
+    # one-time JAX compile and the real steady-state cost was 164 s/fit -- the
+    # difference between tripping Q12's 240 s pause trigger and clearing it.
+    # A 15-23 h full send must not be undiagnosable while it runs.
+    import time as _time
+
+    t_start = _time.monotonic()
+    t_first: float | None = None
+    done_count = 0
+    elapsed: list[float] = []
+
     def _collect(fut):
+        nonlocal done_count, t_first
         inp = fut_inp.pop(fut)
+        t_sub = fut_submitted.pop(fut, None)
         try:
             _persist_result(store, inp, fut.result(), config, created)
             written.append(inp["fit_id"])
         except Exception:  # noqa: BLE001
             _log.exception("fit failed for %s (worker/persist)", inp["fit_id"])
             failed.append(inp["fit_id"])
+        done_count += 1
+        now = _time.monotonic()
+        if t_first is None:
+            t_first = now
+            # Startup is a per-POOL cost (worker spawn + JAX compile), not a
+            # per-fit one, so report it separately or it contaminates s/fit.
+            _log.info(
+                "fit: first result after %.1f s (worker spawn + JAX compile)",
+                now - t_start,
+            )
+        if t_sub is not None:
+            elapsed.append(now - t_sub)
+        if done_count % PROGRESS_EVERY == 0:
+            med = sorted(elapsed)[len(elapsed) // 2] if elapsed else float("nan")
+            rate = (now - t_first) / max(done_count - 1, 1)
+            _log.info(
+                "fit progress: %d/%d (%d written, %d failed) "
+                "median %.0f s/fit, %.1f s/fit wall since first result [%s]",
+                done_count, len(inputs), len(written), len(failed),
+                med, rate, mem_breakdown(),
+            )
 
     with ProcessPoolExecutor(
         max_workers=jobs, mp_context=ctx, initializer=_worker_init
@@ -940,6 +980,7 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
                     _geometry_or_none(inp),
                 )
                 fut_inp[fut] = inp
+                fut_submitted[fut] = _time.monotonic()
                 pending.add(fut)
                 while len(pending) >= 2 * jobs:
                     done, pending_ = wait(pending, return_when=FIRST_COMPLETED)
