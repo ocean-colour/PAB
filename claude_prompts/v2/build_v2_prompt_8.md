@@ -110,7 +110,7 @@ silently would hide a failure rate. But what to *do* about them is yours:
 I'd suggest **(b) before deciding** — 0.33 % is small enough to live with but
 the mechanism may well affect the other 99.67 % less visibly.
 
-**Answer:**
+**Answer:** (b) and be sure to include what you find in the final report we will generate for v2.
 
 ### Q2 (Task 2) — the 2.0/1.0 shift is strongly level-dependent
 
@@ -139,7 +139,7 @@ correction factor. **Is the clear-water behaviour expected?** If it is the
 intended physics, it deserves its own paragraph as a result rather than a
 caveat.
 
-**Answer:**
+**Answer:** Yes, I think this is as expected an deserves its own paragraph as a result rather than a caveat.
 
 ### Q3 (Task 2) — `B_p` posterior piles up at both prior bounds
 
@@ -156,7 +156,7 @@ edge-pinning at 15 %, then the Prompt 6 slice at 2 %; at n=14,604 it is 2.8 %
 at the same tolerance, so the Prompt 6 figure held and the Prompt 3 one did
 not.
 
-**Answer:**
+**Answer:** Also include this in the Report with figure(s).
 
 ## Reports
 
