@@ -242,7 +242,11 @@ def test_main_runs_and_resumes(monkeypatch, tmp_path):
         row = store.query("SELECT * FROM fits WHERE algorithm = 'NASA_GIOP'")[0]
         from pab import config
 
-        assert row["pab_version"] == config.pab_version
+        # The PRODUCT version, not the pipeline's. This previously read
+        # `config.pab_version` and passed only because that global happened to
+        # be "1.1" during the v1 run -- so it pinned the bug that stamped 1,367
+        # NASA rows "2.0" in Prompt 7 Task 3 (R6).
+        assert row["pab_version"] == nasa_giop.PRODUCT_VERSION
     assert "nasa-giop done: written 1" in open(log_file).read()
 
     # resume: everything skips, still exit 0, no duplicate rows

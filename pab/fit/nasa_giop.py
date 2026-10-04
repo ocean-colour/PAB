@@ -24,6 +24,20 @@ _log = logging.getLogger("pab.fit.nasa_giop")
 #: The ``fits.algorithm`` value for a NASA-GIOP ingest (not a BING fit).
 ALGORITHM = "NASA_GIOP"
 
+#: Version stamped on NASA-GIOP rows. This is the **product** version, not the
+#: pipeline's. The NASA-GIOP ingest is the same algorithm reading the same
+#: official IOP granules whether PAB is at 1.x or 2.x, so its rows must carry a
+#: version that reflects *the product*, and that version only moves when this
+#: ingest changes (R6).
+#:
+#: Prompt 7 Task 3 stamped 1,367 rows `2.0` because this used
+#: ``config.pab_version`` — the pipeline version, which happened to read 1.1
+#: during the v1 run and 2.0 during v2. The database then held one unchanged
+#: product under two labels, which makes "select the NASA-GIOP baseline"
+#: ambiguous. Those rows were corrected to 1.1 by hand; this constant stops it
+#: recurring.
+PRODUCT_VERSION = "1.1"
+
 
 def make_nasa_giop_fit_id(matchup_id: str, ix: int, iy: int) -> str:
     """Deterministic fit id: ``"{matchup_id}_{ix}_{iy}_NASA_GIOP"``.
@@ -298,6 +312,14 @@ def main(argv=None) -> int:
         default=None,
         help="Explicit matchup_id to ingest (repeatable; overrides --limit).",
     )
+    p.add_argument(
+        "--pab-version",
+        default=PRODUCT_VERSION,
+        help="Version stamped on the NASA-GIOP rows. Defaults to the PRODUCT "
+        f"version ({PRODUCT_VERSION!r}), NOT the pipeline's — the ingest is the "
+        "same algorithm over the same granules regardless of PAB's version "
+        "(R6). Override only if this ingest itself changes.",
+    )
     p.add_argument("--replace", action="store_true", help="Re-ingest existing fits.")
     p.add_argument("--log-file", default=None, help="Also log to this file.")
     args = p.parse_args(argv)
@@ -330,7 +352,7 @@ def main(argv=None) -> int:
             store,
             cache_dir=args.cache_dir,
             replace=args.replace,
-            pab_version=config.pab_version,
+            pab_version=args.pab_version,
             matchup_ids=matchup_ids,
         )
         elapsed = time.monotonic() - t0

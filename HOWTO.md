@@ -247,6 +247,24 @@ From 2026-09-14 the released datasets are kept **one directory per version**,
 and the published v1.0 database is **frozen**. Before this, everything lived in
 a single `full/` directory that was re-ingested in place.
 
+**Which v2 copy is authoritative (2026-10-03).** After Prompt 7 Task 1 the full
+2.0 fit finished on the PVC and the database was returned to the workstation:
+**`$PAB_DATA_DIR/v2/pab.db` is now the live, writable copy** (207,638,528 B,
+sha256 `eb9a341aa6561fbef2169496997428c55e8700351fd30b33dc610969e2253542`,
+15,971 2.0 fits). **`/data/v2/pab.db` on the PVC is the stale one from here on**
+— it will not receive the NASA-GIOP rows Task 3 adds on the workstation. The
+chains stay on the PVC (`/data/v2/fit_chains/`, 15,971 files, 19 GB); only the
+database came back.
+
+The pre-backfill seed it replaced is kept as
+`$PAB_DATA_DIR/v2/pab_pre_backfill_2026-09-14.db` (14,610 matchups, 0 2.0 fits)
+rather than overwritten, and the run logs are under `$PAB_DATA_DIR/v2/logs/`.
+
+**Transfer note:** copy it **compressed**. `kubectl cp` of the 207 MB file in one
+stream has no resume and died at 36.9 MB on a flaky link, leaving a malformed
+file at the canonical path. `gzip -c` in-pod gives 40 MB (5.1x), transfers in
+~4 s, and `gzip -t` adds an integrity check on top of the sha comparison.
+
 **The frozen-v1 rule.** `v1/pab.db` is the database behind the published 1.0
 results. It is `chmod a-w` and its sha256 is an invariant:
 
