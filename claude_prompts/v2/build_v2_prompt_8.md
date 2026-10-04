@@ -360,6 +360,85 @@ Full suite in `ocean14`: **387 passed, 1 skipped** (369 → 387).
 
 Not yet done: Task 3 (figures on Nautilus) and Task 4 (regenerate the site).
 
+### Task 3 — figures on Nautilus
+
+**Status: the code half is done and verified; the pod has NOT been launched.**
+Two blockers, below.
+
+**The `figure` stage gained two filters**, both in `pab/pipeline.py`:
+
+1. **Only BING fits of one `pab_version`** (`--figure-version`, default the
+   store's newest). The stage previously iterated *every* row of `fits`. On
+   the v2 store that is 31,947 rows, of which **15,976 are NASA-GIOP ingests
+   with no MCMC chains** — a fit figure for one cannot succeed. Half the stage
+   was guaranteed failures, each costing a worker slot and an exception
+   traceback.
+2. **Scenes only where `matchups.scene_path IS NULL`** — the guard Task 3
+   asked for. The scene is the half that re-opens the ~1.8 GB granule, and
+   **14,586 of 15,976** matchups already carry one from the previous release.
+   Re-rendering produces a byte-identical PNG for the price of the granule
+   read. `_render_figure` gained `want_scene`; the set is resolved **once in
+   the parent** (the only writer — a worker cannot see another worker's
+   scene), and two fits of one matchup render its scene once, not twice.
+
+**Verified against the real v2 database** (read-only, selection logic only):
+
+```
+version selected      : 2.0
+fit figures to render : 15971
+of those with a scene : 1390
+NASA rows included    : 0
+```
+
+**The manifest** `nautilus/v2_figrep_job.yaml` — 16 workers / 100 Gi,
+DB-local wrapper (copy to emptyDir, 2-min checkpoints, never
+`sqlite3.backup()` onto CephFS), `--stage figure` then `--stage report`,
+`PYTHONWARNINGS=ignore`, `MPLBACKEND=Agg`, `backoffLimit: 4`,
+`activeDeadlineSeconds: 43200`, everything tee'd to `/data/v2/figrep.log`.
+`kubectl apply --dry-run=client` passes.
+
+It also carries an **in-pod guard assertion**: before copying the database it
+greps its own `pipeline.figure` source for `want_scene` and `algorithm =
+'BING'` and **exits 1** if they are absent. An image predating Task 3 cannot
+silently do the 31,947-render version — this is the Prompt 7 lesson
+(verifying the image is not verifying the manifest) turned into something the
+pod checks for itself.
+
+**Cost: ~3–6 h at 16 workers.** The spread is honest, not padding. The
+42 s/matchup from the 1.0 run is fit-figure **plus** scene combined and was
+never split, and only the scene half is being skipped. The job logs each
+stage's wall-clock separately so the next one can be sized from measurement.
+
+**Blocker 1 — the image does not contain the guards.** `:2.0.5` was built
+from `69efcd4`; the guards are uncommitted. Running the job against `:2.0.5`
+is precisely the 31,947-render, 14,586-granule-read case the guards exist to
+prevent. Required order: commit → build → push → **point this manifest at the
+new tag** → re-verify the manifest names the tag that was verified.
+
+**Blocker 2 — Q1–Q3 are unanswered.** They do not block rendering (it reads
+existing chains and re-fits nothing), but Q1(c) and Q3 both end in *re-fit*,
+which would invalidate the figures for whatever is re-fitted. Q1 is 48 fits —
+negligible rework. Q3 could be a slice or the whole run. Worth a decision
+before spending 3–6 h of 16-core time.
+
+**Tests** — `pab/tests/test_figure_guards.py` (8), each verified
+load-bearing:
+
+| break | caught by |
+|---|---|
+| algorithm/version filter removed | 3 tests |
+| `want_scene` always True in the parent | 3 tests |
+| `_render_figure` ignores `want_scene` | `test_render_figure_skips_the_granule…` |
+
+Two existing `test_pipeline.py` figure tests needed updating and both were
+**underspecified rather than wrong**: `_seed_fits` left `algorithm` NULL
+(production always sets it), and `_stub_render` did not mirror the real
+signature. The second is worth noting — `figure` catches a failed render and
+logs it, so a stub missing a keyword surfaced as "every render failed"
+rather than as a `TypeError`.
+
+Full suite in `ocean14`: **399 passed, 1 skipped**.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -499,3 +578,49 @@ Files touched: `pab/report/rst.py`, `pab/metrics/compare.py`,
 (`uri=True`), new `pab/tests/test_report_versions.py`,
 `pab/tests/test_compare_versions.py`.
 Not committed — git is JXP's. Q1–Q3 await answers before Task 3.
+
+### 2026-10-04 (Prompt 8 Task 3 — figure-stage guards; pod not launched)
+
+Added both `figure` stage guards, the manifest, and the tests. Did **not**
+launch: the image predates the guards, and Q1–Q3 are unanswered. What I
+learned:
+
+- **The guard Task 3 asked for was the smaller of the two.** The brief named
+  the `scene_path IS NULL` guard. Measuring the stage first turned up a bigger
+  one it did not mention: the stage iterated *all* of `fits`, and half that
+  table is NASA-GIOP rows with no chains. Nobody had noticed because the figure
+  stage had only ever run on a store where that was not true. Rendering the
+  brief's guard alone would have left a run that failed 15,976 times.
+
+- **Reading the counts out of the database before writing code decided the
+  design.** 14,586 of 15,976 matchups already have a scene; 1,390 do not. That
+  one query is the difference between 16k granule reads and 1,390, and it is
+  also what makes the expected-counts block in the manifest possible — the job
+  now prints what it is about to do and can be killed in seconds if the numbers
+  are wrong.
+
+- **I put the Prompt 7 lesson into the pod instead of into a checklist.** Twice
+  now a job has run with an image or flag that did not match what was verified.
+  A checklist step did not prevent the second one. So the manifest now asserts
+  on its own source — it greps `pipeline.figure` for `want_scene` and the BING
+  filter and exits 1 if absent. A stale image cannot start the expensive
+  version of this job even if I point the manifest at the wrong tag.
+
+- **A test double that does not mirror the real signature hides behind an
+  `except`.** Updating `_render_figure` broke two existing tests not because
+  the logic was wrong but because `_stub_render` lacked the new keyword — and
+  the symptom was "every render failed", not `TypeError`, because `figure`
+  catches render failures by design. Same shape as the Task 2 finding: a broad
+  `except` converting a signal into silence.
+
+- **The shell dropped out of `ocean14` again** and a full-suite run reported
+  "12 failed, 355 passed, **33 skipped**". The 33 skips were the tell — the
+  usual number is 1. Two of the 12 were real (the fixture + stub above) and ten
+  were `bing` missing from base conda. Checking `which python` alongside the
+  result is the only thing that separates them; the skip count is a second,
+  cheaper tell worth remembering.
+
+Files touched: `pab/pipeline.py` (`figure`, `_render_figure`,
+`_figures_parallel`, `PipelineConfig.figure_version`, `--figure-version`),
+new `nautilus/v2_figrep_job.yaml`, new `pab/tests/test_figure_guards.py`,
+`pab/tests/test_pipeline.py`. Not committed — git is JXP's.

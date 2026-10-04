@@ -1,0 +1,135 @@
+# Prompt 8 Task 3 — figures + report for the 2.0 release, in-pod.
+#
+# WHY IN-POD: the MCMC chains live on the PVC (`/data/v2/fit_chains`); the
+# workstation copy of `fit_chains/` is EMPTY. A fit figure reconstructs the
+# posterior from its chain, so this is the one stage that cannot run on the
+# workstation. For this stage only, the PVC copy of `pab.db` is the writer —
+# the workstation copy is uploaded first and copied back at the end.
+#
+# EXPECTED COUNTS (measured on the workstation DB, 2026-10-04):
+#   fit figures to render       15,971   (BING, pab_version 2.0)
+#   of those, needing a scene    1,390   (matchups.scene_path IS NULL)
+#   NASA-GIOP rows rendered           0   (they have no chains)
+# The log prints all three before any work starts. If the first is ~31,947 or
+# the third is non-zero, the image predates the Task 3 guards — kill it.
+#
+# TWO GUARDS, both added in Task 3, both the difference between hours and days:
+#   * `algorithm = 'BING' AND pab_version = 2.0`. The `fits` table also holds
+#     15,976 NASA-GIOP ingests with no chains. Without this filter HALF the
+#     stage is guaranteed failures, each costing a worker slot and a traceback.
+#   * scenes only where `scene_path IS NULL`. The scene re-opens the ~1.8 GB
+#     granule and 14,586 of 15,976 matchups already have one; re-rendering
+#     produces an identical PNG for the price of the granule read.
+#
+# COST: ~3-6 h at 16 workers. The spread is real, not padding: the 42 s/matchup
+# measured in the 1.0 run is fit-figure PLUS scene combined and was never split,
+# and only the scene half is being skipped here. The job logs its own per-stage
+# wall-clock so the next one can be sized properly. activeDeadlineSeconds is set
+# against the pessimistic end with headroom.
+#
+# *** DB-LOCAL, not optional. *** SQLite on CephFS wedged four pods in the 1.0
+# run (Ceph MDS thrash -> state D, uninterruptible). Copy to emptyDir, run
+# there, checkpoint back every 2 min via local sqlite3.backup() + file copy.
+# Never sqlite3.backup() onto CephFS.
+#
+# PRE-LAUNCH (all three, in order — step 3 is the one that has bitten twice):
+#   1. the image TAG below exists in the registry and was built from a commit
+#      containing the Task 3 figure guards (grep the pod for `want_scene`);
+#   2. `/data/v2/pab.db` sha256 matches the workstation copy just uploaded;
+#   3. *** THIS FILE names that verified tag. *** Verifying the image is not
+#      verifying the manifest: Prompt 5 silently ignored a flag that already
+#      existed, and Prompt 7 launched a manifest pointing at :2.0.3 forty
+#      seconds after verifying :2.0.4.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars delete job pab-v2-figrep --ignore-not-found
+#   kubectl apply -f nautilus/v2_figrep_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v2-figrep
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v2-figrep
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4            # idempotent by figure_path; a resume skips finished renders
+  activeDeadlineSeconds: 43200   # 12 h against a ~3-6 h expectation
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:REPLACE_ME   # must contain the Task 3 figure guards
+        imagePullPolicy: IfNotPresent
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data/v2}
+        - {name: RUN, value: /data/v2}
+        - {name: PYTHONWARNINGS, value: "ignore"}   # robust emits a DomainWarning per forward call
+        - {name: MPLBACKEND, value: "Agg"}          # no display in-pod
+        - {name: MALLOC_ARENA_MAX, value: "2"}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            ulimit -n 65536 2>/dev/null || true
+            LOG=$RUN/figrep.log
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $LOG; }
+            LOCAL=/scratch/pab.db
+            BKUP="import sqlite3,os,shutil; s=sqlite3.connect('/scratch/pab.db'); d=sqlite3.connect('/scratch/pab.bak'); s.backup(d); d.close(); s.close(); shutil.copy('/scratch/pab.bak','/data/v2/pab.db.tmp'); os.replace('/data/v2/pab.db.tmp','/data/v2/pab.db')"
+            log "FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+            log "PROVENANCE"
+            python -c "import json; from pab.config import package_versions, pab_version; pv=package_versions(); print('pab_version', pab_version); print('git_sha', json.dumps(pv['git_sha']))" 2>&1 | tee -a $LOG
+            log "IMAGE GUARD CHECK — the Task 3 guards must be in this image"
+            python -c "import inspect; from pab import pipeline; src=inspect.getsource(pipeline.figure); ok=('want_scene' in src) and (\"algorithm = 'BING'\" in src); print('figure guards present:', ok); raise SystemExit(0 if ok else 1)" 2>&1 | tee -a $LOG || { log "ABORT: image predates the Task 3 guards"; exit 1; }
+            log "DB-local: copy $RUN/pab.db -> $LOCAL"
+            cp $RUN/pab.db $LOCAL
+            log "BEFORE"
+            python -c "import sqlite3; c=sqlite3.connect('$LOCAL'); q=lambda s: c.execute(s).fetchone()[0]; print('fit figures to render:', q(\"SELECT COUNT(*) FROM fits WHERE algorithm='BING' AND pab_version='2.0' AND figure_path IS NULL\")); print('scenes to render:', q('SELECT COUNT(*) FROM matchups WHERE scene_path IS NULL')); print('NASA rows (never rendered):', q(\"SELECT COUNT(*) FROM fits WHERE algorithm='NASA_GIOP'\")); print('chains on disk:', q(\"SELECT COUNT(*) FROM fits WHERE chains_path IS NOT NULL\"))" 2>&1 | tee -a $LOG
+            ls /data/v2/fit_chains 2>/dev/null | wc -l | tee -a $LOG
+            ( while true; do sleep 120; python -c "$BKUP" 2>>$LOG && echo "=== DB backup $(date -Is) ===" >>$LOG || true; done ) &
+            BGPID=$!
+            log "FIGURE start (--jobs 16, BING 2.0 only, scenes where NULL)"
+            T0=$(date +%s)
+            if ! pab --db $LOCAL --outdir $RUN/pipeline --stage figure --jobs 16 --figure-version 2.0 2>&1 | tee -a $LOG; then
+              log "FIGURE FAILED — final DB sync + stopping (re-apply to resume)"
+              python -c "$BKUP" 2>>$LOG || true
+              kill $BGPID 2>/dev/null || true
+              exit 1
+            fi
+            log "FIGURE end — elapsed $(( $(date +%s) - T0 )) s"
+            python -c "$BKUP" 2>>$LOG || true
+            log "MID-RUN COUNTS"
+            python -c "import sqlite3; c=sqlite3.connect('$LOCAL'); q=lambda s: c.execute(s).fetchone()[0]; print('fit figures recorded:', q(\"SELECT COUNT(*) FROM fits WHERE algorithm='BING' AND pab_version='2.0' AND figure_path IS NOT NULL\")); print('scene_path set:', q('SELECT COUNT(*) FROM matchups WHERE scene_path IS NOT NULL')); print('NASA rows with a figure (must be 0):', q(\"SELECT COUNT(*) FROM fits WHERE algorithm='NASA_GIOP' AND figure_path IS NOT NULL\"))" 2>&1 | tee -a $LOG
+            log "REPORT start"
+            T1=$(date +%s)
+            if ! pab --db $LOCAL --outdir $RUN/pipeline --stage report 2>&1 | tee -a $LOG; then
+              log "REPORT FAILED — figures are still safe; final DB sync"
+              python -c "$BKUP" 2>>$LOG || true
+              kill $BGPID 2>/dev/null || true
+              exit 1
+            fi
+            log "REPORT end — elapsed $(( $(date +%s) - T1 )) s"
+            log "final DB sync to CephFS"
+            python -c "$BKUP" 2>>$LOG || true
+            kill $BGPID 2>/dev/null || true
+            log "AFTER — close-out gates"
+            python -c "import sqlite3; c=sqlite3.connect('$LOCAL'); q=lambda s: c.execute(s).fetchone()[0]; f=q(\"SELECT COUNT(*) FROM fits WHERE algorithm='BING' AND pab_version='2.0' AND figure_path IS NOT NULL\"); n=q(\"SELECT COUNT(*) FROM fits WHERE algorithm='BING' AND pab_version='2.0'\"); print('fit figures: %d / %d 2.0 fits' % (f, n)); print('scenes: %d / %d matchups' % (q('SELECT COUNT(*) FROM matchups WHERE scene_path IS NOT NULL'), q('SELECT COUNT(*) FROM matchups'))); print('NASA rows with a figure (must be 0):', q(\"SELECT COUNT(*) FROM fits WHERE algorithm='NASA_GIOP' AND figure_path IS NOT NULL\")); print('duplicate fit_ids:', q('SELECT COUNT(*) FROM (SELECT fit_id FROM fits GROUP BY fit_id HAVING COUNT(*)>1)'))" 2>&1 | tee -a $LOG
+            log "ARTIFACTS"
+            ls /data/v2/pipeline/figures 2>/dev/null | wc -l | tee -a $LOG
+            du -sh /data/v2/pipeline/figures 2>/dev/null | tee -a $LOG
+            du -sh /data/v2/pipeline/site 2>/dev/null | tee -a $LOG
+            sha256sum /data/v2/pab.db | tee -a $LOG
+            log "V2_FIGREP_DONE"
+        resources:
+          requests: {cpu: "16", memory: "100Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "16", memory: "100Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: scratch, mountPath: /scratch}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: scratch, emptyDir: {sizeLimit: 5Gi}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}
