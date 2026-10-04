@@ -10,12 +10,15 @@ reached on demand through the interactive figures). Pure string generation
 
 from __future__ import annotations
 
+import logging
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
 from pab.config import pab_version as _pab_version
 from pab.metrics import compare
+
+_log = logging.getLogger("pab.report")
 
 #: Where per-matchup figures are copied inside the site source tree so Sphinx
 #: serves them verbatim (``html_static_path``). The same relative URL works for
@@ -76,17 +79,38 @@ def _heading(text: str, char: str = "=") -> str:
     return f"{text}\n{char * len(text)}\n"
 
 
-def summary_page(store, *, pab_version: str | None = None) -> str:
-    """The landing/summary page: coverage counts + headline sat-vs-float metrics."""
+def summary_page(store, *, pab_version: str | None = None, compare_db=None) -> str:
+    """The landing/summary page: coverage counts + headline sat-vs-float metrics.
+
+    ``compare_db`` (the frozen v1 database) adds the **1.0 vs 2.0** headline
+    block — the result of the re-analysis, which belongs above the fold rather
+    than only on the Comparisons page.
+    """
     pab_version = pab_version or _pab_version
-    df = compare.gather_matchups(store)
+    # NOTE two different versions are in play on this page and conflating them
+    # would be a quiet error: `pab_version` above is the *running code's*
+    # version, for the provenance line, while `_bing_version` is the version of
+    # the *fits being reported*. They differ whenever the report is regenerated
+    # by newer code over an older run. Resolve the fit version once and pass it
+    # to every consumer, so the counts and the table can never describe
+    # different sets.
+    _bing_version = compare.newest_bing_version(store)
+    df = compare.gather_matchups(store, pab_version=_bing_version)
     n_matchups = store.count("matchups")
     n_floats = store.count("floats")
-    # only the BING retrievals — the parallel NASA_GIOP rows are baseline
-    # ingests, not fits, and would silently double this count
-    n_fits = store.query("SELECT COUNT(*) AS n FROM fits WHERE algorithm = 'BING'")[0][
-        "n"
-    ]
+    # Only the BING retrievals — the parallel NASA_GIOP rows are baseline
+    # ingests, not fits, and would silently double this count.
+    #
+    # And only ONE pab_version: a store fitted twice holds a 1.0 and a 2.0 BING
+    # fit for the same matchup, so without this the headline "BING fits" would
+    # exceed the matchup count and mix two physics configurations. The version
+    # shown is the one resolved above and handed to `gather_matchups`, so this
+    # count and the metrics table always describe the same set of fits.
+    n_fits = store.query(
+        "SELECT COUNT(*) AS n FROM fits WHERE algorithm = 'BING' "
+        "AND (? IS NULL OR pab_version = ?)",
+        (_bing_version, _bing_version),
+    )[0]["n"]
     bbp = (
         compare.log_comparison(df.get("bbp_bing"), df.get("bbp_argo"))
         if len(df)
@@ -131,7 +155,8 @@ def summary_page(store, *, pab_version: str | None = None) -> str:
     cov = (
         f"- **Profiles ingested:** {n_profiles}\n"
         f"- **Matchups:** {n_matchups}\n- **Floats:** {n_floats}\n"
-        f"- **BING fits:** {n_fits}\n"
+        f"- **BING fits:** {n_fits}"
+        + (f" (``pab_version`` {_bing_version})\n" if _bing_version else "\n")
     )
     if dist.size:
         cov += f"- **Median separation:** {_fmt(float(np.median(dist)))} km\n"
@@ -168,6 +193,7 @@ def summary_page(store, *, pab_version: str | None = None) -> str:
             ":doc:`comparisons <comparisons>` and :doc:`Methods <methods>` pages "
             "before reading this as a bias.\n"
         )
+    out.append(_version_headline(store, compare_db))
     out.append(_heading("Explore the results", "-"))
     out.append(
         "- :doc:`Comparisons <comparisons>` — interactive ``b_bp`` & Chl scatters "
@@ -182,6 +208,51 @@ def summary_page(store, *, pab_version: str | None = None) -> str:
     )
     return "\n".join(out)
 
+
+def _version_headline(store, compare_db) -> str:
+    """The 1.0-vs-2.0 headline block for the summary page (``""`` without a v1).
+
+    Only ``b_bp`` and Chl, only the median ratio and n — the full treatment is
+    the Comparisons section. Kept to the numbers that answer "did the inelastic
+    physics move the answer, and by how much".
+    """
+    if not compare_db or not Path(compare_db).is_file():
+        return ""
+    try:
+        df = compare.gather_version_pair(store, str(compare_db))
+    except Exception:  # noqa: BLE001 — a bad v1 must not break the whole build
+        _log.warning(
+            "1.0-vs-2.0 summary headline skipped: could not read %s", compare_db,
+            exc_info=True,
+        )
+        return ""
+    if not len(df):
+        return ""
+    lines = []
+    for key, label in (("bbp700", "b_bp(700 nm)"), ("chl", "chlorophyll")):
+        c1, c2 = f"{key}_v1", f"{key}_v2"
+        if c1 not in df or c2 not in df:
+            continue
+        st = compare.log_comparison(df[c2], df[c1])
+        if st.get("n"):
+            lines.append(
+                f"- **{label}** — median 2.0/1.0 ratio = "
+                f"{_fmt(st['median_ratio'])} (n = {st['n']:,})\n"
+            )
+    if not lines:
+        return ""
+    out = [_heading("1.0 vs 2.0 (elastic vs inelastic)", "-")]
+    out.append(
+        f"The same {len(df):,} matchups and the same pixels, retrieved with the "
+        "elastic (1.0) and inelastic (2.0) forward model — what the re-analysis "
+        "changed:\n"
+    )
+    out.extend(lines)
+    out.append(
+        "The :doc:`Comparisons <comparisons>` page has the scatters, the full "
+        "statistics, and what exactly differs between the two configurations.\n"
+    )
+    return "\n".join(out)
 
 def interactive_figures(df, *, artifact_url_col: str = FIGURE_URL_COL) -> str:
     """Standalone Bokeh **scatter + map** for the landing page (Bokeh-guarded).
@@ -252,6 +323,51 @@ def _chl_scatter(df, interactive, np, url_col):
 #: Reader-facing caveat for every BING-vs-NASA ``b_bp`` figure/stat: the two
 #: values are at different wavelengths, deliberately not spectrally adjusted
 #: (``claude_prompts/pace_giop_gsm.md`` Q3).
+#: What 2.0 changed, **stated once** and reused by the Comparisons section, the
+#: Methods page, and the summary headline — three places that would otherwise
+#: drift apart. Every claim here is read back off the `fits` rows of the v2
+#: database (`rt_backend`, `include_raman`, `include_chl_fl`,
+#: `include_cdom_fl`, `phi_c`, `fit_bp`, `wave_min`/`wave_max`), not from the
+#: plan: CDOM fluorescence was *planned* and is **off** in the run, and the fit
+#: window is **unchanged**, so both are stated as such rather than listed as
+#: improvements.
+V2_CHANGES = (
+    "**What changed in 2.0.** The 1.0 fits used the *elastic* Gordon "
+    "radiative-transfer model: ``Rrs`` is produced by absorption and elastic "
+    "scattering alone. 2.0 re-fits the same spectra with an **inelastic** "
+    "forward model:\n"
+    "\n"
+    "- **Radiative-transfer backend** — ``robust_hybrid`` (a neural-network "
+    "emulator of a full RT solution) replaces the analytic ``gordon`` "
+    "parameterisation.\n"
+    "- **Raman scattering** — water molecules re-emit absorbed blue light at "
+    "longer wavelengths; included.\n"
+    "- **Chlorophyll fluorescence** — the ~685 nm phytoplankton emission "
+    "line, at quantum yield ``phi_C = 0.02``; included.\n"
+    "- **CDOM fluorescence** — available in the model but **off** in this "
+    "run, so none of the results below include it.\n"
+    "- **Free ``B_p``** — the backscatter phase-function parameter, held "
+    "fixed in 1.0, is a sixth fitted parameter in 2.0 with a uniform prior "
+    "over ``[0.004, 0.05]``.\n"
+    "\n"
+    "The **fit window is unchanged** at 400–700 nm. The red edge (713/719 nm, "
+    "where Raman and fluorescence are strongest) was evaluated and "
+    "deliberately left out: on a 97-matchup diagnostic sample Rrs(719) is "
+    "negative or noise-dominated on **44 %** of matchups, so including it "
+    "would feed the inelastic terms mostly noise.\n"
+)
+
+#: The free-``B_p`` prior bounds, read from the fitter rather than restated, so
+#: the edges drawn on the histogram cannot drift from the ones actually used.
+def _bp_prior_range():
+    try:
+        from bing.rt import defs
+
+        return (float(defs.BP_PRIOR_PMIN), float(defs.BP_PRIOR_PMAX))
+    except Exception:  # noqa: BLE001 — the figure is still worth drawing
+        return None
+
+
 _NASA_BBP_CAVEAT = (
     "**Wavelength caveat:** NASA reports ``b_bp`` at **442 nm** while BING's "
     "headline ``b_bp`` is at **700 nm** (chosen to match the float ``BBP700``). "
@@ -346,6 +462,301 @@ def nasa_giop_section(
             )
     return "\n".join(out)
 
+
+def version_section(
+    store,
+    compare_db,
+    *,
+    outdir=None,
+    sortable: bool = True,
+    max_interactive: int = MAX_INTERACTIVE_MATCHUPS,
+) -> str:
+    """The **1.0 vs 2.0** section for the Comparisons page.
+
+    The same matchups, the same pixels, retrieved with the elastic (1.0) and
+    the inelastic (2.0) forward model — the headline result of the v2
+    re-analysis. Mirrors :func:`nasa_giop_section`: ``bbp700`` and ``chl``
+    scatters (interactive Bokeh below ``max_interactive`` matchups, static PNGs
+    above), :func:`~pab.metrics.compare.log_comparison` stats, plus a ``B_p``
+    posterior-median histogram — ``B_p`` exists only in 2.0, so it has no
+    scatter, only a distribution.
+
+    Unlike the NASA section, both axes here are **the same quantity at the same
+    wavelength from the same pixel**; the only difference is the physics. That
+    is what makes a ratio readable as a result rather than a consistency check.
+
+    Returns ``""`` when ``compare_db`` is ``None``, missing, or shares no
+    fitted matchup with the store — the section simply doesn't appear.
+    """
+    if not compare_db or not Path(compare_db).is_file():
+        return ""
+    try:
+        df = compare.gather_version_pair(store, str(compare_db))
+    except Exception:  # noqa: BLE001 — a bad v1 must not break the whole build
+        # But it must not vanish silently either: without this the section
+        # simply isn't in the published site and nothing says why, which is
+        # indistinguishable from "no v1 was given".
+        _log.warning(
+            "1.0-vs-2.0 section skipped: could not read %s", compare_db,
+            exc_info=True,
+        )
+        return ""
+    if not len(df):
+        _log.warning(
+            "1.0-vs-2.0 section skipped: %s shares no fitted matchup+pixel "
+            "with this store", compare_db,
+        )
+        return ""
+
+    out = [_heading("1.0 vs 2.0 — elastic vs inelastic retrieval", "-"), ""]
+    out.append(
+        f"The **same {len(df):,} matchups**, fitted twice: the 1.0 results come "
+        "from the frozen v1 release, the 2.0 results from this one. Rows are "
+        "paired on matchup **and pixel**, so a difference below is a difference "
+        "in the retrieval, not in which patch of ocean was looked at. See the "
+        ":doc:`Methods <methods>` page for the two-database provenance.\n"
+    )
+    out.append(V2_CHANGES)
+
+    # `aph` is gathered (it is in the downloadable table) but deliberately NOT
+    # given its own stats line: the stored `Aph` is the linear amplitude and
+    # `chl = Aph / 0.05582`, a fixed rescaling, so every ratio, IQR, Spearman ρ
+    # and log-RMS below would be identical to the Chl ones. Two identical rows
+    # under different names read as two independent agreements.
+    pairs = (
+        ("bbp700", "b_bp(700 nm)", "m$^{-1}$", "m^-1"),
+        ("chl", "chlorophyll", "mg m$^{-3}$", "mg m^-3"),
+    )
+    for key, label, _unit, _plain in pairs:
+        c1, c2 = f"{key}_v1", f"{key}_v2"
+        if c1 not in df or c2 not in df:
+            continue
+        st = compare.log_comparison(df[c2], df[c1])
+        if not st.get("n"):
+            continue
+        out.append(
+            f"- **{label}** — n = {st['n']:,}; median 2.0/1.0 ratio = "
+            f"{_fmt(st['median_ratio'])} "
+            f"(IQR {_fmt(st['ratio_iqr_lo'])}–{_fmt(st['ratio_iqr_hi'])}); "
+            f"Spearman ρ = {_fmt(st['spearman'])}; "
+            f"log10 offset = {_fmt(st['log_bias'])}, "
+            f"RMS = {_fmt(st['log_rms'])}.\n"
+        )
+    out.append(_version_ratio_by_level(df))
+    out.append(_version_failure_note(df))
+    out.append(
+        "(The Chl figures are also the ``A_ph`` figures: BING's chlorophyll is "
+        "a fixed rescaling of the fitted phytoplankton absorption amplitude, "
+        "``Chl = A_ph / 0.05582``, so every ratio statistic is identical. Both "
+        "columns are in the downloadable table.)\n"
+    )
+
+    static = outdir is not None and len(df) > max_interactive
+    if static:
+        out.append(_version_static_figures(df, outdir))
+    elif sortable:
+        try:
+            from pab.report import interactive
+
+            for key, label, _u, plain in pairs:
+                c1, c2 = f"{key}_v1", f"{key}_v2"
+                if c1 not in df or c2 not in df:
+                    continue
+                unit = f" [{plain}]" if plain else ""
+                fig = interactive.comparison_scatter(
+                    df,
+                    sat_col=c2,
+                    insitu_col=c1,
+                    title=f"{label}: 2.0 (inelastic) vs 1.0 (elastic)",
+                    xlabel=f"1.0 {label}{unit}",
+                    ylabel=f"2.0 {label}{unit}",
+                )
+                out.append(interactive.raw_html(fig))
+        except ImportError:
+            out.append(
+                "(The interactive 1.0-vs-2.0 scatters require ``bokeh`` at "
+                "build time.)\n"
+            )
+    if outdir is not None:
+        out.append(_bp_histogram_block(df, outdir))
+    return "\n".join(x for x in out if x)
+
+
+#: Above this ``b_bp``(700 nm) a retrieval is not a measurement of seawater:
+#: open-ocean particulate backscatter at 700 nm spans roughly 1e-4 to 1e-1
+#: m^-1, so a value above 1 is a failed fit, not a bright scene.
+BBP_IMPLAUSIBLE = 1.0
+
+
+def _version_ratio_by_level(df) -> str:
+    """Report the 2.0/1.0 ``b_bp`` ratio in terciles of the 1.0 value.
+
+    The single median ratio is not the whole story: the shift is strongly
+    level-dependent, and quoting one number for a population whose ratio spans
+    an order of magnitude would invite the reader to apply it as a uniform
+    correction. Terciles of the 1.0 value are the least arbitrary split that
+    shows the trend (no hand-chosen edges), and they are computed here so the
+    statement cannot go stale.
+    """
+    import numpy as np
+
+    if "bbp700_v1" not in df or "bbp700_v2" not in df:
+        return ""
+    v1 = np.asarray(df["bbp700_v1"], dtype=float)
+    v2 = np.asarray(df["bbp700_v2"], dtype=float)
+    ok = np.isfinite(v1) & np.isfinite(v2) & (v1 > 0) & (v2 > 0)
+    if ok.sum() < 30:  # terciles of a handful of points say nothing
+        return ""
+    v1, v2 = v1[ok], v2[ok]
+    lo_e, hi_e = np.percentile(v1, [100 / 3, 200 / 3])
+    groups = (
+        ("clearest third", v1 < lo_e),
+        ("middle third", (v1 >= lo_e) & (v1 < hi_e)),
+        ("most-scattering third", v1 >= hi_e),
+    )
+    parts = []
+    for name, m in groups:
+        if m.sum():
+            parts.append(f"{name} {np.median(v2[m] / v1[m]):.2f}")
+    if len(parts) < 2:
+        return ""
+    return (
+        "**The shift is not uniform.** Split by the 1.0 ``b_bp`` into terciles, "
+        "the median 2.0/1.0 ratio runs " + "; ".join(parts) + " (1.0 ``b_bp`` "
+        f"tercile edges {lo_e:.3g} and {hi_e:.3g} m⁻¹). The headline ratio above "
+        "is a population median, **not** a correction factor to apply to a "
+        "single retrieval.\n"
+    )
+
+def _version_failure_note(df) -> str:
+    """Count and report 2.0 fits that returned a non-physical ``b_bp``.
+
+    Computed from the frame rather than hard-coded: the point of the note is
+    that the number is checked at every build, so a regression that multiplies
+    these shows up in the report instead of hiding behind a robust median.
+    Returns ``""`` when there are none.
+    """
+    import numpy as np
+
+    if "bbp700_v2" not in df:
+        return ""
+    v2 = np.asarray(df["bbp700_v2"], dtype=float)
+    bad2 = int(np.count_nonzero(np.isfinite(v2) & (v2 > BBP_IMPLAUSIBLE)))
+    if not bad2:
+        return ""
+    n = int(np.isfinite(v2).sum())
+    bits = [
+        f"**Retrieval failures.** {bad2} of {n:,} 2.0 fits "
+        f"({bad2 / n * 100:.2f} %) return ``b_bp``(700 nm) above "
+        f"{BBP_IMPLAUSIBLE:g} m⁻¹, which is not a possible value for seawater "
+        "(the open ocean spans roughly 1e-4 to 1e-1 m⁻¹); the largest is "
+        f"{np.nanmax(v2):.3g} m⁻¹."
+    ]
+    if "bbp700_v1" in df:
+        v1 = np.asarray(df["bbp700_v1"], dtype=float)
+        bad1 = int(np.count_nonzero(np.isfinite(v1) & (v1 > BBP_IMPLAUSIBLE)))
+        bits.append(
+            f" The same matchups fitted in 1.0 produce {bad1} such value"
+            f"{'' if bad1 == 1 else 's'} (maximum {np.nanmax(v1):.3g} m⁻¹), so "
+            "these are specific to the 2.0 configuration."
+        )
+    bits.append(
+        " They are **left in** every statistic on this page — the medians and "
+        "Spearman ρ are rank-based and barely move — and are flagged here "
+        "rather than filtered, so the failure rate stays visible.\n"
+    )
+    return "".join(bits)
+
+def _version_static_figures(df, outdir) -> str:
+    """Static 2.0-vs-1.0 ``bbp700``/``chl`` scatters for the large-N page."""
+    try:
+        from pab.plotting import population
+    except ImportError:
+        return ""
+    dest = Path(outdir) / "_static" / "comparisons"
+    dest.mkdir(parents=True, exist_ok=True)
+    figs: list[tuple[str, str]] = []
+    for key, label, unit, _p in (
+        ("bbp700", "$b_{bp}$(700 nm)", "m$^{-1}$", ""),
+        ("chl", "chlorophyll", "mg m$^{-3}$", ""),
+    ):
+        c1, c2 = f"{key}_v1", f"{key}_v2"
+        if c1 not in df or c2 not in df:
+            continue
+        try:
+            population.comparison_scatter(
+                df,
+                c2,
+                c1,
+                outfile=dest / f"v2_vs_v1_{key}.png",
+                xlabel=f"1.0 (elastic) {label} [{unit}]",
+                ylabel=f"2.0 (inelastic) {label} [{unit}]",
+                # A handful of 2.0 fits return non-physical values (see the
+                # retrieval-failure note in the section text). Autoscaling to
+                # them squashes every real point into a corner; the off-scale
+                # count is printed in the panel and they stay in the stats.
+                clip_percentile=99.0,
+            )
+            figs.append(
+                (
+                    f"v2_vs_v1_{key}.png",
+                    f"2.0 (inelastic) vs 1.0 (elastic) {label}, log-log, same "
+                    "matchup and same pixel. The dashed line is the median "
+                    "ratio; the solid line is 1:1.",
+                )
+            )
+        except Exception:  # noqa: BLE001 — a bad panel must not break the build
+            pass
+    if not figs:
+        return ""
+    out = [
+        f"{len(df):,} paired matchups — shown as static figures (the "
+        "interactive per-point scatter is suppressed at this scale to keep the "
+        "committed site small).\n"
+    ]
+    for name, cap in figs:
+        out.append(
+            f".. figure:: _static/comparisons/{name}\n   :width: 520px\n\n   {cap}\n"
+        )
+    return "\n".join(out)
+
+
+def _bp_histogram_block(df, outdir) -> str:
+    """The free-``B_p`` posterior-median histogram (2.0 only), with prior edges."""
+    if "Bp_v2" not in df:
+        return ""
+    try:
+        import numpy as np
+
+        from pab.plotting import population
+    except ImportError:
+        return ""
+    v = np.asarray(df["Bp_v2"], dtype=float)
+    n = int(np.isfinite(v).sum())
+    if not n:
+        return ""
+    dest = Path(outdir) / "_static" / "comparisons"
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        population.value_histogram(
+            df,
+            "Bp_v2",
+            outfile=dest / "v2_bp_hist.png",
+            xlabel="$B_p$ (posterior median)",
+            prior_range=_bp_prior_range(),
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+    return (
+        ".. figure:: _static/comparisons/v2_bp_hist.png\n"
+        "   :width: 520px\n\n"
+        f"   Posterior-median ``B_p`` across the {n:,} 2.0 fits. ``B_p`` was "
+        "**fixed** in 1.0, so there is no 1.0 counterpart to scatter it "
+        "against. The dotted lines are the uniform prior's bounds: a pile-up "
+        "against either edge would mean the data wanted a value the prior "
+        "forbade, and the fraction within 1 % of an edge is given in the "
+        "panel title.\n"
+    )
 
 def _static_comparison_figures(df, outdir) -> str:
     """Static (Matplotlib) ``b_bp``/Chl scatters + matchup map for the large-N page.
@@ -674,9 +1085,14 @@ def matchup_quality_table(store, *, sortable: bool = True) -> str:
     return "\n".join(out)
 
 
-def methods_page() -> str:
+def methods_page(*, compare_db=None) -> str:
     """Reader-facing methods/context page: data, protocol, retrieval, how to read
-    the figures and metrics, caveats, and references."""
+    the figures and metrics, caveats, and references.
+
+    ``compare_db`` (the frozen v1 database) adds the two-database provenance
+    note; the 2.0 retrieval configuration is described either way, because it
+    describes *this* release whether or not 1.0 is alongside it.
+    """
     out = [_heading("Methods"), ""]
     out.append(
         "This page explains what PAB does and how to read the results. PAB pairs "
@@ -722,6 +1138,27 @@ def methods_page() -> str:
         "**OC4** band-ratio Chl is shown as a cross-check when available.\n"
     )
 
+    out.append(_heading("Retrieval configuration (2.0) & the two databases", "-"))
+    out.append(V2_CHANGES)
+    out.append(
+        "**``pab_version`` semantics.** Every row carries the version of the "
+        "*analysis* that produced it, not of the code that wrote it. ``1.0`` is "
+        "the elastic BING retrieval of the v1 release; ``2.0`` is the inelastic "
+        "re-analysis in this one; ``1.1`` marks the NASA-GIOP ingests, which are "
+        "the **same NASA product read by the same code** in both releases and so "
+        "are deliberately *not* re-stamped ``2.0`` — a re-stamp would imply a "
+        "re-analysis that did not happen.\n"
+    )
+    if compare_db:
+        out.append(
+            "**Two databases.** The 1.0 fits are not in this release's database. "
+            "They live in the **frozen v1 database**, which is held read-only "
+            "(and at an older schema) so published results cannot be edited "
+            "after the fact; the 1.0-vs-2.0 comparison attaches it read-only "
+            "and joins on matchup **and pixel**, so each pair is two retrievals "
+            "of one spectrum. Matchups fitted in only one of the two releases "
+            "are absent from that comparison rather than being half-filled.\n"
+        )
     out.append(_heading("How to read the figures & metrics", "-"))
     out.append(
         "Each scatter plots the **satellite** value (y) against the **in-situ** "
@@ -1013,6 +1450,7 @@ def build_site(
     sortable: bool = True,
     opener=None,
     downloads_base_url: str | None = None,
+    compare_db=None,
 ) -> dict[str, Path]:
     """Write the fixed aggregate ``.rst`` pages **and a Sphinx ``conf.py``** to
     ``outdir`` — a self-contained, buildable reporting-site source tree.
@@ -1028,6 +1466,10 @@ def build_site(
             when ``bokeh`` is available (else static ``list-table``).
         opener: Optional granule opener (test/cache seam). When given, the OC4
             band-ratio Chl cross-check (``chl_oc``) is added to the Chl figure.
+        compare_db: Path to the frozen **v1** database. When given, the site
+            gains the 1.0-vs-2.0 section, summary headline, and provenance
+            note; when omitted (or the file is absent) those simply don't
+            appear and every other page is unchanged.
 
     Returns:
         ``{name: path}`` for each written file — the fixed :data:`PAGE_STEMS`
@@ -1045,11 +1487,17 @@ def build_site(
     # downloads. All are fixed pages — still no per-matchup page.
     pages = {
         "index": index_page(),
-        "summary": summary_page(store, pab_version=pab_version),
+        "summary": summary_page(
+            store, pab_version=pab_version, compare_db=compare_db
+        ),
         "comparisons": (
             comparisons_page(df, sortable=sortable, outdir=outdir)
             + "\n"
             + nasa_giop_section(store, outdir=outdir, sortable=sortable)
+            + "\n"
+            + version_section(
+                store, compare_db, outdir=outdir, sortable=sortable
+            )
         ),
         "figures": figures_page(store, outdir, df),
         "aggregates": (
@@ -1057,7 +1505,11 @@ def build_site(
             + "\n"
             + matchup_quality_table(store, sortable=sortable)
         ),
-        "methods": methods_page() + "\n" + provenance_block(pab_version=pab_version),
+        "methods": (
+            methods_page(compare_db=compare_db)
+            + "\n"
+            + provenance_block(pab_version=pab_version)
+        ),
         "downloads": downloads_page(
             store, outdir, downloads_base_url=downloads_base_url
         ),

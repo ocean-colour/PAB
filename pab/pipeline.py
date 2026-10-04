@@ -1053,6 +1053,15 @@ def build_parser() -> argparse.ArgumentParser:
         "Read the Docs to build (see HOWTO §7).",
     )
     p.add_argument(
+        "--compare-db",
+        default=None,
+        metavar="PATH",
+        help="With --emit-site: path to the frozen v1 database. Adds the "
+        "1.0-vs-2.0 (elastic vs inelastic) section, the summary headline, and "
+        "the two-database provenance note. Attached read-only; omit it and "
+        "those simply don't appear.",
+    )
+    p.add_argument(
         "--downloads-base-url",
         default=None,
         metavar="URL",
@@ -1115,6 +1124,7 @@ def main(argv=None) -> int:
                 args.emit_site,
                 opener=opener,
                 downloads_base_url=args.downloads_base_url,
+                compare_db=args.compare_db,
             )
         print(f"emitted reporting site → {args.emit_site}")
         for name, path in sorted(written.items()):
