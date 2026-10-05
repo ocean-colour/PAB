@@ -102,6 +102,82 @@ def comparison_scatter(
     return _finish(fig, outfile, dpi)
 
 
+def ratio_vs_level(
+    df,
+    num_col: str,
+    den_col: str,
+    *,
+    outfile=None,
+    dpi: int = 100,
+    nbins: int = 12,
+    min_per_bin: int = 20,
+    xlabel: str | None = None,
+    ylabel: str | None = None,
+):
+    """Median ``num/den`` ratio against the magnitude of ``den``, log-binned.
+
+    A single population median hides a ratio that varies systematically with
+    the signal level, and a reader will otherwise take it as a correction
+    factor. This plots the ratio *as a function of* the baseline value, with
+    the interquartile band, so the trend is the result rather than a footnote.
+
+    Bins holding fewer than ``min_per_bin`` points are dropped: a median of
+    three points plotted beside a median of three thousand reads as the same
+    kind of statement, and it is not.
+
+    Returns:
+        The Matplotlib ``Figure`` (or the written ``Path`` when ``outfile``).
+    """
+    import matplotlib.pyplot as plt
+
+    num = np.asarray(df[num_col], dtype=float)
+    den = np.asarray(df[den_col], dtype=float)
+    ok = np.isfinite(num) & np.isfinite(den) & (num > 0) & (den > 0)
+    num, den = num[ok], den[ok]
+    fig, ax = plt.subplots(figsize=(5.4, 3.6))
+    if num.size >= min_per_bin:
+        edges = np.logspace(
+            np.log10(np.percentile(den, 0.5)),
+            np.log10(np.percentile(den, 99.5)),
+            nbins + 1,
+        )
+        xs, med, lo, hi, ns = [], [], [], [], []
+        for a, b in zip(edges[:-1], edges[1:], strict=False):
+            m = (den >= a) & (den < b)
+            if m.sum() < min_per_bin:
+                continue
+            r = num[m] / den[m]
+            xs.append(float(np.sqrt(a * b)))
+            q1, q2, q3 = np.percentile(r, [25, 50, 75])
+            med.append(q2)
+            lo.append(q1)
+            hi.append(q3)
+            ns.append(int(m.sum()))
+        if xs:
+            ax.fill_between(xs, lo, hi, color="C0", alpha=0.22, label="IQR")
+            ax.plot(xs, med, "o-", color="C0", lw=1.6, ms=5, label="median ratio")
+            ax.set_title(
+                f"{len(xs)} bins, {sum(ns):,} matchups "
+                f"({min(ns)}-{max(ns)} per bin)",
+                fontsize=9,
+            )
+        ax.axhline(1.0, color="k", lw=1, ls="-", label="no change")
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        # Over a 2-3 decade span Matplotlib labels the MINOR log ticks too and
+        # they overlap into an unreadable smear. Decade majors only.
+        from matplotlib.ticker import LogLocator, NullFormatter
+
+        ax.xaxis.set_major_locator(LogLocator(base=10.0))
+        ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.set_xlabel(xlabel or den_col)
+    ax.set_ylabel(ylabel or f"{num_col} / {den_col}")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3, which="both")
+    fig.tight_layout()
+    return _finish(fig, outfile, dpi)
+
+
 def value_histogram(
     df,
     col: str,

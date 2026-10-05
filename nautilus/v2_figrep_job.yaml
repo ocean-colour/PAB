@@ -58,7 +58,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: pab
-        image: gitlab-registry.nrp-nautilus.io/profx/pab:REPLACE_ME   # must contain the Task 3 figure guards
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.6   # PAB 228c5ae -- Task 3 figure guards verified in-image 2026-10-04
         imagePullPolicy: IfNotPresent
         env:
         - {name: HOME, value: /root}

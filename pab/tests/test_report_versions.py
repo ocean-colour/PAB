@@ -357,7 +357,6 @@ def test_ratio_is_reported_by_level_not_as_one_number(tmp_path):
                 chl=0.12, version="2.0",
             )
         out = rst.version_section(store, v1, sortable=False)
-        assert "not uniform" in out
         assert "clearest third" in out and "most-scattering third" in out
         assert "not** a correction factor" in out
 
@@ -367,4 +366,60 @@ def test_no_level_split_on_a_handful_of_matchups(tmp_path):
     v1 = _v1_db(tmp_path)
     with Store.open(":memory:") as store:
         _v2_store(store)
-        assert "not uniform" not in rst.version_section(store, v1, sortable=False)
+        assert "clearest third" not in rst.version_section(store, v1, sortable=False)
+
+
+def test_captions_contain_no_matplotlib_mathtext(tmp_path):
+    """`$b_{bp}$` is an axis label; in RST it renders as literal dollar signs."""
+    v1 = _v1_db(tmp_path)
+    out_dir = tmp_path / "site"
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        out = rst.version_section(store, v1, outdir=out_dir, max_interactive=1)
+    assert "$" not in out, (
+        "Matplotlib mathtext leaked into the page:\n"
+        + "\n".join(ln for ln in out.splitlines() if "$" in ln)
+    )
+
+
+def test_clear_water_result_is_framed_as_a_result(tmp_path):
+    """Q2: JXP confirmed the clear-water behaviour is expected physics."""
+    v1 = tmp_path / "v1.db"
+    n = 120
+    with Store.open(str(v1)) as s:
+        for i in range(n):
+            _seed_one(
+                s, f"M{i}", wmo=7900000 + i, cycle=i, bbp=1e-4 * (i + 1),
+                chl=0.1, version="1.0",
+            )
+    with Store.open(":memory:") as store:
+        for i in range(n):
+            r = 0.2 + 0.7 * i / (n - 1)
+            _seed_one(
+                store, f"M{i}", wmo=7900000 + i, cycle=i,
+                bbp=1e-4 * (i + 1) * r, chl=0.12, version="2.0",
+            )
+        out = rst.version_section(store, v1, sortable=False)
+        assert "Result:" in out, "the level dependence is still framed as a caveat"
+        assert "expected behaviour of the physics" in out
+        assert "Raman" in out and "inventing particulate backscatter" in out
+
+
+def test_bp_block_reports_the_pile_up_at_both_bounds(tmp_path):
+    """Q3: the censoring must be stated, not left to the panel title."""
+    import numpy as np
+
+    v1 = _v1_db(tmp_path)
+    out_dir = tmp_path / "site"
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        # put Bp hard against both bounds
+        for fid, bp in (("M1_v2.0", 0.004), ("M2_v2.0", 0.05)):
+            store.upsert(
+                "fit_results",
+                {"fit_id": fid, "quantity": "BING_ExpBPow_Bp", "value": bp},
+            )
+        out = rst.version_section(store, v1, outdir=out_dir, max_interactive=1)
+        assert "both bounds" in out or "both ends" in out
+        assert "censored" in out
+        assert np.isfinite(0.0)  # keep numpy import meaningful

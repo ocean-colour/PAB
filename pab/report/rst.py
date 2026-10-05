@@ -543,6 +543,8 @@ def version_section(
             f"RMS = {_fmt(st['log_rms'])}.\n"
         )
     out.append(_version_ratio_by_level(df))
+    if outdir is not None:
+        out.append(_ratio_figure_block(df, outdir))
     out.append(_version_failure_note(df))
     out.append(
         "(The Chl figures are also the ``A_ph`` figures: BING's chlorophyll is "
@@ -620,12 +622,72 @@ def _version_ratio_by_level(df) -> str:
             parts.append(f"{name} {np.median(v2[m] / v1[m]):.2f}")
     if len(parts) < 2:
         return ""
+    lo_r = float(np.median(v2[groups[0][1]] / v1[groups[0][1]]))
+    hi_r = float(np.median(v2[groups[2][1]] / v1[groups[2][1]]))
     return (
-        "**The shift is not uniform.** Split by the 1.0 ``b_bp`` into terciles, "
-        "the median 2.0/1.0 ratio runs " + "; ".join(parts) + " (1.0 ``b_bp`` "
-        f"tercile edges {lo_e:.3g} and {hi_e:.3g} m⁻¹). The headline ratio above "
-        "is a population median, **not** a correction factor to apply to a "
-        "single retrieval.\n"
+        _heading("Result: the inelastic correction is a clear-water effect", "~")
+        + "\n"
+        "The single median ratio understates and overstates by turns, because "
+        "the shift is a strong, monotonic function of how much backscatter "
+        "there is to begin with. Split by the 1.0 ``b_bp`` into terciles, the "
+        "median 2.0/1.0 ratio runs " + "; ".join(parts) + " (tercile edges "
+        f"{lo_e:.3g} and {hi_e:.3g} m⁻¹), and it keeps going at the extremes: "
+        "below 2e-4 m⁻¹ the ratio is ~0.02, i.e. 2.0 retrieves some **fifty "
+        "times less** backscatter than 1.0.\n"
+        "\n"
+        "This is the expected behaviour of the physics, not an artifact. Raman "
+        "scattering and chlorophyll fluorescence contribute a roughly fixed "
+        "radiance; what varies is how much *elastic* signal sits underneath "
+        "them. In clear water the elastic contribution is small, so the "
+        "inelastic terms are a large fraction of ``Rrs`` — and the 1.0 model, "
+        "which has no inelastic terms at all, could only explain that radiance "
+        "by inventing particulate backscatter. 2.0 attributes it to the "
+        "processes that actually produce it, and the retrieved ``b_bp`` drops "
+        "accordingly. In productive water the elastic signal dominates, the "
+        "inelastic terms are a small correction, and the two versions "
+        f"converge — the most-scattering tercile differs by only "
+        f"{(1 - hi_r) * 100:.0f} %.\n"
+        "\n"
+        "The practical consequence: the headline ratio is a population median "
+        "and **not** a correction factor to apply to a single retrieval. Which "
+        "end of this curve a matchup sits on matters more than the median "
+        "does.\n"
+    )
+
+def _ratio_figure_block(df, outdir) -> str:
+    """The 2.0/1.0 ratio as a function of the 1.0 ``b_bp`` — the Q2 result."""
+    try:
+        import numpy as np
+
+        from pab.plotting import population
+    except ImportError:
+        return ""
+    if "bbp700_v1" not in df or "bbp700_v2" not in df:
+        return ""
+    v1 = np.asarray(df["bbp700_v1"], dtype=float)
+    if np.isfinite(v1).sum() < 200:  # the curve needs populated bins
+        return ""
+    dest = Path(outdir) / "_static" / "comparisons"
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        population.ratio_vs_level(
+            df,
+            "bbp700_v2",
+            "bbp700_v1",
+            outfile=dest / "v2_v1_ratio_vs_level.png",
+            xlabel="1.0 (elastic) $b_{bp}$(700 nm) [m$^{-1}$]",
+            ylabel="2.0 / 1.0",
+        )
+    except Exception:  # noqa: BLE001 — a bad panel must not break the build
+        return ""
+    return (
+        ".. figure:: _static/comparisons/v2_v1_ratio_vs_level.png\n"
+        "   :width: 560px\n\n"
+        "   The 2.0/1.0 ``b_bp`` ratio against the 1.0 value, with the "
+        "interquartile band. The curve rises from ~0.02 in the clearest water "
+        "to ~0.95 in the most scattering: the inelastic correction is large "
+        "where the elastic signal is weak and vanishes where it is strong. "
+        "Bins with fewer than 20 matchups are not plotted.\n"
     )
 
 def _version_failure_note(df) -> str:
@@ -665,7 +727,84 @@ def _version_failure_note(df) -> str:
         "Spearman ρ are rank-based and barely move — and are flagged here "
         "rather than filtered, so the failure rate stays visible.\n"
     )
+    bits.append(_runaway_regime_note(df))
     return "".join(bits)
+
+
+#: Retrieved-Chl bin edges for the runaway-rate table. Chosen to straddle the
+#: ultra-oligotrophic range where the failures live; the rates are computed, so
+#: a shift in the data changes the table rather than falsifying it.
+_RUNAWAY_CHL_EDGES = (0.0, 0.01, 0.02, 0.05, 0.1, 0.3, float("inf"))
+
+
+def _runaway_regime_note(df) -> str:
+    """Where the non-physical retrievals live, as a rate by retrieved Chl.
+
+    The investigation behind this (Prompt 8 Q1) ruled out a node, granule or
+    sampler cause — the failures spread over 47 distinct granules with every
+    convergence flag set and viewing geometry indistinguishable from the rest.
+    What does separate them is the regime, and that makes them the extreme
+    tail of the clear-water result above rather than a separate defect. Worth
+    a table rather than a sentence, because the rate is zero over most of the
+    range and a single average would hide that.
+    """
+    import numpy as np
+
+    if "chl_v2" not in df or "bbp700_v2" not in df:
+        return ""
+    chl = np.asarray(df["chl_v2"], dtype=float)
+    bbp = np.asarray(df["bbp700_v2"], dtype=float)
+    ok = np.isfinite(chl) & np.isfinite(bbp)
+    if ok.sum() < 500:
+        return ""
+    chl, bbp = chl[ok], bbp[ok]
+    bad = bbp > BBP_IMPLAUSIBLE
+    if not bad.any():
+        return ""
+    rows = []
+    for lo, hi in zip(_RUNAWAY_CHL_EDGES[:-1], _RUNAWAY_CHL_EDGES[1:], strict=False):
+        m = (chl >= lo) & (chl < hi)
+        if not m.sum():
+            continue
+        label = f"{lo:g}–{hi:g}" if np.isfinite(hi) else f"> {lo:g}"
+        if lo == 0:
+            label = f"< {hi:g}"
+        rows.append((label, int(m.sum()), int((m & bad).sum())))
+    if len(rows) < 3:
+        return ""
+    out = [
+        "\n**They are not scattered at random — they are the clear-water tail.** "
+        "The failures spread over many granules, carry every convergence flag "
+        "set, and have viewing geometry, separation and spectrum count "
+        "indistinguishable from the rest; what separates them is the regime. "
+        "Rate by retrieved chlorophyll:\n",
+        "",
+        ".. list-table::",
+        "   :header-rows: 1",
+        "",
+        "   * - Chl [mg m⁻³]",
+        "     - matchups",
+        "     - non-physical",
+        "     - rate",
+    ]
+    for label, n, nb in rows:
+        out += [
+            f"   * - {label}",
+            f"     - {n:,}",
+            f"     - {nb}",
+            f"     - {nb / n * 100:.2f} %",
+        ]
+    out.append("")
+    out.append(
+        "So the same mechanism that makes the inelastic correction large in "
+        "clear water also makes the retrieval ill-conditioned there, and in a "
+        "small number of cases it fails outright. **No single-variable filter "
+        "isolates them**: a χ² cut that catches most of them flags fourteen "
+        "times as many sound fits, and so does a chlorophyll cut. They are the "
+        "tail of a continuum, not a separable population, which is why they "
+        "are reported rather than removed.\n"
+    )
+    return "\n".join(out)
 
 def _version_static_figures(df, outdir) -> str:
     """Static 2.0-vs-1.0 ``bbp700``/``chl`` scatters for the large-N page."""
@@ -676,9 +815,12 @@ def _version_static_figures(df, outdir) -> str:
     dest = Path(outdir) / "_static" / "comparisons"
     dest.mkdir(parents=True, exist_ok=True)
     figs: list[tuple[str, str]] = []
-    for key, label, unit, _p in (
-        ("bbp700", "$b_{bp}$(700 nm)", "m$^{-1}$", ""),
-        ("chl", "chlorophyll", "mg m$^{-3}$", ""),
+    # Two labels per row, deliberately: `mpl` is Matplotlib mathtext for the
+    # axis, `rst` is what goes in the caption. Reusing one put a literal
+    # "$b_{bp}$" into the rendered page.
+    for key, mpl, unit, rst_label in (
+        ("bbp700", "$b_{bp}$(700 nm)", "m$^{-1}$", "``b_bp`` (700 nm)"),
+        ("chl", "chlorophyll", "mg m$^{-3}$", "chlorophyll"),
     ):
         c1, c2 = f"{key}_v1", f"{key}_v2"
         if c1 not in df or c2 not in df:
@@ -689,8 +831,8 @@ def _version_static_figures(df, outdir) -> str:
                 c2,
                 c1,
                 outfile=dest / f"v2_vs_v1_{key}.png",
-                xlabel=f"1.0 (elastic) {label} [{unit}]",
-                ylabel=f"2.0 (inelastic) {label} [{unit}]",
+                xlabel=f"1.0 (elastic) {mpl} [{unit}]",
+                ylabel=f"2.0 (inelastic) {mpl} [{unit}]",
                 # A handful of 2.0 fits return non-physical values (see the
                 # retrieval-failure note in the section text). Autoscaling to
                 # them squashes every real point into a corner; the off-scale
@@ -700,9 +842,9 @@ def _version_static_figures(df, outdir) -> str:
             figs.append(
                 (
                     f"v2_vs_v1_{key}.png",
-                    f"2.0 (inelastic) vs 1.0 (elastic) {label}, log-log, same "
-                    "matchup and same pixel. The dashed line is the median "
-                    "ratio; the solid line is 1:1.",
+                    f"2.0 (inelastic) vs 1.0 (elastic) {rst_label}, log-log, "
+                    "same matchup and same pixel. The dashed line is the "
+                    "median ratio; the solid line is 1:1.",
                 )
             )
         except Exception:  # noqa: BLE001 — a bad panel must not break the build
@@ -747,15 +889,36 @@ def _bp_histogram_block(df, outdir) -> str:
         )
     except Exception:  # noqa: BLE001
         return ""
+    bounds = _bp_prior_range()
+    edge_txt = ""
+    if bounds:
+        lo, hi = bounds
+        span = hi - lo
+        parts = []
+        for tol in (0.01, 0.02, 0.05):
+            w = span * tol
+            k = int(np.count_nonzero((v <= lo + w) | (v >= hi - w)))
+            parts.append(f"{k / n * 100:.1f} % within {tol * 100:g} %")
+        edge_txt = (
+            "\n**The prior is doing real work at both ends.** The posterior "
+            "medians are **bimodal**, with mass against *both* bounds of the "
+            f"uniform ``[{lo:g}, {hi:g}]`` prior: " + ", ".join(parts) + " of a "
+            "bound. The 1st percentile sits at the floor and the 99th at the "
+            "ceiling. A pile-up at a bound means the data preferred a value "
+            "the prior forbade, so for those fits the bound — not the "
+            "spectrum — sets ``B_p``. The bounds are physically motivated and "
+            "have been kept, but the headline ``B_p`` distribution should be "
+            "read as *censored at both ends* rather than as a free "
+            "measurement.\n"
+        )
     return (
         ".. figure:: _static/comparisons/v2_bp_hist.png\n"
         "   :width: 520px\n\n"
         f"   Posterior-median ``B_p`` across the {n:,} 2.0 fits. ``B_p`` was "
         "**fixed** in 1.0, so there is no 1.0 counterpart to scatter it "
-        "against. The dotted lines are the uniform prior's bounds: a pile-up "
-        "against either edge would mean the data wanted a value the prior "
-        "forbade, and the fraction within 1 % of an edge is given in the "
-        "panel title.\n"
+        "against. The dotted lines are the uniform prior's bounds; the "
+        "fraction within 1 % of an edge is given in the panel title.\n"
+        + edge_txt
     )
 
 def _static_comparison_figures(df, outdir) -> str:

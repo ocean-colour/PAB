@@ -112,6 +112,56 @@ the mechanism may well affect the other 99.67 % less visibly.
 
 **Answer:** (b) and be sure to include what you find in the final report we will generate for v2.
 
+**Findings (2026-10-04).** Across all 15,971 2.0 fits the count is **51**, not
+48 — the 48 was over the 14,604 *paired* subset. Comparing the 51 against the
+15,920 others:
+
+| | runaways (51) | normal (15,920) |
+|---|---|---|
+| χ² | median 5.94 (p10 1.61) | median 0.42 (p90 1.07) |
+| `B_p` | median 0.0053 (p10 0.0040 = the bound) | median 0.0236 |
+| retrieved Chl | median 0.0121 | median 0.173 |
+| θ_s / θ_v / dφ | no difference | — |
+| distance / Δtime / n_spectra | no difference | — |
+| `success` flag | all 1 | — |
+| granules | 47 distinct over 51 fits | — |
+
+**It is not a node, granule or sampler artifact**: 47 distinct granules, every
+`success` flag set, identical `nsteps`/`nwalkers`, and viewing geometry,
+separation and spectrum count all indistinguishable from the normal
+population.
+
+**It is the ultra-oligotrophic regime.** Runaway rate by retrieved Chl:
+
+| Chl | n | runaways | rate |
+|---|---|---|---|
+| < 0.01 | 776 | 22 | 2.84 % |
+| 0.01–0.02 | 218 | 21 | **9.63 %** |
+| 0.02–0.05 | 690 | 5 | 0.72 % |
+| 0.05–0.1 | 2,387 | 0 | **0.00 %** |
+| 0.1–0.3 | 7,393 | 0 | **0.00 %** |
+| > 0.3 | 4,507 | 3 | 0.07 % |
+
+**Zero runaways in 9,780 fits** between Chl 0.05 and 0.3. 48 of the 51 sit
+below Chl 0.05. So these are the extreme tail of the same clear-water
+behaviour as Q2 — where the elastic signal is weakest and the inelastic terms
+dominate, the retrieval becomes ill-conditioned and 51 of 1,684 clear-water
+fits ran away entirely.
+
+**There is no clean post-hoc gate**, which is the practical conclusion. Every
+single-variable cut costs 15–30× false positives:
+
+| gate | flags | catches | false positives |
+|---|---|---|---|
+| χ² > 1.5 | 747 | 47 / 51 | 700 |
+| `B_p` < 0.0045 | 444 | 17 / 51 | 427 |
+| Chl < 0.05 | 1,684 | 48 / 51 | 1,636 |
+
+**Correction to my first read:** I initially said χ² "says so" — that the fits
+are detectably bad. It is too strong. The medians differ 14×, but the
+distributions overlap: the lowest runaway χ² is 0.60 and normal fits reach
+148. χ² *enriches* for runaways; it does not isolate them.
+
 ### Q2 (Task 2) — the 2.0/1.0 shift is strongly level-dependent
 
 The headline is `b_bp` 2.0/1.0 = **0.75**, but that is a population median over
@@ -141,6 +191,17 @@ caveat.
 
 **Answer:** Yes, I think this is as expected an deserves its own paragraph as a result rather than a caveat.
 
+**Done (2026-10-04).** Promoted to a result with its own sub-heading,
+*"Result: the inelastic correction is a clear-water effect"*, stating the
+mechanism: Raman and chlorophyll fluorescence contribute a roughly fixed
+radiance, so what varies is how much elastic signal sits underneath them; in
+clear water the 1.0 model could only explain that radiance by inventing
+particulate backscatter, and 2.0 attributes it to the processes that produce
+it. Backed by a new figure (`population.ratio_vs_level`) plotting the 2.0/1.0
+ratio against the 1.0 value with the IQR band — it rises from ~0.02 to ~0.95
+and asymptotes to 1, so the convergence in productive water is visible rather
+than asserted. The "not a correction factor" warning is kept.
+
 ### Q3 (Task 2) — `B_p` posterior piles up at both prior bounds
 
 The free `B_p` posterior medians are **bimodal with mass at both edges** of the
@@ -157,6 +218,15 @@ at the same tolerance, so the Prompt 6 figure held and the Prompt 3 one did
 not.
 
 **Answer:** Also include this in the Report with figure(s).
+
+**Done (2026-10-04).** The `B_p` histogram already carried the prior bounds and
+the within-1 % count in its panel title; it now also has a prose block stating
+that the posterior is **bimodal with mass against both bounds** (2.8 % within
+1 %, 7.1 % within 2 %, 15.4 % within 5 %; 1st percentile at the floor, 99th at
+the ceiling), that for those fits the bound rather than the spectrum sets
+`B_p`, and that the distribution should be read as **censored at both ends**
+rather than as a free measurement. The bounds are kept and described as
+physically motivated, per your answer. All figures computed at build time.
 
 ## Reports
 
@@ -362,8 +432,9 @@ Not yet done: Task 3 (figures on Nautilus) and Task 4 (regenerate the site).
 
 ### Task 3 — figures on Nautilus
 
-**Status: the code half is done and verified; the pod has NOT been launched.**
-Two blockers, below.
+**Status: launched 2026-10-04 23:17 UTC and running clean.** Both blockers
+cleared — JXP answered Q1 (b) and Q3 (report it), neither of which involves a
+re-fit, so the figures cannot be invalidated; and the image was rebuilt.
 
 **The `figure` stage gained two filters**, both in `pab/pipeline.py`:
 
@@ -409,17 +480,46 @@ pod checks for itself.
 never split, and only the scene half is being skipped. The job logs each
 stage's wall-clock separately so the next one can be sized from measurement.
 
-**Blocker 1 — the image does not contain the guards.** `:2.0.5` was built
-from `69efcd4`; the guards are uncommitted. Running the job against `:2.0.5`
-is precisely the 31,947-render, 14,586-granule-read case the guards exist to
-prevent. Required order: commit → build → push → **point this manifest at the
-new tag** → re-verify the manifest names the tag that was verified.
+**Deployment, in order.**
 
-**Blocker 2 — Q1–Q3 are unanswered.** They do not block rendering (it reads
-existing chains and re-fits nothing), but Q1(c) and Q3 both end in *re-fit*,
-which would invalidate the figures for whatever is re-fitted. Q1 is 48 fits —
-negligible rework. Q3 could be a slice or the whole run. Worth a decision
-before spending 3–6 h of 16-core time.
+1. Verified JXP's commit `228c5ae` contains the guards, manifest and tests.
+2. Built `:2.0.6`. Docker reported the source layers `CACHED`, so rather than
+   trust that, **ran the image** and confirmed `want_scene`, the `BING`
+   filter, `figure_version` and `Store.open(uri=True)` are all present. This
+   is the step that would have caught a stale layer; the smoke test alone
+   would not have.
+3. Pushed; `docker manifest inspect` confirms `:2.0.6` in the registry.
+4. Pointed the manifest at `:2.0.6` and **re-grepped the manifest** — the
+   check that failed twice before.
+5. Uploaded the DB. `mv`'d the stale PVC copy to `pab.db.pre-task3-bak`
+   (reversible; not deleted), gzipped 211 MB → 40.8 MB, `kubectl cp`,
+   decompressed. **sha256 identical at both ends**
+   (`0823f059…`), `PRAGMA quick_check` ok, and 2,000/2,000 sampled
+   `chains_path` values resolve on the PVC. The PVC copy was 4 MB smaller and
+   a day older — it was indeed stale.
+6. Launched.
+
+**The pod's own guard assertion fired correctly** and the counts match the
+prediction exactly:
+
+```
+figure guards present: True
+fit figures to render: 15971
+scenes to render: 1390
+NASA rows (never rendered): 15976
+chains on disk: 15971
+figure: rendering 15971 fits (1390 with scenes) over 16 processes
+```
+
+**Throughput: 0.66 s/fit**, measured over 3 minutes from the *output PNG
+count* — ~2.9 h for the figure stage, well inside the 12 h deadline. **0
+failures** through 4,000 fits.
+
+I first reported the rate as "degrading, 0.52 → 1.00 → 2.18 s/fit" from the
+`figure progress: N submitted` log line. That was wrong: the parent submits in
+bursts as the pending queue drains, so the submit counter is not a throughput
+measure. Counting finished files gave a steady 1.52 fits/s. Same error shape
+as the `fit` sizing miss — extrapolating a rate from the wrong counter.
 
 **Tests** — `pab/tests/test_figure_guards.py` (8), each verified
 load-bearing:
@@ -623,4 +723,68 @@ learned:
 Files touched: `pab/pipeline.py` (`figure`, `_render_figure`,
 `_figures_parallel`, `PipelineConfig.figure_version`, `--figure-version`),
 new `nautilus/v2_figrep_job.yaml`, new `pab/tests/test_figure_guards.py`,
-`pab/tests/test_pipeline.py`. Not committed — git is JXP's.
+`pab/tests/test_pipeline.py`. Committed by JXP as `228c5ae`.
+
+### 2026-10-05 (Prompt 8 Task 3 launch + the Q1-Q3 report work)
+
+JXP answered Q1-Q3; both re-fit options were declined, so Task 3 launched.
+Image `:2.0.6`, job `pab-v2-figrep`, 0 failures, 0.66 s/fit. Then did the
+report work the answers called for. What I learned:
+
+- **"Verify the image" has to mean *run* it.** `docker build` reported the
+  source layers `CACHED`, which is exactly the state in which a stale layer
+  ships. The existing smoke tests check `pab_version` and the stage order —
+  both of which were already true in `:2.0.5` and would have passed on an
+  image with none of the Task 3 code. What settled it was running the image
+  and grepping `pipeline.figure` for `want_scene`. I then put the same check
+  inside the manifest so the pod refuses to start on an image without it;
+  that is the third time this class of mistake has come up and the first
+  time the defence is automatic rather than procedural.
+
+- **I misread the progress rate, again, in the same way.** I announced the
+  throughput was degrading (0.52 → 1.00 → 2.18 s/fit) off the
+  `figure progress: N submitted` lines. But the parent submits in *bursts* as
+  the pending queue drains, so that counter measures queue behaviour, not
+  work. Counting finished PNGs over three minutes gave a flat 1.52 fits/s.
+  The `fit` sizing miss was the same shape: a rate inferred from a counter
+  that was not measuring the thing. The fix is cheap and I should reach for
+  it first — count the artifacts, not the log line.
+
+- **The PVC copy really was stale**, 4 MB smaller and a day older. HOWTO said
+  so and I checked anyway, which is the right order; `mv` to a `.bak` rather
+  than overwrite cost nothing and makes the step reversible.
+
+- **Q1's answer turned a defect into a result.** Asked to investigate the 51
+  runaways, the useful finding was not a cause but a *regime*: zero in 9,780
+  fits between Chl 0.05-0.3, 9.6 % at Chl 0.01-0.02. That makes them the tail
+  of the same clear-water physics Q2 confirmed as expected, not a separate
+  bug — and it also kills the idea of a filter, since every single-variable
+  cut costs 14-30x false positives. "Where does it fail" was a better
+  question than "why does it fail".
+
+- **I had to correct my own first read of Q1.** I wrote that χ² "says so" —
+  that the bad fits are detectably bad. The medians differ 14x, but the
+  lowest runaway χ² is 0.60 and sound fits reach 148. χ² enriches for them;
+  it does not separate them. Overlapping distributions with very different
+  medians are easy to describe as if they were separable.
+
+- **Matplotlib mathtext leaked into the rendered page.** `$b_{bp}$` is an
+  axis label; in RST it is four literal dollar-sign characters. I had reused
+  one variable for the Matplotlib axis and the RST caption. Now two
+  variables, and a test asserting no `$` survives into the page — the kind of
+  thing that is invisible in code review and obvious in a browser.
+
+- **Updating my own test to match new wording needed care.** Promoting the
+  level-dependence from caveat to result changed the prose, which broke a
+  test asserting on the old phrase "not uniform". The right fix was to assert
+  on the enduring intent (the terciles are reported, the correction-factor
+  warning stands) rather than on wording — a test pinned to a sentence
+  obstructs editing without protecting anything.
+
+Report work from the answers: Q2 became a result sub-section with a mechanism
+paragraph and a new `ratio_vs_level` figure; Q3 gained a prose block naming
+the distribution censored at both bounds; Q1's findings became a computed
+rate-by-Chl table in the failures note. Full suite: **402 passed, 1 skipped**.
+
+Uncommitted: `pab/report/rst.py`, `pab/plotting/population.py`,
+`pab/tests/test_report_versions.py`, this doc.
