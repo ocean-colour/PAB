@@ -73,6 +73,79 @@ published object **before** pushing (the two-machines/one-key lesson,
 
 ## Q&A
 
+### Q1 (Task 1) — confirm the publish + backup plan
+
+Everything below is staged and hashed but **nothing has been sent**. The
+working agreement requires each publish/backup step be confirmed.
+
+**(a) S3 → `s3://pab/v2/`** (226 MB, from the workstation). `s3://pab/v2/` is
+currently **empty**; `s3://pab/v1/pab.db` exists and is byte-identical to the
+frozen workstation copy (`09de0a6d…f978273` — Task 2's check already passes on
+the workstation side).
+
+| object | bytes | sha256 |
+|---|---|---|
+| `v2/pab.db` | 217,325,568 | `7d44e1f3c5a3385ca64af893b0b88661962a7910a8064abb7a297afc0b78bdaf` |
+| `v2/matchup_summary.csv` | 6,102,869 | `6622a78cf3061a17bfafa908443c60c428512168ab235eb474e3ad26070f0f74` |
+| `v2/matchup_summary.parquet` | 2,645,441 | `4754e2372f4d35918c7f060ea4287f44a89329a01045d24f2f2e6b5fe9c0627c` |
+
+The tables were regenerated on the workstation from the authoritative
+`v2/pab.db` (15,971 rows, `pab_version` all `2.0` — the version filter added
+in Prompt 8 Task 1 is doing its job here). I will re-download each from the
+public URL and re-check sha256 after upload, and check the existing object
+before overwriting (the two-machines/one-key lesson).
+
+**Which credential should the S3 push use?** `HOWTO.md` §7b says "the standard
+boto3 chain". `~/.aws/credentials` has `default`, `mskelm`, `benpritikin`,
+`ceph-s3-large-files`, `swot-user` — none named for `pab`, and I will not
+guess which has write access to the public bucket. The `rclone` remote
+`nautilus_s3` **does** have working Ceph credentials configured. Options:
+
+- **(i)** `rclone copyto` via the `nautilus_s3` remote (credentials already
+  known-good; bypasses `NautilusS3Backend`);
+- **(ii)** `NautilusS3Backend` with a named profile — tell me which;
+- **(iii)** `NautilusS3Backend` with `AWS_ACCESS_KEY_ID`/`SECRET` exported by
+  you into the session.
+
+I'd suggest **(ii) or (iii)**, so the documented code path is the one that
+actually publishes — but I need the profile name.
+
+**(b) Off-site backup → `AIOcean:PAB/`** (a Google shared drive, not S3).
+`AIOcean:PAB/` currently holds only the v1-era `fit_chains/` and `site/`; there
+is **no `v2/` prefix**, so the Prompt 7 optional chains backup was never run.
+
+| item | size | source | how |
+|---|---|---|---|
+| `pab_v2_2026-10-07.db` | 217 MB | workstation | `rclone copyto`, direct |
+| `v2/site/` | 1.1 MB | workstation | `rclone copy`, direct |
+| `v2/fit_chains/` | ~18 GB | **PVC only** | needs an in-cluster job |
+| `v2/figures/` | ~1 GB (17,361 files) | **PVC only** | needs an in-cluster job |
+
+The chains and figures exist **only on the Nautilus PVC** (the workstation
+`fit_chains/` is empty), and PVCs are not backed up — so this is the step that
+actually protects 35 h of compute. It needs the 1.0 pattern: a temporary
+AIOcean-only secret in the cluster, a `rclone copy` job, secret deleted after.
+That means putting a Google Drive credential into the cluster, so I want it
+confirmed explicitly and separately from (a).
+
+**Answer (a):**
+
+**Answer (b):**
+
+### Q2 (Task 2) — `wave_max` is 700, not 720
+
+Task 2's gate list says every BING fit should have `wave_max=720`. The actual
+run has **`wave_max=700.0`** on all 15,971 2.0 fits — and v1 is also 400–700,
+so the window never changed between versions. This is the same discrepancy
+found in Prompt 8 Task 2 (the brief's "720 nm" item), and it is the *run* that
+is right: Prompt 3 found Rrs(719) negative or noise-dominated on 44 % of a
+diagnostic sample, so the red edge was deliberately excluded.
+
+Unless you say otherwise I will verify `wave_max=700.0` and record the
+deviation from the brief rather than failing the gate.
+
+**Answer:**
+
 ## Reports
 
 ## Logging
