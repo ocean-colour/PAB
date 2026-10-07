@@ -179,6 +179,68 @@ it currently points at nothing, and it fails silently everywhere it is used.
 
 ## Reports
 
+### Task 1 — publish + back up
+
+Executed after the Q3 repair, so what is published is the **corrected**
+database. Running order was deliberately repair → re-verify → publish.
+
+**(a) Published to `s3://pab/v2/`** via `NautilusS3Backend(prefix="v2",
+profile_name="default")` — the documented code path, per Q1(a). `s3://pab/v2/`
+was confirmed **empty** immediately before pushing (the two-machines /
+last-writer-wins lesson), so nothing was overwritten.
+
+| object | bytes | sha256 | upload |
+|---|---|---|---|
+| `v2/pab.db` | 217,325,568 | `1e69f6eef09b85add89b04ac45d423d9d981fbd81b097d0856dab59687d8a3f8` | 3.4 s |
+| `v2/matchup_summary.csv` | 6,102,869 | `6622a78cf3061a17bfafa908443c60c428512168ab235eb474e3ad26070f0f74` | 0.3 s |
+| `v2/matchup_summary.parquet` | 2,645,441 | `4754e2372f4d35918c7f060ea4287f44a89329a01045d24f2f2e6b5fe9c0627c` | 0.3 s |
+
+**Verified at the public URL**, not from a listing: each object re-downloaded
+over plain HTTPS with no credentials — **HTTP 200 and sha256 identical** for
+all three.
+
+The DB hash differs from the one quoted in Q1 (`7d44e1f3…`) because that was
+the pre-repair database. The summary tables are **byte-identical** before and
+after the repair — `gather_matchups` does not select `scene_path` — which I
+confirmed by regenerating and comparing rather than assuming.
+
+**(b) Off-site backup → `AIOcean:PAB/`** (Google shared drive). `rclone copy`
+throughout, never `sync`: the destination holds the 1.0 backups and `sync`
+would delete whatever is not in the source.
+
+From the workstation, complete:
+
+| item | size | destination |
+|---|---|---|
+| v2 database | 217,325,568 | `AIOcean:PAB/pab_v2_2026-10-07.db` |
+| reporting site | 1.1 MB | `AIOcean:PAB/v2/site/` (incl. the 4 new 2.0 figures) |
+
+From the PVC, running as `nautilus/v2_backup_job.yaml` (new):
+
+| item | size | files |
+|---|---|---|
+| `v2/fit_chains/` | **18.3 GB** | 15,971 |
+| `v2/figures/` | 1,022 MB | 17,361 |
+
+These exist **only** on the PVC — the workstation `fit_chains/` is empty and
+Nautilus PVCs are not backed up, so until this job finishes 35 h of compute
+has exactly one copy. The job's first act is to list the destination and print
+it, so the 1.0 artifacts are visibly untouched; it finishes with a count
+comparison and an `rclone check`.
+
+**Credential handling.** The in-cluster secret `aiocean-rclone` carries an
+**AIOcean-only** rclone config — the workstation's other three remotes
+(`GDrive:`, `RoB:`, `nautilus_s3:`) are deliberately excluded rather than
+shipping the whole config. It is temporary and is deleted as soon as the job
+reports Completed.
+
+**(c) Ready for JXP.** `report_site/` and the `pab/` changes are ready to
+commit and push; after the `full-inelastic` → `develop` merge the live RTD
+page needs checking for the 2.0 headline and the 1.0-vs-2.0 section. Note
+GitHub had a **major Git Operations outage** on 2026-10-07 15:14 UTC which
+rejected a push with an opaque `Internal Server Error`; unrelated to this work.
+
+
 ### Task 2 — verify
 
 **Everything passes except one finding, which is real and fixable — see below.**
