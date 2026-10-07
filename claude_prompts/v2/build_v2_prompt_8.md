@@ -511,9 +511,48 @@ chains on disk: 15971
 figure: rendering 15971 fits (1390 with scenes) over 16 processes
 ```
 
-**Throughput: 0.66 s/fit**, measured over 3 minutes from the *output PNG
-count* — ~2.9 h for the figure stage, well inside the 12 h deadline. **0
-failures** through 4,000 fits.
+**Completed 2026-10-05 10:30 UTC. All close-out gates passed.**
+
+```
+FIGURE end  —  14,819 s  (4.12 h)
+REPORT end  —  25,510 s  (7.09 h)
+fit figures: 15971 / 15971 2.0 fits
+scenes:      15976 / 15976 matchups
+NASA rows with a figure (must be 0): 0
+duplicate fit_ids: 0
+failures: 0
+```
+
+`scene_path` reaching 15,976 confirms the scene guard was **additive**: the
+14,586 pre-existing scenes were untouched and only the 1,390 missing ones were
+rendered. Zero NASA rows rendered — without that guard the stage would have
+attempted 15,976 renders that cannot succeed.
+
+**DB returned to the workstation**: gzipped in-pod (217.3 MB → 41.1 MB),
+sha256 verified on both the compressed and decompressed forms, `quick_check`
+ok. Confirmed a strict superset of the old copy before swapping (identical
+31,947 fits and 303,489 `fit_results`, plus 15,971 `figure_path` and the 1,390
+new `scene_path`). Old copy kept as `pab.db.pre-figures-bak`; the PVC copy
+re-locked `chmod a-w`.
+
+**The report stage took 7.09 h, and that was a bug.** The N-guards
+(`MAX_INLINE_FIGURES`, `MAX_INTERACTIVE_MATCHUPS`) suppress the gallery
+*HTML*, but `_stage_static` had already **copied every figure** — the guard
+protected the markup and not the payload. The site staged ~17,000 PNGs,
+**1.3 GB**, to display none of them, at 2.8 files/s on CephFS. That is where
+7 of the 11 hours went, and the job finished with ~50 min of margin against
+its 12 h deadline.
+
+Fixed: staging moved *inside* `_thumbnail_gallery`, after the N-check, via a
+`stage` callable; `_gather_with_figures` skips staging entirely above both
+thresholds and logs that it did. Four tests, each verified load-bearing. This
+had to be fixed for **Task 4 regardless** — Task 4's site is the one bound for
+the repo and RTD, and its checklist gates on site size.
+
+I did not kill the running job to recover those hours: the figure results were
+already checkpointed and safe, the job was going to finish inside its
+deadline, and stopping a job JXP had authorised while he was away was not my
+call. Had the deadline been at risk I would have stopped it.
 
 I first reported the rate as "degrading, 0.52 → 1.00 → 2.18 s/fit" from the
 `figure progress: N submitted` log line. That was wrong: the parent submits in
@@ -538,6 +577,82 @@ logs it, so a stub missing a keyword surfaced as "every render failed"
 rather than as a `TypeError`.
 
 Full suite in `ocean14`: **399 passed, 1 skipped**.
+
+### Task 4 — regenerate the site
+
+```
+pab --db $PAB_DATA_DIR/v2/pab.db --emit-site report_site \
+    --compare-db $PAB_DATA_DIR/v1/pab.db \
+    --downloads-base-url https://s3-west.nrp-nautilus.io/pab/v2
+```
+
+**8.8 seconds**, against the 7.09 h the same stage took in-pod before the
+staging fix. `sphinx-build` is clean — **zero warnings**. Not committed.
+
+**Checks from the brief, all passing:**
+
+| check | result |
+|---|---|
+| matchups | 15,976 (the brief said ≈16.8k — the actual figure) |
+| BING fits | 15,971, stamped ``pab_version`` 2.0 |
+| NASA comparison | n = 15,964, now against **2.0** ``bbp700`` (ratio 2.15, ρ 0.874) |
+| the 1.0-vs-2.0 section | present, with all four figures |
+| galleries suppressed | all three, each stating the artifacts are downloads |
+| site size | **1.1 MB** source / 12 MB built; 8 PNGs |
+
+### The headline result
+
+The question v2 exists to answer is not "how do 1.0 and 2.0 differ" but
+"**does the inelastic model agree better with the floats**". On the paired
+subset (same matchups, same pixels, n = 14,604):
+
+| | n | sat/float | ρ | log bias | log RMS |
+|---|---|---|---|---|---|
+| ``b_bp`` 1.0 | 13,965 | 1.561 | 0.498 | **+0.169** | 0.371 |
+| ``b_bp`` 2.0 | 13,965 | **1.145** | 0.426 | **+0.013** | 0.643 |
+| Chl 1.0 | 13,834 | 0.782 | 0.523 | −0.287 | 0.856 |
+| Chl 2.0 | 13,834 | **0.939** | **0.734** | **−0.092** | **0.586** |
+
+**Chlorophyll improves on every axis** — bias cut 3×, correlation 0.52 → 0.73,
+scatter 0.86 → 0.59.
+
+**Backscatter is the interesting one.** 2.0 all but eliminates a +17 % log
+bias (ratio 1.56 → 1.15) but the scatter doubles (RMS 0.371 → 0.643). That
+looks like a straight trade — until the clear-water regime is excluded:
+
+| Chl > 0.05 (n = 12,502) | sat/float | ρ | log bias | log RMS |
+|---|---|---|---|---|
+| ``b_bp`` 1.0 | 1.563 | 0.522 | +0.184 | 0.337 |
+| ``b_bp`` 2.0 | **1.152** | 0.442 | **+0.032** | **0.383** |
+
+Outside the ill-conditioned ultra-oligotrophic water, **2.0 removes ~6/7 of
+the bias for almost no cost in scatter** (0.337 → 0.383). The apparent
+doubling of RMS over the full population is almost entirely the clear-water
+tail — the same regime that produces the 51 non-physical retrievals and the
+0.02 ratio floor. That ties Q1, Q2 and this result into one story: the
+inelastic model is a clear improvement where the retrieval is well
+conditioned, and the clear-water regime is where the remaining work is.
+
+The one genuine caveat not explained by the tail: **rank correlation falls**
+even in productive water (0.522 → 0.442). Bias and scatter improve; ordering
+does not.
+
+**Two defects found and fixed while checking the rendered pages**, neither
+visible in code review:
+
+- The suppressed figure gallery **vanished entirely** instead of printing its
+  "available as downloads" line — once staging stops, every URL is None and a
+  gallery that counts surviving items sees zero. Fixed with an explicit
+  population count.
+- That same message promised the reader they could "tap a point in the
+  scatter", but above ``MAX_INTERACTIVE_MATCHUPS`` the scatter is a static
+  PNG. The page was describing an interaction that does not exist at the only
+  scale where the message appears.
+- `` ``b_bp``(700 nm) `` is a malformed inline literal — docutils warned, and
+  it rendered as visible backticks. Now ``` ``b_bp(700 nm)`` ```, with a test
+  that scans every generated page.
+
+Full suite: **410 passed, 1 skipped**.
 
 ## Logging
 
@@ -788,3 +903,94 @@ rate-by-Chl table in the failures note. Full suite: **402 passed, 1 skipped**.
 
 Uncommitted: `pab/report/rst.py`, `pab/plotting/population.py`,
 `pab/tests/test_report_versions.py`, this doc.
+
+### 2026-10-05 (Prompt 8 Task 3 complete — and the staging bug it exposed)
+
+The job finished: 15,971 fit figures, 1,390 new scenes, 0 failures, every
+close-out gate green, DB back on the workstation with hashes checked. What I
+learned:
+
+- **An N-guard on the markup is not an N-guard on the payload.** The report
+  stage took 7.09 h — longer than the entire 4.12 h figure stage — because
+  `_stage_static` copied all ~17,000 PNGs into the site *before*
+  `_thumbnail_gallery` decided not to display any of them. 1.3 GB, at 2.8
+  files/s on CephFS. The constant is literally named `MAX_INLINE_FIGURES` and
+  the docstring says "the gallery is suppressed", which is exactly true and
+  exactly not what I assumed it meant. The guard was in the cheap half of the
+  operation.
+
+- **I found it by asking a question I nearly didn't ask.** The report stage
+  produced no log output, which I reported as "expected, it builds the site in
+  one pass". Then I checked what was actually on disk and saw `_static` at
+  26 MB and climbing. Watching a silent stage's *side effects* rather than its
+  stdout is what surfaced it; the log would never have said anything.
+
+- **The margin was thinner than the success implies.** 11.2 h against a 12 h
+  `activeDeadlineSeconds`. It passed, so no alarm fired, and the gates all
+  read green — but ~7 of those hours were pure waste and a slightly slower
+  CephFS would have had the deadline kill the job after the figures were
+  already done. A job that completes is not the same as a job that was fine.
+
+- **I chose not to kill it, and I still think that was right** — the figure
+  output was checkpointed, the job was inside its deadline, and stopping
+  authorised work while JXP was away is his call, not mine. But the reasoning
+  that mattered was "is anything at risk", not "is this wasteful". Had the
+  projection crossed the deadline I would have stopped it and said so.
+
+- **The fix was needed for Task 4 regardless**, which is the real point. The
+  in-pod site is a throwaway; Task 4's is the one that goes to the repo and
+  RTD, and its own checklist gates on site size. The bug would have put 1.3 GB
+  where the design budget is a few tens of MB.
+
+Files touched: `pab/report/rst.py` (`_thumbnail_gallery` gains `stage`;
+`scene_gallery`, `argo_qa_gallery`, `_gather_with_figures` defer staging),
+`pab/tests/test_report_versions.py` (4 staging tests).
+
+### 2026-10-05 (Prompt 8 Task 4 — site regenerated; the headline result)
+
+Regenerated the site in 8.8 s (the same work took 7.09 h in-pod before the
+staging fix), Sphinx clean, 1.1 MB, not committed. All of the brief's checks
+pass. What I learned:
+
+- **The comparison the project exists for was not the one I had been
+  reporting.** Everything so far answered "how do 1.0 and 2.0 differ" —
+  `b_bp` ratio 0.75, Chl 1.17. Those are differences between two models, and
+  neither says which is *right*. The question is agreement with the floats,
+  and computing it changed the story: 2.0 cuts the `b_bp` log bias from +0.169
+  to +0.013 and improves Chl on every axis. I had the pieces for this for two
+  days and did not assemble them because the brief kept asking for the
+  version-to-version delta.
+
+- **A result that looks like a trade-off was a regime effect.** Over the full
+  population 2.0's `b_bp` scatter doubles (RMS 0.371 → 0.643), which reads as
+  "less bias, more noise — pick one". Excluding Chl < 0.05 it is 0.337 →
+  0.383, i.e. almost free. The degradation was nearly all the ultra-
+  oligotrophic tail, the same regime behind the 51 runaways and the 0.02 ratio
+  floor. Three findings I had been treating as separate turned out to be one.
+
+- **I nearly compared different populations.** The full-store numbers are
+  n=13,970 for 1.0 and n=15,274 for 2.0 — 2.0 fitted more matchups, so some of
+  the difference could have been *which* matchups rather than which model.
+  Redoing it on the paired subset barely moved the numbers, which is the point:
+  the check was cheap and I would not have known without it.
+
+- **Rendered output has defects that source review cannot see.** Three in one
+  pass: a suppressed gallery that silently vanished instead of printing its
+  message (a consequence of my own staging fix the previous day), a sentence
+  promising a tap-to-open scatter that does not exist at that scale, and a
+  malformed inline literal rendering as visible backticks. Each needed reading
+  the generated `.rst`/HTML, not the generator. The gallery one is the
+  cautionary case: a fix with a real, measured benefit quietly removed a line
+  the reader needed.
+
+- **"Zero Sphinx warnings" was worth chasing.** The single remaining warning
+  was the malformed literal — a one-line fix that was genuinely visible on the
+  page. Warnings in generated output are cheap to leave and cheap to read.
+
+Headline numbers are in the Task 4 report above. Remaining caveat for JXP:
+rank correlation for `b_bp` falls even in productive water (0.522 → 0.442)
+while bias and scatter improve. Bias and spread get better; ordering does not.
+That is not explained by the clear-water tail and I have not explained it.
+
+Files touched: `pab/report/rst.py`, `pab/tests/test_report_versions.py`,
+regenerated `report_site/` (**not committed**, per the brief).

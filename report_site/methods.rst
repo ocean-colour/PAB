@@ -23,6 +23,23 @@ The satellite ``Rrs`` spectrum is fit with **BING** (Bayesian inference with Gor
 - **``b_bp``** — non-water particulate backscatter (reported at 700 nm, to match the float ``BBP700``); the primary matchup observable.
 - **Chlorophyll** — retrieved from the fitted phytoplankton absorption amplitude ``Aph`` (``Chl = 10**Aph / 0.05582``). The float ``CHLA`` only *seeds* the absorption shape; it is **not** a fixed input, so the BING Chl is a genuine retrieval compared against the in-situ value. An independent **OC4** band-ratio Chl is shown as a cross-check when available.
 
+Retrieval configuration (2.0) & the two databases
+-------------------------------------------------
+
+**What changed in 2.0.** The 1.0 fits used the *elastic* Gordon radiative-transfer model: ``Rrs`` is produced by absorption and elastic scattering alone. 2.0 re-fits the same spectra with an **inelastic** forward model:
+
+- **Radiative-transfer backend** — ``robust_hybrid`` (a neural-network emulator of a full RT solution) replaces the analytic ``gordon`` parameterisation.
+- **Raman scattering** — water molecules re-emit absorbed blue light at longer wavelengths; included.
+- **Chlorophyll fluorescence** — the ~685 nm phytoplankton emission line, at quantum yield ``phi_C = 0.02``; included.
+- **CDOM fluorescence** — available in the model but **off** in this run, so none of the results below include it.
+- **Free ``B_p``** — the backscatter phase-function parameter, held fixed in 1.0, is a sixth fitted parameter in 2.0 with a uniform prior over ``[0.004, 0.05]``.
+
+The **fit window is unchanged** at 400–700 nm. The red edge (713/719 nm, where Raman and fluorescence are strongest) was evaluated and deliberately left out: on a 97-matchup diagnostic sample Rrs(719) is negative or noise-dominated on **44 %** of matchups, so including it would feed the inelastic terms mostly noise.
+
+**``pab_version`` semantics.** Every row carries the version of the *analysis* that produced it, not of the code that wrote it. ``1.0`` is the elastic BING retrieval of the v1 release; ``2.0`` is the inelastic re-analysis in this one; ``1.1`` marks the NASA-GIOP ingests, which are the **same NASA product read by the same code** in both releases and so are deliberately *not* re-stamped ``2.0`` — a re-stamp would imply a re-analysis that did not happen.
+
+**Two databases.** The 1.0 fits are not in this release's database. They live in the **frozen v1 database**, which is held read-only (and at an older schema) so published results cannot be edited after the fact; the 1.0-vs-2.0 comparison attaches it read-only and joins on matchup **and pixel**, so each pair is two retrievals of one spectrum. Matchups fitted in only one of the two releases are absent from that comparison rather than being half-filled.
+
 How to read the figures & metrics
 ---------------------------------
 
@@ -52,7 +69,7 @@ Provenance
 ----------
 
 
-Built from ``pab_version`` ``1.1`` on 2026-09-10. Installed package versions:
+Built from ``pab_version`` ``2.0`` on 2026-10-05. Installed package versions:
 
 .. list-table::
    :header-rows: 1
@@ -60,7 +77,7 @@ Built from ``pab_version`` ``1.1`` on 2026-09-10. Installed package versions:
    * - package
      - version
    * - pab
-     - 1.0
+     - 2.0
    * - bing
      - 0.0.dev0
    * - ocpy
@@ -70,10 +87,31 @@ Built from ``pab_version`` ``1.1`` on 2026-09-10. Installed package versions:
    * - remote_sensing
      - 0.0.dev0
    * - earthaccess
-     - 0.13.0
+     - 0.18.0
+   * - robust
+     - 0.0.dev0
    * - numpy
-     - 2.2.5
+     - 2.5.2
    * - scipy
-     - 1.17.0
+     - 1.18.0
    * - xarray
      - 2025.9.0
+
+
+Source revisions (the editable installs all report ``0.0.dev0``, so the commit is what identifies the code):
+
+.. list-table::
+   :header-rows: 1
+
+   * - repository
+     - commit
+   * - PAB
+     - 920ab22
+   * - bing
+     - bf56f6d
+   * - ocpy
+     - 8d6396a
+   * - remote_sensing
+     - 2b85c65
+   * - retrieve-or-bust
+     - e1f4289

@@ -584,7 +584,7 @@ def version_section(
     return "\n".join(x for x in out if x)
 
 
-#: Above this ``b_bp``(700 nm) a retrieval is not a measurement of seawater:
+#: Above this ``b_bp(700 nm)`` a retrieval is not a measurement of seawater:
 #: open-ocean particulate backscatter at 700 nm spans roughly 1e-4 to 1e-1
 #: m^-1, so a value above 1 is a failed fit, not a bright scene.
 BBP_IMPLAUSIBLE = 1.0
@@ -709,7 +709,7 @@ def _version_failure_note(df) -> str:
     n = int(np.isfinite(v2).sum())
     bits = [
         f"**Retrieval failures.** {bad2} of {n:,} 2.0 fits "
-        f"({bad2 / n * 100:.2f} %) return ``b_bp``(700 nm) above "
+        f"({bad2 / n * 100:.2f} %) return ``b_bp(700 nm)`` above "
         f"{BBP_IMPLAUSIBLE:g} m⁻¹, which is not a possible value for seawater "
         "(the open ocean spans roughly 1e-4 to 1e-1 m⁻¹); the largest is "
         f"{np.nanmax(v2):.3g} m⁻¹."
@@ -1056,7 +1056,14 @@ def _stage_static(src, outdir, subdir: str) -> str | None:
 
 
 def _thumbnail_gallery(
-    items, *, heading: str, intro: str, over_limit: str, max_inline: int
+    items,
+    *,
+    heading: str,
+    intro: str,
+    over_limit: str,
+    max_inline: int,
+    stage=None,
+    total: int | None = None,
 ) -> str:
     """An N-guarded clickable-thumbnail gallery from ``(url, caption)`` items.
 
@@ -1064,14 +1071,34 @@ def _thumbnail_gallery(
     links to the full PNG; above the threshold the gallery is suppressed (the
     design's no-page-explosion constraint) and ``over_limit`` (a ``{n}`` template)
     is shown instead. Returns ``""`` when there are no items.
+
+    ``stage`` maps an item's first element (a source path) to a published URL,
+    and is called **only when the gallery will actually render**. Callers used
+    to stage every file before calling this, so at 10⁴ matchups the site copied
+    the entire figure set — ~32,000 files and 636 MB — in order to display none
+    of them. The N-guard protected the HTML and not the payload, which is the
+    expensive half; measured in-pod, that copy ran at 2.8 files/s on CephFS, or
+    3.2 h to stage a gallery nobody sees.
     """
     items = [(u, c) for (u, c) in items if isinstance(u, str) and u]
-    if not items:
+    # `total` is the population size, which is NOT len(items) once a caller
+    # stops staging at scale: the urls are all None then, and judging by the
+    # surviving items would make the whole section disappear instead of saying
+    # the artifacts exist as downloads.
+    n = len(items) if total is None else total
+    if not n:
         return ""
     out = [_heading(heading, "-"), ""]
-    if len(items) > max_inline:
-        out.append(over_limit.format(n=len(items)) + "\n")
+    if n > max_inline:
+        out.append(over_limit.format(n=n) + "\n")
         return "\n".join(out)
+    if not items:
+        return ""
+    if stage is not None:
+        items = [(stage(src), c) for (src, c) in items]
+        items = [(u, c) for (u, c) in items if isinstance(u, str) and u]
+        if not items:
+            return ""
     out.append(intro + "\n")
     html = ['<div class="pab-gallery">']
     for url, cap in items:
@@ -1102,12 +1129,16 @@ def figure_gallery(
     ]
     return _thumbnail_gallery(
         items,
+        total=len(df),
         heading="Per-matchup figures",
         intro="One thumbnail per matchup (the design exposes figures, not "
         "per-matchup pages). Click a thumbnail to open the full-resolution PNG.",
+        # No "tap a point in the scatter" here: above MAX_INTERACTIVE_MATCHUPS
+        # the Comparisons page falls back to static PNGs, so at exactly the
+        # scale this message appears there is nothing tappable to point at.
         over_limit="{n} matchups — too many to show inline. Per-matchup fit "
-        "figures are available as downloads (see the release manifest) and by "
-        "tapping a point in the scatter above.",
+        "figures are published as downloads; see the release manifest on the "
+        "Downloads page.",
         max_inline=max_inline,
     )
 
@@ -1124,12 +1155,10 @@ def argo_qa_gallery(store, outdir, *, max_inline: int = MAX_INLINE_FIGURES) -> s
         "JOIN profiles p ON p.profile_id = ms.profile_id "
         "WHERE ms.qa_path IS NOT NULL ORDER BY p.wmo, p.cycle"
     )
-    items = [
-        (_stage_static(r["qa_path"], outdir, "argo_qa"), f"{r['wmo']}/{r['cycle']}")
-        for r in rows
-    ]
+    items = [(r["qa_path"], f"{r['wmo']}/{r['cycle']}") for r in rows]
     return _thumbnail_gallery(
         items,
+        stage=lambda src: _stage_static(src, outdir, "argo_qa"),
         heading="Argo profile Q&A",
         intro="Per-profile quality-assurance plots: ``BBP700`` and ``CHLA`` vs "
         "pressure with the mixed-layer depth marked — to eyeball the MLD and the "
@@ -1152,12 +1181,10 @@ def scene_gallery(store, outdir, *, max_inline: int = MAX_INLINE_FIGURES) -> str
         "JOIN profiles p ON p.profile_id = m.profile_id "
         "WHERE m.scene_path IS NOT NULL ORDER BY p.wmo, p.cycle"
     )
-    items = [
-        (_stage_static(r["scene_path"], outdir, "scenes"), f"{r['wmo']}/{r['cycle']}")
-        for r in rows
-    ]
+    items = [(r["scene_path"], f"{r['wmo']}/{r['cycle']}") for r in rows]
     return _thumbnail_gallery(
         items,
+        stage=lambda src: _stage_static(src, outdir, "scenes"),
         heading="PACE scene quick-looks",
         intro="False-colour PACE/OCI scene around each float (red star = float "
         "position; white circles = the analyzed pixels) — so cloudy or glinty "
@@ -1596,12 +1623,25 @@ def _gather_with_figures(store, outdir: Path, *, opener=None):
             "SELECT fit_id, figure_path FROM fits WHERE figure_path IS NOT NULL"
         )
     }
-    urls = [
+    # Both consumers of this column are N-guarded: the inline gallery
+    # (`MAX_INLINE_FIGURES`) and the interactive scatter's tap-to-open
+    # (`MAX_INTERACTIVE_MATCHUPS`, which also falls back to static PNGs). Above
+    # both thresholds nothing links to these files, so copying them into the
+    # site is 636 MB and 3.2 h of CephFS traffic for an unreachable payload.
+    df = df.copy()
+    if len(df) > max(MAX_INLINE_FIGURES, MAX_INTERACTIVE_MATCHUPS):
+        _log.info(
+            "report: %d matchups — not staging per-matchup figures into the "
+            "site (nothing links to them at this scale; they are published via "
+            "the release manifest)",
+            len(df),
+        )
+        df[FIGURE_URL_COL] = [None] * len(df)
+        return df
+    df[FIGURE_URL_COL] = [
         _stage_static(fig_paths.get(fit_id), outdir, "figures")
         for fit_id in df["fit_id"]
     ]
-    df = df.copy()
-    df[FIGURE_URL_COL] = urls
     return df
 
 

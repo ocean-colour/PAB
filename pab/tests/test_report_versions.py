@@ -423,3 +423,153 @@ def test_bp_block_reports_the_pile_up_at_both_bounds(tmp_path):
         assert "both bounds" in out or "both ends" in out
         assert "censored" in out
         assert np.isfinite(0.0)  # keep numpy import meaningful
+
+
+# -- the site must not copy a payload nothing links to ------------------------
+def _seed_with_figures(store, n, tmp_path):
+    """n matchups whose fit figure and scene exist on disk."""
+    figdir = tmp_path / "figs"
+    figdir.mkdir(exist_ok=True)
+    for i in range(n):
+        fid = _seed_one(
+            store, f"M{i}", wmo=7900000 + i, cycle=i, bbp=1e-3, chl=0.1,
+            version="2.0",
+        )
+        fp = figdir / f"{fid}_fit.png"
+        fp.write_bytes(b"png")
+        sp = figdir / f"M{i}_scene.png"
+        sp.write_bytes(b"png")
+        store.execute(
+            "UPDATE fits SET figure_path = ? WHERE fit_id = ?", (str(fp), fid)
+        )
+        store.execute(
+            "UPDATE matchups SET scene_path = ? WHERE matchup_id = ?",
+            (str(sp), f"M{i}"),
+        )
+
+
+def _staged(outdir):
+    d = outdir / "_static"
+    return sum(1 for _ in d.rglob("*.png")) if d.is_dir() else 0
+
+
+def test_figures_are_staged_below_the_gallery_threshold(tmp_path):
+    out = tmp_path / "site"
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 3, tmp_path)
+        rst.build_site(store, out, sortable=False)
+    assert _staged(out) > 0, "a small site should still carry its thumbnails"
+
+
+def test_scene_gallery_does_not_stage_when_suppressed(tmp_path):
+    """The N-guard protected the HTML but not the payload.
+
+    At 10^4 matchups the real run copied ~32,000 PNGs (636 MB, 3.2 h on
+    CephFS) into a site that renders none of them.
+    """
+    out = tmp_path / "site"
+    out.mkdir()
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 6, tmp_path)
+        page = rst.scene_gallery(store, out, max_inline=2)
+    assert "too many to show inline" in page, page
+    scenes = out / "_static" / "scenes"
+    staged = list(scenes.glob("*.png")) if scenes.is_dir() else []
+    assert not staged, (
+        f"{len(staged)} scenes copied into a site that shows none of them"
+    )
+
+
+def test_scene_gallery_does_stage_when_it_renders(tmp_path):
+    out = tmp_path / "site"
+    out.mkdir()
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 3, tmp_path)
+        page = rst.scene_gallery(store, out, max_inline=50)
+    assert ".. raw:: html" in page
+    assert len(list((out / "_static" / "scenes").glob("*.png"))) == 3
+
+
+def test_fit_figures_not_staged_at_scale(tmp_path, monkeypatch):
+    """`_gather_with_figures` staged every fit figure unconditionally."""
+    out = tmp_path / "site"
+    out.mkdir()
+    monkeypatch.setattr(rst, "MAX_INLINE_FIGURES", 2)
+    monkeypatch.setattr(rst, "MAX_INTERACTIVE_MATCHUPS", 2)
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 6, tmp_path)
+        df = rst._gather_with_figures(store, out)
+    assert df[rst.FIGURE_URL_COL].isna().all(), "figure URLs point at unstaged files"
+    figs = out / "_static" / "figures"
+    staged = list(figs.glob("*.png")) if figs.is_dir() else []
+    assert not staged, f"{len(staged)} fit figures copied with nothing linking to them"
+
+
+def test_fit_figures_staged_below_threshold(tmp_path):
+    out = tmp_path / "site"
+    out.mkdir()
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 3, tmp_path)
+        df = rst._gather_with_figures(store, out)
+    assert df[rst.FIGURE_URL_COL].notna().all()
+    assert len(list((out / "_static" / "figures").glob("*.png"))) == 3
+
+
+def test_suppressed_figure_gallery_still_tells_the_reader(tmp_path, monkeypatch):
+    """Not staging must not make the section vanish.
+
+    Once `_gather_with_figures` stops staging at scale every URL is None, so a
+    gallery that counts surviving items sees zero and returns "" — silently
+    dropping the line that says the figures exist as downloads.
+    """
+    out = tmp_path / "site"
+    out.mkdir()
+    monkeypatch.setattr(rst, "MAX_INLINE_FIGURES", 2)
+    monkeypatch.setattr(rst, "MAX_INTERACTIVE_MATCHUPS", 2)
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 6, tmp_path)
+        df = rst._gather_with_figures(store, out)
+        page = rst.figure_gallery(df, max_inline=2)
+    assert "Per-matchup figures" in page, "the whole section disappeared"
+    assert "6 matchups" in page
+    assert "downloads" in page
+
+
+def test_suppressed_gallery_does_not_promise_a_tappable_scatter(tmp_path, monkeypatch):
+    """At this scale the Comparisons page renders static PNGs, not Bokeh."""
+    out = tmp_path / "site"
+    out.mkdir()
+    monkeypatch.setattr(rst, "MAX_INLINE_FIGURES", 2)
+    monkeypatch.setattr(rst, "MAX_INTERACTIVE_MATCHUPS", 2)
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 6, tmp_path)
+        df = rst._gather_with_figures(store, out)
+        page = rst.figure_gallery(df, max_inline=2)
+    assert "tapping a point" not in page, (
+        "the page promises a tap-to-open scatter that is suppressed at this scale"
+    )
+
+
+def test_pages_have_no_malformed_inline_literals(tmp_path):
+    """``literal``(paren) is an unterminated inline literal in docutils.
+
+    Sphinx reports it as a WARNING and renders the backticks verbatim, so the
+    reader sees ``b_bp``(700 nm) on the page.
+    """
+    import re
+
+    v1 = _v1_db(tmp_path)
+    out = tmp_path / "site"
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        written = rst.build_site(store, out, sortable=False, compare_db=v1)
+    bad = []
+    for name, path in written.items():
+        if not str(path).endswith(".rst"):
+            continue
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            # a closing `` followed immediately by an opening paren or word char
+            if re.search(r"``[\(\w]", line.replace("``(url", "")):
+                if re.search(r"[^`]``[\(]", line):
+                    bad.append(f"{name}.rst:{i}: {line[:90]}")
+    assert not bad, "malformed inline literals:\n" + "\n".join(bad)
