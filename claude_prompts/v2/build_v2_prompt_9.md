@@ -147,7 +147,135 @@ deviation from the brief rather than failing the gate.
 
 **Answer:** Ok, verify `wave_max=700.0` and record the deviation from the brief rather than failing the gate.
 
+### Q3 (Task 2) — repair the 14,586 dangling `scene_path` values?
+
+Task 2's spot-check turned up that **14,586 of 15,976 `matchups.scene_path`
+values point at `/data/full/pipeline/figures/`**, a PVC directory that no
+longer exists — it was renamed `full` → `v1` during the version split and the
+column was never updated. `chains_path` and `figure_path` are fine.
+
+The files are intact at `/data/v1/pipeline/figures/`. I checked **all 14,586**
+remapped paths in-pod: **0 missing**. The repair is one statement:
+
+```sql
+UPDATE matchups
+   SET scene_path = replace(scene_path, '/data/full/', '/data/v1/')
+ WHERE scene_path LIKE '/data/full/%';
+```
+
+I have **not** run it. It mutates the database Task 1 is about to publish, and
+I would rather publish a correct one than fix it afterwards.
+
+- **(a)** Repair now, re-verify, then publish the corrected DB in Task 1.
+  (Recommended — the hashes in Q1 would change, and I would recompute them.)
+- **(b)** Publish as-is and repair later.
+- **(c)** Leave it: the paths describe where the v1 run wrote them, and the
+  v1 PVC layout is itself historical.
+
+I'd go with **(a)**. The column is provenance for a published dataset; 91 % of
+it currently points at nothing, and it fails silently everywhere it is used.
+
+**Answer:**
+
 ## Reports
+
+### Task 2 — verify
+
+**Everything passes except one finding, which is real and fixable — see below.**
+
+**v1 is byte-identical to its frozen state, across three independent copies:**
+
+```
+HOWTO frozen value     09de0a6d334dc02e73494b198567a37707e1942e5cfd1173c89822b35f978273
+workstation v1         09de0a6d334dc02e73494b198567a37707e1942e5cfd1173c89822b35f978273
+S3 v1/pab.db           09de0a6d334dc02e73494b198567a37707e1942e5cfd1173c89822b35f978273
+```
+
+169,938,944 bytes, `-r--r--r--`. The S3 copy was downloaded from the public
+URL and hashed, not trusted from a listing.
+
+**v2 gates — all pass:**
+
+| gate | result |
+|---|---|
+| `PRAGMA integrity_check` | ok |
+| `PRAGMA foreign_key_check` | 0 violations |
+| `PRAGMA user_version` | 5 |
+| all 15,971 BING fits `pab_version='2.0'` | pass |
+| `rt_backend='robust_hybrid'` | pass |
+| `include_raman=1`, `include_chl_fl=1`, `include_cdom_fl=0`, `fit_bp=1` | pass |
+| `wave_min=400.0`, **`wave_max=700.0`** | pass (see Q2 — the brief said 720) |
+| no BING fit on a pixel without geometry (R3) | pass |
+| NASA rows | 15,976 = 14,609 + **1,367** new, all stamped `1.1` (R6) |
+| no duplicate `fit_id` | pass |
+| 11 quantities on **every** BING fit | pass (one distinct count: 11) |
+| `BING_ExpBPow_Bp` present | pass (new in 2.0) |
+| every BING fit has `chains_path` + `figure_path` | pass |
+| every matchup has `scene_path` | pass |
+| no NASA row has a figure | pass |
+
+**The geometry gate as written in the brief does not hold, and should not.**
+50 of 159,760 pixels have no `theta_s`/`theta_v`/`dphi`. They are not scattered:
+they are **all 10 pixels of exactly 5 matchups**, and none of those 5 was
+fitted. That is R3 working — a matchup with no L1B geometry is refused rather
+than silently defaulted. The invariant worth asserting is the arithmetic:
+**15,971 fits + 5 refused = 15,976 matchups**, which closes exactly. The gate
+was rewritten to check that, plus that the gap is never *partial* within a
+matchup (0 such).
+
+**Spot-check, 4 matchups end to end.** All four: chains recorded, figure
+recorded, scene recorded, 11 quantities, present in the published summary
+table — **and the files verified to exist on the PVC**, which is what turned
+up the finding below.
+
+### Finding: 14,586 `scene_path` values are dangling pointers
+
+Checking files rather than columns showed all four spot-checked scenes
+pointing at `/data/full/pipeline/figures/…`, which **no longer exists**. The
+PVC directory was renamed `full` → `v1` during the version split and the
+`matchups.scene_path` column was never updated.
+
+| `scene_path` prefix | count | resolves? |
+|---|---|---|
+| `/data/full/` (the v1 run) | **14,586** | **no — path renamed** |
+| `/data/v2/` (this run) | 1,390 | yes |
+
+`chains_path` and `figure_path` are unaffected — all 15,971 of each point at
+`/data/v2/` and resolve.
+
+**The files are not lost.** They are at `/data/v1/pipeline/figures/` (29,195
+files). I checked **all 14,586** remapped paths in-pod: **0 missing**. The fix
+is one unambiguous substitution, `/data/full/` → `/data/v1/`.
+
+Nothing is visibly broken today — the scene gallery is suppressed at this
+scale, and `_stage_static` tests `is_file()` and skips silently. That is
+precisely why it survived: a 91 %-dangling column that degrades quietly. It
+would surface the moment anyone renders the site at small N, publishes bulk
+artifacts, or follows the provenance.
+
+**Not fixed yet — it mutates the database that Task 1 is about to publish, so
+it wants a word from JXP first (Q3).**
+
+### Headline science numbers (2.0)
+
+```
+sat vs float                        n       ratio     rho   log bias    RMS
+  bbp700  BING(2.0) / Argo       15274      1.148   0.415    +0.0103   0.645
+  chl     BING(2.0) / Argo       15154      0.943   0.733    -0.0917   0.587
+1.0 vs 2.0 (same matchup, same pixel)
+  bbp700  2.0 / 1.0              14604      0.750   0.924    -0.1565   0.536
+  chl     2.0 / 1.0              14604      1.165   0.704    +0.1912   0.644
+NASA vs 2.0
+  NASA bbp(442) / BING(700)      15964      2.154   0.874    +0.3594   0.648
+```
+
+NASA 442 nm vs BING 700 nm — the wavelengths differ by design; a ratio above 1
+is expected from the blue-to-red decrease of particulate backscatter.
+
+The result that matters, from Prompt 8 Task 4: against the floats 2.0 cuts the
+``b_bp`` log bias from +0.169 to +0.010 and improves Chl on every axis, and the
+apparent doubling of ``b_bp`` scatter is almost entirely the ultra-oligotrophic
+tail (at Chl > 0.05 it is 0.337 → 0.383).
 
 ## Logging
 
