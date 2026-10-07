@@ -110,6 +110,7 @@ guess which has write access to the public bucket. The `rclone` remote
 I'd suggest **(ii) or (iii)**, so the documented code path is the one that
 actually publishes — but I need the profile name.
 
+
 **(b) Off-site backup → `AIOcean:PAB/`** (a Google shared drive, not S3).
 `AIOcean:PAB/` currently holds only the v1-era `fit_chains/` and `site/`; there
 is **no `v2/` prefix**, so the Prompt 7 optional chains backup was never run.
@@ -128,9 +129,9 @@ AIOcean-only secret in the cluster, a `rclone copy` job, secret deleted after.
 That means putting a Google Drive credential into the cluster, so I want it
 confirmed explicitly and separately from (a).
 
-**Answer (a):**
+**Answer (a):** (ii) with `default`
 
-**Answer (b):**
+**Answer (b):** Yes it is ok to add the Google Drive credential to the cluster, it is a temporary secret.
 
 ### Q2 (Task 2) — `wave_max` is 700, not 720
 
@@ -144,7 +145,7 @@ diagnostic sample, so the red edge was deliberately excluded.
 Unless you say otherwise I will verify `wave_max=700.0` and record the
 deviation from the brief rather than failing the gate.
 
-**Answer:**
+**Answer:** Ok, verify `wave_max=700.0` and record the deviation from the brief rather than failing the gate.
 
 ## Reports
 
