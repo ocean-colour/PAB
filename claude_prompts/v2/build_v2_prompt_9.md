@@ -175,7 +175,7 @@ I would rather publish a correct one than fix it afterwards.
 I'd go with **(a)**. The column is provenance for a published dataset; 91 % of
 it currently points at nothing, and it fails silently everywhere it is used.
 
-**Answer:**
+**Answer:** (a)
 
 ## Reports
 
