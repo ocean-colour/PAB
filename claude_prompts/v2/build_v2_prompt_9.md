@@ -339,6 +339,76 @@ The result that matters, from Prompt 8 Task 4: against the floats 2.0 cuts the
 apparent doubling of ``b_bp`` scatter is almost entirely the ultra-oligotrophic
 tail (at Chl > 0.05 it is 0.337 → 0.383).
 
+### Task 1(b) — off-site backup: complete
+
+`pab-v2-backup` ran **145 min** and verified clean:
+
+```
+chains  local=15971 remote=15971
+figures local=17361 remote=17361
+rclone check: 0 differences found, 15971 matching files
+V2_BACKUP_DONE 2026-10-07T18:16:43+00:00
+```
+
+The 18.3 GB of chains and 1,022 MB of figures now have a second copy. The
+temporary `aiocean-rclone` secret was **deleted** from the cluster and the
+staged config shredded on the workstation; the finished job and pods are gone.
+
+**Benign noise worth knowing about.** The log carries repeated
+`ERROR : Failed to save config after N tries: … read-only file system`. That is
+rclone trying to write a refreshed OAuth token back to its config, which is a
+read-only secret mount. It does not affect the transfer — the token stayed
+valid, every file copied, and `rclone check` found 0 differences. Anyone
+reading that log would reasonably think the backup failed; it did not. A
+writable `emptyDir` copy of the config would silence it next time.
+
+### Task 3 — docs + the 2.0 run report
+
+**New: [`docs/design/PAB_v2_run_report.md`](../../docs/design/PAB_v2_run_report.md)**
+— the factual record of the run, modelled on the 1.0 report: what changed
+(including the two things that were *planned and are not in the run* — CDOM
+fluorescence off, fit window unchanged), headline counts, the results
+(sat-vs-float, 1.0-vs-2.0 attribution, NASA baseline, free `B_p`, the 51
+non-physical retrievals with the rate-by-Chl table), timings per stage, the
+slice gates, what broke and what it taught, the integrity gates, where
+everything lives with hashes, and seven follow-ups. Added to the docs toctree.
+
+**`PAB_implementation.md` → new §12.** What changed in the *implementation*:
+schema v5, the `geometry` stage and R3, the two-database seams (`uri=True` and
+why there is no plain-path `ATTACH` fallback; the version filter; the
+`matchup_id`+`pixel_id` join; `V2_CHANGES`; `--compare-db`), and the fixes made
+along the way.
+
+**`PAB_design.md` → *Provenance & versioning*.** Two additions:
+
+- **A major version gets its own database** (adopted at 2.0), with the four
+  consequences that are easy to get wrong — read-only attach and the
+  `uri=True` trap, joining on `matchup_id` **and** `pixel_id`, filtering
+  metrics to one version, and *not* re-stamping rows whose product did not
+  change (the NASA `1.1` rule).
+- **The "end = today" backfill rule** — a mission-length run has no fixed end
+  date, so record the window actually processed and treat a later re-run as a
+  backfill that adds records, not a re-analysis earning a new version.
+
+**`HOWTO.md`.** The CLI synopsis gained `geometry` in the `--stage` choices
+(it was missing) plus `--matchup`/`--matchups-csv`/`--figure-version`/
+`--compare-db`/`--downloads-base-url`, and the flag table documents
+`--compare-db`, `--figure-version` and `--downloads-base-url`. The 2.0 fit
+defaults, the `geometry` stage and the v1/v2 paths were already covered in §4
+and §5b.
+
+**`db_schema.rst`.** Already complete for v5 — all ten new columns
+(`theta_s`, `theta_v`, `dphi`, `geom_source`, `rt_backend`, `include_raman`,
+`include_chl_fl`, `include_cdom_fl`, `phi_c`, `fit_bp`) are documented. No
+change needed; verified rather than assumed.
+
+**`ToDo.md`.** A *Done — the inelastic re-analysis* section, the remaining item
+re-pointed from `first-full-run` to `full-inelastic` → `develop`, and the four
+open scientific questions from the run recorded as tasks.
+
+`sphinx-build` over `docs/` is **clean — zero warnings** (the new report was
+briefly an orphan page; it is now in the Design toctree).
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -350,3 +420,65 @@ Append an entry to the **Logs** section of this file using the format:
 ```
 
 ## Logs
+
+### 2026-10-07 (Prompt 9 — publish, verify, close out)
+
+Tasks 1–3 complete: the 2.0 database and tables published to `s3://pab/v2/`,
+everything backed up off-site, the run verified end to end, and the docs plus
+the 2.0 run report written. What I learned:
+
+- **Verifying what the database *records* is not verifying the run.** Every
+  column-level gate passed. The spot-check then looked for the actual files and
+  found **14,586 of 15,976 `scene_path` values pointing at a directory that no
+  longer exists** — `/data/full/` was renamed `/data/v1/` during the version
+  split and the column was never updated. 91 % of a provenance column was
+  dangling and nothing had noticed, because the gallery is suppressed at this
+  scale and `_stage_static` tests `is_file()` and skips silently. The lesson is
+  specific: a verification step that reads only the DB confirms internal
+  consistency, not that the dataset exists.
+
+- **Sequencing mattered more than the fix.** The repair itself was one
+  `replace()`. What mattered was doing it *before* publishing — I had the
+  hashes computed and Task 1 ready to fire, and it would have been easy to ship
+  and fix afterwards. Publishing a dataset with a knowingly-broken provenance
+  column, then correcting it, means two hashes in circulation for one release.
+
+- **The brief's gate was wrong and the data was right, twice.** `wave_max=720`
+  (the run is 700, deliberately) and "every pixel has geometry" (50 pixels
+  across 5 matchups have none, and R3 refuses to fit them). Both times the
+  useful move was to work out what invariant the gate was *reaching for* —
+  here `15,971 fits + 5 refused = 15,976 matchups`, which closes exactly — and
+  assert that instead of either failing the gate or quietly dropping it.
+
+- **Least privilege cost one function call.** The AIOcean backup needed a
+  credential in the cluster. Shipping `~/.config/rclone/rclone.conf` would have
+  put four remotes there, including `nautilus_s3:` with write access to the
+  public bucket. Extracting the single `AIOcean` block took a `configparser`
+  round-trip. The secret is now deleted and the staged copy shredded.
+
+- **`rclone copy`, never `sync` — and the manifest says why.** The destination
+  holds the 1.0 backups; `sync` makes the destination match the source, which
+  here would mean deleting them. The job also prints the destination listing
+  *before* transferring, so the v1 artifacts are visibly intact in the log.
+
+- **A loud log is not a failed job.** The backup log is full of
+  `ERROR : Failed to save config … read-only file system` — rclone trying to
+  write a refreshed OAuth token to a read-only secret mount. Every file copied
+  and `rclone check` found 0 differences across 15,971 files. I nearly reported
+  it as a problem; reading what the error actually said, and then checking the
+  destination counts, is what settled it.
+
+- **Publishing is verified at the public URL, not from a listing.** All three
+  objects were re-downloaded over plain HTTPS with no credentials and
+  re-hashed. A listing confirms a key exists; it does not confirm the bytes.
+
+Counts and numbers are in the Task 1–3 reports above. Remaining for JXP: merge
+`full-inelastic` → `develop` and verify the live RTD page shows the 2.0
+headline and the 1.0-vs-2.0 section — the last item of Task 1(c), and the only
+thing in Prompt 9 I cannot do myself.
+
+Files touched: new `docs/design/PAB_v2_run_report.md`, new
+`nautilus/v2_backup_job.yaml`, `docs/design/PAB_implementation.md` (§12),
+`docs/design/PAB_design.md`, `docs/index.rst`, `HOWTO.md`, `ToDo.md`,
+`/mnt/.../v2/pab.db` (the `scene_path` repair; backup at
+`pab.db.pre-scenepath-bak`).

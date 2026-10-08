@@ -77,10 +77,12 @@ override it with the `PAB_DATA_DIR` environment variable.
 ## 3. The CLI
 
 ```
-pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
+pab [-h] [--db DB] [--stage {ingest,discover,match,geometry,fit,figure,report}]
     [--outdir OUTDIR] [--profiles-csv PROFILES_CSV] [--replace]
     [--no-figures] [--download] [--cache-dir CACHE_DIR] [--jobs JOBS]
     [--ingest-jobs N] [--discover-jobs N] [--dry-run] [--emit-site DIR]
+    [--matchup ID] [--matchups-csv FILE] [--figure-version VERSION]
+    [--compare-db PATH] [--downloads-base-url URL]
 ```
 
 | Flag | Meaning |
@@ -100,6 +102,9 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
 | `--cache-dir CACHE_DIR` | Where downloaded granules live. Default: `DATA_DIR/granules`. |
 | `--dry-run` | Print the stage plan and exit without touching anything. |
 | `--emit-site DIR` | Generate the reporting-site sources (`rst.build_site`) into `DIR` from `--db` and exit — no stages run. Use to (re)generate the in-repo `report_site/` that Read the Docs builds (see §7). |
+| `--compare-db PATH` | With `--emit-site`: the **frozen v1 database**. Adds the *1.0 vs 2.0* section to the Comparisons page, the headline block on the summary page, and the two-database provenance note to Methods. Attached **read-only** (`file:…?mode=ro`); omit it and all three simply don't appear. See §5b. |
+| `--figure-version VERSION` | With `--stage figure`: render BING fits at this `pab_version`. Default: the store's newest. NASA-GIOP rows are **never** rendered — they have no MCMC chains, so a fit figure for one cannot succeed. On the v2 store that guard is the difference between 15,971 renders and 31,947 of which half are guaranteed failures. |
+| `--downloads-base-url URL` | With `--emit-site`: link the summary tables at this URL prefix (e.g. the public `s3://pab` URL) instead of staging multi-MB CSV/Parquet into the committed site. Keeps `report_site/` bounded at scale (§7b). |
 
 ### Granule access: in-region vs. `--download`
 
