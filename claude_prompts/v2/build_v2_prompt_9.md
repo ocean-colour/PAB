@@ -71,6 +71,10 @@ published object **before** pushing (the two-machines/one-key lesson,
    tails, the slice gate results, the 1.0-vs-2.0 attribution, follow-ups:
    bulk-artifact publish, Zenodo, gap C, CDOM fluorescence). Log.
 
+4. **PR**  The PR is approved but a few tests are failing. please investigate 
+   and fix them if they are trivial
+   Use Opus 5.5
+
 ## Q&A
 
 ### Q1 (Task 1) — confirm the publish + backup plan
@@ -409,6 +413,59 @@ open scientific questions from the run recorded as tasks.
 `sphinx-build` over `docs/` is **clean — zero warnings** (the new report was
 briefly an orphan page; it is now in the Design toctree).
 
+### Task 4 — PR #13: the failing CI tests
+
+PR #13 (`full-inelastic` → `main`) had **14 failing** tests in the `pytest`
+job (359 passed, 38 skipped). Locally, under ocean14, **all 410 passed**, so
+none was a code bug. Every failure came from the CI job differing from the
+workstation, in two ways.
+
+**1. Optional dependencies missing on CI (13 tests).** The CI job deliberately
+installs only a lean set (numpy … pytest). The special-source packages (`bing`,
+`robust`) and `h5netcdf` are absent, and the suite's convention is
+`pytest.importorskip`. The new 2.0 tests skipped that guard: some import
+`bing` directly, and some reach it through `_geometry_or_none` →
+`ObsGeometry`, `_bp_prior_range`, or the `package_versions()["robust"]`
+check. Fix: add `pytest.importorskip("bing" | "robust" | "h5netcdf" |
+"bing.rt.defs")` to each test. Two of them only failed on an empty `written`
+list, because the fit failure was caught and logged. Those failures were
+also `bing` failing to import.
+
+| file | tests guarded | needs |
+|---|---|---|
+| `test_fit.py` | 7 | `bing` |
+| `test_fit.py` | 2 (`package_versions` robust, v5 RT columns) | `robust` |
+| `test_fit_progress.py` | 1 (+ `import pytest`) | `bing` |
+| `test_l1b.py` | 2 | `h5netcdf` |
+| `test_report_versions.py` | 1 (`B_p` "both ends" text) | `bing.rt.defs` |
+
+**2. The SQLite build (1 test).**
+`test_gather_version_pair_does_not_fall_back_to_a_writable_attach` assumes a
+connection opened without `uri=True` cannot honour `file:…?mode=ro`, so the
+attach must raise. That holds for conda's SQLite (`compile_options` has no
+`USE_URI`). It does not hold for Ubuntu 24.04's system `libsqlite3`, which CI's
+`setup-python` 3.12 links against: that build is compiled with
+`SQLITE_USE_URI`, and I confirmed this with `/usr/bin/python3` here. On that
+build the URI is honoured on every connection, so the attach **succeeds
+read-only**. That is the safe outcome, and `gather_version_pair` is correct.
+Only the test's premise fails. Fix: the test skips when `PRAGMA
+compile_options` reports `USE_URI`. I made no change to `pab/metrics/compare.py`.
+
+**Verified.**
+
+- A lean conda env mirroring the CI install (Python 3.12, the same pip set,
+  repo on `PYTHONPATH`): **360 passed, 51 skipped, 0 failed**.
+- ocean14 over the five touched test files: **135 passed, 1 skipped**, so the
+  guarded tests still *run* where the stack exists. The skip is the live-L1B
+  test, as before.
+
+I could not reproduce the `USE_URI` branch end to end, because the system
+Python has no pip/venv. The skip condition is the `compile_options` check I ran
+against that exact library. CI will confirm it on the next push.
+
+Only test files changed. Nothing is committed or pushed, per the working
+agreement. CI re-runs when you push.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -482,3 +539,26 @@ Files touched: new `docs/design/PAB_v2_run_report.md`, new
 `docs/design/PAB_design.md`, `docs/index.rst`, `HOWTO.md`, `ToDo.md`,
 `/mnt/.../v2/pab.db` (the `scene_path` repair; backup at
 `pab.db.pre-scenepath-bak`).
+
+### 2026-10-14 (Prompt 9 Task 4 — fix the PR #13 CI test failures)
+
+PR #13 had 14 failing CI tests, but all 410 passed locally, so the problem was
+the CI environment and not the code. 13 were new 2.0 tests missing the suite's
+`pytest.importorskip` guard for `bing`, `robust` or `h5netcdf`. CI installs a
+lean dependency set on purpose. The 14th assumed SQLite never honours a
+`file:` URI without `uri=True`. Ubuntu's system libsqlite3, which CI uses, is
+built with `SQLITE_USE_URI`, so there the read-only attach simply works. The
+test now skips on such builds. Verified in a lean CI-like env (360 passed, 51
+skipped) and under ocean14 (guarded tests still run). What I learned:
+
+- **The failures were in the tests, not the code.** Every guard is on the
+  test side. Running the full suite locally first established that before any
+  edit.
+- **Indirect imports evade the guard.** Several tests never import `bing`
+  themselves; they reach it through `ObsGeometry` or the prior-range lookup.
+  Two of them showed up only as an empty `written` list, because `build_fits`
+  catches and logs per-fit failures. So a "wrong result" failure on CI can
+  still be a missing module.
+- **SQLite behaviour is a build property.** `PRAGMA compile_options` is the
+  way to ask. conda's build and Ubuntu's differ on `USE_URI`, and that
+  difference decides whether `uri=True` matters at all.

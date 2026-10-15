@@ -179,6 +179,7 @@ def test_wrap_dphi_matches_the_reference_pixel():
 # -- reading the group ----------------------------------------------------------
 def test_read_geolocation_renames_dims(tmp_path):
     """L1B's ``(scans, pixels)`` become PAB's canonical ``(x, y)``."""
+    pytest.importorskip("h5netcdf")
     path = tmp_path / "l1b.nc"
     dt = xr.DataTree.from_dict(
         {l1b.GEOLOCATION_GROUP: synthetic_geolocation(dims=("scans", "pixels"))}
@@ -191,6 +192,7 @@ def test_read_geolocation_renames_dims(tmp_path):
 
 
 def test_read_geolocation_rejects_a_granule_without_the_group(tmp_path):
+    pytest.importorskip("h5netcdf")
     path = tmp_path / "wrong.nc"
     xr.DataTree.from_dict(
         {"geophysical_data": xr.Dataset({"a": ("x", [1.0])})}

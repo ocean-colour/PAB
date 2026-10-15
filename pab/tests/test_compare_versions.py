@@ -229,6 +229,12 @@ def test_gather_version_pair_does_not_fall_back_to_a_writable_attach(tmp_path):
         _seed_matchup(s1)
     # A connection WITHOUT uri=True cannot honour the read-only URI.
     conn = sqlite3.connect(":memory:")
+    # ...unless SQLite was built with SQLITE_USE_URI=1 (e.g. Ubuntu's system
+    # libsqlite3, which CI links against): then URIs are honoured on every
+    # connection, the attach succeeds read-only, and there is nothing to test.
+    if "USE_URI" in {r[0] for r in conn.execute("PRAGMA compile_options")}:
+        conn.close()
+        pytest.skip("this SQLite build honours URI filenames by default")
     conn.row_factory = sqlite3.Row
     store = Store(conn)
     store.create()

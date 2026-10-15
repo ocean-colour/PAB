@@ -249,6 +249,7 @@ def _stub_fit_only(wave, Rrs, Rrs_unc, chl, config, geom=None):
 
 
 def test_build_fits_parallel_matches_serial(tmp_path, monkeypatch):
+    pytest.importorskip("bing")
     # The parallel path must persist exactly the fits the serial path would — same
     # fit_ids, same rows. Stub the (stochastic, bing-backed) compute with a
     # deterministic result and farm it across 2 processes; extraction + all DB
@@ -565,6 +566,7 @@ def test_build_fits_without_geometry_fails_every_pixel_and_opens_nothing():
 
 def test_build_fits_with_geometry_reaches_the_granule(monkeypatch, tmp_path):
     """The same store *with* geometry gets as far as opening + fitting."""
+    pytest.importorskip("bing")
     from pab.tests.test_pace import make_granule
 
     monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
@@ -584,6 +586,7 @@ def test_build_fits_with_geometry_reaches_the_granule(monkeypatch, tmp_path):
 
 
 def test_fit_matchup_raises_a_clear_error_without_geometry():
+    pytest.importorskip("bing")
     with Store.open(":memory:") as store:
         matchup_id, _ = _seed_matchup(store, geometry=False)
         with pytest.raises(ValueError, match="no viewing geometry"):
@@ -594,6 +597,7 @@ def test_fit_matchup_raises_a_clear_error_without_geometry():
 
 def test_gordon_config_fits_without_geometry(monkeypatch, tmp_path):
     """The 1.0 backend has no geometry concept, so a NULL pixel is fine there."""
+    pytest.importorskip("bing")
     from pab.tests.test_pace import make_granule
 
     monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
@@ -722,6 +726,7 @@ def test_packaged_ed_covers_the_fit_window_and_raman_excitation():
 # --- provenance: git SHAs + the persisted RT columns (Prompt 3 Task 4) -------
 def test_package_versions_includes_robust_under_its_import_name():
     """``robust`` is distributed as ``retrieve-or-bust``; record the import name."""
+    pytest.importorskip("robust")
     from pab.config import package_versions
 
     pv = package_versions()
@@ -787,6 +792,7 @@ def test_unknown_sha_for_a_non_repo(tmp_path):
 
 def test_persist_fit_writes_the_v5_rt_columns():
     """The six columns that distinguish a 2.0 fit from a 1.0 one."""
+    pytest.importorskip("robust")
     import json
 
     with Store.open(":memory:") as store:
@@ -845,6 +851,7 @@ class _SpyModel:
 
 
 def test_reconstruct_rrs_uses_gordon_for_the_1_0_backend(monkeypatch):
+    pytest.importorskip("bing")
     import bing.evaluate as ev
 
     calls = []
@@ -865,6 +872,7 @@ def test_reconstruct_rrs_uses_gordon_for_the_1_0_backend(monkeypatch):
 
 def test_reconstruct_rrs_uses_the_robust_backend_with_geom_and_bp(monkeypatch):
     """The task's assertion: a robust fit must reconstruct with robust physics."""
+    pytest.importorskip("bing")
     import bing.evaluate as ev
 
     calls = []
@@ -893,6 +901,7 @@ def test_reconstruct_rrs_uses_the_robust_backend_with_geom_and_bp(monkeypatch):
 
 def test_reconstruct_rrs_defaults_to_gordon_for_a_legacy_rt_dict(monkeypatch):
     """A 1.0 row has no ``rt_backend``; that must mean Gordon, not a crash."""
+    pytest.importorskip("bing")
     import bing.evaluate as ev
 
     calls = []

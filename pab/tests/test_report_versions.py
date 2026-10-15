@@ -407,6 +407,7 @@ def test_clear_water_result_is_framed_as_a_result(tmp_path):
 
 def test_bp_block_reports_the_pile_up_at_both_bounds(tmp_path):
     """Q3: the censoring must be stated, not left to the panel title."""
+    pytest.importorskip("bing.rt.defs")  # the prior bounds come from bing
     import numpy as np
 
     v1 = _v1_db(tmp_path)

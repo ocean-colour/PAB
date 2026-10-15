@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from pab.fit.models import FitConfig
 
 
 def test_startup_cost_is_reported_separately_from_per_fit_cost(caplog):
     """Worker spawn + JAX compile is a per-POOL cost; folding it into s/fit
     inflates the figure and can trip a pause trigger on an artefact."""
+    pytest.importorskip("bing")
     from pab.db.store import Store
     from pab.fit import run
     from pab.tests.test_fit import _seed_matchup
