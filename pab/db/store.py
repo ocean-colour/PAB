@@ -54,7 +54,13 @@ class Store:
         Returns:
             A ready :class:`Store`.
         """
-        conn = sqlite3.connect(str(path))
+        # `uri=True` so a caller can open or ATTACH with `file:…?mode=ro`.
+        # Without it SQLite treats such a string as a literal filename, an
+        # `ATTACH` of a read-only URI silently fails, and a caller falling back
+        # to the plain path attaches READ-WRITE instead (see
+        # `pab.metrics.compare.gather_version_pair`, which attaches the frozen
+        # v1 release). A plain path is unaffected unless it contains "?".
+        conn = sqlite3.connect(str(path), uri=True)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         store = cls(conn)

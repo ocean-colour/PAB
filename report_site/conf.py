@@ -1,6 +1,6 @@
 """Sphinx config for the PAB reporting site (generated; separate from the developer docs)."""
 project = "PAB matchup results"
-release = version = "1.1"
+release = version = "2.0"
 extensions = []
 exclude_patterns = ["_build"]
 try:
@@ -9,6 +9,6 @@ try:
     html_theme = "sphinx_rtd_theme"
 except ImportError:
     html_theme = "alabaster"
-html_js_files = ['https://cdn.bokeh.org/bokeh/release/bokeh-3.7.2.min.js', 'https://cdn.bokeh.org/bokeh/release/bokeh-gl-3.7.2.min.js', 'https://cdn.bokeh.org/bokeh/release/bokeh-widgets-3.7.2.min.js', 'https://cdn.bokeh.org/bokeh/release/bokeh-tables-3.7.2.min.js', 'https://cdn.bokeh.org/bokeh/release/bokeh-mathjax-3.7.2.min.js']
+html_js_files = ['https://cdn.bokeh.org/bokeh/release/bokeh-3.9.1.min.js', 'https://cdn.bokeh.org/bokeh/release/bokeh-gl-3.9.1.min.js', 'https://cdn.bokeh.org/bokeh/release/bokeh-widgets-3.9.1.min.js', 'https://cdn.bokeh.org/bokeh/release/bokeh-tables-3.9.1.min.js', 'https://cdn.bokeh.org/bokeh/release/bokeh-mathjax-3.9.1.min.js']
 # Per-matchup figures are copied under _static/figures and served verbatim.
 html_static_path = ["_static"]

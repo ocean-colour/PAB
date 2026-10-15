@@ -13,6 +13,9 @@
 # Sizing, from the pilot's measured rates:
 #   ingest   ~2.1 s/profile at 32 procs (4.2 s at 16, latency-bound to GDAC)
 #            -> 53,520 remaining ~= 31 h
+#   NOTE (2026-09-18): the v2 backfill measured ~11 s/profile at 32 procs —
+#   5x slower, flat over 16 h, workers idle-waiting (24 millicores of 34
+#   cores). The GDAC appears to rate-limit. Do not size a new run from 2.1.
 #   discover ~1.75 s/search serially, 8 threads -> ~3-4 h (was ~26 h at 1 thread)
 # 34 CPU / 64Gi rather than the run pod's 50/100Gi: neither stage is CPU-bound,
 # and a smaller request schedules faster on a shared cluster.

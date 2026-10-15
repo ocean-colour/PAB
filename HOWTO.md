@@ -77,10 +77,12 @@ override it with the `PAB_DATA_DIR` environment variable.
 ## 3. The CLI
 
 ```
-pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
+pab [-h] [--db DB] [--stage {ingest,discover,match,geometry,fit,figure,report}]
     [--outdir OUTDIR] [--profiles-csv PROFILES_CSV] [--replace]
     [--no-figures] [--download] [--cache-dir CACHE_DIR] [--jobs JOBS]
     [--ingest-jobs N] [--discover-jobs N] [--dry-run] [--emit-site DIR]
+    [--matchup ID] [--matchups-csv FILE] [--figure-version VERSION]
+    [--compare-db PATH] [--downloads-base-url URL]
 ```
 
 | Flag | Meaning |
@@ -88,7 +90,9 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
 | `--db DB` | SQLite store path (created if absent; parent dirs are made). Default: `DATA_DIR/pab.db`. |
 | `--stage STAGE` | Run only this stage. **Repeatable** — e.g. `--stage match --stage fit`. Default: all stages, in order. |
 | `--outdir OUTDIR` | Base output directory. Default: `DATA_DIR/pipeline`. |
-| `--profiles-csv PROFILES_CSV` | Profile-selection CSV. Default: `data/dev_profiles.csv`. `ingest` fetches these profiles; **`discover` also restricts to them when the flag is given explicitly**, which is what makes a targeted re-search of a subset possible. Omit it and `discover` sweeps every profile in the store (so the dev default can never silently narrow a production run). `match`/`fit`/`figure` always work from the store. |
+| `--profiles-csv PROFILES_CSV` | Profile-selection CSV. Default: `data/dev_profiles.csv`. `ingest` fetches these profiles; **`discover` also restricts to them when the flag is given explicitly**, which is what makes a targeted re-search of a subset possible. Omit it and `discover` sweeps every profile in the store (so the dev default can never silently narrow a production run). **As of 2.0 `match` honours it too** — `match` re-attempts every unmatched profile on each run, and an unmatched profile is usually unmatched permanently, so a targeted backfill would otherwise re-derive tens of thousands of known-negative results (the v2 backfill: 45,010 profiles attempted where only 7,592 could gain a matchup). **As of Prompt 6 `fit` takes its own selection** — but by **matchup**, not profile, so it is `--matchup ID` (repeatable) / `--matchups-csv FILE`, not this flag. `figure` still always works from the store. |
+| `--matchup ID` | Explicit `matchup_id` for the **`fit`** stage (repeatable). Mirrors `pab.fit.nasa_giop`'s flag of the same name. Omit it and `fit` sweeps every matchup in the store — `None` means "no selection", an empty one means "nothing". |
+| `--matchups-csv FILE` | The bulk form of `--matchup`: a CSV with a `matchup_id` column. Used for Prompt 6's 100-matchup leading slice. |
 | `--replace` | Re-do completed work instead of skipping it. |
 | `--no-figures` | Skip the `figure` stage. |
 | `--jobs JOBS` | Parallel processes for the `match`, `fit` and `figure` stages (profile-/matchup-level; default `1` = serial). In `fit`, granules are opened and pixels extracted in the parent and only the MCMC runs in workers; in `match`, the granule open + pixel extraction themselves run in workers. In `figure`, workers render (each opening its own read-only connection to the same DB file) and the parent records the paths. Either way **all DB writes stay in the parent** (no SQLite contention). An injected `opener` must be picklable (module-level) to be used in parallel; otherwise `match` falls back to serial. |
@@ -98,6 +102,9 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,fit,figure,report}]
 | `--cache-dir CACHE_DIR` | Where downloaded granules live. Default: `DATA_DIR/granules`. |
 | `--dry-run` | Print the stage plan and exit without touching anything. |
 | `--emit-site DIR` | Generate the reporting-site sources (`rst.build_site`) into `DIR` from `--db` and exit — no stages run. Use to (re)generate the in-repo `report_site/` that Read the Docs builds (see §7). |
+| `--compare-db PATH` | With `--emit-site`: the **frozen v1 database**. Adds the *1.0 vs 2.0* section to the Comparisons page, the headline block on the summary page, and the two-database provenance note to Methods. Attached **read-only** (`file:…?mode=ro`); omit it and all three simply don't appear. See §5b. |
+| `--figure-version VERSION` | With `--stage figure`: render BING fits at this `pab_version`. Default: the store's newest. NASA-GIOP rows are **never** rendered — they have no MCMC chains, so a fit figure for one cannot succeed. On the v2 store that guard is the difference between 15,971 renders and 31,947 of which half are guaranteed failures. |
+| `--downloads-base-url URL` | With `--emit-site`: link the summary tables at this URL prefix (e.g. the public `s3://pab` URL) instead of staging multi-MB CSV/Parquet into the committed site. Keeps `report_site/` bounded at scale (§7b). |
 
 ### Granule access: in-region vs. `--download`
 
@@ -127,7 +134,8 @@ pab --db data/pab.db --download
 | `ingest` | Persist BGC-Argo profiles + mixed-layer summaries (parallel fetch — see `--ingest-jobs`). | → `mld_summary` |
 | `discover` | Find in-window PACE granules per profile (earthaccess; parallel via `--discover-jobs`). A profile is skipped only if the store already holds a granule **whose footprint covers that profile's own position** in its time window. | → `granules` |
 | `match` | Build PACE↔Argo matchups (Stage 4 spatial/temporal gate). Candidates come from an in-memory `GranuleIndex` (time window **+** footprint bounding box padded by `MatchupConfig.footprint_pad_deg`), so only granules that plausibly cover the float are opened. | → `matchups` |
-| `fit` | Run BING spectral fits per matchup (needs BING + emcee). | → `fit_results` |
+| `geometry` | Read each matchup pixel's solar/sensor geometry (`theta_s`, `theta_v`, `dphi`) from the co-temporal **PACE L1B** granule. Grouped **by granule** — 146,100 pixels sit on 11,494 granules, so it is one 1.8 GB lazy open per granule, not per pixel. Parallel via `--jobs`. | → `matchup_pixels.theta_s`/`theta_v`/`dphi`/`geom_source` |
+| `fit` | Run BING spectral fits per matchup (needs BING + emcee). **From 2.0 the defaults are the inelastic configuration** — `rt_backend='robust_hybrid'`, Raman + Chl fluorescence on, free `B_p` — which *requires* `geometry` to have run. A pixel with no geometry is recorded under `failed` and its granule is never opened. | → `fit_results` |
 | `figure` | Render per-matchup fit + scene figures (best-effort; needs Loisel data; parallel via `--jobs` — the costliest stage per matchup at ~42 s serial). | → `outdir/figures` |
 | `report` | Build the static site + a release manifest (Stage 7). | → `outdir/site`, `outdir/release` |
 
@@ -136,6 +144,48 @@ their natural keys — profile, `matchup_id`, `fit_id`). Re-running the pipeline
 resumes where it left off. `discover` additionally skips any profile that already
 has an in-window granule, so it won't re-query the network on resume. Use
 `--replace` to force re-doing completed work.
+
+**`geometry` runs before `fit`, and that order matters.** The inelastic RT
+backend (`rt_backend='robust_hybrid'`, v2.0) reads `theta_s`/`theta_v`/`dphi`
+off `matchup_pixels` at fit time; a pixel whose geometry is still NULL cannot be
+fitted with it. Two consequences:
+
+- Run `--stage geometry` (or a full run, which includes it) **before** any 2.0
+  `--stage fit`. The default stage order already does this.
+- The geometry read is deliberately **not** inside `fit`. It is per *granule*,
+  not per fit, so folding it in would pay an L1B open in `fit`'s serial parent
+  loop — 146,100 opens instead of 11,494.
+
+The stage is idempotent on `theta_s IS NULL`, so a resumed run does **zero**
+network work for pixels already filled, and a granule that fails transiently is
+simply retried by the next run (it is recorded in the summary's `failed` list,
+never raised). Per-pixel grid-check failures land in `mismatched` and leave that
+pixel NULL; they do not cost the granule's other pixels.
+
+**The 2.0 fit configuration.** `FitConfig()` now defaults to the inelastic
+setup and `FitConfig.v1()` reproduces the published 1.0 one:
+
+| | 2.0 (default) | `FitConfig.v1()` |
+| --- | --- | --- |
+| `rt_backend` | `robust_hybrid` | `gordon` |
+| `include_Raman` / `include_Chl_fl` | `True` / `True` | `False` / `False` |
+| `include_CDOM_fl` | `False` | `False` |
+| `fit_Bp` (free `B_p`) | `True` | `False` |
+| `wave_max` | 700 nm | 700 nm |
+
+2.0 and 1.0 fit the **same 400–700 nm band** — they differ by radiative
+transfer, not by window. (2.0 briefly used 720 nm; the PACE 719 nm band turned
+out to be negative or noise-dominated on 40% of matchups, so it was dropped.)
+
+Use `FitConfig.v1()` for any 1.0-vs-2.0 comparison rather than re-typing the six
+keywords — that is the whole point of it. Details, including the free-`B_p`
+chain layout and the `Ed` the inelastic terms need, are in
+[`docs/fitting.rst`](docs/fitting.rst).
+
+**Chains do not follow `--db`.** `fits.chains_path` is
+`$PAB_DATA_DIR/fit_chains/<fit_id>.npz` — keyed off the **root** of
+`PAB_DATA_DIR`. For a v2 run whose chains should land in
+`…/PAB/v2/fit_chains/`, set `PAB_DATA_DIR=…/PAB/v2` (see §5b).
 
 **Provenance.** Records carry the `pab_version` and a `created` timestamp.
 Re-running under a *new* `pab_version` **adds** records rather than overwriting,
@@ -194,6 +244,88 @@ Relative to `--outdir` (default `DATA_DIR/pipeline`):
 
 The SQLite store (`--db`) holds all the structured results and is the source of
 truth; the site and manifest are derived from it.
+
+
+## 5b. Versions — `v1/` (frozen) and `v2/`
+
+From 2026-09-14 the released datasets are kept **one directory per version**,
+and the published v1.0 database is **frozen**. Before this, everything lived in
+a single `full/` directory that was re-ingested in place.
+
+**Which v2 copy is authoritative (2026-10-03).** After Prompt 7 Task 1 the full
+2.0 fit finished on the PVC and the database was returned to the workstation:
+**`$PAB_DATA_DIR/v2/pab.db` is now the live, writable copy** (207,638,528 B,
+sha256 `eb9a341aa6561fbef2169496997428c55e8700351fd30b33dc610969e2253542`,
+15,971 2.0 fits). **`/data/v2/pab.db` on the PVC is the stale one from here on**
+— it will not receive the NASA-GIOP rows Task 3 adds on the workstation. The
+chains stay on the PVC (`/data/v2/fit_chains/`, 15,971 files, 19 GB); only the
+database came back.
+
+The pre-backfill seed it replaced is kept as
+`$PAB_DATA_DIR/v2/pab_pre_backfill_2026-09-14.db` (14,610 matchups, 0 2.0 fits)
+rather than overwritten, and the run logs are under `$PAB_DATA_DIR/v2/logs/`.
+
+**Transfer note:** copy it **compressed**. `kubectl cp` of the 207 MB file in one
+stream has no resume and died at 36.9 MB on a flaky link, leaving a malformed
+file at the canonical path. `gzip -c` in-pod gives 40 MB (5.1x), transfers in
+~4 s, and `gzip -t` adds an integrity check on top of the sha comparison.
+
+**The frozen-v1 rule.** `v1/pab.db` is the database behind the published 1.0
+results. It is `chmod a-w` and its sha256 is an invariant:
+
+```
+09de0a6d334dc02e73494b198567a37707e1942e5cfd1173c89822b35f978273   169,938,944 B
+```
+
+**No stage, script or test writes to it.** Read it with an explicit read-only
+open (`sqlite3.connect("file:…?mode=ro", uri=True)`), and pass `--db` explicitly
+everywhere so no default can resolve to it by accident. To compare v2 against
+v1, attach v1 read-only rather than copying rows into it.
+
+| | v1 (frozen, published 1.0) | v2 (the inelastic-RT run) |
+| --- | --- | --- |
+| workstation | `$PAB_DATA_DIR/v1/pab.db` — the old `full/pab.db`, renamed. `$PAB_DATA_DIR/full` is now a **symlink to `v1`**, so existing commands and docs that say `full/pab.db` keep working. | `$PAB_DATA_DIR/v2/pab.db`, `$PAB_DATA_DIR/v2/fit_chains/` |
+| PVC (Nautilus) | `/data/v1/` — the 1.0 run's outputs, re-laid out 2026-09-17. **`/data/v1/pab.db` does not exist**: the database that was at `/data/full/pab.db` is the *stale* pre-`cdom_chl`, pre-NASA-GIOP one (138,854,400 B), so it was renamed `/data/v1/pab_stale_2026-08-20.db` rather than left at a path the sha256 above defines. The 14,633 chain files under `/data/v1/fit_chains/` **are** the genuine 1.0 chains — but `fits.chains_path` in the v1 database still records the old `/data/fit_chains/...` paths, deliberately not rewritten because v1 is frozen; prepend `/data/v1` when resolving them. | `/data/v2/pab.db`, `/data/v2/fit_chains/`, `/data/v2/pipeline/` — set `PAB_DATA_DIR=/data/v2` so chains key there |
+| S3 | `s3://pab/v1/pab.db` (public, immutable). The **`s3://pab/full/` objects stay put** — the live site's download links point at them, and `full/pab.db` is byte-identical to `v1/pab.db`. | `s3://pab/v2/pab.db` + `v2/matchup_summary.*` |
+| backup | `AIOcean:PAB/` | `AIOcean:PAB/pab_v2_<date>.db` (dated copy, not a sync) |
+
+Public URLs are `https://s3-west.nrp-nautilus.io/pab/<key>`; the bucket policy
+is public-read on `arn:aws:s3:::pab/*`, so a new prefix needs no ACL work.
+
+**Where chains actually land.** `pab.fit.artifacts.chains_path()` resolves to
+`$PAB_DATA_DIR/fit_chains/<fit_id>.npz` — the *root* of `PAB_DATA_DIR`, not a
+per-version subdirectory. `v2/fit_chains/` is therefore only used when
+`PAB_DATA_DIR` itself points at the version directory (`…/PAB/v2`), which is
+what the PVC row above does. On the workstation with the usual
+`PAB_DATA_DIR=…/Color/PAB`, chains go to `…/Color/PAB/fit_chains/` regardless of
+which `--db` you pass — so set `PAB_DATA_DIR` deliberately before a run that
+writes chains.
+
+**Building a version database.** `pab/db/split_version.py` copies a release and
+strips one algorithm's fits, which is how v2 was created from v1:
+
+```bash
+python -m pab.db.split_version \
+    --src "$PAB_DATA_DIR/v1/pab.db" --dst "$PAB_DATA_DIR/v2/pab.db" --fit-chains
+```
+
+It opens the source **read-only**, copies via the `sqlite3` online-backup API
+(a `shutil.copy2` would carry the `a-w` mode onto the copy and break the next
+write), deletes the `BING` `fits` plus their `fit_results`, `VACUUM`s, then
+verifies: `integrity_check`, `foreign_key_check`, every non-fit table equal to
+the source, `matchups.scene_path` preserved, and the source's sha256 unchanged.
+It exits non-zero if any check fails. v2 as built:
+
+| table | v1 | v2 |
+| --- | ---: | ---: |
+| floats / profiles / mld_summary | 881 / 54,031 / 54,031 | unchanged |
+| granules / matchups / matchup_pixels | 67,435 / 14,610 / 146,100 | unchanged |
+| `fits` | 29,218 (14,609 BING + 14,609 NASA-GIOP) | **14,609** (NASA-GIOP only) |
+| `fit_results` | 262,962 | **116,872** (`NASA_GIOP_*` only) |
+
+The NASA-GIOP rows are kept because they are the baseline the v2 comparison is
+measured against, and `matchups.scene_path` is kept so the v2 site reuses v1's
+14,586 PACE scene quick-looks instead of re-rendering them.
 
 
 ## 6. Notes & gotchas
@@ -311,6 +443,14 @@ machines writing descendants of the same DB, check the published object before
 pushing — the S3 key is last-writer-wins, and the NASA rows are re-graftable
 into any sibling with two `INSERT`s (see `claude_prompts/pace_giop_gsm.md`,
 Full Run Task 5/6 entries).
+
+**Versioned layout (2026-09-14).** The published 1.0 database also now has a
+permanent, immutable home at
+`https://s3-west.nrp-nautilus.io/pab/v1/pab.db` (byte-identical to
+`full/pab.db`, same sha256 `09de0a6d…f978273`). The `full/` objects above are
+**unchanged** and remain what the live site links. See
+[§5b Versions](#5b-versions--v1-frozen-and-v2) for the full v1/v2 layout across
+workstation, PVC and S3, and for the frozen-v1 rule.
 
 > **Remaining follow-on:** publish the **bulk artifacts** (chains + figures) to
 > `s3://pab` via `publish_release(..., backend=NautilusS3Backend(...))` so the

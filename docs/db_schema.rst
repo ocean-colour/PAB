@@ -21,6 +21,16 @@ Conventions
   ``TEMP`` in °C; wavelengths in nm.
 * Distances in km; time offsets in hours; timestamps as ISO-8601 text.
 * Every results-bearing row carries a ``pab_version`` stamp for provenance.
+* ``pab_version`` records when a **row** was created, **not** which database
+  file it currently lives in. The two diverge as soon as a version database is
+  built by copying another (:mod:`pab.db.split_version`): the v2 store carries
+  ``matchups`` stamped ``1.0`` and the NASA-GIOP ``fits``/``fit_results``
+  stamped ``1.1``, because those records were made during the v1 run and were
+  carried over unchanged; only rows *created* by the v2 run stamp ``2.0``. So
+  do not infer a database's version from the stamps inside it — a single file
+  legitimately holds several. Likewise a ``pab_version`` bump does not imply a
+  re-analysis: the 2026-09-05/06 chl-a/CDOM provenance backfill deliberately
+  stayed at ``1.0`` (see ``HOWTO.md`` §7b).
 
 Tables
 ------
@@ -81,7 +91,28 @@ Tables
     The ~10 selected ``Rrs`` pixels per matchup. **PK** ``pixel_id``;
     **unique** ``(matchup_id, ix, iy)``; **FK** ``matchup_id`` → ``matchups``.
     Columns: ``ix``, ``iy``, ``latitude``, ``longitude``, ``distance_km``,
-    ``rank`` (1 = nearest), ``flagged``.
+    ``rank`` (1 = nearest), ``flagged``, and — **v5** — the per-pixel viewing
+    geometry: ``theta_s``, ``theta_v``, ``dphi`` (all **degrees**) and
+    ``geom_source``.
+
+    The geometry is read from the co-temporal **PACE L1B** granule
+    (``geolocation_data``), which shares the L2's ``(scans, pixels)`` grid, and
+    is filled by the ``geometry`` pipeline stage; ``geom_source`` records where
+    it came from (e.g. ``'L1B_V3'``). It is stored per **pixel**, not per fit,
+    because it is a property of the observation rather than of the model fitted
+    to it — so it is read once and reused by every fit of that pixel.
+
+    * ``theta_s`` — solar zenith angle, degrees, ``0 ≤ theta_s < 90`` for a
+      daylight observation (L1B ``solar_zenith``).
+    * ``theta_v`` — sensor (viewing) zenith angle, degrees, ``0`` at nadir
+      (L1B ``sensor_zenith``).
+    * ``dphi`` — **relative** azimuth, degrees, defined as
+      ``sensor_azimuth − solar_azimuth`` **wrapped to (−180, 180]**. For the
+      reference pixel ``(868, 142)`` of
+      ``PACE_OCI.20250309T131631``: ``sensor_azimuth = 61.58°``,
+      ``solar_azimuth = −19.75°``, hence ``dphi = 81.33°``.
+
+    NULL on rows created before v5.
 
 ``fits``
     One row per fitted spectrum, with configuration + provenance. **PK**
@@ -94,6 +125,14 @@ Tables
     ``nsteps``, ``nburn``, ``nwalkers``, ``wave_min``/``wave_max``, ``chisq``,
     ``aic``, ``bic``, ``accept_frac``, ``success``, ``chains_path``,
     ``figure_path``, ``pkg_versions`` (JSON), ``pab_version``, ``created``.
+
+    **v5** adds the radiative-transfer configuration, which is what
+    distinguishes a 2.0 fit from a 1.0 one (the ``model_pair`` is unchanged
+    between them): ``rt_backend`` (``'gordon'`` for the elastic 1.0 fits,
+    ``'robust_hybrid'`` for the inelastic 2.0 ones), the inelastic switches
+    ``include_raman`` / ``include_chl_fl`` / ``include_cdom_fl`` (0/1),
+    ``phi_c`` (chlorophyll-fluorescence quantum yield), and ``fit_bp`` (0/1 —
+    whether :math:`B_p` was a free parameter). NULL on rows created before v5.
 
 ``fit_results``
     The scalar IOP results in **long format**. **PK** ``(fit_id, quantity)``;
@@ -120,6 +159,19 @@ The schema version lives in ``PRAGMA user_version``.
 schema (version 1); later DDL changes register a forward step and bump
 ``SCHEMA_VERSION``.
 
+A migration step only ever runs on a database still at its *starting*
+version, so each version must be defined **completely** in one step: adding a
+column to ``_v4_to_v5`` after some file has already been stamped
+``user_version = 5`` will never apply it to that file, silently. This is why
+v5 carries both the ``matchup_pixels`` geometry and the ``fits`` RT columns in
+a single migration.
+
+Splitting a release into a new version database is a separate concern from
+schema migration and lives in :mod:`pab.db.split_version`: it copies a store
+and drops one algorithm's ``fits``/``fit_results``, leaving the schema version
+untouched (``VACUUM`` preserves ``PRAGMA user_version``). See ``HOWTO.md``
+§5b for the ``v1``/``v2`` layout and the frozen-v1 rule.
+
 Access API
 ----------
 
@@ -129,3 +181,6 @@ Access API
 
 .. automodule:: pab.db.schema
    :members: SCHEMA_VERSION, create_all, migrate, get_version
+
+.. automodule:: pab.db.split_version
+   :members: split_version, verify, copy_database, drop_algorithm, table_counts, sha256

@@ -1,7 +1,8 @@
 """End-to-end pipeline & CLI (Stage 8).
 
 A single, resumable, config-driven stage runner tying Stages 2–7 together —
-**ingest → discover → match → fit → figure → report** — with **no new science**:
+**ingest → discover → match → geometry → fit → figure → report** — with **no
+new science**:
 each stage is a thin wrapper over the module already built for it, reads/writes
 the shared :class:`pab.db.store.Store`, and **skips work already done** (the
 existing `persist_*`/`build_*` idempotency), so a re-run resumes. Re-running
@@ -32,7 +33,15 @@ from pab.parallel import PROGRESS_EVERY, init_worker, picklable
 _log = logging.getLogger("pab.pipeline")
 
 #: The pipeline stages, in run order.
-STAGES: tuple[str, ...] = ("ingest", "discover", "match", "fit", "figure", "report")
+STAGES: tuple[str, ...] = (
+    "ingest",
+    "discover",
+    "match",
+    "geometry",
+    "fit",
+    "figure",
+    "report",
+)
 
 
 @dataclass
@@ -62,6 +71,8 @@ class PipelineConfig:
 
     profiles: list[dict[str, Any]] | None = None
     profiles_csv: str | Path | None = None
+    matchups: list[str] | None = None  # explicit matchup_ids for the fit stage
+    matchups_csv: str | Path | None = None  # ...or a CSV with a matchup_id column
     argo_src: str = "gdac"
     argo_mode: str = "expert"
     short_name: str = "PACE_OCI_L2_AOP"
@@ -72,6 +83,9 @@ class PipelineConfig:
     fit: FitConfig = field(default_factory=FitConfig)
     outdir: str | Path | None = None
     make_figures: bool = True
+    #: Which BING ``pab_version`` the ``figure`` stage renders. ``None`` → the
+    #: store's newest. Never renders NASA-GIOP rows: they have no chains.
+    figure_version: str | None = None
     replace: bool = False
     download: bool = False
     cache_dir: str | Path | None = None
@@ -128,6 +142,31 @@ class PipelineConfig:
         if self.profiles is None and self.profiles_csv is None:
             return None
         return {(int(r["wmo"]), int(r["cycle"])) for r in self.profile_rows()}
+
+    def matchup_ids(self) -> set[str] | None:
+        """``{matchup_id}`` of an **explicitly requested** slice, else ``None``.
+
+        The ``fit``-stage twin of :meth:`selection_keys`. ``None`` means "no
+        selection was given" — distinct from an empty one — so a bare
+        ``pab --stage fit`` still fits every matchup in the store rather than
+        silently narrowing.
+
+        ``fit`` is selected by **matchup**, not profile, which is why this is a
+        separate seam from ``--profiles-csv`` rather than a reuse of it.
+        """
+        if self.matchups is None and self.matchups_csv is None:
+            return None
+        ids: set[str] = set(self.matchups or ())
+        if self.matchups_csv is not None:
+            import csv as _csv
+
+            with open(self.matchups_csv, newline="") as fh:
+                ids.update(
+                    row["matchup_id"].strip()
+                    for row in _csv.DictReader(fh)
+                    if row.get("matchup_id", "").strip()
+                )
+        return ids
 
     def profile_rows(self) -> list[dict[str, Any]]:
         """The profile selection — inline ``profiles`` or the dev-set CSV rows."""
@@ -309,7 +348,16 @@ def _ingest_executor(fetcher, workers: int):
     **Processes** for the live path. Measured on real GDAC profiles: serial
     6.2 s/profile, 12 threads 2.75, **12 processes 0.97** — the fetch is not
     network-bound but bound by argopy's Python-side parsing, so the GIL, not the
-    servers, is the ceiling. Processes need a picklable ``fetcher``
+    servers, is the ceiling.
+
+    **That ceiling is not permanent.** The 2026-09-18 v2 backfill measured a
+    flat **~11 s/profile at 32 processes** over 16 h, with each worker at ~1.5 %
+    CPU and the pod drawing 24 millicores of a 34-core request — i.e. blocked on
+    the GDAC, not parsing, and almost certainly rate-limited (the rate did not
+    vary by more than 10 % across 5,662 profiles). When the remote side is the
+    bottleneck, adding processes buys nothing; size a run from a fresh
+    measurement rather than from the numbers above. Processes need a picklable
+    ``fetcher``
     (``None`` = the live fetch, or a module-level seam); anything else (a
     lambda/closure test seam) falls back to **threads**, which still concurrent
     the I/O and keeps the datasets in-process.
@@ -631,13 +679,43 @@ def _search_with_retry(searcher, lat, lon, t0, t1, config, *, attempts: int = 3)
 
 
 def match(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
-    """Stage 4: build matchups (idempotent/resumable)."""
+    """Stage 4: build matchups (idempotent/resumable).
+
+    Honours an **explicit** ``--profiles-csv`` selection, like ``discover``.
+    Without one it sweeps the whole store, unchanged. The asymmetry it removes
+    was expensive: ``match`` re-attempts every unmatched profile each run, and
+    those are usually unmatched permanently, so a targeted backfill would have
+    re-derived ~37 k known-negative results.
+    """
     from pab.matchup.engine import build_matchups
 
     return build_matchups(
         store,
         opener=opener,
         config=config.matchup,
+        replace=config.replace,
+        jobs=config.jobs,
+        selection=config.selection_keys(),
+    )
+
+
+def geometry(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
+    """Per-pixel viewing geometry from PACE L1B (idempotent by ``theta_s``).
+
+    Runs **between ``match`` and ``fit``** because the inelastic RT backend
+    needs ``theta_s``/``theta_v``/``dphi`` at fit time, and because the read is
+    per **granule** — grouping the pixels turns 146,100 potential L1B opens
+    into 11,494. Doing it inside ``fit`` would pay each 1.8 GB open in the
+    serial parent loop instead.
+
+    ``opener`` maps an AOP granule source to a geolocation dataset (the test
+    seam); live, the stage resolves the L1B granule through CMR itself.
+    """
+    from pab.matchup.geometry import build_geometry
+
+    return build_geometry(
+        store,
+        opener=opener,
         replace=config.replace,
         jobs=config.jobs,
     )
@@ -653,6 +731,7 @@ def fit(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
         config=config.fit,
         replace=config.replace,
         jobs=config.jobs,
+        selection=config.matchup_ids(),
     )
 
 
@@ -667,6 +746,18 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
     granule. With ``jobs > 1`` the renders run in worker processes
     (:func:`_render_figure`); the parent records the paths, so it stays the only
     DB writer.
+
+    Two filters keep this stage from doing work it cannot or need not do:
+
+    * **Only BING fits of one ``pab_version``.** The ``fits`` table also holds
+      the NASA-GIOP ingests, which have no MCMC chains — rendering a fit figure
+      for one cannot succeed. On the v2 store that is 15,976 of 31,947 rows, so
+      without this filter half the stage is guaranteed failures, each costing a
+      worker slot and an exception traceback.
+    * **Scenes only where ``matchups.scene_path`` is NULL.** The scene is the
+      expensive half (it re-opens the ~1.8 GB granule) and most matchups
+      already carry one from the previous release. Re-rendering a scene that
+      exists produces a byte-identical PNG for the price of the granule read.
     """
     if not config.make_figures:
         return {"written": [], "skipped": [], "failed": []}
@@ -674,9 +765,28 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
     figdir = config.out() / "figures"
     figdir.mkdir(parents=True, exist_ok=True)
     written, skipped, failed = [], [], []
-    todo: list[tuple[str, str]] = []
+    todo: list[tuple[str, str, bool]] = []
+
+    version = config.figure_version
+    if version is None:
+        from pab.metrics import compare
+
+        version = compare.newest_bing_version(store)
+    _log.info("figure: rendering BING fits at pab_version %s", version)
+
+    # `scene_path IS NULL` is resolved once, here, rather than per render: the
+    # parent is the only writer, so a worker cannot see another worker's scene.
+    needs_scene = {
+        r["matchup_id"]
+        for r in store.query(
+            "SELECT matchup_id FROM matchups WHERE scene_path IS NULL"
+        )
+    }
     for r in store.query(
-        "SELECT fit_id, matchup_id, figure_path FROM fits ORDER BY fit_id"
+        "SELECT fit_id, matchup_id, figure_path FROM fits "
+        "WHERE algorithm = 'BING' AND (? IS NULL OR pab_version = ?) "
+        "ORDER BY fit_id",
+        (version, version),
     ):
         if r["figure_path"] and not config.replace:
             skipped.append(r["fit_id"])
@@ -690,7 +800,15 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
                     (str(sp), r["matchup_id"]),
                 )
             continue
-        todo.append((r["fit_id"], r["matchup_id"]))
+        want_scene = r["matchup_id"] in needs_scene
+        # Two fits of the same matchup must not both render its scene.
+        needs_scene.discard(r["matchup_id"])
+        todo.append((r["fit_id"], r["matchup_id"], want_scene))
+    _log.info(
+        "figure: %d fit figures to render, %d of them also needing a scene",
+        len(todo),
+        sum(1 for _, _, w in todo if w),
+    )
 
     def _record(fit_id: str, matchup_id: str, paths) -> None:
         fpath, scene_path = paths
@@ -711,12 +829,20 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
         )
         return {"written": written, "skipped": skipped, "failed": failed}
 
-    for fit_id, matchup_id in todo:
+    for fit_id, matchup_id, want_scene in todo:
         try:
             _record(
                 fit_id,
                 matchup_id,
-                _render_figure(None, fit_id, matchup_id, figdir, opener, store=store),
+                _render_figure(
+                    None,
+                    fit_id,
+                    matchup_id,
+                    figdir,
+                    opener,
+                    store=store,
+                    want_scene=want_scene,
+                ),
             )
         except Exception:  # noqa: BLE001 — one bad render must not abort the batch
             _log.exception("figure failed for %s", fit_id)
@@ -739,13 +865,20 @@ def _store_path(store) -> str | None:
     return None
 
 
-def _render_figure(db_path, fit_id, matchup_id, figdir, opener, *, store=None):
+def _render_figure(
+    db_path, fit_id, matchup_id, figdir, opener, *, store=None, want_scene=True
+):
     """Render one fit figure (+ its scene); return ``(fig_path, scene_path)``.
 
     Runs in a worker process when ``db_path`` is given: it opens its **own**
     connection with ``create=False`` — no schema migration, hence no write — so
     the parent remains the single writer while N workers read concurrently.
     ``store`` is the parent's connection for the serial path.
+
+    ``want_scene=False`` skips the scene entirely — the caller has already
+    established that this matchup has one. The scene, not the fit figure, is
+    what re-opens the granule, so this is the difference between a few seconds
+    and tens of seconds per matchup.
     """
     from pathlib import Path as _Path
 
@@ -761,6 +894,8 @@ def _render_figure(db_path, fit_id, matchup_id, figdir, opener, *, store=None):
         fpath = figdir / f"{fit_id}_fit.png"
         fit_fig.fit_figure(store, fit_id, outfile=fpath)
         scene_path = None
+        if not want_scene:
+            return str(fpath), None
         try:  # the scene is a bonus artifact; don't fail the fit figure on it
             scene_path = scene.scene_from_store(
                 store,
@@ -785,7 +920,12 @@ def _figures_parallel(
 
     fut_row: dict = {}
     pending: set = set()
-    _log.info("figure: rendering %d fits over %d processes", len(todo), jobs)
+    _log.info(
+        "figure: rendering %d fits (%d with scenes) over %d processes",
+        len(todo),
+        sum(1 for _, _, w in todo if w),
+        jobs,
+    )
 
     def _drain(fut):
         fit_id, matchup_id = fut_row.pop(fut)
@@ -798,9 +938,15 @@ def _figures_parallel(
     with ProcessPoolExecutor(
         max_workers=jobs, mp_context=mp.get_context("spawn"), initializer=init_worker
     ) as ex:
-        for i, (fit_id, matchup_id) in enumerate(todo, start=1):
+        for i, (fit_id, matchup_id, want_scene) in enumerate(todo, start=1):
             fut = ex.submit(
-                _render_figure, db_path, fit_id, matchup_id, str(figdir), opener
+                _render_figure,
+                db_path,
+                fit_id,
+                matchup_id,
+                str(figdir),
+                opener,
+                want_scene=want_scene,
             )
             fut_row[fut] = (fit_id, matchup_id)
             pending.add(fut)
@@ -835,6 +981,7 @@ _STAGE_FUNCS = {
     "ingest": ingest,
     "discover": discover,
     "match": match,
+    "geometry": geometry,
     "fit": fit,
     "figure": figure,
     "report": report,
@@ -913,6 +1060,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--outdir", default=None, help="Output dir (default DATA_DIR/pipeline)."
     )
     p.add_argument("--profiles-csv", default=None, help="Profile-selection CSV.")
+    p.add_argument(
+        "--matchup",
+        action="append",
+        default=None,
+        dest="matchups",
+        help="Explicit matchup_id for the fit stage (repeatable). Mirrors "
+        "pab.fit.nasa_giop's flag of the same name.",
+    )
+    p.add_argument(
+        "--matchups-csv",
+        default=None,
+        help="CSV with a matchup_id column selecting the fit stage's slice "
+        "(the bulk form of --matchup).",
+    )
     p.add_argument("--replace", action="store_true", help="Re-do completed work.")
     p.add_argument("--no-figures", action="store_true", help="Skip the figure stage.")
     p.add_argument(
@@ -962,6 +1123,23 @@ def build_parser() -> argparse.ArgumentParser:
         "Read the Docs to build (see HOWTO §7).",
     )
     p.add_argument(
+        "--figure-version",
+        default=None,
+        metavar="VERSION",
+        help="With --stage figure: render BING fits at this pab_version "
+        "(default: the store's newest). NASA-GIOP rows are never rendered — "
+        "they have no MCMC chains.",
+    )
+    p.add_argument(
+        "--compare-db",
+        default=None,
+        metavar="PATH",
+        help="With --emit-site: path to the frozen v1 database. Adds the "
+        "1.0-vs-2.0 (elastic vs inelastic) section, the summary headline, and "
+        "the two-database provenance note. Attached read-only; omit it and "
+        "those simply don't appear.",
+    )
+    p.add_argument(
         "--downloads-base-url",
         default=None,
         metavar="URL",
@@ -985,6 +1163,9 @@ def main(argv=None) -> int:
     )
     config = PipelineConfig(
         profiles_csv=args.profiles_csv,
+        matchups=args.matchups,
+        matchups_csv=args.matchups_csv,
+        figure_version=args.figure_version,
         outdir=args.outdir,
         replace=args.replace,
         make_figures=not args.no_figures,
@@ -1013,12 +1194,16 @@ def main(argv=None) -> int:
             from pab.pace.cloud import cached_opener
 
             opener = cached_opener(config.cache())
-        with Store.open(Path(args.db)) as store:
+        # Read-only: never create or migrate. `--emit-site` against a frozen
+        # release (v1/pab.db is chmod a-w) must work, and a default open would
+        # try to migrate it and fail.
+        with Store.open(Path(args.db), create=False) as store:
             written = rst.build_site(
                 store,
                 args.emit_site,
                 opener=opener,
                 downloads_base_url=args.downloads_base_url,
+                compare_db=args.compare_db,
             )
         print(f"emitted reporting site → {args.emit_site}")
         for name, path in sorted(written.items()):

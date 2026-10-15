@@ -670,11 +670,17 @@ def test_search_with_retry_recovers_from_a_transient_failure(monkeypatch):
 
 
 # -- parallel figure stage --------------------------------------------------
-def _stub_render(db_path, fit_id, matchup_id, figdir, opener, *, store=None):
+def _stub_render(
+    db_path, fit_id, matchup_id, figdir, opener, *, store=None, want_scene=True
+):
     """Module-level stand-in for _render_figure: writes the files, no plotting.
 
     Keeps the test about the fan-out + parent-side bookkeeping (the renderers
     themselves need BING/Loisel data, which CI does not have).
+
+    It must mirror the real signature: `figure` catches a failed render and
+    logs it, so a stub missing a keyword shows up as "every render failed"
+    rather than as a TypeError.
     """
     from pathlib import Path
 
@@ -683,6 +689,8 @@ def _stub_render(db_path, fit_id, matchup_id, figdir, opener, *, store=None):
         raise RuntimeError("render failed")
     fpath = figdir / f"{fit_id}_fit.png"
     fpath.write_bytes(b"png")
+    if not want_scene:
+        return str(fpath), None
     spath = figdir / f"{matchup_id}_scene.png"
     spath.write_bytes(b"png")
     return str(fpath), str(spath)
@@ -717,6 +725,11 @@ def _seed_fits(store, n):
             {
                 "fit_id": fid,
                 "matchup_id": mid,
+                # `algorithm` is what the figure stage filters on (NASA-GIOP
+                # rows have no chains and cannot be rendered). Production always
+                # sets it; this fixture used to leave it NULL, which made these
+                # tests pass only because the stage rendered everything.
+                "algorithm": "BING",
                 "model_pair": "ExpBPow",
                 "pab_version": "test",
             },

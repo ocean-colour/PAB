@@ -399,7 +399,9 @@ def test_fit_figure_smoke(tmp_path, monkeypatch):
             chla=0.1,
             bbp_bing=2e-3,
         )
-        config = FitConfig(nsteps=600, nburn=150, analysis_burn=150)
+        # 1.0 config: the figure path reconstructs with Gordon until the
+        # backend dispatch lands (Prompt 3 Task 4).
+        config = FitConfig.v1(nsteps=600, nburn=150, analysis_burn=150)
         try:
             fit_id = run.fit_matchup(store, "M1", config=config, opener=lambda s: gran)
         except FileNotFoundError as exc:

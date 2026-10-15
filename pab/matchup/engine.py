@@ -326,7 +326,7 @@ class GranuleIndex:
         return out
 
 
-def _open_with_timeout(source, *, opener=None, timeout_s: float = 0.0):
+def _open_with_timeout(source, *, opener=None, timeout_s: float = 0.0, open_fn=None):
     """Open a granule, raising :class:`TimeoutError` if it takes too long.
 
     Uses ``SIGALRM``, which interrupts the calling thread even when it is parked
@@ -339,11 +339,29 @@ def _open_with_timeout(source, *, opener=None, timeout_s: float = 0.0):
     caller is not the main thread (``signal.alarm`` is main-thread only) — the
     chunk-level guard in :func:`_build_matchups_parallel` remains the backstop
     for those cases.
+
+    Args:
+        source: Passed to the opener; also named in the timeout message.
+        opener: Test seam forwarded to :func:`pab.pace.cloud.open_granule`.
+        timeout_s: Bound in seconds; ``<= 0`` disables the guard.
+        open_fn: Alternative single-argument open callable, used instead of
+            ``cloud.open_granule``. Lets other readers — e.g.
+            :func:`pab.pace.l1b.open_l1b_geolocation`, which reads a different
+            product and group — share this guard rather than re-implement it.
     """
     import signal
     import threading
 
-    if timeout_s and timeout_s > 0 and threading.current_thread() is threading.main_thread():
+    def _open():
+        if open_fn is not None:
+            return open_fn(source)
+        return cloud.open_granule(source, opener=opener)
+
+    if (
+        timeout_s
+        and timeout_s > 0
+        and threading.current_thread() is threading.main_thread()
+    ):
 
         def _timed_out(signum, frame):  # pragma: no cover - signal path
             raise TimeoutError(f"granule read exceeded {timeout_s:.0f}s: {source}")
@@ -351,11 +369,11 @@ def _open_with_timeout(source, *, opener=None, timeout_s: float = 0.0):
         previous = signal.signal(signal.SIGALRM, _timed_out)
         signal.setitimer(signal.ITIMER_REAL, float(timeout_s))
         try:
-            return cloud.open_granule(source, opener=opener)
+            return _open()
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0.0)
             signal.signal(signal.SIGALRM, previous)
-    return cloud.open_granule(source, opener=opener)
+    return _open()
 
 
 def _close_quietly(ds) -> None:
@@ -398,12 +416,15 @@ def find_matchup(
     Raises:
         ValueError: if the profile has no ``latitude``/``longitude``.
     """
+    from pab.parallel import portable_errors
+
     config = config or MatchupConfig()
     if profile.get("latitude") is None or profile.get("longitude") is None:
         raise ValueError(
             f"profile {profile.get('wmo')}/{profile.get('cycle')} has no "
             "latitude/longitude; cannot match it to a granule"
         )
+    pid = f"{profile.get('wmo')}_{profile.get('cycle')}"
     lat = float(profile["latitude"])
     lon = float(profile["longitude"])
     p_time = profile["time"]
@@ -423,9 +444,13 @@ def find_matchup(
         if dtime_hours > config.dtime_max_hours:
             break  # sorted, so everything after is further out in time too
         try:
-            ds = _open_with_timeout(
-                g["source"], opener=opener, timeout_s=config.open_timeout_s
-            )
+            # portable_errors leaves TimeoutError (picklable) alone, so the
+            # handler below still fires; it only flattens exceptions that would
+            # be destroyed crossing the process boundary -- see pab.parallel.
+            with portable_errors(f"{pid} granule {g['granule_id']}"):
+                ds = _open_with_timeout(
+                    g["source"], opener=opener, timeout_s=config.open_timeout_s
+                )
         except TimeoutError:
             # A dropped HTTPS connection can leave the read waiting forever (no
             # timeout in fsspec/aiohttp): observed as a worker with unestablished
@@ -438,9 +463,12 @@ def find_matchup(
             )
             continue
         try:
-            pixels = _extract.extract_matchup_spectra(
-                ds, lat, lon, n=config.n_spectra, mask_flags=config.mask_flags
-            )
+            # The extract is where the lazy HTTP reads actually happen, so a
+            # 503 can surface here rather than at open.
+            with portable_errors(f"{pid} granule {g['granule_id']}"):
+                pixels = _extract.extract_matchup_spectra(
+                    ds, lat, lon, n=config.n_spectra, mask_flags=config.mask_flags
+                )
         finally:
             # Release the granule immediately. `extract_matchup_spectra` returns
             # materialised numpy (every read goes through `.values`), so nothing
@@ -601,6 +629,7 @@ def build_matchups(
     replace: bool = False,
     created: str | None = None,
     jobs: int = 1,
+    selection: set[tuple[int, int]] | None = None,
 ) -> dict[str, list[str]]:
     """Match every qualifying profile against the stored granules and persist.
 
@@ -623,6 +652,18 @@ def build_matchups(
         replace: Re-write matchups that already exist.
         created: Timestamp to stamp on written rows.
         jobs: Profile-level parallel processes (1 = serial).
+        selection: ``{(wmo, cycle)}`` to restrict to, or ``None`` for the whole
+            store. ``None`` is distinct from an empty set: a bare
+            ``pab --stage match`` keeps sweeping every profile.
+
+            This exists because ``match`` re-attempts **every** unmatched
+            profile on every run, and an unmatched profile is usually unmatched
+            for a permanent reason — no granule covers it. The v2 backfill made
+            the cost concrete: 45,010 profiles would have been attempted when
+            only 7,592 could possibly gain a matchup, because every newly
+            discovered granule postdated the other 36,966 (~35 h against ~6 h).
+            ``discover`` already took a selection for the same reason; this
+            removes the asymmetry.
 
     Returns:
         ``{"written": [...], "skipped": [...], "unmatched": [...]}`` — matchup
@@ -648,7 +689,15 @@ def build_matchups(
     if not replace:
         for row in store.query("SELECT profile_id, matchup_id FROM matchups"):
             done.setdefault(row["profile_id"], row["matchup_id"])
-    for profile in qualifying_profiles(store):
+    profiles = qualifying_profiles(store)
+    if selection is not None:
+        profiles = [
+            p for p in profiles if (int(p["wmo"]), int(p["cycle"])) in selection
+        ]
+        _log.info(
+            "match: selection restricts to %d of the store's profiles", len(profiles)
+        )
+    for profile in profiles:
         if profile["profile_id"] in done:
             skipped.append(done[profile["profile_id"]])
             continue
@@ -672,8 +721,16 @@ def build_matchups(
 
     if jobs and int(jobs) > 1 and inputs and picklable(opener):
         return _build_matchups_parallel(
-            store, inputs, config, created, int(jobs), replace,
-            written, skipped, unmatched, opener=opener,
+            store,
+            inputs,
+            config,
+            created,
+            int(jobs),
+            replace,
+            written,
+            skipped,
+            unmatched,
+            opener=opener,
         )
 
     for profile, candidates in inputs:
@@ -694,8 +751,17 @@ def build_matchups(
 
 
 def _build_matchups_parallel(
-    store, inputs, config, created, jobs, replace, written, skipped, unmatched,
-    *, opener=None,
+    store,
+    inputs,
+    config,
+    created,
+    jobs,
+    replace,
+    written,
+    skipped,
+    unmatched,
+    *,
+    opener=None,
 ):
     """Parallel backend for :func:`build_matchups`. Mutates the result lists.
 

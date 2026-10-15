@@ -85,7 +85,40 @@ def log_comparison(sat, insitu) -> dict[str, Any]:
     return out
 
 
-def gather_matchups(store, *, model_pair: str = "ExpBPow"):
+def _version_key(v: str) -> tuple:
+    """Sort key for a ``pab_version`` string, numeric where it can be.
+
+    ``"2.0"`` must sort above ``"1.1"``, which plain string comparison gets
+    right here but would not once a ``"10.0"`` exists. Non-numeric parts fall
+    back to comparing as text so an odd value never raises.
+    """
+    parts = []
+    for piece in str(v).split("."):
+        try:
+            parts.append((0, int(piece)))
+        except ValueError:
+            parts.append((1, piece))
+    return tuple(parts)
+
+
+def newest_bing_version(store) -> str | None:
+    """The newest ``pab_version`` among the store's BING fits, or ``None``.
+
+    The v2 database holds BING **2.0** fits alongside NASA-GIOP **1.1** rows,
+    and a store that has been fitted twice would hold 1.0 and 2.0 BING fits for
+    the same matchup. Metrics must pick one, and the newest is the one the
+    report is about -- so this is the default rather than something every
+    caller has to remember to pass.
+    """
+    rows = store.query(
+        "SELECT DISTINCT pab_version FROM fits "
+        "WHERE algorithm = 'BING' AND pab_version IS NOT NULL"
+    )
+    versions = [r["pab_version"] for r in rows]
+    return max(versions, key=_version_key) if versions else None
+
+
+def gather_matchups(store, *, model_pair: str = "ExpBPow", pab_version=None):
     """Assemble the per-matchup comparison table from the DB.
 
     One row per matchup that has a BING fit **for ``model_pair``**: the satellite
@@ -95,19 +128,29 @@ def gather_matchups(store, *, model_pair: str = "ExpBPow"):
     ``model_pair`` so a second model pair (or other fits on the same matchup) does
     not produce duplicate rows.
 
+    The join is also filtered to ``algorithm = 'BING'`` and a **single
+    ``pab_version``**. Without the version filter a store holding both 1.0 and
+    2.0 fits for one matchup yields *two* rows, silently doubling every count
+    and mixing two physics configurations into one scatter.
+
     Args:
         store: An open :class:`pab.db.store.Store`.
         model_pair: Which BING fit to pull (default ``"ExpBPow"`` →
             ``BING_ExpBPow_bbp700`` / ``BING_ExpBPow_chl``).
+        pab_version: Which BING version to report. ``None`` (the default) picks
+            the store's newest via :func:`newest_bing_version`, which is the
+            one the report is about.
 
     Returns:
         A :class:`pandas.DataFrame` (empty when no matched fits exist).
     """
     bbp_q = f"BING_{model_pair}_{DEFAULT_BBP_QUANTITY}"
     chl_q = f"BING_{model_pair}_{DEFAULT_CHL_QUANTITY}"
+    if pab_version is None:
+        pab_version = newest_bing_version(store)
     sql = """
         SELECT m.matchup_id, p.wmo, p.cycle, p.latitude, p.longitude, p.time,
-               f.fit_id, f.chisq,
+               f.fit_id, f.chisq, f.pab_version,
                ms.bbp700 AS bbp_argo, ms.chla AS chla_argo,
                fb.value AS bbp_bing,
                fb.value_lo AS bbp_bing_lo, fb.value_hi AS bbp_bing_hi,
@@ -116,15 +159,113 @@ def gather_matchups(store, *, model_pair: str = "ExpBPow"):
         FROM matchups m
         JOIN profiles p ON p.profile_id = m.profile_id
         JOIN mld_summary ms ON ms.profile_id = m.profile_id
-        JOIN fits f ON f.matchup_id = m.matchup_id AND f.model_pair = ?
+        JOIN fits f ON f.matchup_id = m.matchup_id
+                   AND f.algorithm = 'BING'
+                   AND f.model_pair = ?
+                   AND (? IS NULL OR f.pab_version = ?)
         LEFT JOIN fit_results fb
                ON fb.fit_id = f.fit_id AND fb.quantity = ?
         LEFT JOIN fit_results fc
                ON fc.fit_id = f.fit_id AND fc.quantity = ?
         ORDER BY m.matchup_id
     """
-    return store.query_df(sql, (model_pair, bbp_q, chl_q))
+    return store.query_df(sql, (model_pair, pab_version, pab_version, bbp_q, chl_q))
 
+
+def gather_version_pair(store, v1_path, *, model_pair: str = "ExpBPow"):
+    """One row per matchup fitted in **both** 1.0 and 2.0, for the comparison.
+
+    The 1.0 BING fits do not live in the v2 database — the v2 split carried the
+    NASA-GIOP rows across but not the BING ones — so the only place to read
+    them is the frozen ``v1/pab.db``. That database is ``chmod a-w`` and at
+    schema v4 while the code is at v5, so it is **attached read-only** via a
+    ``file:…?mode=ro`` URI: a plain ``Store.open`` would try to migrate it and
+    die with ``attempt to write a readonly database``. The URI form needs the
+    connection opened with ``uri=True`` (:meth:`pab.db.store.Store.open` does),
+    and there is deliberately **no plain-path fallback** -- a plain ``ATTACH``
+    is read-write, so a fallback would quietly make the frozen release
+    writable.
+
+    Rows are matched on ``matchup_id`` **and** ``pixel_id``. `matchup_id` alone
+    is not enough: it identifies the profile/granule pair, not which pixel was
+    fitted, and comparing two fits of *different pixels* would silently
+    attribute a spatial difference to the physics change.
+
+    Args:
+        store: An open :class:`pab.db.store.Store` on the v2 database.
+        v1_path: Path to the frozen v1 database.
+        model_pair: Which BING fit to pull from both sides.
+
+    Raises:
+        FileNotFoundError: If ``v1_path`` does not exist -- rather than letting
+            ``ATTACH`` create an empty database there.
+
+    Returns:
+        A :class:`pandas.DataFrame` with ``bbp700``/``chl``/``aph``/``chisq``
+        for each version (suffixed ``_v1``/``_v2``) plus ``Bp_v2`` — the free
+        phase-function parameter, which exists only in 2.0. Empty when the two
+        databases share no fitted matchup.
+    """
+    from pathlib import Path as _Path
+
+    # Check existence FIRST. `ATTACH` of a plain path *creates* the database
+    # when it is missing, so a typo'd --compare-db would silently leave an
+    # empty `pab.b` next to the real data and then fail with the confusing
+    # `no such table: v1.fits`. Fail on the path, before touching the disk.
+    if not _Path(v1_path).is_file():
+        raise FileNotFoundError(f"comparison database not found: {v1_path}")
+
+    q = {k: f"BING_{model_pair}_{k}" for k in ("bbp700", "chl", "Aph", "Bp")}
+    # NO fallback to a plain-path ATTACH. A plain `ATTACH` is read-WRITE, so a
+    # fallback turns "the read-only attach failed" into "the frozen release is
+    # now writable" -- silently. This is not hypothetical: the URI form fails
+    # unless the connection was opened with `uri=True`, so an earlier version
+    # of this function attached `v1/pab.db` read-write on every call and was
+    # saved only by the file's `chmod a-w`. If the read-only attach fails, that
+    # is an error worth seeing.
+    store.conn.execute("ATTACH DATABASE ? AS v1", (f"file:{v1_path}?mode=ro",))
+    attached = True
+    try:
+        sql = """
+            SELECT m.matchup_id, f2.pixel_id,
+                   p.wmo, p.cycle, p.latitude, p.longitude, p.time,
+                   f1.pab_version AS version_v1, f2.pab_version AS version_v2,
+                   f1.chisq AS chisq_v1,   f2.chisq AS chisq_v2,
+                   f1.accept_frac AS accept_v1, f2.accept_frac AS accept_v2,
+                   b1.value AS bbp700_v1,  b2.value AS bbp700_v2,
+                   c1.value AS chl_v1,     c2.value AS chl_v2,
+                   a1.value AS aph_v1,     a2.value AS aph_v2,
+                   bp2.value AS Bp_v2
+            FROM matchups m
+            JOIN profiles p ON p.profile_id = m.profile_id
+            JOIN fits f2 ON f2.matchup_id = m.matchup_id
+                        AND f2.algorithm = 'BING' AND f2.model_pair = ?
+            JOIN v1.fits f1 ON f1.matchup_id = m.matchup_id
+                           AND f1.pixel_id = f2.pixel_id
+                           AND f1.algorithm = 'BING' AND f1.model_pair = ?
+            LEFT JOIN fit_results    b2 ON b2.fit_id = f2.fit_id AND b2.quantity = ?
+            LEFT JOIN v1.fit_results b1 ON b1.fit_id = f1.fit_id AND b1.quantity = ?
+            LEFT JOIN fit_results    c2 ON c2.fit_id = f2.fit_id AND c2.quantity = ?
+            LEFT JOIN v1.fit_results c1 ON c1.fit_id = f1.fit_id AND c1.quantity = ?
+            LEFT JOIN fit_results    a2 ON a2.fit_id = f2.fit_id AND a2.quantity = ?
+            LEFT JOIN v1.fit_results a1 ON a1.fit_id = f1.fit_id AND a1.quantity = ?
+            LEFT JOIN fit_results    bp2 ON bp2.fit_id = f2.fit_id AND bp2.quantity = ?
+            ORDER BY m.matchup_id
+        """
+        params = (
+            model_pair, model_pair,
+            q["bbp700"], q["bbp700"],
+            q["chl"], q["chl"],
+            q["Aph"], q["Aph"],
+            q["Bp"],
+        )
+        return store.query_df(sql, params)
+    finally:
+        if attached:
+            try:
+                store.conn.execute("DETACH DATABASE v1")
+            except Exception:
+                pass
 
 def gather_nasa_giop(store, *, model_pair: str = "ExpBPow"):
     """Assemble the "BING vs NASA GIOP" comparison table from the DB.

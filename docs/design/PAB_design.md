@@ -593,6 +593,44 @@ path/ID that encodes the matchup and `pab_version`. Re-running under a new
 `pab_version` produces a new record rather than silently overwriting, enabling
 side-by-side comparison of algorithm/prior changes across versions.
 
+**A major version gets its own database (adopted at 2.0).** "A new version adds
+records" works while the versions share a schema and a matchup set. 2.0 broke
+both: it required schema v5 (per-pixel viewing geometry and the RT
+configuration) and it re-ran discovery over a longer mission window, so it has
+matchups 1.0 never saw. Keeping both in one file would have meant migrating the
+published 1.0 release in place — losing the ability to reproduce it — and every
+query carrying a version predicate forever.
+
+So each major version lives in its own database: `v1/pab.db` (frozen,
+`chmod a-w`, schema v4) and `v2/pab.db` (schema v5). Consequences worth stating
+because they are easy to get wrong:
+
+- **The frozen release is attached read-only**, never opened for writing. Use a
+  `file:…?mode=ro` URI, which requires the connection itself to be opened with
+  `uri=True`; without that SQLite treats the string as a literal filename and a
+  fallback to a plain-path `ATTACH` silently attaches it **read-write**. There
+  is deliberately no such fallback: a failed read-only attach must raise.
+- **Cross-version comparison joins on `matchup_id` *and* `pixel_id`.**
+  `matchup_id` identifies the profile/granule pair, not which pixel was fitted;
+  joining on it alone pairs retrievals of *different pixels* and reports a
+  spatial difference as an algorithmic one.
+- **Metrics filter to a single `pab_version`.** A store holding two versions of
+  one matchup yields two rows from an unfiltered gather, silently doubling every
+  count and mixing two configurations into one scatter.
+- **Not every row is re-stamped.** A record whose *product* did not change keeps
+  its own version: the NASA-GIOP baseline rows are the same NASA product read by
+  the same code in both releases and stay at `1.1`. Re-stamping them `2.0` would
+  claim a re-analysis that did not happen.
+
+**The "end = today" backfill rule.** A mission-length run has no fixed end date:
+the Argo and PACE archives keep growing, so "the full mission" means
+*start → today*, and the end moves every time the pipeline is re-run. Record the
+window actually processed rather than a nominal one, and treat a later re-run as
+a **backfill** that adds records for the newly available interval rather than as
+a re-analysis — it does not earn a new `pab_version`. (The 1.0 Chl-a/CDOM
+provenance re-ingest is the documented precedent: schema/provenance backfill,
+same version.)
+
 ### Outputs & community exposure
 
 Per the Data section, the **extracted scalar values live in the SQLite

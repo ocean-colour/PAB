@@ -1013,4 +1013,111 @@ and
 
 ---
 
+## 12. The 2.0 inelastic re-analysis
+
+**`pab_version = 2.0`, completed 2026-10-05.** The full factual record is
+[`PAB_v2_run_report.md`](PAB_v2_run_report.md); this section records what
+changed in the *implementation*.
+
+### 12.1 What changed
+
+The 1.0 fits used the **elastic** Gordon RT model. 2.0 re-fits the same spectra
+with an **inelastic** forward model: `rt_backend='robust_hybrid'` (a
+neural-network emulator of a full RT solution) replacing the analytic `gordon`
+parameterisation, Raman scattering included, chlorophyll fluorescence included
+at `phi_C = 0.02`, and the backscatter phase-function parameter `B_p` promoted
+from a fixed constant to a **sixth fitted parameter** with a uniform prior over
+`[0.004, 0.05]`.
+
+Two things that were *planned* and are **not** in the run, stated here because
+describing them otherwise would be a false claim: **CDOM fluorescence is off**
+(`include_cdom_fl = 0` on all 15,971 fits), and the **fit window is unchanged**
+at 400–700 nm. The red edge was evaluated and deliberately excluded —
+`Rrs(719)` is negative or noise-dominated on 44 % of a 97-matchup diagnostic
+sample.
+
+### 12.2 Schema v5
+
+`PRAGMA user_version = 5`. Two groups of columns (see `docs/db_schema.rst`):
+
+- `matchup_pixels` gains `theta_s`, `theta_v`, `dphi` (degrees) and
+  `geom_source` — the per-pixel viewing geometry the inelastic backend needs.
+- `fits` gains `rt_backend`, `include_raman`, `include_chl_fl`,
+  `include_cdom_fl`, `phi_c`, `fit_bp` — the RT configuration, so a row states
+  which physics produced it rather than relying on `pab_version` as a proxy.
+
+`BING_<model_pair>_Bp` is the eleventh stored quantity per BING fit (1.0 had
+ten).
+
+### 12.3 The `geometry` stage
+
+A new stage between `match` and `fit` (`pab.matchup.geometry.build_geometry`).
+It reads each matchup pixel's solar/sensor geometry from the co-temporal **PACE
+L1B** granule, grouped **by granule** — 146,100 pixels sit on 11,494 granules,
+so it is one ~1.8 GB lazy open per granule rather than per pixel.
+
+**R3: geometry is never silently defaulted.** A fit whose pixel has no
+`theta_s` is refused and recorded under `failed`, before its granule is opened.
+Defaulting to nadir would produce a plausible-looking retrieval from an
+assumption the data never supported. In the production run this refused exactly
+5 matchups (the only 5 with no L1B geometry at all), so
+**15,971 fits + 5 refused = 15,976 matchups**.
+
+The stage sets `max_tasks_per_child=5`: measured per-worker RSS grows ~7.8 MB
+per granule, reaching OOM at ~950. `fit` deliberately does **not** recycle
+workers — it would re-pay an ~11 min JAX compile, and its memory plateaus.
+
+### 12.4 Two databases, and the seams that follow
+
+Each major version now lives in its own file (the rationale is in
+`PAB_design.md` → *Provenance & versioning*). The implementation seams:
+
+- `Store.open` passes **`uri=True`**, so `ATTACH DATABASE 'file:…?mode=ro'`
+  actually parses as a URI. Without it SQLite reads the string as a literal
+  filename, the attach fails, and a fallback to a plain-path `ATTACH` silently
+  attaches the frozen release **read-write**. `gather_version_pair` therefore
+  has **no fallback**: a failed read-only attach raises.
+- `compare.newest_bing_version` + a `pab_version` filter on
+  `compare.gather_matchups`, so a store holding two versions of a matchup
+  cannot double every count.
+- `compare.gather_version_pair(store, v1_path)` joins on `matchup_id` **and**
+  `pixel_id`.
+- `rst.V2_CHANGES` states what changed **once**, consumed by the Comparisons
+  section, the Methods page and the summary headline.
+- `pab --emit-site --compare-db PATH` wires the frozen release in; the section
+  returns `""` when it is absent, and logs a warning when it is present but
+  unreadable (a section that vanishes silently from a published report is worse
+  than one that errors).
+
+### 12.5 Fixes made along the way
+
+- **`figure` rendered rows it could not render.** The stage iterated every
+  `fits` row, and 15,976 of 31,947 are NASA-GIOP ingests with no MCMC chains.
+  Now filtered to BING fits of one `pab_version` (`--figure-version`).
+- **`figure` re-rendered scenes that already existed.** The scene re-opens the
+  granule and 14,586 matchups already had one; it now renders only where
+  `scene_path IS NULL` (`want_scene`), resolved once in the parent.
+- **The report stage copied a payload nothing linked to.** `MAX_INLINE_FIGURES`
+  and `MAX_INTERACTIVE_MATCHUPS` suppressed the gallery *HTML* while
+  `_stage_static` had already copied every figure — ~17,000 PNGs, 1.3 GB, at
+  2.8 files/s on CephFS, to display none of them. Staging moved **inside**
+  `_thumbnail_gallery`, after the N-check. The same build went from 7.09 h to
+  8.8 s and from 1.3 GB to 1.1 MB.
+- **NASA-GIOP rows were stamped with the running code's version.** The driver
+  used `config.pab_version`; `pab.fit.nasa_giop.PRODUCT_VERSION` now pins
+  `"1.1"`. An existing test had been holding the bug in place by asserting
+  against the same wrong source.
+- **`parallel.portable_errors`** flattens unpicklable worker exceptions, so a
+  NASA 503 is reported as such rather than as
+  `TypeError: can't pickle CIMultiDictProxy`.
+- **`build_fits` gained selection and progress instrumentation** —
+  `--matchup`/`--matchups-csv`, and separate logging of worker-spawn/JAX-compile
+  startup cost from steady-state per-fit cost (a total-wall ÷ fits figure read
+  385 s/fit where the real steady state was 164 s).
+- **`population.comparison_scatter` gained `clip_percentile`**, which bounds the
+  axes and **counts** the off-scale points in the panel title rather than
+  dropping them.
+
+---
+
 *Living document; updated at the close of each stage.*

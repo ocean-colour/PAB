@@ -1,0 +1,85 @@
+# Prompt 6 Task 3 — B_p attribution diagnostic.
+#
+# Refits the slice's 100 matchups with fit_Bp=False (Bp_value=0.01), otherwise
+# the 2.0 configuration, to separate what sampling B_p contributes to the
+# bbp700 shift from what the emulator + inelastic terms contribute alone.
+#
+# *** NEVER TOUCHES v2. *** The script refuses to run unless SCRATCH_DB is
+# under /scratch and PAB_DATA_DIR is not /data/v2, because:
+#   - make_fit_id does NOT encode fit_Bp, so a B_p-fixed fit collides with the
+#     free-B_p fit already stored. It needs replace=True, which against the real
+#     store would OVERWRITE the real 2.0 fits with diagnostic ones.
+#   - chains follow PAB_DATA_DIR, so PAB_DATA_DIR=/scratch keeps them off the
+#     v2 chain directory.
+# The only thing written to the PVC is /data/v2/bp_attribution.csv (the paired
+# bbp700 values), which is a new file and touches nothing existing.
+#
+# Reads /data/v2/pab.db read-only to copy it, and again read-only for the
+# free-B_p values.
+#
+# Sizing: the slice took 164 s/fit steady-state at 32 workers plus ~11 min of
+# JAX compile, so ~25 min. 2 h deadline.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars delete configmap pab-bp-attr --ignore-not-found
+#   kubectl -n sea-meets-the-stars create configmap pab-bp-attr --from-file=nautilus/v2_bp_attribution.py
+#   kubectl -n sea-meets-the-stars delete job pab-v2-bp-attr --ignore-not-found
+#   kubectl apply -f nautilus/v2_bp_attribution_job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v2-bp-attr
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 7200   # 2 h against a ~25 min expectation
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.4   # PAB 2da2e09
+        imagePullPolicy: IfNotPresent
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /scratch}   # chains -> /scratch, NOT /data/v2
+        - {name: PYTHONWARNINGS, value: "ignore"}
+        - {name: SCRATCH_DB, value: /scratch/pab_bpfix.db}
+        - {name: SLICE_CSV, value: /data/v2/slice_100.csv}
+        - {name: OUT_CSV, value: /data/v2/bp_attribution.csv}
+        - {name: JOBS, value: "32"}
+        - {name: MALLOC_ARENA_MAX, value: "2"}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            LOG=/data/v2/bp_attribution.log
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $LOG; }
+            log "PROVENANCE"
+            python -c "import json; from pab.config import package_versions, pab_version; pv=package_versions(); print('pab_version', pab_version); print('git_sha', json.dumps(pv['git_sha']))" 2>&1 | tee -a $LOG
+            log "SCRATCH COPY (v2 is read-only here)"
+            cp /data/v2/pab.db $SCRATCH_DB
+            ls -l $SCRATCH_DB | tee -a $LOG
+            log "BP ATTRIBUTION start (fit_Bp=False, Bp_value=0.01, jobs=32)"
+            python /cfg/v2_bp_attribution.py 2>&1 | tee -a $LOG
+            RC=${PIPESTATUS[0]}
+            log "BP ATTRIBUTION end rc=$RC"
+            log "v2 UNTOUCHED CHECK"
+            python -c "import sqlite3; c=sqlite3.connect('file:/data/v2/pab.db?mode=ro',uri=True); print('v2 fits:', c.execute('SELECT COUNT(*) FROM fits').fetchone()[0], '| 2.0 fits:', c.execute(\"SELECT COUNT(*) FROM fits WHERE rt_backend LIKE 'robust%'\").fetchone()[0])" 2>&1 | tee -a $LOG
+            log "V2_BP_ATTR_DONE"
+            exit $RC
+        resources:
+          requests: {cpu: "32", memory: "100Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "32", memory: "100Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: scratch, mountPath: /scratch}
+        - {name: cfg, mountPath: /cfg/v2_bp_attribution.py, subPath: v2_bp_attribution.py}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: scratch, emptyDir: {sizeLimit: 10Gi}}
+      - {name: cfg, configMap: {name: pab-bp-attr}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}

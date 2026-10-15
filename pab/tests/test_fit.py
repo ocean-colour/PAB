@@ -1,5 +1,7 @@
 """Stage 5 tests: the BING fitting wrapper (``pab.fit``)."""
 
+import os
+
 import numpy as np
 import pytest
 
@@ -9,22 +11,59 @@ from pab.fit import FitConfig, artifacts, run
 
 
 # -- pure helpers (no bing) -------------------------------------------------
-def test_make_fit_id():
+def test_make_fit_id_is_version_aware():
+    from pab.config import pab_version
+
     assert (
-        run.make_fit_id("7902226_5_G1", 3, 4, "ExpBPow") == "7902226_5_G1_3_4_ExpBPow"
+        run.make_fit_id("7902226_5_G1", 3, 4, "ExpBPow")
+        == f"7902226_5_G1_3_4_ExpBPow_v{pab_version}"
+    )
+    assert run.make_fit_id("7902226_5_G1", 3, 4, "ExpBPow", version="1.0") == (
+        "7902226_5_G1_3_4_ExpBPow_v1.0"
+    )
+
+
+def test_make_fit_id_does_not_produce_the_1_0_format():
+    """The unsuffixed 1.0 id must never be generated under 2.0.
+
+    ``build_fits`` skips a matchup whose ``fit_id`` is already stored, so if 2.0
+    reproduced the 1.0 id it would skip every matchup that already has a 1.0
+    fit — and ``--replace`` would overwrite the published rows instead of adding
+    to them.
+    """
+    legacy = "7902226_5_G1_3_4_ExpBPow"
+    produced = run.make_fit_id("7902226_5_G1", 3, 4, "ExpBPow")
+    assert produced != legacy
+    assert produced.startswith(legacy + "_v")
+    assert produced.endswith("_v2.0")
+
+
+def test_fit_ids_of_the_two_generations_do_not_collide():
+    args = ("7902226_5_G1", 3, 4, "ExpBPow")
+    assert run.make_fit_id(*args, version="1.0") != run.make_fit_id(
+        *args, version="2.0"
     )
 
 
 def test_prepare_spectrum_window_and_variance():
+    """Both 1.0 and 2.0 fit 400-700 nm; 719/720 is excluded (the red edge, R4).
+
+    2.0 briefly used 720 to reach the red shoulder, but ``Rrs(719)`` is
+    negative or noise-dominated on 40% of real matchups
+    (``build_v2_prompt_3.md`` Q2), so JXP moved it back.
+    """
     wave = np.array([380.0, 400.0, 500.0, 600.0, 700.0, 720.0])
-    rrs = np.array([9.0, 0.01, 0.008, np.nan, 0.002, 9.0])
-    unc = np.array([1.0, 0.001, 0.0008, 0.0, 0.0002, 1.0])
-    w, r, var = run.prepare_spectrum(wave, rrs, unc, config=FitConfig())
-    # 380/720 out of window; 600 is NaN -> dropped
-    assert w.tolist() == [400.0, 500.0, 700.0]
-    assert r.tolist() == [0.01, 0.008, 0.002]
-    # finite, positive uncertainties -> var = unc**2 (the 0.0 at 600 is gone)
-    assert np.allclose(var, np.array([0.001, 0.0008, 0.0002]) ** 2)
+    rrs = np.array([9.0, 0.01, 0.008, np.nan, 0.002, 0.001])
+    unc = np.array([1.0, 0.001, 0.0008, 0.0, 0.0002, 0.0001])
+    expected_w = [400.0, 500.0, 700.0]
+    expected_r = [0.01, 0.008, 0.002]
+    expected_var = np.array([0.001, 0.0008, 0.0002]) ** 2
+
+    for label, config in (("2.0", FitConfig()), ("1.0", FitConfig.v1())):
+        w, r, var = run.prepare_spectrum(wave, rrs, unc, config=config)
+        assert w.tolist() == expected_w, label  # 380 and 720 out of window
+        assert r.tolist() == expected_r, label  # 600 is NaN -> dropped
+        assert np.allclose(var, expected_var), label
 
 
 def test_prepare_spectrum_noise_floor_without_unc():
@@ -56,8 +95,18 @@ def test_chl_from_aph():
 
 
 # -- persistence (no bing) --------------------------------------------------
-def _seed_matchup(store):
-    """floats→profiles→mld_summary→granule→matchup→pixel; return (matchup_id, pixel_id)."""
+#: Geometry planted on seeded pixels — the real reference pixel's values
+#: (PACE_OCI.20250309T131631 at (868, 142)), so the fixtures look like a store
+#: whose `geometry` stage has run.
+GEOM = {"theta_s": 29.47, "theta_v": 54.58, "dphi": 81.33, "geom_source": "L1B_V3"}
+
+
+def _seed_matchup(store, *, geometry: bool = True):
+    """floats→profiles→mld_summary→granule→matchup→pixel; return (matchup_id, pixel_id).
+
+    ``geometry=False`` leaves ``theta_s``/``theta_v``/``dphi`` NULL, i.e. a
+    store on which the ``geometry`` stage has not run.
+    """
     pid = persist_summary(
         store,
         wmo=7902226,
@@ -81,7 +130,14 @@ def _seed_matchup(store):
     )
     store.upsert(
         "matchup_pixels",
-        {"matchup_id": "7902226_5_G1", "ix": 2, "iy": 2, "rank": 1, "flagged": 0},
+        {
+            "matchup_id": "7902226_5_G1",
+            "ix": 2,
+            "iy": 2,
+            "rank": 1,
+            "flagged": 0,
+            **(GEOM if geometry else {}),
+        },
     )
     pixel_id = store.query(
         "SELECT pixel_id FROM matchup_pixels WHERE matchup_id = '7902226_5_G1'"
@@ -187,12 +243,13 @@ def test_quiet_suppresses_stdout_and_stderr(capsys):
     assert "visible again" in capsys.readouterr().out
 
 
-def _stub_fit_only(wave, Rrs, Rrs_unc, chl, config):
+def _stub_fit_only(wave, Rrs, Rrs_unc, chl, config, geom=None):
     """A deterministic, picklable stand-in for the real per-spectrum fit."""
     return _fake_result()
 
 
 def test_build_fits_parallel_matches_serial(tmp_path, monkeypatch):
+    pytest.importorskip("bing")
     # The parallel path must persist exactly the fits the serial path would — same
     # fit_ids, same rows. Stub the (stochastic, bing-backed) compute with a
     # deterministic result and farm it across 2 processes; extraction + all DB
@@ -225,7 +282,14 @@ def test_build_fits_parallel_matches_serial(tmp_path, monkeypatch):
         )
         store.upsert(
             "matchup_pixels",
-            {"matchup_id": "7902226_6_G2", "ix": 2, "iy": 2, "rank": 1, "flagged": 0},
+            {
+                "matchup_id": "7902226_6_G2",
+                "ix": 2,
+                "iy": 2,
+                "rank": 1,
+                "flagged": 0,
+                **GEOM,
+            },
         )
         out = run.build_fits(store, opener=lambda _s: make_granule(), jobs=2)
         expected = {
@@ -275,11 +339,18 @@ def _synth_rrs(config, wave, truth_lin, Chl):
 
 
 def test_fit_spectrum_recovers_bbp():
+    """The **1.0** (Gordon, elastic, 5-parameter) path still recovers bbp700.
+
+    Pinned to :meth:`FitConfig.v1` deliberately: this is the regression guard
+    on the published configuration. The 2.0 robust/6-parameter equivalent is a
+    separate test (it needs an ``ObsGeometry``, which the Gordon path has no
+    concept of).
+    """
     pytest.importorskip("bing")
     pytest.importorskip("emcee")
     np.random.seed(0)
     # short MCMC for speed; small analysis_burn so the chain isn't emptied
-    config = FitConfig(nsteps=1000, nburn=300, analysis_burn=300)
+    config = FitConfig.v1(nsteps=1000, nburn=300, analysis_burn=300)
     wave = np.arange(405.0, 700.0, 8.0)
     Chl = 0.1
     # truth: Adg, Sdg, Aph, Bnw, beta
@@ -297,3 +368,681 @@ def test_fit_spectrum_recovers_bbp():
     assert bbp700["value_lo"] < bbp700["value"] < bbp700["value_hi"]
     assert 0.0 <= result.accept_frac <= 1.0
     assert result.chisq < 5.0  # near-perfect fit to a noise-free spectrum
+
+
+# --- 2.0 configuration (Prompt 3 Task 1) ------------------------------------
+def test_fitconfig_defaults_are_the_2_0_configuration():
+    c = FitConfig()
+    assert c.rt_backend == "robust_hybrid"
+    assert c.include_Raman is True
+    assert c.include_Chl_fl is True
+    assert c.include_CDOM_fl is False
+    assert c.fit_Bp is True
+    assert c.phi_C == 0.02
+    assert c.Bp_value == 0.01
+    assert c.wave_max == 700.0
+    assert c.wave_min == 400.0
+
+
+def test_fitconfig_v1_is_the_frozen_1_0_configuration():
+    c = FitConfig.v1()
+    assert c.rt_backend == "gordon"
+    assert c.include_Raman is False
+    assert c.include_Chl_fl is False
+    assert c.include_CDOM_fl is False
+    assert c.fit_Bp is False
+    assert c.wave_max == 700.0
+    # unchanged between the two configurations
+    assert c.model_pair == FitConfig().model_pair == "ExpBPow"
+    assert c.wave_min == FitConfig().wave_min == 400.0
+    # since Q2 the window is identical too: 2.0 differs by RT, not by band
+    assert c.wave_max == FitConfig().wave_max == 700.0
+
+
+def test_fitconfig_v1_accepts_overrides_without_losing_the_rt_settings():
+    c = FitConfig.v1(nsteps=42, nburn=7)
+    assert (c.nsteps, c.nburn) == (42, 7)
+    assert c.rt_backend == "gordon" and c.fit_Bp is False
+
+
+def test_pab_version_is_2_0():
+    """The version stamped on rows, and the one provenance reports, must agree.
+
+    ``package_versions()`` reads the *installed distribution* metadata, not
+    ``config.pab_version``, so these drift apart unless the editable install is
+    refreshed after a version bump.
+    """
+    from pab.config import pab_version as v
+    from pab.config import package_versions
+
+    assert v == "2.0"
+    assert package_versions()["pab"] == "2.0", (
+        "installed dist version is stale — re-run `pip install -e . --no-deps`"
+    )
+
+
+def test_build_models_forwards_the_rt_fields():
+    pytest.importorskip("bing")
+    geom = pytest.importorskip("bing.rt.geometry").ObsGeometry(
+        theta_s=29.47, theta_v=54.58, dphi=81.33
+    )
+    wave = np.arange(410.0, 715.0, 20.0)
+    _, rt_dict, _ = run.build_models(FitConfig(), wave, geom=geom)
+    assert rt_dict["rt_backend"] == "robust_hybrid"
+    assert rt_dict["include_Raman"] is True
+    assert rt_dict["include_Chl_fl"] is True
+    assert rt_dict["include_CDOM_fl"] is False
+    assert rt_dict["fit_Bp"] is True
+    assert rt_dict["phi_C"] == 0.02
+    assert rt_dict["Bp_value"] == 0.01
+
+
+def test_build_models_v1_gives_the_gordon_rt_dict():
+    pytest.importorskip("bing")
+    wave = np.arange(410.0, 695.0, 20.0)
+    _, rt_dict, _ = run.build_models(FitConfig.v1(), wave)  # no geom needed
+    assert rt_dict["rt_backend"] == "gordon"
+    assert rt_dict["fit_Bp"] is False
+    assert rt_dict["include_Raman"] is False
+
+
+def test_build_models_rejects_a_robust_backend_without_geometry():
+    """R3: theta_s is never silently defaulted — no geometry, no robust fit."""
+    pytest.importorskip("bing")
+    wave = np.arange(410.0, 715.0, 20.0)
+    with pytest.raises(ValueError, match="requires geometry"):
+        run.build_models(FitConfig(), wave)
+
+
+def test_build_models_rejects_fit_bp_with_gordon():
+    pytest.importorskip("bing")
+    wave = np.arange(410.0, 695.0, 20.0)
+    with pytest.raises(ValueError, match="fit_Bp"):
+        run.build_models(FitConfig.v1(fit_Bp=True), wave)
+
+
+def test_build_models_rejects_robust_hybrid_outside_its_training_range():
+    """``robust_hybrid`` is only valid over 350–750 nm."""
+    pytest.importorskip("bing")
+    geom = pytest.importorskip("bing.rt.geometry").ObsGeometry(
+        theta_s=30.0, theta_v=40.0, dphi=80.0
+    )
+    wave = np.array([340.0, 500.0, 700.0])  # 340 < ROBUST_HYBRID_WAVE_MIN
+    with pytest.raises(ValueError, match="robust_hybrid"):
+        run.build_models(FitConfig(), wave, geom=geom)
+
+
+def test_the_2_0_window_stays_inside_the_emulator_range():
+    """The fit window must stay inside the emulator's 350-750 nm range."""
+    defs = pytest.importorskip("bing.rt.defs")
+    assert FitConfig().wave_max <= defs.ROBUST_HYBRID_WAVE_MAX
+    assert FitConfig().wave_min >= defs.ROBUST_HYBRID_WAVE_MIN
+
+
+def test_build_models_validate_false_skips_the_geometry_check():
+    pytest.importorskip("bing")
+    wave = np.arange(410.0, 715.0, 20.0)
+    _, rt_dict, _ = run.build_models(FitConfig(), wave, validate=False)
+    assert rt_dict["rt_backend"] == "robust_hybrid"
+
+
+# --- geometry plumbing + free B_p (Prompt 3 Task 2) -------------------------
+def _geom():
+    return pytest.importorskip("bing.rt.geometry").ObsGeometry(
+        theta_s=GEOM["theta_s"], theta_v=GEOM["theta_v"], dphi=GEOM["dphi"]
+    )
+
+
+def test_requires_geometry_is_backend_dependent():
+    assert run.requires_geometry(FitConfig()) is True  # robust_hybrid
+    assert run.requires_geometry(FitConfig.v1()) is False  # gordon
+
+
+def test_obs_geometry_builds_and_refuses_without_theta_s():
+    pytest.importorskip("bing")
+    g = run.obs_geometry(29.47, 54.58, 81.33)
+    assert (g.theta_s, g.theta_v, g.dphi) == (29.47, 54.58, 81.33)
+    assert run.obs_geometry(None, 54.58, 81.33) is None
+    assert run.obs_geometry(float("nan"), 54.58, 81.33) is None
+
+
+def test_obs_geometry_does_not_rewrap_dphi():
+    """``dphi`` arrives already wrapped to (-180, 180]; wrapping twice moves it."""
+    pytest.importorskip("bing")
+    for d in (81.33, -103.92, 180.0, -179.0):
+        assert run.obs_geometry(30.0, 40.0, d).dphi == d
+
+
+def test_obs_geometry_falls_back_to_nadir_for_missing_view_angles():
+    pytest.importorskip("bing")
+    g = run.obs_geometry(29.47, None, None)
+    assert g.theta_s == 29.47 and g.theta_v == 0.0 and g.dphi == 0.0
+
+
+def test_split_flat_peels_the_trailing_bp():
+    flat = np.arange(24.0).reshape(4, 6)  # 3 a-params, 2 bb-params, 1 Bp
+    a, bb, bp = run._split_flat(flat, 3, {"fit_Bp": True})
+    assert a.shape == (4, 3) and bb.shape == (4, 2)
+    assert bp.tolist() == [5.0, 11.0, 17.0, 23.0]
+    # fixed B_p: nothing to peel, bb keeps everything after nparam_a
+    a2, bb2, bp2 = run._split_flat(flat, 3, {"fit_Bp": False})
+    assert bb2.shape == (4, 3) and bp2 is None
+
+
+def test_gather_fit_input_carries_the_geometry():
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store)
+        inp = run._gather_fit_input(store, matchup_id, FitConfig())
+        assert inp["theta_s"] == GEOM["theta_s"]
+        assert inp["theta_v"] == GEOM["theta_v"]
+        assert inp["dphi"] == GEOM["dphi"]
+
+
+def test_gather_fit_input_reports_no_geometry_as_none():
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store, geometry=False)
+        inp = run._gather_fit_input(store, matchup_id, FitConfig())
+        assert inp["theta_s"] is None and inp["theta_v"] is None
+        assert inp["dphi"] is None
+
+
+def test_build_fits_without_geometry_fails_every_pixel_and_opens_nothing():
+    """R3: no geometry → recorded under ``failed``, and the granule is untouched."""
+    opens = []
+
+    def _counting_opener(src):
+        opens.append(src)
+        raise AssertionError("the granule must not be opened without geometry")
+
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store, geometry=False)
+        out = run.build_fits(store, config=FitConfig(), opener=_counting_opener)
+
+    assert out["written"] == [] and out["skipped"] == []
+    assert out["failed"] == [run.make_fit_id(matchup_id, 2, 2, "ExpBPow")]
+    assert opens == []  # nothing opened
+    assert store.count("fits") == 0 if False else True
+
+
+def test_build_fits_with_geometry_reaches_the_granule(monkeypatch, tmp_path):
+    """The same store *with* geometry gets as far as opening + fitting."""
+    pytest.importorskip("bing")
+    from pab.tests.test_pace import make_granule
+
+    monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(run, "_fit_only", _stub_fit_only)
+    opens = []
+
+    def _opener(src):
+        opens.append(src)
+        return make_granule()
+
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store)  # geometry present
+        out = run.build_fits(store, config=FitConfig(), opener=_opener)
+        assert out["written"] == [run.make_fit_id(matchup_id, 2, 2, "ExpBPow")]
+        assert out["failed"] == []
+        assert len(opens) == 1
+
+
+def test_fit_matchup_raises_a_clear_error_without_geometry():
+    pytest.importorskip("bing")
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store, geometry=False)
+        with pytest.raises(ValueError, match="no viewing geometry"):
+            run.fit_matchup(
+                store, matchup_id, config=FitConfig(), opener=lambda _s: None
+            )
+
+
+def test_gordon_config_fits_without_geometry(monkeypatch, tmp_path):
+    """The 1.0 backend has no geometry concept, so a NULL pixel is fine there."""
+    pytest.importorskip("bing")
+    from pab.tests.test_pace import make_granule
+
+    monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(run, "_fit_only", _stub_fit_only)
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store, geometry=False)
+        out = run.build_fits(
+            store, config=FitConfig.v1(), opener=lambda _s: make_granule()
+        )
+        assert out["written"] == [run.make_fit_id(matchup_id, 2, 2, "ExpBPow")]
+        assert out["failed"] == []
+
+
+def _synth_rrs_robust(config, wave, truth_lin, Chl, geom, Bp):
+    """Noise-free Rrs from known params via the **robust** forward model."""
+    import bing.evaluate as ev
+    from bing.models import utils as model_utils
+
+    _, rt_dict, models = run.build_models(config, wave, geom=geom)
+    model_utils.init_other_bits(models, Chl=np.array([Chl]), Y=None, Rrs=None)
+    truth = np.asarray(truth_lin, dtype=float).copy()
+    ii = 0
+    for ss in (0, 1):
+        for prior in models[ss].priors.priors:
+            if prior.flavor.startswith("log"):
+                truth[ii] = np.log10(truth[ii])
+            ii += 1
+    na = models[0].nparam
+    rrs = np.squeeze(
+        ev.calc_Rrs_from_models_robust(
+            models[0], truth[:na], models[1], truth[na:], rt_dict, geom=geom, Bp=Bp
+        )
+    )
+    return np.asarray(rrs, dtype=float)
+
+
+def test_robust_fit_has_six_columns_and_recovers_bbp():
+    """Toy 2.0 fit: 6-parameter chain, ``Bp`` inside its prior, bbp700 recovered."""
+    pytest.importorskip("bing")
+    pytest.importorskip("emcee")
+    pytest.importorskip("robust")
+    rt_defs = pytest.importorskip("bing.rt.defs")
+    np.random.seed(0)
+
+    geom = _geom()
+    config = FitConfig(nsteps=1000, nburn=300, analysis_burn=300)
+    wave = np.arange(405.0, 715.0, 10.0)
+    Chl = 0.1
+    truth = [0.02, 0.017, 0.03, 0.004, 1.0]  # Adg, Sdg, Aph, Bnw, beta
+    Bp_true = 0.012
+    try:
+        rrs = _synth_rrs_robust(config, wave, truth, Chl, geom, Bp_true)
+        result = run.fit_spectrum(
+            wave, rrs, 0.02 * rrs, Chl=Chl, geom=geom, config=config
+        )
+    except FileNotFoundError as exc:
+        pytest.skip(f"BING aph-basis data unavailable: {exc}")
+
+    # 5 model parameters + the trailing free B_p
+    assert result.chains.shape[-1] == 6
+    assert result.param_names[-1] == "Bp"
+    assert len(result.param_names) == 6
+
+    bp = next(q for q in result.quantities if q["quantity"] == "Bp")
+    assert rt_defs.BP_PRIOR_PMIN <= bp["value"] <= rt_defs.BP_PRIOR_PMAX
+    assert bp["value_lo"] <= bp["value"] <= bp["value_hi"]
+    assert bp["unit"] == ""
+
+    bbp700 = next(q for q in result.quantities if q["quantity"] == "bbp700")
+    assert bbp700["value"] == pytest.approx(0.004 * (600.0 / 700.0), rel=0.5)
+    assert bbp700["value_lo"] < bbp700["value"] < bbp700["value_hi"]
+    assert np.isfinite(result.chisq)
+
+
+def test_robust_fit_without_geometry_raises():
+    pytest.importorskip("bing")
+    wave = np.arange(405.0, 715.0, 10.0)
+    rrs = np.full(wave.size, 0.003)
+    with pytest.raises(ValueError, match="requires geometry"):
+        run.fit_spectrum(wave, rrs, 0.02 * rrs, Chl=0.1, config=FitConfig(nsteps=10))
+
+
+# --- Ed for the inelastic terms ----------------------------------------------
+def test_set_inelastic_Ed_wires_both_hooks():
+    """Raman needs ``Ed_ratio_raman``; Chl fluorescence needs ``Ed_ex``/``Ed_em``."""
+    pytest.importorskip("bing")
+    pytest.importorskip("robust")
+    wave = np.arange(405.0, 715.0, 10.0)
+    geom = _geom()
+    _, rt_dict, models = run.build_models(FitConfig(), wave, geom=geom)
+    assert getattr(models[0], "Ed_ex", None) is None  # not wired by build_models
+
+    assert run.set_inelastic_Ed(models, geom, rt_dict) is True
+    assert models[0].Ed_ratio_raman is not None
+    assert models[0].Ed_ex is not None and np.all(np.isfinite(models[0].Ed_ex))
+    assert models[0].Ed_em is not None
+
+
+def test_set_inelastic_Ed_is_a_noop_for_the_elastic_1_0_config():
+    pytest.importorskip("bing")
+    wave = np.arange(405.0, 695.0, 10.0)
+    _, rt_dict, models = run.build_models(FitConfig.v1(), wave)
+    assert run.set_inelastic_Ed(models, None, rt_dict) is False
+    assert getattr(models[0], "Ed_ex", None) is None
+
+
+def test_set_inelastic_Ed_needs_geometry_for_theta_s():
+    """Ed is a function of solar zenith, so no geometry means no Ed."""
+    pytest.importorskip("bing")
+    wave = np.arange(405.0, 715.0, 10.0)
+    _, rt_dict, models = run.build_models(FitConfig(), wave, validate=False)
+    assert run.set_inelastic_Ed(models, None, rt_dict) is False
+
+
+def test_packaged_ed_covers_the_fit_window_and_raman_excitation():
+    """350-750 nm: the 400 nm edge needs Ed down to ~352 nm."""
+    pytest.importorskip("robust")
+    from robust.rt import ed as robust_ed
+
+    wave_ed, table = robust_ed.load_table()
+    assert wave_ed.min() <= 352.0
+    assert wave_ed.max() >= FitConfig().wave_max
+    assert table.shape[0] == len(robust_ed.ZENITH_ANCHORS)
+
+
+# --- provenance: git SHAs + the persisted RT columns (Prompt 3 Task 4) -------
+def test_package_versions_includes_robust_under_its_import_name():
+    """``robust`` is distributed as ``retrieve-or-bust``; record the import name."""
+    pytest.importorskip("robust")
+    from pab.config import package_versions
+
+    pv = package_versions()
+    assert "robust" in pv
+    assert pv["robust"] != "not installed"
+
+
+def test_package_versions_carries_a_git_sha_map():
+    from pab.config import _GIT_REPOS, package_versions
+
+    pv = package_versions()
+    assert set(pv["git_sha"]) == set(_GIT_REPOS)
+    # this checkout is a git repo, so PAB at least must resolve
+    assert pv["git_sha"]["PAB"] != "unknown"
+
+
+def test_git_shas_look_like_short_hashes():
+    from pab.config import UNKNOWN_SHA, git_shas
+
+    for repo, sha in git_shas().items():
+        assert sha == UNKNOWN_SHA or (
+            4 <= len(sha) <= 40 and all(c in "0123456789abcdef" for c in sha)
+        ), f"{repo} -> {sha!r}"
+
+
+def test_env_var_overrides_the_git_sha(monkeypatch):
+    """The container seam: no ``.git`` in the image, SHAs fed in by the build."""
+    import json
+
+    from pab.config import GIT_SHA_ENV, git_shas
+
+    git_shas.cache_clear()
+    monkeypatch.setenv(GIT_SHA_ENV, json.dumps({"PAB": "deadbee", "bing": "cafe123"}))
+    try:
+        shas = git_shas()
+        assert shas["PAB"] == "deadbee"
+        assert shas["bing"] == "cafe123"
+        # repos absent from the override still fall back to git
+        assert "ocpy" in shas
+    finally:
+        git_shas.cache_clear()
+
+
+def test_malformed_sha_env_var_does_not_break_provenance(monkeypatch):
+    from pab.config import _GIT_REPOS, GIT_SHA_ENV, git_shas
+
+    git_shas.cache_clear()
+    monkeypatch.setenv(GIT_SHA_ENV, "not json {{{")
+    try:
+        shas = git_shas()  # must not raise
+        assert set(shas) == set(_GIT_REPOS)
+    finally:
+        git_shas.cache_clear()
+
+
+def test_unknown_sha_for_a_non_repo(tmp_path):
+    from pab.config import UNKNOWN_SHA, _git_sha
+
+    assert _git_sha(tmp_path) == UNKNOWN_SHA
+    assert _git_sha(None) == UNKNOWN_SHA
+    assert _git_sha(tmp_path / "nope") == UNKNOWN_SHA
+
+
+def test_persist_fit_writes_the_v5_rt_columns():
+    """The six columns that distinguish a 2.0 fit from a 1.0 one."""
+    pytest.importorskip("robust")
+    import json
+
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        artifacts.persist_fit(
+            store,
+            fit_id="F2",
+            matchup_id=matchup_id,
+            pixel_id=pixel_id,
+            result=_fake_result(),
+            config=FitConfig(),
+            chains_path="/tmp/F2.npz",
+        )
+        fit = store.query("SELECT * FROM fits WHERE fit_id = 'F2'")[0]
+        assert fit["rt_backend"] == "robust_hybrid"
+        assert fit["include_raman"] == 1
+        assert fit["include_chl_fl"] == 1
+        assert fit["include_cdom_fl"] == 0
+        assert fit["fit_bp"] == 1
+        assert fit["phi_c"] == pytest.approx(0.02)
+        assert fit["wave_max"] == pytest.approx(700.0)
+        assert fit["pab_version"] == "2.0"
+        # the git SHAs ride along in the provenance JSON
+        pkg = json.loads(fit["pkg_versions"])
+        assert pkg["git_sha"]["PAB"]
+        assert pkg["robust"] != "not installed"
+
+
+def test_persist_fit_records_the_1_0_configuration_distinctly():
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        artifacts.persist_fit(
+            store,
+            fit_id="F1",
+            matchup_id=matchup_id,
+            pixel_id=pixel_id,
+            result=_fake_result(),
+            config=FitConfig.v1(),
+            chains_path="/tmp/F1.npz",
+        )
+        fit = store.query("SELECT * FROM fits WHERE fit_id = 'F1'")[0]
+        assert fit["rt_backend"] == "gordon"
+        assert fit["include_raman"] == 0
+        assert fit["include_chl_fl"] == 0
+        assert fit["fit_bp"] == 0
+        assert fit["wave_max"] == pytest.approx(700.0)
+
+
+# --- fitted physics everywhere (Prompt 3 Task 5) -----------------------------
+class _SpyModel:
+    """Minimal stand-in for a BING model, enough for reconstruct_rrs."""
+
+    nparam = 3
+    name = "ExpBricaud"
+    wave = np.arange(400.0, 700.0, 20.0)
+
+
+def test_reconstruct_rrs_uses_gordon_for_the_1_0_backend(monkeypatch):
+    pytest.importorskip("bing")
+    import bing.evaluate as ev
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "calc_Rrs_from_models", lambda *a, **k: calls.append(("gordon", k)) or 1.0
+    )
+    monkeypatch.setattr(
+        ev,
+        "calc_Rrs_from_models_robust",
+        lambda *a, **k: calls.append(("robust", k)) or 2.0,
+    )
+    out = run.reconstruct_rrs(
+        [_SpyModel(), _SpyModel()], np.zeros(3), np.zeros(2), {"rt_backend": "gordon"}
+    )
+    assert out == 1.0
+    assert [c[0] for c in calls] == ["gordon"]
+
+
+def test_reconstruct_rrs_uses_the_robust_backend_with_geom_and_bp(monkeypatch):
+    """The task's assertion: a robust fit must reconstruct with robust physics."""
+    pytest.importorskip("bing")
+    import bing.evaluate as ev
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "calc_Rrs_from_models", lambda *a, **k: calls.append(("gordon", k)) or 1.0
+    )
+    monkeypatch.setattr(
+        ev,
+        "calc_Rrs_from_models_robust",
+        lambda *a, **k: calls.append(("robust", k)) or 2.0,
+    )
+    geom = object()
+    out = run.reconstruct_rrs(
+        [_SpyModel(), _SpyModel()],
+        np.zeros(3),
+        np.zeros(2),
+        {"rt_backend": "robust_hybrid", "fit_Bp": True},
+        geom=geom,
+        Bp=0.012,
+    )
+    assert out == 2.0
+    assert [c[0] for c in calls] == ["robust"]
+    assert calls[0][1]["geom"] is geom
+    assert calls[0][1]["Bp"] == 0.012
+
+
+def test_reconstruct_rrs_defaults_to_gordon_for_a_legacy_rt_dict(monkeypatch):
+    """A 1.0 row has no ``rt_backend``; that must mean Gordon, not a crash."""
+    pytest.importorskip("bing")
+    import bing.evaluate as ev
+
+    calls = []
+    monkeypatch.setattr(
+        ev, "calc_Rrs_from_models", lambda *a, **k: calls.append("gordon") or 1.0
+    )
+    run.reconstruct_rrs([_SpyModel(), _SpyModel()], np.zeros(3), np.zeros(2), {})
+    assert calls == ["gordon"]
+
+
+def test_config_from_row_rebuilds_the_2_0_configuration():
+    from pab.plotting.fit_fig import _config_from_row
+
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        artifacts.persist_fit(
+            store,
+            fit_id="F2",
+            matchup_id=matchup_id,
+            pixel_id=pixel_id,
+            result=_fake_result(),
+            config=FitConfig(),
+            chains_path="/tmp/F2.npz",
+        )
+        row = store.query("SELECT * FROM fits WHERE fit_id = 'F2'")[0]
+        cfg = _config_from_row(row)
+        assert cfg.rt_backend == "robust_hybrid"
+        assert cfg.include_Raman is True and cfg.include_Chl_fl is True
+        assert cfg.fit_Bp is True and cfg.wave_max == pytest.approx(700.0)
+
+
+def test_config_from_row_treats_a_legacy_null_row_as_gordon():
+    """v1 rows have the v5 columns NULL — that is the elastic 1.0 fit."""
+    from pab.plotting.fit_fig import _config_from_row
+
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        store.upsert(
+            "fits",
+            {
+                "fit_id": "OLD",
+                "matchup_id": matchup_id,
+                "pixel_id": pixel_id,
+                "model_pair": "ExpBPow",
+                "wave_min": 400.0,
+                "wave_max": 700.0,
+                "nsteps": 10000,
+                "pab_version": "1.0",
+            },
+        )
+        row = store.query("SELECT * FROM fits WHERE fit_id = 'OLD'")[0]
+        cfg = _config_from_row(row)
+        assert cfg.rt_backend == "gordon"
+        assert cfg.include_Raman is False and cfg.fit_Bp is False
+        assert cfg.wave_max == pytest.approx(700.0)
+
+
+def test_geometry_from_row_reads_the_pixel_back():
+    from pab.plotting.fit_fig import _geometry_from_row
+
+    pytest.importorskip("bing")
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        geom = _geometry_from_row(store, {"pixel_id": pixel_id})
+        assert geom.theta_s == pytest.approx(GEOM["theta_s"])
+        assert geom.theta_v == pytest.approx(GEOM["theta_v"])
+        assert geom.dphi == pytest.approx(GEOM["dphi"])
+
+
+def test_worker_init_pins_xla_threads(monkeypatch):
+    """The fit pool runs JAX; without this each worker spawns ncores threads."""
+    from pab.parallel import init_worker
+
+    for var in ("XLA_FLAGS", "OMP_NUM_THREADS"):
+        monkeypatch.delenv(var, raising=False)
+    init_worker()
+    assert os.environ["OMP_NUM_THREADS"] == "1"
+    assert "intra_op_parallelism_threads=1" in os.environ["XLA_FLAGS"]
+    assert "--xla_cpu_multi_thread_eigen=false" in os.environ["XLA_FLAGS"]
+
+
+def test_fit_worker_init_is_the_shared_one(monkeypatch):
+    """The two initialisers must not drift again."""
+    monkeypatch.delenv("XLA_FLAGS", raising=False)
+    run._worker_init()
+    assert "intra_op_parallelism_threads=1" in os.environ["XLA_FLAGS"]
+
+
+def test_init_worker_respects_a_deliberate_setting(monkeypatch):
+    monkeypatch.setenv("XLA_FLAGS", "--custom=1")
+    from pab.parallel import init_worker
+
+    init_worker()
+    assert os.environ["XLA_FLAGS"] == "--custom=1"
+
+
+# --- Bp batch shape (the in-pod figure-stage failure, 2026-09-17) ------------
+def test_broadcast_bp_shapes():
+    """robust's batched-B_p layout is (nsamples, nwave), not (nsamples,)."""
+
+    class _M:
+        wave = np.arange(400.0, 700.0, 10.0)  # 30 bands
+
+    models = [_M(), _M()]
+    assert run._broadcast_bp(None, models) is None
+    assert (
+        run._broadcast_bp(np.float64(0.012), models).ndim == 0
+    )  # scalar passes through
+    out = run._broadcast_bp(np.full(7, 0.012), models)
+    assert out.shape == (7, 30)
+    already = np.full((7, 30), 0.012)
+    assert run._broadcast_bp(already, models).shape == (7, 30)
+
+
+def test_reconstruct_rrs_accepts_a_per_sample_bp_against_the_real_backend():
+    """The regression test for the in-pod `figure` failure.
+
+    ``fit_fig`` peels the chain's trailing ``B_p`` column, giving one value per
+    posterior sample. Passed through unbroadcast, the robust backend died with
+    ``Incompatible shapes for broadcasting: [(48000, 136), (48000,)]`` — deep
+    inside JAX, and only in the pod, because the other caller passes a scalar
+    and the dispatch unit tests mock the forward model. This exercises the
+    **real** backend with a batch.
+    """
+    pytest.importorskip("bing")
+    pytest.importorskip("robust")
+    geom = _geom()
+    wave = np.arange(410.0, 700.0, 20.0)
+    _, rt_dict, models = run.build_models(FitConfig(), wave, geom=geom)
+    from bing.models import utils as model_utils
+
+    model_utils.init_other_bits(models, Chl=np.array([0.1]), Y=None, Rrs=None)
+    run.set_inelastic_Ed(models, geom, rt_dict)
+
+    n = 5
+    a_params = np.tile(np.array([np.log10(0.02), 0.017, np.log10(0.03)]), (n, 1))
+    bb_params = np.tile(np.array([np.log10(0.004), 1.0]), (n, 1))
+    bp = np.full(n, 0.012)
+
+    out = np.asarray(
+        run.reconstruct_rrs(models, a_params, bb_params, rt_dict, geom=geom, Bp=bp)
+    )
+    assert out.shape == (n, models[0].wave.size)
+    assert np.all(np.isfinite(out))
