@@ -676,7 +676,7 @@ them (19 GB is not a pod-to-workstation stream job). Options: **A** re-run
 `aiocean-rclone` secret again), as a separate step outside these prompts
 (recommended); **B** leave it; **C** something else.
 
-**Your answer:**
+**Your answer:** A
 
 **4 — Uploading `nasa_giop_summary.{csv,parquet}` to S3 (raised by E2).** The
 Downloads page now links
@@ -693,7 +693,7 @@ by hand (E2 wrote them only to its scratchpad: `nasa_giop_summary.csv` 8.35 MB,
 `.parquet` 2.89 MB; I can re-export them wherever you like); **C** hide the
 links until the objects exist.
 
-**Your answer:**
+**Your answer:** Follow your recommendation.
 
 ## Logs
 
