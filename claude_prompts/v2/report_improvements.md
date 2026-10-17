@@ -108,6 +108,55 @@ paths. Do, read-only:
    bracketed "if absent" clause in E5 with the concrete fetch command. No
    code changes in this prompt. Use Fable if you can. Log your work.
 
+**E1 Findings (2026-10-17).** All stored paths are flat (basename directly
+under the prefix, no subdirectories). Searched `$PAB_DATA_DIR`
+(`/mnt/tank/Oceanography/data/Color/PAB`; `~/Oceanography` is a symlink to
+`/mnt/tank/Oceanography`), `$HOME` and `/mnt/tank` to depth 9: **none of the
+three sets is on the workstation** except the 965 run1k Argo Q&A plots. The
+Drive backup (`AIOcean:PAB/`) holds every set except the 2.0-backfill Argo
+Q&A plots, which exist only on the PVC. Roots used by E5/E6: the fetched
+files go into a new `$PAB_DATA_DIR/gallery/{v2_figures,v1_scenes,argo_qa}/`
+(outside the frozen `v1/`); `<list>.txt` below is one basename per line,
+written from the E5 selection, split by stored prefix.
+
+| set | stored prefix | rows | workstation root | sampled files found | fallback fetch |
+| --- | --- | ---: | --- | --- | --- |
+| BING 2.0 fit figures | `/data/v2/pipeline/figures/` | 15,971 | absent | 0/500 local; 500/500 in `AIOcean:PAB/v2/figures/` (15,971/15,971 by name) | `rclone copy AIOcean:PAB/v2/figures/ $PAB_DATA_DIR/gallery/v2_figures/ --files-from fits.txt --no-traverse` |
+| scene quick-looks, 1.0 run | `/data/v1/pipeline/figures/` | 14,586 | absent (249 same-named files in `run1k/pipeline/figures/` are the run1k renders; not used) | 450/450 in `AIOcean:PAB/site/_static/scenes/` (14,586/14,586 by name) | `rclone copy AIOcean:PAB/site/_static/scenes/ $PAB_DATA_DIR/gallery/v1_scenes/ --files-from scenes_v1.txt --no-traverse` |
+| scene quick-looks, 2.0 backfill | `/data/v2/pipeline/figures/` | 1,390 | absent | 50/50 in `AIOcean:PAB/v2/figures/` (1,390/1,390 by name) | same remote folder and local root as the fit figures: add the names to `fits.txt` |
+| Argo Q&A, 1.0 full run | `/data/full/pipeline/argo_qa/` | 51,763 | absent | 458/458 in `AIOcean:PAB/site/_static/argo_qa/` (52,728 files = 51,763 full + 965 run1k) | `rclone copy AIOcean:PAB/site/_static/argo_qa/ $PAB_DATA_DIR/gallery/argo_qa/ --files-from qa.txt --no-traverse` |
+| Argo Q&A, run1k | `/data/run1k/pipeline/argo_qa/` | 965 | `$PAB_DATA_DIR/run1k/pipeline/argo_qa/` | 11/11 sampled, 965/965 by name | none needed (also in the Drive folder above) |
+| Argo Q&A, 2.0 backfill | `/data/v2/pipeline/argo_qa/` | 5,453 | absent | 0 — in no Drive folder | PVC only: `kubectl -n sea-meets-the-stars cp <pod>:/data/v2/pipeline/argo_qa/<WMO>_<cycle>.png <dest>`; needs a pod (none up, none launched) |
+
+Notes:
+- Counts vs the prompt's expectations: fit figures 15,971 as expected;
+  `scene_path` is non-null on all 15,976 matchups = 14,586 v1 + 1,390 v2
+  (the "~14,586" was the v1 part); `qa_path` is non-null on 58,181 of 59,620
+  `mld_summary` rows (1,439 NULL) but split over **three** prefixes, mostly
+  `/data/full/`, not `/data/run1k/` as the prompt assumed.
+- Profiles behind the 15,971 BING 2.0 fits, by Q&A prefix: 14,564 full, 300
+  run1k, 684 v2 (PVC-only), 423 NULL — so ~7 % of candidate fits have no
+  fetchable Q&A plot; E5 must tolerate a missing panel (see Q&A/Edits 1).
+- Databases: `v1/pab.db` 169,938,944 B, sha256 `09de0a6d…8273` (the HOWTO
+  §5b invariant). `v2/pab.db` 217,325,568 B, sha256
+  `1e69f6eef09b85add89b04ac45d423d9d981fbd81b097d0856dab59687d8a3f8`;
+  `rclone hashsum sha256 AIOcean:PAB/pab_v2_2026-10-07.db` returns the same
+  (md5 `c5ba6c3a…4b88` also equal) — **byte-identical** to the Drive copy.
+  Fit counts unchanged from the Q&A: BING `2.0` 15,971 (all with a
+  `figure_path`), NASA_GIOP `1.1` 15,976 (no figures). Matchups: 14,610 `1.0`
+  + 1,366 `2.0`. The HOWTO §5b sha for v2 (`eb9a341a…`, 207,638,528 B) is the
+  pre-NASA-GIOP state, preserved as `v2/pab_pre_nasagiop_20261003.db`.
+- Drive layout: `AIOcean:PAB/` = `pab.db`, `pab_merged_nasa_giop_2026-09-10.db`,
+  `pab_v2_2026-10-07.db`, `fit_chains/` (empty), `site/_static/{argo_qa 52,728
+  files 2.03 GiB, scenes 14,586 / 794 MiB, figures 14,609 v1 fits / 864 MiB,
+  downloads}`, `v2/{figures 17,361 files 1,018 MiB (15,971 fits + 1,390
+  scenes), fit_chains (empty), site/}`. The Q&A's "17,363" was off by two.
+- Kubernetes: `kubectl get pods` in the default namespace is forbidden; use
+  `kubectl -n sea-meets-the-stars get jobs,pods` — no jobs or pods exist.
+- The three `rclone copy … --files-from … --no-traverse` commands were
+  verified with `--dry-run` on two names each (35–83 KB per file;
+  `--no-traverse` avoids listing the 52 k-entry Drive folder).
+
 **E2 — GIOP `b_bp` at 700 nm (Q1 = A, Q2 = A, F3 agreed).**
 Derive, never persist. In `pab/metrics/compare.py::gather_nasa_giop` add a
 `LEFT JOIN` on `NASA_GIOP_bbp_s` and new columns `bbp_s_nasa`,
@@ -213,11 +262,29 @@ render both from the real v2 DB and look at them — land visible, no colourbar
 driven by the runaways. Use Fable if you can. Log your work.
 
 **E5 — Representative figure galleries (Q4 = A; paths from E1).**
-Roots found by E1: fit figures `<FIT_FIG_ROOT>`, scene quick-looks
-`<SCENE_ROOT>`, Argo Q&A `<ARGO_QA_ROOT>`. [If E1 found a set absent: fetch
-only the files selected below with the command E1 recorded, into a local
-folder, and use that as the root; if no fetch is possible, leave that
-gallery's current over-limit text unchanged and say so in the log.]
+Roots found by E1 (none of the sets is on the workstation except the run1k
+Q&A plots; the rest is fetched from the Drive backup into
+`$PAB_DATA_DIR/gallery/`): fit figures and 2.0 scenes
+`$PAB_DATA_DIR/gallery/v2_figures/` (stored prefix
+`/data/v2/pipeline/figures/`), 1.0 scene quick-looks
+`$PAB_DATA_DIR/gallery/v1_scenes/` (`/data/v1/pipeline/figures/`), Argo Q&A
+`$PAB_DATA_DIR/gallery/argo_qa/` (`/data/full/pipeline/argo_qa/`) and the
+existing `$PAB_DATA_DIR/run1k/pipeline/argo_qa/` (`/data/run1k/pipeline/argo_qa/`).
+Fetch only the files selected below: after implementing the selection, write
+the selected basenames to three lists split by stored prefix (`fits.txt` =
+fit figures + any `/data/v2/…` scenes, `scenes_v1.txt` = `/data/v1/…` scenes,
+`qa.txt` = `/data/full/…` and `/data/run1k/…` Q&A plots) and run
+```
+mkdir -p $PAB_DATA_DIR/gallery/{v2_figures,v1_scenes,argo_qa}
+rclone copy AIOcean:PAB/v2/figures/ $PAB_DATA_DIR/gallery/v2_figures/ --files-from fits.txt --no-traverse
+rclone copy AIOcean:PAB/site/_static/scenes/ $PAB_DATA_DIR/gallery/v1_scenes/ --files-from scenes_v1.txt --no-traverse
+rclone copy AIOcean:PAB/site/_static/argo_qa/ $PAB_DATA_DIR/gallery/argo_qa/ --files-from qa.txt --no-traverse
+```
+(verified with `--dry-run` in E1; ~35–85 KB per file). Q&A plots under
+`/data/v2/pipeline/argo_qa/` (684 of the 15,971 candidate fits) and the 423
+profiles with no `qa_path` cannot be fetched (PVC only, no pod): the Q&A
+gallery drops those panels with the counted warning of step 1 and the log
+says how many — unless Q&A/Edits 1 says otherwise.
 1. **Path remap.** Add a repeatable `--figure-root OLD=NEW` option to
    `--emit-site` in `pab/pipeline.py`, passed as `figure_roots: dict` into
    `rst.build_site` and applied inside `_stage_static` (longest-prefix
@@ -259,8 +326,13 @@ gallery's current over-limit text unchanged and say so in the log.]
 1. Regenerate:
    `pab --db $PAB_DATA_DIR/v2/pab.db --compare-db $PAB_DATA_DIR/v1/pab.db
    --emit-site report_site --downloads-base-url
-   https://s3-west.nrp-nautilus.io/pab/v2 --figure-root <FIT_FIG_ROOT …>`
-   (one `--figure-root` per set from E1), then
+   https://s3-west.nrp-nautilus.io/pab/v2
+   --figure-root /data/v2/pipeline/figures=$PAB_DATA_DIR/gallery/v2_figures
+   --figure-root /data/v1/pipeline/figures=$PAB_DATA_DIR/gallery/v1_scenes
+   --figure-root /data/full/pipeline/argo_qa=$PAB_DATA_DIR/gallery/argo_qa
+   --figure-root /data/run1k/pipeline/argo_qa=$PAB_DATA_DIR/run1k/pipeline/argo_qa`
+   (one `--figure-root` per stored prefix from E1; `/data/v2/pipeline/argo_qa/`
+   has no off-pod root and is left unmapped on purpose), then
    `python -m sphinx -b html report_site report_site/_build` with no new
    warnings.
 2. Verify by looking (Read each PNG): the four density panels, the two maps,
@@ -514,6 +586,35 @@ dependency list, but the report stage runs on the workstation, so I would
 
 **Your answer:**  That looks good, but add a first one that figures out the paths to the files and then creates the prompts.
 
+### Edits
+
+Questions raised while running E1 (answers feed E5/E6).
+
+**1 — The 2.0-backfill Argo Q&A plots exist only on the PVC.** The 5,453
+plots under `/data/v2/pipeline/argo_qa/` are in no Drive folder (the backup's
+only `argo_qa/` folder holds the 51,763 full-run + 965 run1k plots), and no
+pod is up. 684 of the 15,971 BING 2.0 fits (4.3 %) sit on those profiles and
+another 423 on profiles with no `qa_path` at all, so a selected fit has a
+~7 % chance of having no fetchable Q&A plot. Options: **A** E5 drops the
+missing panel with a log line (the Q&A gallery may show 7 of 8;
+recommended, nothing to launch); **B** E5's selection skips fits whose Q&A
+plot is unreachable (a small bias in which fits are shown); **C** you launch
+`nautilus/inspect_pod.yaml` once so E5 can `kubectl cp` the handful — and,
+while a pod is up, `rclone copy` the whole 5,453-file folder to
+`AIOcean:PAB/v2/argo_qa/`, which also closes the backup gap (the v2 chains
+are likewise not in the backup: `AIOcean:PAB/v2/fit_chains/` is empty).
+
+**Your answer:**
+
+**2 — Where the fetched files live.** E5/E6 now use a new
+`$PAB_DATA_DIR/gallery/{v2_figures,v1_scenes,argo_qa}/` so nothing is written
+under the frozen `v1/`. The alternative is to mirror the PVC layout
+(`$PAB_DATA_DIR/v2/pipeline/figures/`, `v1/pipeline/figures/`,
+`full/pipeline/argo_qa/`), which would let a single `--figure-root
+/data=$PAB_DATA_DIR` cover every prefix. Keep `gallery/`?
+
+**Your answer:**
+
 ## Logs
 
 ### 2026-10-17 (v2 Prompt 1 — reviewed the report code and data; posted Q1–Q9 for approval)
@@ -619,4 +720,55 @@ Choices made while writing the prompts, so they are visible:
   a colour scale through a caller.
 
 Next: the user runs E1–E6 on the workstation.
+
+### 2026-10-17 (v2 Edit E1 — located the per-matchup figure files; finalized E5/E6)
+
+Run with Fable. Read-only throughout: the databases were opened with
+`file:…?mode=ro`, rclone was used only for `lsd/lsf/size/hashsum` and a
+`copy --dry-run`, kubectl only for `get`; no code or data changed. The only
+file edited is this one (Findings table under E1, the E5/E6 placeholders,
+two questions under Q&A/Edits, this entry).
+
+What was done:
+
+- Queried `$PAB_DATA_DIR/v2/pab.db` for the directory prefixes of
+  `fits.figure_path` (BING, `pab_version='2.0'`; the column is `algorithm`,
+  not `method`), `matchups.scene_path` and `mld_summary.qa_path`, then
+  sampled 500 rows per set and matched them by path suffix and by basename
+  against every candidate directory under `$PAB_DATA_DIR`, a `find` over
+  `$HOME` and `/mnt/tank` (depth 9), and the file listings of the Drive
+  folders (`rclone lsf`, 17,361 + 14,586 + 52,728 names).
+- Hashed both databases locally and the Drive copy remotely
+  (`rclone hashsum sha256`, which Google Drive supports directly).
+- Checked the PVC side: the namespace is `sea-meets-the-stars` (the default
+  namespace is forbidden to this user); no jobs or pods exist and none was
+  launched.
+
+What I learned, and what was surprising:
+
+- **The prompt's expected prefixes were partly wrong.** Scenes are
+  14,586 under `/data/v1/…` *plus* 1,390 under `/data/v2/…` (every matchup
+  has a scene). The 58,181 Q&A paths are split over `/data/full/` (51,763),
+  `/data/v2/` (5,453) and `/data/run1k/` (965), not all under `run1k`; 1,439
+  rows have no plot. So the remap needs four `--figure-root` flags, not
+  three, and one prefix (`/data/v2/pipeline/argo_qa/`) has no off-pod root.
+- **Nothing but the 965 run1k Q&A plots is on the workstation.** The
+  `run1k/pipeline/figures/` directory holds 249 scenes with the same names as
+  v1 rows, but they are the run1k renders and were not used as a root.
+- **The Drive backup covers everything except the v2 Q&A plots** (and the
+  v2 chains: `AIOcean:PAB/v2/fit_chains/` is empty). `v2/figures/` has
+  17,361 files (15,971 fits + 1,390 scenes — the Q&A said 17,363), and the
+  1.0 site staging under `site/_static/` has all 14,586 v1 scenes and the
+  52,728 full + run1k Q&A plots. `rclone copy --files-from --no-traverse`
+  against those folders was verified with `--dry-run`.
+- **`v2/pab.db` is byte-identical to `pab_v2_2026-10-07.db`** (217,325,568 B,
+  sha256 `1e69f6ee…8a3f8` on both sides), so the Q&A numbers stand: 15,971
+  BING 2.0 fits, 15,976 NASA-GIOP 1.1 rows. `v1/pab.db` still matches the
+  HOWTO invariant. The HOWTO §5b sha for v2 describes the pre-NASA-GIOP file.
+- E5 now fetches the selected files into `$PAB_DATA_DIR/gallery/…` and E6
+  carries the four real `--figure-root` flags. Two questions went to
+  Q&A/Edits: how E5 should treat the ~7 % of candidate fits whose Q&A plot is
+  PVC-only or missing, and whether `gallery/` is the right place.
+
+Next: answers to Q&A/Edits 1–2, then E2.
 
