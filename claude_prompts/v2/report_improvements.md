@@ -746,7 +746,7 @@ limit also makes 1.0-vs-2.0 and future runs comparable at a glance. A
 one-line change (`LOG_RATIO_PERCENTILES` → a fixed `LOG_RATIO_VMAX`) either
 way; nothing in E4 depends on it.
 
-**Your answer:**
+**Your answer:** I choose B
 
 ## Logs
 
