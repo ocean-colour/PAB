@@ -604,7 +604,7 @@ while a pod is up, `rclone copy` the whole 5,453-file folder to
 `AIOcean:PAB/v2/argo_qa/`, which also closes the backup gap (the v2 chains
 are likewise not in the backup: `AIOcean:PAB/v2/fit_chains/` is empty).
 
-**Your answer:**
+**Your answer:**  Let's go with C, but you can execute the `rclone copy` command.
 
 **2 — Where the fetched files live.** E5/E6 now use a new
 `$PAB_DATA_DIR/gallery/{v2_figures,v1_scenes,argo_qa}/` so nothing is written
@@ -613,7 +613,7 @@ under the frozen `v1/`. The alternative is to mirror the PVC layout
 `full/pipeline/argo_qa/`), which would let a single `--figure-root
 /data=$PAB_DATA_DIR` cover every prefix. Keep `gallery/`?
 
-**Your answer:**
+**Your answer:** Sure, keep `gallery/`.
 
 ## Logs
 
