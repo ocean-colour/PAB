@@ -1424,7 +1424,7 @@ What the code does (Q4 = A, F1, Q&A/Edits 1–2):
   rejects a value without `=`, and reaches `build_site` as a dict.
   `test_report_versions.py`: `test_fit_figures_not_staged_at_scale` now
   asserts that exactly the representative rows are staged and linked (its
-  six identical-ratio matchups collapse to one). Named tests 18 passed; full
+  six identical-ratio matchups collapse to one). Named tests 11 passed; full
   suite **435 passed, 1 skipped** (427 after E4 → +8); `ruff check pab` clean.
 
 Acceptance on `$PAB_DATA_DIR/v2/pab.db` (15,971 matchups). The selection
