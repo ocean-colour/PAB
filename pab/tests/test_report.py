@@ -5,7 +5,15 @@ import pytest
 
 from pab.argo.summary import persist_summary
 from pab.db import Store
+from pab.plotting import population
 from pab.report import aggregate, publish, rst
+
+
+@pytest.fixture(autouse=True)
+def _plain_maps(monkeypatch):
+    """Every map a report test renders uses plain lon/lat axes: no cartopy,
+    no Natural Earth download, so the suite never touches the network."""
+    monkeypatch.setattr(population, "MAP_PROJECTION", None)
 
 
 def _seed(
@@ -417,8 +425,67 @@ def test_comparisons_page_static_figures_at_scale(tmp_path):
         out = rst.comparisons_page(df, outdir=tmp_path, max_interactive=1)
         assert ".. figure:: _static/comparisons/bbp_scatter.png" in out
         assert (tmp_path / "_static" / "comparisons" / "bbp_scatter.png").is_file()
+        assert ".. figure:: _static/comparisons/chl_scatter.png" in out
         assert "suppressed at this scale" in out
         assert ".. raw:: html" not in out  # no multi-MB inline Bokeh embed
+        # the density-panel captions: what is drawn, and the off-scale count
+        assert out.count("Filled cells where ≥ 5 matchups fall in a cell") == 2
+        assert "0 matchups lie outside the axes and are counted in the statistics" in out
+        # the two maps, with captions stating the clip and the ≥ 5 rule
+        for name in ("matchup_map.png", "healpix_map.png"):
+            assert f".. figure:: _static/comparisons/{name}" in out
+            assert (tmp_path / "_static" / "comparisons" / name).is_file()
+        assert out.count("2nd-98th percentile of the per-matchup log-ratio") == 2
+        assert "only cells holding ≥ 5 matchups are drawn" in out
+        assert "(0 cells, 0 matchups; 2 sparser cells left out)" in out
+
+
+def test_comparisons_captions_quote_the_offscale_count(tmp_path):
+    import pandas as pd
+
+    rng = np.random.default_rng(1)
+    # log-uniform, so the 99 % clip (padded x0.7 / x1.4) covers every value
+    # and only the injected runaways are off-scale
+    insitu = 10 ** rng.uniform(-3.5, -2.5, 400)
+    df = pd.DataFrame(
+        {
+            "bbp_bing": insitu * 1.2,
+            "bbp_argo": insitu,
+            "chl_bing": insitu * 100,
+            "chla_argo": insitu * 90,
+            "latitude": rng.uniform(-60, 60, 400),
+            "longitude": rng.uniform(-180, 180, 400),
+        }
+    )
+    df.loc[[0, 1, 2], "bbp_bing"] = 1e4  # three non-physical runaways
+    out = rst.comparisons_page(df, outdir=tmp_path, max_interactive=1)
+    # the b_bp caption counts them; the Chl caption (no runaways) says 0
+    assert "3 matchups lie outside the axes and are counted" in out
+    assert "0 matchups lie outside the axes and are counted" in out
+    # the maps' shared colour clip is the 2nd-98th percentile: the three
+    # runaways (log-ratio ~ +7) cannot stretch it, and both captions quote
+    # the same value (computed once by the caller)
+    import re
+
+    clips = re.findall(r"clipped at ±([0-9.]+) dex", out)
+    assert len(clips) == 2 and clips[0] == clips[1]
+    assert float(clips[0]) < 0.2
+    # the 2.0-vs-1.0 panels carry the same caption form
+    df2 = pd.DataFrame(
+        {
+            "bbp700_v1": insitu,
+            "bbp700_v2": df["bbp_bing"],
+            "chl_v1": insitu * 90,
+            "chl_v2": insitu * 100,
+        }
+    )
+    out2 = rst._version_static_figures(df2, tmp_path)
+    assert ".. figure:: _static/comparisons/v2_vs_v1_bbp700.png" in out2
+    assert ".. figure:: _static/comparisons/v2_vs_v1_chl.png" in out2
+    assert "3 matchups lie outside the axes and are counted" in out2
+    assert out2.count("Filled cells where ≥ 5 matchups fall in a cell") == 2
+    for name in ("v2_vs_v1_bbp700.png", "v2_vs_v1_chl.png"):
+        assert (tmp_path / "_static" / "comparisons" / name).is_file()
 
 
 #: ``(442/700) ** 1`` — the 700 nm shift factor for a seeded slope of 1.0.
@@ -533,6 +600,9 @@ def test_nasa_giop_section_static_at_scale(tmp_path):
         assert png.is_file()
         assert "shifted to 700 nm" in out and "no spectral adjustment" not in out
         assert ".. raw:: html" not in out  # no giant Bokeh embed at scale
+        # the density-panel caption
+        assert "Filled cells where ≥ 5 matchups fall in a cell" in out
+        assert "0 matchups lie outside the axes and are counted in the statistics" in out
 
 
 def test_build_site_includes_nasa_giop_everywhere(tmp_path):
@@ -619,6 +689,292 @@ def test_figure_gallery_guarded_above_threshold():
     # above threshold -> suppressed with a downloads note, no <img>
     out = rst.figure_gallery(df, max_inline=2)
     assert "too many to show inline" in out and "<img" not in out
+
+
+# -- representative galleries (E5) -------------------------------------------
+def _synthetic_frame(n=300, *, runaway=True, seed=0):
+    """A comparison frame with a log-normal sat/float ratio and a Chl range."""
+    import pandas as pd
+
+    rng = np.random.default_rng(seed)
+    bbp_argo = 10 ** rng.uniform(-3.5, -2.0, n)
+    ratio = 10 ** rng.normal(0.0, 0.3, n)
+    bbp_bing = bbp_argo * ratio
+    chl = 10 ** rng.uniform(-2, 0.5, n)
+    if runaway:
+        bbp_bing[7] = 2.0e3  # the largest runaway
+        bbp_bing[11] = 5.0  # a smaller one
+    df = pd.DataFrame(
+        {
+            "matchup_id": [f"M{i:04d}" for i in range(n)],
+            "fit_id": [f"M{i:04d}_fit" for i in range(n)],
+            "wmo": 7900000 + np.arange(n),
+            "cycle": np.arange(n) % 50,
+            "latitude": rng.uniform(-70, 70, n),
+            "longitude": rng.uniform(-180, 180, n),
+            "time": "2025-03-01T00:00:00",
+            "bbp_argo": bbp_argo,
+            "bbp_bing": bbp_bing,
+            "chl_bing": chl,
+        }
+    )
+    # a few unusable pairs: must be ignored, not selected
+    df.loc[0, "bbp_argo"] = np.nan
+    df.loc[1, "bbp_argo"] = 0.0
+    return df
+
+
+def test_select_representative_fits_is_deterministic_with_reasons():
+    df = _synthetic_frame()
+    sel = rst.select_representative_fits(df)
+    assert len(sel) == 8
+    reasons = list(sel["reason"])
+    assert [r.split(" ")[0] for r in reasons[:5]] == ["5th", "25th", "50th", "75th", "95th"]
+    assert all("percentile of sat/float b_bp, ratio" in r for r in reasons[:5])
+    assert reasons[5].startswith("non-physical retrieval, b_bp = 2.0e3 m⁻¹")
+    assert sel.iloc[5]["matchup_id"] == "M0007"  # the largest runaway, not M0011
+    assert reasons[6].startswith("clearest tercile, Chl ")
+    assert reasons[7].startswith("most productive tercile, Chl ")
+    # captions are "WMO/cycle — reason"
+    for _, r in sel.iterrows():
+        assert r["caption"] == f"{r['wmo']}/{r['cycle']} — {r['reason']}"
+    # the percentile picks bracket the population in order; the unusable rows
+    # are never chosen
+    lr = sel["log_ratio"].to_numpy()[:5]
+    assert np.all(np.diff(lr) > 0)
+    assert not {"M0000", "M0001"} & set(sel["matchup_id"])
+    # the clearest pick is in the clearest tercile and the productive one in the top
+    lo, hi = np.percentile(df["chl_bing"][2:], [100 / 3, 200 / 3])
+    assert sel.iloc[6]["chl_bing"] < lo and sel.iloc[7]["chl_bing"] >= hi
+    # deterministic: the same rows in the same order, whatever the input order
+    again = rst.select_representative_fits(df.sample(frac=1, random_state=3))
+    assert list(again["matchup_id"]) == list(sel["matchup_id"])
+    assert list(again["reason"]) == reasons
+
+
+def test_select_representative_fits_without_runaway_and_dedup():
+    sel = rst.select_representative_fits(_synthetic_frame(runaway=False))
+    assert len(sel) == 7
+    assert not any(r.startswith("non-physical") for r in sel["reason"])
+    # a tiny population collapses onto the same rows: de-duplicated, order kept
+    tiny = _synthetic_frame(n=4, runaway=False).iloc[2:]
+    sel = rst.select_representative_fits(tiny)
+    assert len(sel) == len(set(sel["matchup_id"])) <= 2
+    assert sel.iloc[0]["reason"].startswith("5th percentile")
+    # ties go to the smallest matchup_id (identical ratios everywhere)
+    import pandas as pd
+
+    same = pd.DataFrame(
+        {
+            "matchup_id": ["M3", "M1", "M2"],
+            "wmo": [3, 1, 2],
+            "cycle": [1, 1, 1],
+            "bbp_argo": [1e-3] * 3,
+            "bbp_bing": [2e-3] * 3,
+            "chl_bing": [0.1, 0.1, 0.1],
+        }
+    )
+    assert list(rst.select_representative_fits(same)["matchup_id"]) == ["M1"]
+    # empty in, empty out (with the documented columns)
+    empty = rst.select_representative_fits(same.iloc[:0])
+    assert len(empty) == 0 and {"reason", "caption"} <= set(empty.columns)
+
+
+def test_select_representative_scenes_one_per_region():
+    from pab.metrics import compare
+
+    df = compare.add_strata(_synthetic_frame())
+    sel = rst.select_representative_scenes(df)
+    regions = list(sel["region"])
+    assert len(regions) == len(set(regions)) == 4  # one per latitude band
+    usable = df[np.isfinite(df["bbp_argo"]) & (df["bbp_argo"] > 0)]
+    counts = usable["region"].value_counts()  # the pairs the medians are over
+    assert regions == sorted(regions, key=lambda r: (-counts[r], r))  # most populous first
+    for _, r in sel.iterrows():
+        assert r["reason"].startswith(f"{r['region']} band, nearest its median")
+        assert f"(n={counts[r['region']]:,})" in r["reason"]
+    assert len(rst.select_representative_scenes(df, max_regions=2)) == 2
+    # the pick is the one nearest its band's median log-ratio
+    tropics = df[(df["region"] == "tropics") & np.isfinite(df["bbp_argo"])]
+    tropics = tropics[tropics["bbp_argo"] > 0]
+    lr = np.log10(tropics["bbp_bing"] / tropics["bbp_argo"])
+    nearest = tropics["matchup_id"].iloc[int(np.argmin(np.abs(lr - np.median(lr))))]
+    assert sel[sel["region"] == "tropics"]["matchup_id"].iloc[0] == nearest
+
+
+def test_figure_root_remap_resolves_prefix_and_drops_missing(tmp_path):
+    roots = {
+        "/data": str(tmp_path / "all"),
+        "/data/v2/pipeline/figures/": str(tmp_path / "v2figs"),  # longest wins
+    }
+    src = "/data/v2/pipeline/figures/M1_fit.png"
+    assert rst.remap_figure_path(src, roots) == str(tmp_path / "v2figs" / "M1_fit.png")
+    assert rst.remap_figure_path("/data/v1/pipeline/figures/s.png", roots) == str(
+        tmp_path / "all" / "v1" / "pipeline" / "figures" / "s.png"
+    )
+    # a prefix matches whole components only, and no match leaves the path alone
+    assert rst.remap_figure_path("/data/v2/pipeline/figures_old/x.png", roots) == str(
+        tmp_path / "all" / "v2" / "pipeline" / "figures_old" / "x.png"
+    )
+    assert rst.remap_figure_path("/elsewhere/x.png", roots) == "/elsewhere/x.png"
+    assert rst.remap_figure_path(src, None) == src
+    # staging resolves through the remap …
+    (tmp_path / "v2figs").mkdir()
+    (tmp_path / "v2figs" / "M1_fit.png").write_bytes(b"fake-png")
+    site = tmp_path / "site"
+    url = rst._stage_static(src, site, "figures", figure_roots=roots)
+    assert url == "_static/figures/M1_fit.png"
+    assert (site / "_static" / "figures" / "M1_fit.png").read_bytes() == b"fake-png"
+    # … and a file that is still missing (even under a nonexistent root) is dropped
+    assert rst._stage_static("/data/v2/pipeline/figures/M2_fit.png", site, "figures", figure_roots=roots) is None
+    missing_root = {"/data/v2/pipeline/argo_qa": str(tmp_path / "does-not-exist")}
+    assert rst._stage_static("/data/v2/pipeline/argo_qa/1_2.png", site, "argo_qa", figure_roots=missing_root) is None
+    assert rst._stage_static(None, site, "figures", figure_roots=roots) is None
+
+
+def test_stage_static_downscales_large_images(tmp_path):
+    from PIL import Image
+
+    big = tmp_path / "big_fit.png"
+    Image.new("RGBA", (3000, 1500), (10, 20, 30, 255)).save(big)
+    small = tmp_path / "small_fit.png"
+    Image.new("RGB", (800, 600), (10, 20, 30)).save(small)
+    site = tmp_path / "site"
+    url = rst._stage_static(str(big), site, "figures")
+    assert url == "_static/figures/big_fit.png"
+    with Image.open(site / url) as im:
+        assert im.size == (rst.GALLERY_MAX_SIDE, rst.GALLERY_MAX_SIDE // 2)
+    staged = site / "_static" / "figures" / "big_fit.png"
+    assert staged.stat().st_size < big.stat().st_size
+    # already small enough: copied verbatim
+    rst._stage_static(str(small), site, "figures")
+    assert (site / "_static" / "figures" / "small_fit.png").read_bytes() == small.read_bytes()
+    # max_side=None switches the downscale off
+    rst._stage_static(str(big), site, "raw", max_side=None)
+    assert (site / "_static" / "raw" / "big_fit.png").read_bytes() == big.read_bytes()
+
+
+def _seed_population(store, tmp_path, n):
+    """``n`` matchups spanning a range of ratios, each with a fit figure, a
+    scene and a Q&A plot on disk (stub bytes) — enough to exceed a small
+    ``MAX_INLINE_FIGURES``."""
+    src = tmp_path / "src"
+    src.mkdir(exist_ok=True)
+    for i in range(n):
+        fit_id = _seed(
+            store,
+            f"M{i:03d}",
+            7900000 + i,
+            i,
+            lat=-60 + 120 * i / max(n - 1, 1),
+            lon=-100 + i,
+            time="2025-02-18T20:00:00",
+            bbp_argo=1e-3,
+            bbp_bing=1e-3 * 10 ** (-0.6 + 1.2 * i / max(n - 1, 1)),
+            chl_bing=0.01 * 10 ** (2 * i / max(n - 1, 1)),
+            figure_path=str(src / f"M{i:03d}_fit.png"),
+        )
+        for name in (f"M{i:03d}_fit.png", f"M{i:03d}_scene.png", f"M{i:03d}_qa.png"):
+            (src / name).write_bytes(b"png")
+        store.execute(
+            "UPDATE matchups SET scene_path = ? WHERE matchup_id = ?",
+            (str(src / f"M{i:03d}_scene.png"), f"M{i:03d}"),
+        )
+        store.execute(
+            "UPDATE mld_summary SET qa_path = ? WHERE profile_id = "
+            "(SELECT profile_id FROM matchups WHERE matchup_id = ?)",
+            (str(src / f"M{i:03d}_qa.png"), f"M{i:03d}"),
+        )
+        assert fit_id
+    return src
+
+
+def test_figures_page_above_max_inline_shows_only_the_selection(tmp_path, monkeypatch, caplog):
+    import logging
+    import re
+
+    monkeypatch.setattr(rst, "MAX_INLINE_FIGURES", 5)
+    monkeypatch.setattr(rst, "MAX_INTERACTIVE_MATCHUPS", 5)
+    site = tmp_path / "site"
+    with Store.open(":memory:") as store:
+        src = _seed_population(store, tmp_path, 12)
+        # one selected Q&A plot is missing on disk: dropped with a counted warning
+        df = rst._gather_with_figures(store, site)
+        fits = rst.select_representative_fits(df)
+        scenes = rst.select_representative_scenes(df)
+        assert 5 <= len(fits) <= 8 and 1 <= len(scenes) <= rst.MAX_SCENE_REGIONS
+        gone = fits["matchup_id"].iloc[2]
+        (src / f"{gone}_qa.png").unlink()
+        with caplog.at_level(logging.WARNING, logger="pab.report"):
+            page = rst.figures_page(store, site, df)
+    # exactly the selected thumbnails, with their reasons, in each gallery
+    imgs = re.findall(r'<img src="([^"]+)"', page)
+    assert len(imgs) == len(fits) + len(scenes) + len(fits) - 1
+    assert [u for u in imgs if "_static/figures/" in u] == [
+        f"_static/figures/{m}_fit.png" for m in fits["matchup_id"]
+    ]
+    assert [u for u in imgs if "_static/scenes/" in u] == [
+        f"_static/scenes/{m}_scene.png" for m in scenes["matchup_id"]
+    ]
+    assert [u for u in imgs if "_static/argo_qa/" in u] == [
+        f"_static/argo_qa/{m}_qa.png" for m in fits["matchup_id"] if m != gone
+    ]
+    for cap in list(fits["caption"]) + list(scenes["caption"]):
+        assert f"<figcaption>{cap}</figcaption>" in page
+    assert "12 matchups — too many to show inline" in page
+    assert f"The {len(fits)} below were chosen to span the sat/float agreement" in page
+    assert "plus one failed retrieval" not in page  # no runaway in this population
+    assert "the clearest and most productive regimes" in page
+    assert "one per latitude band" in page
+    assert f"The {len(fits) - 1} below are the profiles behind" in page
+    assert f"(1 of the {len(fits)} chosen have no file reachable" in page
+    # only the selected files were staged, nothing else
+    assert sorted(p.name for p in (site / "_static" / "figures").iterdir()) == sorted(
+        f"{m}_fit.png" for m in fits["matchup_id"]
+    )
+    assert len(list((site / "_static" / "scenes").iterdir())) == len(scenes)
+    assert len(list((site / "_static" / "argo_qa").iterdir())) == len(fits) - 1
+    # one counted warning for the Q&A gallery, none for the others
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "Argo profile Q&A" in warnings[0]
+    assert f"1 of {len(fits)} representative files dropped" in warnings[0]
+
+
+def test_build_site_passes_figure_roots_to_every_gallery(tmp_path, monkeypatch):
+    """Stored (in-pod) paths resolve through ``figure_roots`` for fits, scenes
+    and Q&A plots alike; nothing is staged for a prefix that has no root."""
+    monkeypatch.setattr(rst, "MAX_INLINE_FIGURES", 5)
+    monkeypatch.setattr(rst, "MAX_INTERACTIVE_MATCHUPS", 5)
+    site = tmp_path / "site"
+    with Store.open(":memory:") as store:
+        src = _seed_population(store, tmp_path, 8)
+        # rewrite every stored path to a pod-style prefix
+        store.execute(
+            "UPDATE fits SET figure_path = replace(figure_path, ?, '/data/v2/pipeline/figures')",
+            (str(src),),
+        )
+        store.execute(
+            "UPDATE matchups SET scene_path = replace(scene_path, ?, '/data/v1/pipeline/figures')",
+            (str(src),),
+        )
+        store.execute(
+            "UPDATE mld_summary SET qa_path = replace(qa_path, ?, '/data/full/pipeline/argo_qa')",
+            (str(src),),
+        )
+        roots = {
+            "/data/v2/pipeline/figures": str(src),
+            "/data/v1/pipeline/figures": str(src),
+            "/data/v2/pipeline/argo_qa": str(tmp_path / "absent"),  # tolerated
+        }
+        written = rst.build_site(store, site, sortable=False, figure_roots=roots)
+        page = written["figures"].read_text()
+        assert "_static/figures/" in page and "_static/scenes/" in page
+        assert "_static/argo_qa/" not in page  # no root for /data/full/…
+        assert "too many to show inline" in page
+        # without the remap nothing resolves and the old downloads notes remain
+        plain = tmp_path / "plain"
+        rst.build_site(store, plain, sortable=False)
+        assert "<img" not in (plain / "figures.rst").read_text()
 
 
 # -- interactive (bokeh) ----------------------------------------------------

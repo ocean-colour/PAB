@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import logging
+import os
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1147,7 +1148,28 @@ def build_parser() -> argparse.ArgumentParser:
         "the s3://pab public URL) instead of staging multi-MB CSV/Parquet into the "
         "committed site. Keeps report_site/ bounded at scale (HOWTO §7b).",
     )
+    p.add_argument(
+        "--figure-root",
+        action="append",
+        default=None,
+        type=figure_root_pair,
+        metavar="OLD=NEW",
+        help="With --emit-site: translate figure paths recorded in the database "
+        "(fits.figure_path, matchups.scene_path, mld_summary.qa_path) that start "
+        "with OLD to NEW before staging the galleries. Repeatable, one per stored "
+        "prefix; the longest matching OLD wins. Files still missing after the "
+        "remap are dropped from their gallery with a counted warning.",
+    )
     return p
+
+
+def figure_root_pair(text: str) -> tuple[str, str]:
+    """Parse one ``--figure-root OLD=NEW`` argument (``~`` and ``$VAR`` in NEW
+    are expanded, so the flag works the same from a shell or a job spec)."""
+    old, sep, new = text.partition("=")
+    if not sep or not old or not new:
+        raise argparse.ArgumentTypeError(f"expected OLD=NEW, got {text!r}")
+    return old, os.path.expanduser(os.path.expandvars(new))
 
 
 def main(argv=None) -> int:
@@ -1204,6 +1226,7 @@ def main(argv=None) -> int:
                 opener=opener,
                 downloads_base_url=args.downloads_base_url,
                 compare_db=args.compare_db,
+                figure_roots=dict(args.figure_root or []),
             )
         print(f"emitted reporting site → {args.emit_site}")
         for name, path in sorted(written.items()):

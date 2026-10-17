@@ -387,6 +387,20 @@ building the developer docs from the root `.readthedocs.yaml`.
 > CDN list is baked into the generated `conf.py`), and the thumbnails are served
 > as static files — both render on RTD with no Bokeh install at build time.
 
+**Maps need cartopy (2026-10-17, E4).** The Comparisons page's two maps
+(`matchup_map.png`, `healpix_map.png`; `pab.plotting.population.matchup_map` /
+`healpix_map`) draw on cartopy `Robinson` axes with Natural Earth land and
+coastlines, so `cartopy` is in `requirements.txt`. The first use **downloads**
+the 110m Natural Earth `land` and `coastline` shapefiles (network once, ~1 MB)
+into cartopy's cache, `~/.local/share/cartopy/shapefiles/natural_earth/physical/`
+(`cartopy.config["data_dir"]`; the workstation already has them). Without
+cartopy the maps fall back to plain lon/lat axes, and with cartopy but no cache
+and no network to Robinson axes without land — a warning either way, never a
+failed build. The tests force the plain-axes path (`projection=None`), so the
+suite never touches the network. The Docker image was **not** rebuilt for this
+pin: the report stage (`--emit-site`) runs on the workstation, not in the pod
+(Q&A/v2 F6).
+
 ### 7b. Bulk artifacts & DOI snapshots — S3 backend live (DB published); full artifact publish + Zenodo pending
 
 The `report` stage writes a release **manifest** and uploads artifacts through a

@@ -453,7 +453,302 @@ def test_comparison_scatter_file_and_budget(tmp_path):
         df, "bbp_bing", "bbp_argo", outfile=tmp_path / "scatter.png"
     )
     assert out.exists() and out.stat().st_size < population.SIZE_BUDGET
-    assert population.matchup_map(df, outfile=tmp_path / "map.png").exists()
+    assert population.matchup_map(
+        df, outfile=tmp_path / "map.png", projection=None
+    ).exists()
+
+
+def _dense_frame(n=3000, seed=0):
+    """A sat/float population dense enough to fill histogram cells.
+
+    Log-**uniform** over one decade, deliberately: the 99 % clip pads the
+    percentile range by × 0.7 / × 1.4, which covers a bounded distribution
+    entirely, so nothing is off-scale unless a test puts it there. (A
+    log-normal has tails beyond the clip and would add off-scale points of
+    its own.)
+    """
+    import pandas as pd
+
+    rng = np.random.default_rng(seed)
+    insitu = 10 ** rng.uniform(-3.5, -2.5, n)
+    sat = insitu * 10 ** rng.uniform(-0.1, 0.3, n)
+    return pd.DataFrame({"bbp_bing": sat, "bbp_argo": insitu})
+
+
+def _mesh_and_dots(fig):
+    """The (QuadMesh, dot Line2D) drawn by ``density_scatter``, or ``None``s."""
+    from matplotlib.collections import QuadMesh
+
+    ax = fig.axes[0]
+    mesh = next((c for c in ax.collections if isinstance(c, QuadMesh)), None)
+    dots = next((ln for ln in ax.lines if ln.get_marker() == "o"), None)
+    return mesh, dots
+
+
+def test_density_scatter_file_and_budget(tmp_path):
+    df = _dense_frame()
+    out = population.density_scatter(
+        df, "bbp_bing", "bbp_argo", outfile=tmp_path / "density.png"
+    )
+    assert out.exists() and out.stat().st_size < population.SIZE_BUDGET
+    # a dense population draws filled cells AND leaves some sparse-cell dots
+    import matplotlib.pyplot as plt
+
+    fig = population.density_scatter(df, "bbp_bing", "bbp_argo", cmap="Greens")
+    mesh, dots = _mesh_and_dots(fig)
+    assert mesh is not None and dots is not None
+    assert fig.axes[0].get_xscale() == "log" and fig.axes[0].get_yscale() == "log"
+    assert any(a.get_ylabel() == "matchups per cell" for a in fig.axes[1:])
+    plt.close(fig)
+
+
+def test_density_scatter_small_frame_is_all_dots():
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    # 20 distinct points over 50 x 50 cells: no cell reaches min_count=5
+    insitu = np.logspace(-4, -2, 20)
+    df = pd.DataFrame({"bbp_bing": insitu * 1.5, "bbp_argo": insitu})
+    fig = population.density_scatter(df, "bbp_bing", "bbp_argo")
+    mesh, dots = _mesh_and_dots(fig)
+    assert mesh is None and dots is not None
+    assert len(dots.get_xdata()) == 20
+    assert fig.axes[0].get_title().startswith("n=20")
+    assert "off-scale" not in fig.axes[0].get_title()
+    plt.close(fig)
+
+
+def test_density_scatter_ignores_nan_and_nonpositive():
+    import matplotlib.pyplot as plt
+
+    df = _dense_frame(n=500)
+    df.loc[0, "bbp_bing"] = np.nan
+    df.loc[1, "bbp_argo"] = -1.0
+    df.loc[2, "bbp_bing"] = 0.0
+    fig = population.density_scatter(df, "bbp_bing", "bbp_argo")
+    stats = compare.log_comparison(df["bbp_bing"], df["bbp_argo"])
+    assert stats["n"] == 497
+    assert fig.axes[0].get_title().startswith(f"n={stats['n']} ")
+    plt.close(fig)
+
+
+def test_density_scatter_counts_offscale_but_keeps_them_in_stats():
+    import matplotlib.pyplot as plt
+
+    df = _dense_frame(n=1000)
+    df.loc[[0, 1, 2], "bbp_bing"] = 1e4  # three non-physical runaways
+    fig = population.density_scatter(df, "bbp_bing", "bbp_argo")
+    title = fig.axes[0].get_title()
+    stats = compare.log_comparison(df["bbp_bing"], df["bbp_argo"])
+    assert "[3 off-scale]" in title
+    assert title.startswith(f"n={stats['n']} ")  # the runaways stay in n
+    assert stats["n"] == 1000
+    assert population.offscale_count(df, "bbp_bing", "bbp_argo") == 3
+    # the runaways no longer set the axes
+    assert fig.axes[0].get_ylim()[1] < 1.0
+    plt.close(fig)
+    # without a clip nothing is off-scale (and the title says nothing)
+    fig = population.density_scatter(df, "bbp_bing", "bbp_argo", clip_percentile=None)
+    assert "off-scale" not in fig.axes[0].get_title()
+    assert population.offscale_count(df, "bbp_bing", "bbp_argo", clip_percentile=None) == 0
+    plt.close(fig)
+
+
+# -- maps (projection=None: plain axes, no cartopy, no network) -------------
+def _map_frame(n=2000, seed=0, runaways=3):
+    """Matchups spread over the oceans with a log-normal sat/float ratio
+    (σ = 0.2 dex) and ``runaways`` satellite values at 1e4 m⁻¹."""
+    import pandas as pd
+
+    rng = np.random.default_rng(seed)
+    insitu = 10 ** rng.uniform(-3.5, -2.5, n)
+    sat = insitu * 10 ** rng.normal(0.05, 0.2, n)
+    sat[:runaways] = 1e4
+    return pd.DataFrame(
+        {
+            "bbp_bing": sat,
+            "bbp_argo": insitu,
+            "latitude": rng.uniform(-65, 65, n),
+            "longitude": rng.uniform(-180, 180, n),
+        }
+    )
+
+
+def test_matchup_map_plain_axes_file_and_budget(tmp_path):
+    df = _map_frame()
+    out = population.matchup_map(
+        df, outfile=tmp_path / "matchup_map.png", projection=None
+    )
+    assert out.exists() and out.stat().st_size < population.MAP_SIZE_BUDGET
+    import matplotlib.pyplot as plt
+
+    fig = population.matchup_map(df, projection=None)
+    ax = fig.axes[0]
+    assert type(ax).__name__ == "Axes"  # not a cartopy GeoAxes
+    assert ax.get_xlim() == (-180.0, 180.0) and ax.get_ylim() == (-90.0, 90.0)
+    assert "2,000 matchups" in ax.get_title()
+    assert "2nd-98th percentile" in ax.get_title()
+    assert any("log10(satellite / float b_bp)" in a.get_ylabel() for a in fig.axes[1:])
+    plt.close(fig)
+
+
+def test_log_ratio_vmax_is_symmetric_and_ignores_runaways():
+    import matplotlib.pyplot as plt
+
+    df = _map_frame()
+    vmax = population.log_ratio_vmax(df, "bbp_bing", "bbp_argo")
+    lr = population.log_ratio(df, "bbp_bing", "bbp_argo")
+    fin = lr[np.isfinite(lr)]
+    assert fin.size == len(df)
+    p2, p98 = np.percentile(fin, [2, 98])
+    assert vmax == pytest.approx(max(abs(p2), abs(p98)))
+    # the three 1e4 runaways (log-ratio ~ +7) do not reach the scale
+    assert 0.3 < vmax < 0.7
+    # ... and both maps, given that vmax, colour on exactly [-vmax, vmax]
+    fig = population.matchup_map(df, vmax=vmax, projection=None)
+    norm = fig.axes[0].collections[-1].norm
+    assert (norm.vmin, norm.vmax) == (-vmax, vmax)
+    plt.close(fig)
+    fig = population.healpix_map(df, vmax=vmax, projection=None)
+    norm = fig.axes[0].collections[-1].norm
+    assert (norm.vmin, norm.vmax) == (-vmax, vmax)
+    plt.close(fig)
+    # with no finite ratio at all the limit falls back to 1 dex, not NaN
+    empty = df.assign(bbp_argo=np.nan)
+    assert population.log_ratio_vmax(empty, "bbp_bing", "bbp_argo") == 1.0
+
+
+def test_healpix_map_drops_thin_cells(tmp_path):
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    from matplotlib.collections import PolyCollection
+
+    rng = np.random.default_rng(3)
+    # 40 matchups in one ~7° cell (jitter 0.1°), 2 in another, far away
+    lat = np.r_[10.0 + rng.uniform(-0.1, 0.1, 40), -40.0, -40.05]
+    lon = np.r_[10.0 + rng.uniform(-0.1, 0.1, 40), -150.0, -150.05]
+    insitu = np.full(42, 1e-3)
+    df = pd.DataFrame(
+        {
+            "bbp_bing": insitu * 10 ** np.r_[np.full(40, 0.1), -0.3, -0.3],
+            "bbp_argo": insitu,
+            "latitude": lat,
+            "longitude": lon,
+        }
+    )
+    cells = population.healpix_medians(df, "bbp_bing", "bbp_argo")
+    assert sorted(cells["n"]) == [2, 40]
+    assert cells.loc[cells["n"] == 40, "median_log_ratio"].iloc[0] == pytest.approx(0.1)
+    out = population.healpix_map(
+        df, outfile=tmp_path / "healpix_map.png", projection=None
+    )
+    assert out.exists() and out.stat().st_size < population.MAP_SIZE_BUDGET
+    fig = population.healpix_map(df, projection=None)
+    ax = fig.axes[0]
+    coll = next(c for c in ax.collections if isinstance(c, PolyCollection))
+    assert len(coll.get_paths()) == 1  # only the 40-matchup cell is drawn
+    assert "1 HEALPix cells" in ax.get_title()
+    assert "holding 40 matchups" in ax.get_title()
+    assert "1 sparser cells not drawn" in ax.get_title()
+    plt.close(fig)
+    # a lower threshold draws both
+    fig = population.healpix_map(df, min_count=2, projection=None)
+    coll = next(c for c in fig.axes[0].collections if isinstance(c, PolyCollection))
+    assert len(coll.get_paths()) == 2
+    plt.close(fig)
+
+
+def test_healpix_cell_outlines_at_the_dateline():
+    import healpy
+
+    from pab.report.aggregate import nside_for_cell_size
+
+    nside = nside_for_cell_size(5.0)
+    # every cell's pieces are compact: nothing spans more than half the globe,
+    # nothing is degenerate (a zero-width piece projects as the whole globe)
+    straddlers = []
+    for p in range(healpy.nside2npix(nside)):
+        pieces, split = population._dateline_pieces(*population._cell_outline(nside, p))
+        assert len(pieces) == (2 if split else 1)
+        if split:
+            straddlers.append(pieces)
+        for lon, lat in pieces:
+            assert -180.0 <= lon.min() and lon.max() <= 180.0
+            assert 0.5 < lon.max() - lon.min() <= 180.0
+            assert lat.max() - lat.min() > 0.5
+    # the cells that straddle 180° (at nside 8 the equatorial diamonds only
+    # *touch* it; the rings beside them cross it) are split into a western
+    # piece ending at 180° and an eastern piece starting at -180°
+    assert straddlers
+    for west, east in straddlers:
+        assert west[0].max() == pytest.approx(180.0) and west[0].min() < 179.0
+        assert east[0].min() == pytest.approx(-180.0) and east[0].max() > -179.0
+    # the pole vertex takes its neighbours' longitude, not 0
+    lon, lat = population._cell_outline(nside, 1)  # pole cell over 90-180° E
+    assert 90.0 <= lon[np.abs(lat) > 89.999][0] <= 180.0
+
+
+def test_matchup_map_without_cartopy_warns_and_uses_plain_axes(monkeypatch, caplog):
+    import logging
+    import sys
+
+    import matplotlib.pyplot as plt
+
+    monkeypatch.setitem(sys.modules, "cartopy", None)  # `import cartopy` fails
+    with caplog.at_level(logging.WARNING, logger="pab.plotting"):
+        fig = population.matchup_map(_map_frame(200), projection="robinson")
+    assert "cartopy is not importable" in caplog.text
+    assert type(fig.axes[0]).__name__ == "Axes"
+    plt.close(fig)
+
+
+def test_matchup_map_without_natural_earth_warns_and_keeps_robinson(
+    monkeypatch, caplog
+):
+    pytest.importorskip("cartopy")
+    import logging
+
+    import matplotlib.pyplot as plt
+    from cartopy.io import shapereader
+
+    def _offline(*a, **k):
+        raise OSError("no network")
+
+    monkeypatch.setattr(shapereader, "natural_earth", _offline)
+    with caplog.at_level(logging.WARNING, logger="pab.plotting"):
+        fig = population.healpix_map(_map_frame(200), projection="robinson")
+    assert "Natural Earth coastlines unavailable" in caplog.text
+    assert type(fig.axes[0]).__name__ == "GeoAxes"
+    plt.close(fig)
+
+
+def _natural_earth_cached() -> bool:
+    try:
+        import cartopy
+    except ImportError:
+        return False
+    from pathlib import Path
+
+    root = Path(cartopy.config["data_dir"]) / "shapefiles" / "natural_earth" / "physical"
+    return all((root / f"ne_110m_{n}.shp").is_file() for n in ("land", "coastline"))
+
+
+@pytest.mark.skipif(
+    not _natural_earth_cached(), reason="cartopy + cached Natural Earth needed (no download)"
+)
+def test_maps_on_robinson_axes_with_cached_coastlines(tmp_path):
+    # the real path the report takes; only when the shapefiles are already
+    # cached so the suite never downloads
+    import matplotlib.pyplot as plt
+
+    df = _map_frame()
+    vmax = population.log_ratio_vmax(df, "bbp_bing", "bbp_argo")
+    for fn, name in ((population.matchup_map, "dots"), (population.healpix_map, "cells")):
+        out = fn(df, vmax=vmax, outfile=tmp_path / f"{name}.png", projection="robinson")
+        assert out.exists() and out.stat().st_size < population.MAP_SIZE_BUDGET
+        fig = fn(df, vmax=vmax, projection="robinson")
+        assert type(fig.axes[0]).__name__ == "GeoAxes"
+        plt.close(fig)
 
 
 # -- per-matchup fit figure (needs bing + its model data) -------------------

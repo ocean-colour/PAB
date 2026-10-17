@@ -30,6 +30,18 @@ _STATIC_FIGURES = "_static/figures"
 #: no-page-explosion constraint); detail then comes via tap-to-open + downloads.
 MAX_INLINE_FIGURES = 50
 
+#: The representative galleries shown above :data:`MAX_INLINE_FIGURES`
+#: (Q&A/v2 Q4 = A): the fit figures nearest these percentiles of
+#: ``log10(satellite / float b_bp)`` — plus one runaway and one matchup from
+#: each of the clearest and the most productive ``chl_bing`` terciles — and one
+#: scene quick-look per :func:`pab.metrics.compare.add_strata` region, at most
+#: :data:`MAX_SCENE_REGIONS` of them.
+REPRESENTATIVE_PERCENTILES = (5, 25, 50, 75, 95)
+MAX_SCENE_REGIONS = 6
+#: Longest side, in pixels, of a gallery file staged into the site. The
+#: committed site must stay small, so every staged copy is downscaled to this.
+GALLERY_MAX_SIDE = 1200
+
 #: Above this matchup count the Comparisons page renders **static** Matplotlib
 #: scatter/map PNGs instead of the interactive Bokeh embed. An all-points Bokeh
 #: embed of ~10⁴ matchups is ~14 MB of inline JSON — too big to commit — so at
@@ -412,6 +424,25 @@ def _nasa_bbp_note(df) -> str:
     return out
 
 
+def _density_caption(df, sat_col: str, insitu_col: str) -> str:
+    """The clause every density panel's caption carries: what is drawn, and
+    how many matchups the axes leave out (counted from the same rule the
+    figure used, so the caption's ``N`` is the title's ``N``)."""
+    from pab.plotting import population
+
+    n_off = population.offscale_count(df, sat_col, insitu_col)
+    outside = (
+        "1 matchup lies outside the axes and is counted"
+        if n_off == 1
+        else f"{n_off:,} matchups lie outside the axes and are counted"
+    )
+    return (
+        f"Filled cells where ≥ {population.DENSITY_MIN_COUNT} matchups fall in a "
+        f"cell, individual points elsewhere; {outside} in the statistics. The "
+        "dashed line is the median ratio; the solid line is 1:1."
+    )
+
+
 def nasa_giop_section(
     store,
     *,
@@ -460,25 +491,26 @@ def nasa_giop_section(
 
             dest = Path(outdir) / "_static" / "comparisons"
             dest.mkdir(parents=True, exist_ok=True)
-            # Interim panel (E3 swaps in the density scatter): the 99 % clip
-            # keeps the runaway BING values from setting the axes; they stay
-            # in the statistics and are counted in the title (Q&A/v2 Q6).
-            population.comparison_scatter(
+            # Density-plus-dots (Q&A/v2 Q5), its own hue so the page reads as
+            # three different comparisons. The 99 % clip keeps the runaway
+            # BING values from setting the axes; they stay in the statistics
+            # and are counted in the title and caption (Q6).
+            population.density_scatter(
                 df,
                 "bbp_700_nasa",
                 "bbp_bing",
                 outfile=dest / "nasa_giop_bbp_scatter.png",
                 xlabel="BING $b_{bp}$(700 nm) [m$^{-1}$]",
                 ylabel="NASA GIOP $b_{bp}$(700 nm) [m$^{-1}$]",
-                clip_percentile=99.0,
+                cmap="Purples",
             )
             out.append(
                 ".. figure:: _static/comparisons/nasa_giop_bbp_scatter.png\n"
                 "   :width: 520px\n\n"
                 "   NASA GIOP ``b_bp`` shifted to 700 nm vs BING ``b_bp`` "
-                "(700 nm), log-log; axes span the central 99 % of the values "
-                "and the off-scale count is in the title (those matchups stay "
-                "in the statistics).\n"
+                "(700 nm), log-log; axes span the central 99 % of the values. "
+                + _density_caption(df, "bbp_700_nasa", "bbp_bing")
+                + "\n"
             )
         except Exception:  # noqa: BLE001 — a bad panel must not break the build
             pass
@@ -857,33 +889,35 @@ def _version_static_figures(df, outdir) -> str:
     # Two labels per row, deliberately: `mpl` is Matplotlib mathtext for the
     # axis, `rst` is what goes in the caption. Reusing one put a literal
     # "$b_{bp}$" into the rendered page.
-    for key, mpl, unit, rst_label in (
-        ("bbp700", "$b_{bp}$(700 nm)", "m$^{-1}$", "``b_bp`` (700 nm)"),
-        ("chl", "chlorophyll", "mg m$^{-3}$", "chlorophyll"),
+    for key, mpl, unit, rst_label, cmap in (
+        ("bbp700", "$b_{bp}$(700 nm)", "m$^{-1}$", "``b_bp`` (700 nm)", "Blues"),
+        ("chl", "chlorophyll", "mg m$^{-3}$", "chlorophyll", "Greens"),
     ):
         c1, c2 = f"{key}_v1", f"{key}_v2"
         if c1 not in df or c2 not in df:
             continue
         try:
-            population.comparison_scatter(
+            # Same hues as the satellite-vs-float panels above (F4), so the
+            # page reads as one set. A handful of 2.0 fits return non-physical
+            # values (see the retrieval-failure note in the section text);
+            # the 99 % clip keeps them from setting the axes, the off-scale
+            # count is printed in the panel and caption, and they stay in
+            # the statistics.
+            population.density_scatter(
                 df,
                 c2,
                 c1,
                 outfile=dest / f"v2_vs_v1_{key}.png",
                 xlabel=f"1.0 (elastic) {mpl} [{unit}]",
                 ylabel=f"2.0 (inelastic) {mpl} [{unit}]",
-                # A handful of 2.0 fits return non-physical values (see the
-                # retrieval-failure note in the section text). Autoscaling to
-                # them squashes every real point into a corner; the off-scale
-                # count is printed in the panel and they stay in the stats.
-                clip_percentile=99.0,
+                cmap=cmap,
             )
             figs.append(
                 (
                     f"v2_vs_v1_{key}.png",
                     f"2.0 (inelastic) vs 1.0 (elastic) {rst_label}, log-log, "
-                    "same matchup and same pixel. The dashed line is the "
-                    "median ratio; the solid line is 1:1.",
+                    "same matchup and same pixel. "
+                    + _density_caption(df, c2, c1),
                 )
             )
         except Exception:  # noqa: BLE001 — a bad panel must not break the build
@@ -970,52 +1004,99 @@ def _static_comparison_figures(df, outdir) -> str:
     population helpers are unavailable or every panel fails.
     """
     try:
-        import numpy as np
-
         from pab.plotting import population
     except ImportError:
         return ""
     dest = Path(outdir) / "_static" / "comparisons"
     dest.mkdir(parents=True, exist_ok=True)
     figs: list[tuple[str, str]] = []
+    # Density-plus-dots panels (Q&A/v2 Q5): the 51 non-physical BING `b_bp`
+    # retrievals and the low-end pile-up at the prior floor no longer set the
+    # axes (the 99 % clip), the dense core shows its structure instead of one
+    # blob, and each quantity has its own hue.
     try:
-        population.comparison_scatter(
+        population.density_scatter(
             df,
             "bbp_bing",
             "bbp_argo",
             label="b_bp",
             unit="m$^{-1}$",
+            cmap="Blues",
             outfile=dest / "bbp_scatter.png",
         )
         figs.append(
-            ("bbp_scatter.png", "Satellite vs float ``b_bp`` (700 nm), log-log.")
+            (
+                "bbp_scatter.png",
+                "Satellite vs float ``b_bp`` (700 nm), log-log; axes span the "
+                "central 99 % of the values. "
+                + _density_caption(df, "bbp_bing", "bbp_argo"),
+            )
         )
     except Exception:  # noqa: BLE001 — a bad panel must not break the build
         pass
     if "chl_bing" in df and "chla_argo" in df:
         try:
-            population.comparison_scatter(
+            population.density_scatter(
                 df,
                 "chl_bing",
                 "chla_argo",
                 label="chlorophyll",
                 unit="mg m$^{-3}$",
+                cmap="Greens",
                 outfile=dest / "chl_scatter.png",
             )
-            figs.append(("chl_scatter.png", "Satellite vs float chlorophyll, log-log."))
+            figs.append(
+                (
+                    "chl_scatter.png",
+                    "Satellite vs float chlorophyll, log-log; axes span the "
+                    "central 99 % of the values. "
+                    + _density_caption(df, "chl_bing", "chla_argo"),
+                )
+            )
         except Exception:  # noqa: BLE001
             pass
+    # The two maps (Q&A/v2 Q8, F5) share one symmetric colour scale, computed
+    # once here from the per-matchup log-ratio; the maps compute the ratio
+    # themselves, so no runaway reaches the colorbar through this caller.
+    vmax = population.log_ratio_vmax(df, "bbp_bing", "bbp_argo")
+    scale = (
+        "colour = log10(satellite / float ``b_bp``), symmetric about 0 and "
+        f"clipped at ±{vmax:.2f} dex (the {population.percentile_range()} "
+        "percentile of the per-matchup log-ratio; values beyond take the end "
+        "colours)"
+    )
     try:
-        dfm = df.copy()
-        with np.errstate(divide="ignore", invalid="ignore"):
-            dfm["ratio"] = dfm["bbp_bing"].to_numpy(dtype=float) / dfm[
-                "bbp_argo"
-            ].to_numpy(dtype=float)
-        population.matchup_map(dfm, color_col="ratio", outfile=dest / "matchup_map.png")
+        population.matchup_map(
+            df, sat_col="bbp_bing", insitu_col="bbp_argo", vmax=vmax,
+            outfile=dest / "matchup_map.png",
+        )
         figs.append(
             (
                 "matchup_map.png",
-                "Matchup locations, coloured by sat/float ``b_bp`` ratio.",
+                f"Matchup locations (one dot per matchup); {scale}. Matchups "
+                "without a float ``b_bp`` are grey.",
+            )
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        population.healpix_map(
+            df, sat_col="bbp_bing", insitu_col="bbp_argo", vmax=vmax,
+            outfile=dest / "healpix_map.png",
+        )
+        cells = population.healpix_medians(df, "bbp_bing", "bbp_argo")
+        drawn = cells[cells["n"] >= population.HEALPIX_MIN_COUNT]
+        nside = int(cells["nside"].iloc[0]) if len(cells) else 0
+        width = f"≈ {population.healpix_cell_deg(nside):.0f}° cells" if nside else ""
+        figs.append(
+            (
+                "healpix_map.png",
+                "Median log10(satellite / float ``b_bp``) per HEALPix cell "
+                f"(nside {nside}, {width}); only cells holding ≥ "
+                f"{population.HEALPIX_MIN_COUNT} matchups are drawn "
+                f"({len(drawn)} cells, {int(drawn['n'].sum()):,} matchups; "
+                f"{len(cells) - len(drawn)} sparser cells left out). The same "
+                f"scale as the dot map: {scale}.",
             )
         )
     except Exception:  # noqa: BLE001
@@ -1063,35 +1144,129 @@ def comparisons_page(
     return "\n".join(out)
 
 
-def figures_page(store, outdir, df) -> str:
+def figures_page(store, outdir, df, *, figure_roots=None) -> str:
     """The **Figures** page: the per-matchup fit, PACE scene, and Argo Q&A
-    thumbnail galleries (each N-guarded; no per-matchup pages)."""
+    thumbnail galleries (each N-guarded; no per-matchup pages).
+
+    Above :data:`MAX_INLINE_FIGURES` each gallery shows a representative
+    subset instead of nothing: the fits from :func:`select_representative_fits`,
+    one scene per region (:func:`select_representative_scenes`) and the Q&A
+    plots of the profiles behind the selected fits. Logs the total bytes the
+    galleries staged under ``_static``.
+    """
     out = [_heading("Matchup & profile figures"), ""]
     out.append(
         "Per-matchup **BING fit** figures and **PACE scene** quick-looks, plus the "
         "**Argo profile Q&A** plots. Shown as thumbnails (click to enlarge), never "
         "as separate per-matchup pages.\n"
     )
-    out.append(figure_gallery(df))
-    out.append(scene_gallery(store, outdir))
-    out.append(argo_qa_gallery(store, outdir))
+    fits = scenes = None
+    if len(df) > MAX_INLINE_FIGURES:
+        fits = select_representative_fits(df)
+        scenes = select_representative_scenes(df)
+    out.append(figure_gallery(df, representative=fits))
+    out.append(
+        scene_gallery(store, outdir, representative=scenes, figure_roots=figure_roots)
+    )
+    out.append(
+        argo_qa_gallery(store, outdir, representative=fits, figure_roots=figure_roots)
+    )
+    staged = [
+        p
+        for sub in ("figures", "scenes", "argo_qa")
+        for p in sorted((Path(outdir) / "_static" / sub).glob("*"))
+        if p.is_file()
+    ]
+    if staged:
+        _log.info(
+            "report: galleries staged %d files, %.2f MB under _static/ "
+            "(longest side ≤ %d px)",
+            len(staged),
+            sum(p.stat().st_size for p in staged) / 1e6,
+            GALLERY_MAX_SIDE,
+        )
     return "\n".join(out)
 
 
-def _stage_static(src, outdir, subdir: str) -> str | None:
+def remap_figure_path(src: str, figure_roots=None) -> str:
+    """Translate a stored (in-pod) figure path through ``--figure-root OLD=NEW``.
+
+    The database records PVC paths (``/data/v2/pipeline/figures/…``); a build
+    on the workstation reaches the files under other roots. The **longest**
+    matching ``OLD`` prefix wins (so ``/data/v2/pipeline/figures`` beats
+    ``/data`` when both are given); a prefix matches whole path components
+    only. A ``NEW`` root that does not exist is tolerated here — the file just
+    fails :func:`_stage_static`'s existence check and is counted as missing.
+    """
+    if not figure_roots or not src:
+        return src
+    best = None
+    for old, new in figure_roots.items():
+        old = old.rstrip("/")
+        if old and (src == old or src.startswith(old + "/")):
+            if best is None or len(old) > len(best[0]):
+                best = (old, new)
+    if best is None:
+        return src
+    old, new = best
+    return new.rstrip("/") + src[len(old) :]
+
+
+def _downscaled_copy(src: Path, dest: Path, max_side: int | None) -> Path:
+    """Write ``src`` to ``dest``, shrunk so its longest side is ``max_side`` px.
+
+    Pillow decodes and re-encodes (PNG) only when the image is actually larger
+    than ``max_side``; a smaller image, a file Pillow cannot read (test stubs),
+    or a build without Pillow gets a verbatim copy. Returns the written path
+    (the suffix becomes ``.png`` when re-encoded).
+    """
+    if max_side:
+        try:
+            from PIL import Image
+        except ImportError:
+            Image = None
+        if Image is not None:
+            try:
+                with Image.open(src) as im:
+                    if max(im.size) > max_side:
+                        im.thumbnail((max_side, max_side))
+                        out = dest.with_suffix(".png")
+                        im.save(out, format="PNG", optimize=True)
+                        return out
+            except (OSError, ValueError):
+                pass  # not a decodable image: copy it as it is
+    shutil.copyfile(src, dest)
+    return dest
+
+
+def _stage_static(
+    src,
+    outdir,
+    subdir: str,
+    *,
+    figure_roots=None,
+    max_side: int | None = GALLERY_MAX_SIDE,
+) -> str | None:
     """Copy an artifact into ``outdir/_static/<subdir>`` and return its
     page-relative URL, or ``None`` if ``src`` is missing/not on disk.
 
     The one place that copies a figure into the site tree — shared by the fit,
     scene, and Argo-Q&A galleries so the copy/URL convention stays consistent.
+    ``src`` is first translated through ``figure_roots``
+    (:func:`remap_figure_path`), and the copy is downscaled to ``max_side``
+    pixels on its longest side (:func:`_downscaled_copy`) so the committed
+    site grows by kilobytes per thumbnail, not by the full-resolution PNG.
+    Callers count the ``None`` returns and warn once per gallery.
     """
-    if not (src and Path(src).is_file()):
+    if not src:
+        return None
+    path = Path(remap_figure_path(str(src), figure_roots))
+    if not path.is_file():
         return None
     dest = Path(outdir) / "_static" / subdir
     dest.mkdir(parents=True, exist_ok=True)
-    name = Path(src).name
-    shutil.copyfile(src, dest / name)
-    return f"_static/{subdir}/{name}"
+    written = _downscaled_copy(path, dest / path.name, max_side)
+    return f"_static/{subdir}/{written.name}"
 
 
 def _thumbnail_gallery(
@@ -1103,13 +1278,19 @@ def _thumbnail_gallery(
     max_inline: int,
     stage=None,
     total: int | None = None,
+    representative=None,
+    representative_intro: str | None = None,
 ) -> str:
     """An N-guarded clickable-thumbnail gallery from ``(url, caption)`` items.
 
     For a small set (``<= max_inline``) every item is shown as a thumbnail that
     links to the full PNG; above the threshold the gallery is suppressed (the
     design's no-page-explosion constraint) and ``over_limit`` (a ``{n}`` template)
-    is shown instead. Returns ``""`` when there are no items.
+    is shown instead — unless ``representative`` gives a handful of
+    ``(source, caption)`` items chosen to stand for the population, in which
+    case those are rendered under ``representative_intro`` (a ``{n}``/``{k}``
+    template: population size, thumbnails shown). Returns ``""`` when there are
+    no items.
 
     ``stage`` maps an item's first element (a source path) to a published URL,
     and is called **only when the gallery will actually render**. Callers used
@@ -1117,7 +1298,10 @@ def _thumbnail_gallery(
     the entire figure set — ~32,000 files and 636 MB — in order to display none
     of them. The N-guard protected the HTML and not the payload, which is the
     expensive half; measured in-pod, that copy ran at 2.8 files/s on CephFS, or
-    3.2 h to stage a gallery nobody sees.
+    3.2 h to stage a gallery nobody sees. A representative item whose file
+    cannot be staged (no recorded path, or not on disk after the
+    ``--figure-root`` remap) is dropped, and the drops are reported in **one**
+    warning per gallery, not one per file.
     """
     items = [(u, c) for (u, c) in items if isinstance(u, str) and u]
     # `total` is the population size, which is NOT len(items) once a caller
@@ -1129,15 +1313,38 @@ def _thumbnail_gallery(
         return ""
     out = [_heading(heading, "-"), ""]
     if n > max_inline:
-        out.append(over_limit.format(n=n) + "\n")
-        return "\n".join(out)
-    if not items:
-        return ""
-    if stage is not None:
-        items = [(stage(src), c) for (src, c) in items]
-        items = [(u, c) for (u, c) in items if isinstance(u, str) and u]
+        chosen = list(representative or [])
+        rep = [(u, c) for (u, c) in chosen if isinstance(u, str) and u]
+        if stage is not None:
+            rep = [(stage(src), c) for (src, c) in rep]
+            rep = [(u, c) for (u, c) in rep if isinstance(u, str) and u]
+        dropped = len(chosen) - len(rep)
+        if dropped:
+            _log.warning(
+                "report: %s — %d of %d representative files dropped (no "
+                "recorded path, or not on disk after the --figure-root remap)",
+                heading,
+                dropped,
+                len(chosen),
+            )
+        if not rep:
+            out.append(over_limit.format(n=n) + "\n")
+            return "\n".join(out)
+        items = rep
+        intro = (representative_intro or over_limit).format(n=n, k=len(rep))
+        if dropped:
+            intro += (
+                f" ({dropped} of the {len(chosen)} chosen have no file reachable "
+                "at build time and are left out.)"
+            )
+    else:
         if not items:
             return ""
+        if stage is not None:
+            items = [(stage(src), c) for (src, c) in items]
+            items = [(u, c) for (u, c) in items if isinstance(u, str) and u]
+            if not items:
+                return ""
     out.append(intro + "\n")
     html = ['<div class="pab-gallery">']
     for url, cap in items:
@@ -1154,18 +1361,216 @@ def _thumbnail_gallery(
     return "\n".join(out) + "\n"
 
 
+def _ordinal(n: int) -> str:
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _sci(x: float) -> str:
+    """``9.3e4`` — a compact mantissa/exponent for a runaway caption."""
+    mantissa, exponent = f"{x:.1e}".split("e")
+    return f"{mantissa}e{int(exponent)}"
+
+
+def _sorted_with_log_ratio(df):
+    """The frame sorted by ``matchup_id`` with a ``log_ratio`` column
+    (``log10(bbp_bing / bbp_argo)``, NaN unless both are finite and positive).
+
+    The sort is what makes every "nearest" pick below deterministic: an
+    ``argmin``/``argmax`` over the sorted frame returns the **first** of tied
+    rows, i.e. the smallest ``matchup_id``.
+    """
+    import numpy as np
+
+    base = df.sort_values("matchup_id", kind="stable").reset_index(drop=True).copy()
+    sat = base["bbp_bing"].to_numpy(dtype=float)
+    ins = base["bbp_argo"].to_numpy(dtype=float)
+    ok = np.isfinite(sat) & np.isfinite(ins) & (sat > 0) & (ins > 0)
+    lr = np.full(len(base), np.nan)
+    lr[ok] = np.log10(sat[ok] / ins[ok])
+    base["log_ratio"] = lr
+    return base
+
+
+def _nearest(log_ratio, mask, target) -> int | None:
+    """Position of the ``mask``-ed row whose ``log_ratio`` is nearest ``target``
+    (first = smallest ``matchup_id`` on a tie); ``None`` if the mask is empty."""
+    import numpy as np
+
+    d = np.where(mask, np.abs(log_ratio - target), np.inf)
+    if not np.isfinite(d).any():
+        return None
+    return int(np.argmin(d))
+
+
+def _with_captions(base, picks):
+    """De-duplicate ``(row, reason)`` picks keeping order; return the rows with
+    ``reason`` and ``caption`` (``WMO/cycle — reason``) columns."""
+    rows, reasons = [], []
+    for i, why in picks:
+        if i is None or i in rows:
+            continue
+        rows.append(i)
+        reasons.append(why)
+    out = base.iloc[rows].copy()
+    out["reason"] = reasons
+    out["caption"] = [
+        f"{w}/{c} — {r}"
+        for w, c, r in zip(out["wmo"], out["cycle"], reasons, strict=True)
+    ]
+    return out.reset_index(drop=True)
+
+
+def select_representative_fits(df):
+    """The ≤ 8 matchups whose fit figures stand for the population (Q4 = A).
+
+    Deterministic — the same rows on every rebuild of the same database — and
+    each row says why it was chosen (``reason``; ``caption`` is
+    ``WMO/cycle — reason``). In order:
+
+    1. the matchups whose ``log10(bbp_bing / bbp_argo)`` is nearest the
+       :data:`REPRESENTATIVE_PERCENTILES` (5th, 25th, 50th, 75th, 95th) of that
+       ratio over the finite positive pairs — what good, typical and poor
+       agreement look like;
+    2. the runaway with the largest ``bbp_bing`` above :data:`BBP_IMPLAUSIBLE`
+       (skipped when there is none) — what a failed retrieval looks like;
+    3. within the clearest and the most productive ``chl_bing`` tercile, the
+       matchup nearest that tercile's median log-ratio — the two regimes.
+
+    Ties go to the smallest ``matchup_id``; duplicates are removed keeping the
+    first reason. Returns an empty frame for an empty or ratio-less input.
+    """
+    import numpy as np
+    import pandas as pd
+
+    if not len(df) or "bbp_bing" not in df or "bbp_argo" not in df:
+        return pd.DataFrame(
+            columns=[*df.columns, "log_ratio", "reason", "caption"]
+        )
+    base = _sorted_with_log_ratio(df)
+    lr = base["log_ratio"].to_numpy()
+    sat = base["bbp_bing"].to_numpy(dtype=float)
+    ok = np.isfinite(lr)
+    picks: list[tuple[int | None, str]] = []
+    if ok.any():
+        targets = np.percentile(lr[ok], REPRESENTATIVE_PERCENTILES)
+        for p, target in zip(REPRESENTATIVE_PERCENTILES, targets, strict=True):
+            i = _nearest(lr, ok, target)
+            picks.append(
+                (i, f"{_ordinal(p)} percentile of sat/float b_bp, ratio {10 ** lr[i]:.3g}")
+            )
+    runaway = np.isfinite(sat) & (sat > BBP_IMPLAUSIBLE)
+    if runaway.any():
+        i = int(np.argmax(np.where(runaway, sat, -np.inf)))
+        picks.append((i, f"non-physical retrieval, b_bp = {_sci(sat[i])} m⁻¹"))
+    if "chl_bing" in base:
+        chl = base["chl_bing"].to_numpy(dtype=float)
+        okc = ok & np.isfinite(chl) & (chl > 0)
+        if okc.sum() >= 3:  # terciles of fewer rows are not terciles
+            lo_e, hi_e = np.percentile(chl[okc], [100 / 3, 200 / 3])
+            terciles = (
+                ("clearest", okc & (chl < lo_e)),
+                ("most productive", okc & (chl >= hi_e)),
+            )
+            for name, m in terciles:
+                if not m.any():
+                    continue
+                i = _nearest(lr, m, float(np.median(lr[m])))
+                picks.append(
+                    (
+                        i,
+                        f"{name} tercile, Chl {chl[i]:.2g} mg m⁻³, "
+                        f"ratio {10 ** lr[i]:.3g}",
+                    )
+                )
+    return _with_captions(base, picks)
+
+
+def select_representative_scenes(df, *, max_regions: int = MAX_SCENE_REGIONS):
+    """One matchup per :func:`pab.metrics.compare.add_strata` ``region`` — the
+    one nearest the region's median ``log10(bbp_bing / bbp_argo)`` — for the
+    ``max_regions`` most populous regions (ties: alphabetical). Deterministic;
+    ``reason``/``caption`` columns as in :func:`select_representative_fits`.
+    """
+    import numpy as np
+    import pandas as pd
+
+    if not len(df) or "bbp_bing" not in df or "bbp_argo" not in df:
+        return pd.DataFrame(
+            columns=[*df.columns, "log_ratio", "reason", "caption"]
+        )
+    if "region" not in df and "latitude" in df and "time" in df:
+        df = compare.add_strata(df)
+    base = _sorted_with_log_ratio(df)
+    lr = base["log_ratio"].to_numpy()
+    ok = np.isfinite(lr)
+    region = base["region"] if "region" in base else pd.Series([None] * len(base))
+    counts = {}
+    for name in region[ok]:
+        if name is not None:
+            counts[name] = counts.get(name, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0])))
+    picks = []
+    for name, count in ranked[:max_regions]:
+        m = ok & (region.to_numpy() == name)
+        med = float(np.median(lr[m]))
+        i = _nearest(lr, m, med)
+        picks.append(
+            (
+                i,
+                f"{name} band, nearest its median sat/float b_bp ratio "
+                f"{10 ** med:.3g} (n={count:,})",
+            )
+        )
+    return _with_captions(base, picks)
+
+
+def _fit_gallery_intro(selection) -> str:
+    """The representative fit gallery's intro, saying what the subset spans —
+    a ``{n}``/``{k}`` template for :func:`_thumbnail_gallery`."""
+    reasons = list(selection["reason"]) if len(selection) else []
+    text = (
+        "{n} matchups — too many to show inline. The {k} below were chosen to "
+        "span the sat/float agreement from the "
+        f"{_ordinal(REPRESENTATIVE_PERCENTILES[0])} to the "
+        f"{_ordinal(REPRESENTATIVE_PERCENTILES[-1])} percentile"
+    )
+    if any(r.startswith("non-physical") for r in reasons):
+        text += ", plus one failed retrieval"
+    if any("tercile" in r for r in reasons):
+        text += " and the clearest and most productive regimes"
+    return text + "; every figure is available as a download (Downloads page)."
+
+
 def figure_gallery(
-    df, *, url_col: str = FIGURE_URL_COL, max_inline: int = MAX_INLINE_FIGURES
+    df,
+    *,
+    url_col: str = FIGURE_URL_COL,
+    max_inline: int | None = None,
+    representative=None,
 ) -> str:
     """An N-guarded inline gallery of per-matchup fit figures (no per-matchup pages).
 
     For a small population every matchup's fit figure is a clickable thumbnail
-    (tap opens the full PNG / download); above the threshold detail comes via
-    tap-to-open on the scatter plus the release-manifest downloads.
+    (tap opens the full PNG / download); above the threshold the gallery shows
+    the ``representative`` selection (:func:`select_representative_fits`, whose
+    figures :func:`_gather_with_figures` has staged) with a line saying how it
+    was chosen — or, without one, only the downloads note.
     """
+    if max_inline is None:
+        max_inline = MAX_INLINE_FIGURES
     items = [
         (r.get(url_col), f"{r.get('wmo')}/{r.get('cycle')}") for _, r in df.iterrows()
     ]
+    rep = None
+    if representative is not None and len(representative):
+        urls = dict(zip(df["matchup_id"], df[url_col], strict=True))
+        rep = [
+            (urls.get(mid), cap)
+            for mid, cap in zip(
+                representative["matchup_id"], representative["caption"], strict=True
+            )
+        ]
     return _thumbnail_gallery(
         items,
         total=len(df),
@@ -1179,25 +1584,68 @@ def figure_gallery(
         "figures are published as downloads; see the release manifest on the "
         "Downloads page.",
         max_inline=max_inline,
+        representative=rep,
+        representative_intro=_fit_gallery_intro(representative)
+        if rep is not None
+        else None,
     )
 
 
-def argo_qa_gallery(store, outdir, *, max_inline: int = MAX_INLINE_FIGURES) -> str:
+def _paths_for(store, sql: str, selection, col: str):
+    """``(path, caption)`` per selected matchup, in selection order, from a
+    query with one ``IN (…)`` placeholder list over ``matchup_id``."""
+    ids = list(selection["matchup_id"])
+    if not ids:
+        return []
+    marks = ",".join("?" * len(ids))
+    found = {
+        r["matchup_id"]: r[col] for r in store.query(sql.format(marks=marks), ids)
+    }
+    return [
+        (found.get(mid), cap)
+        for mid, cap in zip(ids, selection["caption"], strict=True)
+    ]
+
+
+def argo_qa_gallery(
+    store,
+    outdir,
+    *,
+    max_inline: int | None = None,
+    representative=None,
+    figure_roots=None,
+) -> str:
     """An N-guarded gallery of the **Argo profile Q&A** figures.
 
     Each ``mld_summary.qa_path`` (BBP700/CHLA vs pressure with the MLD marked,
     emitted by ``ingest``) is copied into ``outdir/_static/argo_qa`` and linked.
+    Above the threshold, ``representative`` (the fit selection) picks the
+    profiles behind those fits, so the three galleries tell one story; a
+    profile with no recorded or reachable plot is dropped with a counted
+    warning rather than biasing the selection toward profiles that have one.
     Returns ``""`` when no profile has a recorded, on-disk Q&A figure.
     """
+    if max_inline is None:
+        max_inline = MAX_INLINE_FIGURES
     rows = store.query(
         "SELECT p.wmo, p.cycle, ms.qa_path FROM mld_summary ms "
         "JOIN profiles p ON p.profile_id = ms.profile_id "
         "WHERE ms.qa_path IS NOT NULL ORDER BY p.wmo, p.cycle"
     )
     items = [(r["qa_path"], f"{r['wmo']}/{r['cycle']}") for r in rows]
+    rep = None
+    if representative is not None and len(representative):
+        rep = _paths_for(
+            store,
+            "SELECT m.matchup_id, ms.qa_path FROM matchups m "
+            "JOIN mld_summary ms ON ms.profile_id = m.profile_id "
+            "WHERE m.matchup_id IN ({marks})",
+            representative,
+            "qa_path",
+        )
     return _thumbnail_gallery(
         items,
-        stage=lambda src: _stage_static(src, outdir, "argo_qa"),
+        stage=lambda src: _stage_static(src, outdir, "argo_qa", figure_roots=figure_roots),
         heading="Argo profile Q&A",
         intro="Per-profile quality-assurance plots: ``BBP700`` and ``CHLA`` vs "
         "pressure with the mixed-layer depth marked — to eyeball the MLD and the "
@@ -1205,25 +1653,50 @@ def argo_qa_gallery(store, outdir, *, max_inline: int = MAX_INLINE_FIGURES) -> s
         over_limit="{n} profiles — too many to show inline; the per-profile Q&A "
         "plots are available as downloads.",
         max_inline=max_inline,
+        representative=rep,
+        representative_intro="{n} profiles — too many to show inline. The {k} "
+        "below are the profiles behind the representative fit figures above "
+        "(same order, same captions): ``BBP700`` and ``CHLA`` vs pressure with "
+        "the mixed-layer depth marked; every Q&A plot is available as a "
+        "download (Downloads page).",
     )
 
 
-def scene_gallery(store, outdir, *, max_inline: int = MAX_INLINE_FIGURES) -> str:
+def scene_gallery(
+    store,
+    outdir,
+    *,
+    max_inline: int | None = None,
+    representative=None,
+    figure_roots=None,
+) -> str:
     """An N-guarded gallery of the **PACE scene quick-looks** per matchup.
 
     Each ``matchups.scene_path`` (false-colour scene around the float, emitted by
     the ``figure`` stage) is copied into ``outdir/_static/scenes`` and linked.
-    Returns ``""`` when no matchup has a recorded, on-disk scene figure.
+    Above the threshold, ``representative`` (:func:`select_representative_scenes`)
+    gives one scene per latitude band. Returns ``""`` when no matchup has a
+    recorded, on-disk scene figure.
     """
+    if max_inline is None:
+        max_inline = MAX_INLINE_FIGURES
     rows = store.query(
         "SELECT p.wmo, p.cycle, m.scene_path FROM matchups m "
         "JOIN profiles p ON p.profile_id = m.profile_id "
         "WHERE m.scene_path IS NOT NULL ORDER BY p.wmo, p.cycle"
     )
     items = [(r["scene_path"], f"{r['wmo']}/{r['cycle']}") for r in rows]
+    rep = None
+    if representative is not None and len(representative):
+        rep = _paths_for(
+            store,
+            "SELECT matchup_id, scene_path FROM matchups WHERE matchup_id IN ({marks})",
+            representative,
+            "scene_path",
+        )
     return _thumbnail_gallery(
         items,
-        stage=lambda src: _stage_static(src, outdir, "scenes"),
+        stage=lambda src: _stage_static(src, outdir, "scenes", figure_roots=figure_roots),
         heading="PACE scene quick-looks",
         intro="False-colour PACE/OCI scene around each float (red star = float "
         "position; white circles = the analyzed pixels) — so cloudy or glinty "
@@ -1231,6 +1704,13 @@ def scene_gallery(store, outdir, *, max_inline: int = MAX_INLINE_FIGURES) -> str
         over_limit="{n} matchups — too many to show inline; the scene quick-looks "
         "are available as downloads.",
         max_inline=max_inline,
+        representative=rep,
+        representative_intro="{n} matchups — too many to show inline. The {k} "
+        "below are one per latitude band — the matchup nearest the band's "
+        "median sat/float ``b_bp`` ratio — so the reader sees a typical scene "
+        "from each: false-colour PACE/OCI around the float (red star = float "
+        "position; white circles = the analyzed pixels); every scene is "
+        "available as a download (Downloads page).",
     )
 
 
@@ -1680,10 +2160,11 @@ def reporting_conf(*, pab_version: str | None = None) -> str:
     )
 
 
-def _gather_with_figures(store, outdir: Path, *, opener=None):
+def _gather_with_figures(store, outdir: Path, *, opener=None, figure_roots=None):
     """The per-matchup comparison frame with a ``figure_url`` column.
 
-    Each matchup's fit figure (``fits.figure_path``) is copied into
+    Each matchup's fit figure (``fits.figure_path``, translated through
+    ``figure_roots`` — see :func:`remap_figure_path`) is copied into
     ``outdir/_static/figures`` (so Sphinx serves it verbatim) and the
     page-relative URL recorded in :data:`FIGURE_URL_COL`. Rows whose figure is
     missing on disk get ``None`` there. When ``opener`` is given, the OC4
@@ -1709,22 +2190,31 @@ def _gather_with_figures(store, outdir: Path, *, opener=None):
     # Both consumers of this column are N-guarded: the inline gallery
     # (`MAX_INLINE_FIGURES`) and the interactive scatter's tap-to-open
     # (`MAX_INTERACTIVE_MATCHUPS`, which also falls back to static PNGs). Above
-    # both thresholds nothing links to these files, so copying them into the
-    # site is 636 MB and 3.2 h of CephFS traffic for an unreachable payload.
+    # both thresholds only the representative selection links to these files,
+    # so only those are staged: copying the whole set into the site is 636 MB
+    # and 3.2 h of CephFS traffic for an unreachable payload.
     df = df.copy()
-    if len(df) > max(MAX_INLINE_FIGURES, MAX_INTERACTIVE_MATCHUPS):
-        _log.info(
-            "report: %d matchups — not staging per-matchup figures into the "
-            "site (nothing links to them at this scale; they are published via "
-            "the release manifest)",
-            len(df),
+
+    def stage(fit_id):
+        return _stage_static(
+            fig_paths.get(fit_id), outdir, "figures", figure_roots=figure_roots
         )
-        df[FIGURE_URL_COL] = [None] * len(df)
+
+    if len(df) > max(MAX_INLINE_FIGURES, MAX_INTERACTIVE_MATCHUPS):
+        chosen = set(select_representative_fits(df)["matchup_id"])
+        _log.info(
+            "report: %d matchups — staging only the %d representative fit "
+            "figures into the site (nothing else links to them at this scale; "
+            "they are published via the release manifest)",
+            len(df),
+            len(chosen),
+        )
+        df[FIGURE_URL_COL] = [
+            stage(fit_id) if mid in chosen else None
+            for mid, fit_id in zip(df["matchup_id"], df["fit_id"], strict=True)
+        ]
         return df
-    df[FIGURE_URL_COL] = [
-        _stage_static(fig_paths.get(fit_id), outdir, "figures")
-        for fit_id in df["fit_id"]
-    ]
+    df[FIGURE_URL_COL] = [stage(fit_id) for fit_id in df["fit_id"]]
     return df
 
 
@@ -1737,6 +2227,7 @@ def build_site(
     opener=None,
     downloads_base_url: str | None = None,
     compare_db=None,
+    figure_roots=None,
 ) -> dict[str, Path]:
     """Write the fixed aggregate ``.rst`` pages **and a Sphinx ``conf.py``** to
     ``outdir`` — a self-contained, buildable reporting-site source tree.
@@ -1756,6 +2247,12 @@ def build_site(
             gains the 1.0-vs-2.0 section, summary headline, and provenance
             note; when omitted (or the file is absent) those simply don't
             appear and every other page is unchanged.
+        figure_roots: ``{stored_prefix: local_root}`` translating the in-pod
+            figure paths recorded in the database (``fits.figure_path``,
+            ``matchups.scene_path``, ``mld_summary.qa_path``) to where the
+            files are on this machine — the CLI's repeatable
+            ``--figure-root OLD=NEW``. Longest prefix wins; a file that is
+            still missing is dropped from its gallery with a counted warning.
 
     Returns:
         ``{name: path}`` for each written file — the fixed :data:`PAGE_STEMS`
@@ -1766,7 +2263,7 @@ def build_site(
     # Always present so the conf's html_static_path entry exists (no Sphinx warning).
     (outdir / "_static").mkdir(parents=True, exist_ok=True)
 
-    df = _gather_with_figures(store, outdir, opener=opener)
+    df = _gather_with_figures(store, outdir, opener=opener, figure_roots=figure_roots)
     # The matchup results are split across topical pages so none is overloaded:
     # summary (coverage + headline metrics), comparisons (interactive scatters +
     # map), figures (the thumbnail galleries), aggregates (tables), methods,
@@ -1785,7 +2282,7 @@ def build_site(
                 store, compare_db, outdir=outdir, sortable=sortable
             )
         ),
-        "figures": figures_page(store, outdir, df),
+        "figures": figures_page(store, outdir, df, figure_roots=figure_roots),
         "aggregates": (
             aggregates_page(store, sortable=sortable)
             + "\n"

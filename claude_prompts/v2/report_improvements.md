@@ -181,7 +181,10 @@ nothing on the PVC is written.
    then `cat` it back). Record the count; if it differs from the DB's 5,453
    `/data/v2/pipeline/argo_qa/` rows, say by how much and copy the whole
    folder anyway. While the pod is up, also record `ls /data/v2/fit_chains |
-   wc -l` and `du -sh /data/v2/fit_chains` (for Q&A/Edits 3; do not copy them).
+   wc -l`, `du -sh /data/v2/fit_chains` and `tail -40 /data/v2/backup.log`
+   (the log of the earlier `v2_backup_job.yaml` run — it should say why the
+   chains never reached Drive) for the chains side task below (Q&A/Edits 3);
+   do not copy the chains.
 4. Transfer **compressed, as a stream** (HOWTO §5b transfer note: a plain
    `kubectl cp` has no resume and has died mid-file before):
    `kubectl -n sea-meets-the-stars exec pab-argoqa-copy -- tar czf - -C
@@ -383,13 +386,28 @@ no selection bias toward fits that have a plot).
    --figure-root /data/run1k/pipeline/argo_qa=$PAB_DATA_DIR/run1k/pipeline/argo_qa`
    (one `--figure-root` per stored prefix from E1/E1b), then
    `python -m sphinx -b html report_site report_site/_build` with no new
-   warnings.
+   warnings. (E5 ran before E1b: all 8 selected fits sit on `/data/full/…`
+   Q&A profiles, so the galleries need nothing from `gallery/v2_argo_qa/`;
+   keep the flag anyway — the remap tolerates a root that does not exist.)
 2. Verify by looking (Read each PNG): the four density panels, the two maps,
    the galleries, and in `comparisons.rst` the GIOP numbers (median ratio
    ≈ 0.94, ρ ≈ 0.89, ceiling ≈ 14.6 %, the unadjusted 2.15 — E2 measured
    2.15, not the Q&A's 2.16 — quoted once). Check `du -sh
    report_site` and `git status --short report_site` so the committed tree
    stays small (target: under 10 MB added); no `_build` or stray files.
+2b. **Upload the NASA-GIOP table (Q&A/Edits 4 = A).** The Downloads page
+   links `https://s3-west.nrp-nautilus.io/pab/v2/nasa_giop_summary.{csv,parquet}`,
+   which do not exist yet. Run `publish.export_tables` against the v2 DB
+   (read-only) into a scratch folder; first check (anonymous `curl -sI` on the
+   two public URLs) that neither object exists — if one does, stop and
+   report rather than overwrite. Then upload each file with
+   `NautilusS3Backend(bucket="pab", prefix="v2").upload(path)` (HOWTO §7b;
+   write credentials from the boto3 chain — if none are configured, stop and
+   ask the user, do not hunt for keys), re-download each from its public URL
+   and compare sha256 with the local file, and `curl -sI` the existing
+   `v2/matchup_summary.csv` to confirm it was not touched. Record the two
+   URLs, sizes and sha256s in the log and add `v2/nasa_giop_summary.*` to
+   HOWTO §5b's S3 row.
 3. Docs: update `docs/design/PAB_implementation.md` (reporting section: the
    700 nm derivation, `density_scatter`, the two maps, representative
    galleries, `--figure-root`), HOWTO §7a (the new flags and the rebuild
@@ -399,6 +417,21 @@ no selection bias toward fits that have a plot).
    `requirements.txt`, `report_site/`) and remind that RTD rebuilds on push
    to the branch the report project tracks. Do not commit. Use Fable if you
    can. Log your work.
+
+**Side task (not part of the E-sequence; Q&A/Edits 3 = A) — re-run the v2
+chains backup.** Any time after E1b (which records the chain count/size and
+the tail of `/data/v2/backup.log`). Read `nautilus/v2_backup_job.yaml` and
+that log; if it shows why the chains step failed, say so and propose a fix to
+the job (e.g. the 24 h `activeDeadlineSeconds`) before anything runs. The
+user creates the temporary `aiocean-rclone` secret and applies the job
+(`kubectl -n sea-meets-the-stars delete job pab-v2-backup
+--ignore-not-found; kubectl apply -f nautilus/v2_backup_job.yaml`); Claude may
+monitor `kubectl logs -f job/pab-v2-backup`. When it reports
+`V2_BACKUP_DONE`, confirm `rclone size AIOcean:PAB/v2/fit_chains/` matches the
+PVC count (15,971) and size, remind the user to delete the secret
+(`kubectl -n sea-meets-the-stars delete secret aiocean-rclone`) and the
+finished job, and note the backup in HOWTO. `rclone copy`, never `sync`.
+Use Fable if you can. Log your work.
 
 ### Outliers
 
@@ -695,6 +728,26 @@ links until the objects exist.
 
 **Your answer:** Follow your recommendation.
 
+**5 — The maps' colour clip is set by one tail (raised by E4).** The agreed
+rule (Q8, F5) is a symmetric scale at `max(|p2|, |p98|)` of the per-matchup
+`log10(sat/float b_bp)`. On the v2 data that is **±1.86 dex**, because the
+2nd percentile is −1.86 (the satellite prior-floor group: 611 matchups below
+−1 dex) while the 98th is only +0.62 (78 matchups above +1). So the scale is
+fixed by the low tail alone and 88 % of the matchups (|log-ratio| ≤ 0.5)
+sit in the palest tints of both maps; the Mediterranean HEALPix cell at
+−1.48 is the one feature that reads at a glance. The runaways no longer
+drive it (that was the point), but the maps still show less than they could.
+Options: **A** keep the rule (what E6 will publish); **B** a fixed **±0.5
+dex** (the Q8 proposal before the percentile idea; 12 % of matchups then sit
+at the end colours, and the captions say so); **C** symmetric at the
+5th–95th percentile (±0.73 dex, 7 % saturated); **D** percentiles of
+|log-ratio| instead (e.g. the 90th → ±0.6). I would take **B**: a fixed
+limit also makes 1.0-vs-2.0 and future runs comparable at a glance. A
+one-line change (`LOG_RATIO_PERCENTILES` → a fixed `LOG_RATIO_VMAX`) either
+way; nothing in E4 depends on it.
+
+**Your answer:**
+
 ## Logs
 
 ### 2026-10-17 (v2 Prompt 1 — reviewed the report code and data; posted Q1–Q9 for approval)
@@ -989,3 +1042,449 @@ Surprising, or worth knowing:
   to E6).
 
 Next: the answer to Q&A/Edits 4, then E3.
+
+### 2026-10-17 (v2 — read Q&A/Edits 3–4 answers; updated E1b and E6, added the chains side task)
+
+No code changed. Q&A/Edits 3 = **A** (re-run the v2 chains backup as a
+separate step) and 4 = **A** (E6 uploads the NASA-GIOP table to S3).
+- **E6** has a new step 2b. It exports `nasa_giop_summary.{csv,parquet}` from
+  the v2 DB (read-only), checks that neither public URL exists yet (it stops
+  rather than overwrite), uploads with `NautilusS3Backend(bucket="pab",
+  prefix="v2")`, re-downloads to check the sha256, confirms
+  `v2/matchup_summary.*` is untouched and adds the objects to HOWTO §5b. If no
+  S3 write credentials are configured it stops and asks.
+- **E1b** step 3 now also records `tail /data/v2/backup.log` from the PVC, so
+  we learn why the earlier `v2_backup_job.yaml` run left
+  `AIOcean:PAB/v2/fit_chains/` empty.
+- A **side task** after E6, outside the E-sequence: diagnose that failure from
+  the log, then re-run `v2_backup_job.yaml`. The user creates the temporary
+  `aiocean-rclone` secret and applies the job, and Claude monitors it and
+  checks the Drive count/size against the PVC. The side task ends with a
+  reminder to delete the secret and the job.
+
+E3–E5 needed no changes for these answers.
+
+### 2026-10-17 (v2 Edit E3 — density-plus-dots scatter)
+
+Run with Fable. Both databases were opened read-only (`file:…?mode=ro`,
+`create=False`); the committed `report_site/` was not touched (E6). Files
+changed: `pab/plotting/population.py`, `pab/report/rst.py`,
+`pab/tests/test_metrics.py`, `pab/tests/test_report.py`, this file.
+
+What the code does (Q5, Q6, F4):
+
+- `population.density_scatter(df, sat_col, insitu_col, *, label, unit,
+  xlabel, ylabel, cmap="Blues", bins=50, min_count=5, clip_percentile=99.0,
+  outfile, dpi)`: both axes log10; the range is the central
+  `clip_percentile` of the pooled finite positive values × 0.7 / × 1.4 — the
+  `comparison_scatter` rule, now factored into one `_clipped_range` helper
+  both functions call; `numpy.histogram2d` of the log10 values over that
+  range; cells with ≥ `min_count` matchups as a `pcolormesh` with a `LogNorm`
+  "matchups per cell" colorbar; every matchup in a sparser cell as a dot
+  (`ms=2.5`, `alpha=0.6`, `cmap(0.75)`); the 1:1 line, the dashed
+  median-ratio line, a legend (cells / dots / 1:1 / median ratio) and the
+  `n=… ρ=… bias=… RMS=… (log10)  [N off-scale]` title with the statistics
+  from `log_comparison` on **all** finite positive pairs (Q6). Mesh and dots
+  are `rasterized=True`. `comparison_scatter` is kept (tests, Bokeh-less
+  small runs).
+- `population.DENSITY_MIN_COUNT = 5` is the `min_count` default and what the
+  captions quote; `population.offscale_count(df, sat_col, insitu_col,
+  clip_percentile=99.0)` gives a caption the same `N` the title prints (same
+  `_clipped_range`), since the figure function returns a `Figure`/`Path`.
+- `rst.py`: `_density_caption(df, sat_col, insitu_col)` builds the shared
+  caption clause ("Filled cells where ≥ 5 matchups fall in a cell, individual
+  points elsewhere; N matchups lie outside the axes and are counted in the
+  statistics. The dashed line is the median ratio; the solid line is 1:1.").
+  Wired into `_static_comparison_figures` (`b_bp` Blues, chlorophyll
+  Greens), `nasa_giop_section` (Purples; x = BING 700, y = NASA 700, the
+  interim `comparison_scatter(..., clip_percentile=99.0)` from E2 removed)
+  and `_version_static_figures` (Blues / Greens, replacing
+  `clip_percentile=99.0` + dots). The Bokeh branches are untouched.
+- Tests. `test_metrics.py`: file written under `SIZE_BUDGET` with a mesh and
+  dots present; a 20-point frame renders as dots only (no `QuadMesh`,
+  `n=20`, no off-scale); NaN / ≤ 0 rows are ignored (`n` in the title equals
+  `log_comparison`'s); three values at 1e4 give `[3 off-scale]`, the same `n`
+  as `log_comparison` (1000, runaways kept), `offscale_count` = 3, the upper
+  axis limit below 1 m⁻¹, and `clip_percentile=None` reports nothing
+  off-scale. `test_report.py`: the Comparisons page carries the caption twice
+  (`b_bp`, Chl), the GIOP static section once, a frame with three runaways
+  says "3 matchups lie outside the axes" on the `b_bp` panel and "0" on the
+  Chl panel, and `_version_static_figures` writes both 2.0-vs-1.0 PNGs with
+  the same caption form. Named tests 10 passed; full suite **420 passed,
+  1 skipped** (415 after E2 → +5); `ruff check pab` clean.
+
+Acceptance on `$PAB_DATA_DIR/v2/pab.db` (+ `v1/pab.db` for the 1.0-vs-2.0
+pair), rendered into the scratchpad and looked at. In every panel the
+runaways no longer set the axes and the dense core shows its structure:
+
+- **`bbp_scatter.png`** (Blues, 59.6 KB): n = 15,274, ρ = 0.41, bias +0.01,
+  RMS 0.65, median ratio 1.15, **155 off-scale**. Axes 3×10⁻⁶–6×10⁻². The
+  core is a blob around 5×10⁻⁴–3×10⁻³ on both axes, hugging 1:1 on its upper
+  edge; two features that the old all-dots panel hid are now plain — a
+  vertical pile of satellite values at 3×10⁻⁶–10⁻⁴ m⁻¹ (the low-end
+  prior-floor group from Q5) sitting under float values of 5×10⁻⁴–10⁻³, and
+  a sparse cloud at float `b_bp` ≈ 10⁻² with satellite values an order of
+  magnitude lower.
+- **`chl_scatter.png`** (Greens, 74.5 KB): n = 15,154, ρ = 0.73, bias −0.09,
+  RMS 0.59, median 0.94, **166 off-scale**. Core 0.05–1 mg m⁻³ along 1:1,
+  slightly below it; a spray of satellite Chl below 10⁻² mg m⁻³ at every
+  float Chl (fits whose `A_ph` went to the floor) is the obvious tail.
+- **`nasa_giop_bbp_scatter.png`** (Purples, 52.1 KB): n = 15,964, ρ = 0.89,
+  bias 0.00, RMS 0.52, median NASA/BING 0.94, **173 off-scale** (the same
+  173 as the E2 interim panel). The dense arc follows 1:1 from 10⁻³ up; the
+  GIOP floor the E2 log predicted is the dominant off-diagonal feature — a
+  horizontal band of NASA values at 2–4×10⁻⁴ m⁻¹ wherever BING retrieves
+  less than 10⁻⁴.
+- **`v2_vs_v1_bbp700.png`** (Blues, 53.5 KB): n = 14,604, ρ = 0.92, bias
+  −0.16, RMS 0.54, median 2.0/1.0 = 0.75, **156 off-scale**. The clear-water
+  result reads straight off the mesh: the cells sit on 1:1 above ~2×10⁻³
+  and peel away below it, down to the 3×10⁻⁶ floor at 1.0 values of
+  3×10⁻⁴–10⁻³.
+- **`v2_vs_v1_chl.png`** (Greens, 90.4 KB — the heaviest): n = 14,604,
+  ρ = 0.70, bias +0.19, RMS 0.64, median 1.17, **90 off-scale**. A tight core
+  0.05–1 mg m⁻³ just above 1:1 with a wide halo of individual points on both
+  sides.
+
+Design choices beyond the prompt, so they are visible:
+
+- The sequential maps start at near-white, so a cell holding exactly five
+  matchups vanished into the background and the mesh edge read as dots
+  only. The mesh uses the colormap truncated to `[0.2, 1.0]` (the dots stay
+  at the full map's 0.75 shade).
+- **Minor gridlines are off** (decade grid only). On the real Chl 2.0-vs-1.0
+  frame the first render was 115 KB — over `SIZE_BUDGET` — and a probe of
+  the knobs showed the minor log grid alone cost 25 KB (112 → 87 KB) while
+  PNG `optimize` made the file *larger* and `bins=40` only saved 10 KB. The
+  grid was also visible clutter through the light cells. All five panels are
+  now 52–90 KB; the synthetic test frames never approach the budget, so the
+  budget is really enforced by this acceptance step, not the tests.
+- The figure is 5.6 × 5 in (not 5 × 5) to make room for the colorbar at
+  the same axes size as before.
+
+Worth knowing: `n` differs per panel (15,274 for `b_bp` vs 15,154 for Chl
+vs 15,964 for GIOP on the same 15,971 fits) because each drops its own
+non-finite/non-positive pairs, and on the float panels that is entirely the
+float side: every BING value is finite and positive, while 697 profiles
+have no `bbp700` and 561 have no `chla` plus 256 a `chla` ≤ 0 (checked on
+the frame). Nothing was done about it. No new questions for Q&A/Edits.
+
+Next: E4 (the two maps).
+
+### 2026-10-17 (v2 Edit E4 — Robinson dot map and HEALPix median map)
+
+Run with Fable. The v2 database was opened read-only (`file:…?mode=ro`,
+`create=False`); the committed `report_site/` was not touched (E6); no
+Docker image rebuilt; nothing installed — `cartopy` 0.25.0 and `healpy`
+1.19.0 were already in `ocean14`, with the 110m Natural Earth `land` and
+`coastline` shapefiles already cached. Files changed:
+`pab/plotting/population.py`, `pab/report/rst.py`, `pab/tests/test_metrics.py`,
+`pab/tests/test_report.py`, `requirements.txt`, `HOWTO.md` (§7a), this file.
+
+What the code does (Q8, F5, F6):
+
+- `population.matchup_map(df, *, sat_col="bbp_bing", insitu_col="bbp_argo",
+  color_col=None, vmax=None, percentiles=(2, 98), projection="default",
+  outfile, dpi)`: the old `matchup_map(df, color_col=, outfile=, dpi=)`
+  calls still work, but the colour is now `log10(sat/float)` computed
+  inside from the two columns (`population.log_ratio`), on `RdBu_r`
+  symmetric about 0 with `Normalize(-vmax, vmax)` and an `extend="both"`
+  colorbar labelled `log10(satellite / float b_bp)`; cartopy `Robinson()`
+  axes, `set_global()`, `cartopy.feature.LAND.with_scale("110m")` at
+  facecolor 0.85, 110m coastlines at linewidth 0.4, faint gridlines; dots
+  `s=9` (marker size 3), alpha 0.6, `transform=PlateCarree()`, rasterized.
+  Matchups with a position but no finite ratio are drawn underneath as
+  small grey dots and counted in the title (`15,274 matchups; colour
+  clipped at ±1.85 dex (2nd-98th percentile); 695 without a ratio in grey`).
+- `population.log_ratio_vmax(df, sat_col, insitu_col, *, percentiles)` =
+  `max(|p_lo|, |p_hi|)` of the finite per-matchup log-ratio (1.0 when there
+  is none); the caller computes it once and passes it to both maps.
+  `population.LOG_RATIO_PERCENTILES = (2.0, 98.0)`;
+  `population.percentile_range()` gives the `"2nd-98th"` the titles and
+  captions quote.
+- The fallback chain lives in one `_map_axes(projection)`: `"robinson"` →
+  cartopy; cartopy not importable → plain lon/lat axes (`[-180, 180] ×
+  [-90, 90]`, equal aspect) with a `pab.plotting` warning; cartopy present
+  but the shapefiles neither cached nor downloadable → Robinson axes
+  without land/coast and a warning. The shapefiles are resolved **eagerly**
+  with `cartopy.io.shapereader.natural_earth(...)` before any feature is
+  added, because cartopy's features otherwise download lazily at draw time
+  and a failed download would surface as an exception out of `savefig`,
+  not as the warning E4 asked for. `projection=None` forces the plain path;
+  `projection="default"` reads the module constant
+  `population.MAP_PROJECTION` (`"robinson"`), which `test_report.py` sets
+  to `None` in an autouse fixture so no report test ever touches cartopy
+  or the network.
+- `population.healpix_map(df, *, sat_col, insitu_col, cell_size_deg=5.0,
+  min_count=HEALPIX_MIN_COUNT, vmax=None, percentiles, projection, outfile,
+  dpi)`: cells from `population.healpix_medians` (a new public helper:
+  `nside_for_cell_size` / `assign_healpix` from `pab.report.aggregate`,
+  per-cell `n` and median log-ratio of the finite positive, positioned
+  pairs — every occupied cell, so the caption can count the ones left
+  out); only cells with `n ≥ min_count` are drawn, as a `PolyCollection`
+  of 16-vertex outlines from `healpy.boundaries(nside, pix, step=4)` with
+  `transform=PlateCarree()` (matplotlib's `_as_mpl_transform` protocol, so
+  cartopy projects and cuts each polygon), same colormap/norm/colorbar as
+  the dot map. `population.HEALPIX_MIN_COUNT = 5` is a separate constant
+  from `DENSITY_MIN_COUNT` (same value, different knob). Two-line title:
+  `453 HEALPix cells (nside 8, ≈7.3°) with ≥ 5 matchups, holding 15,143
+  matchups / 59 sparser cells not drawn; colour clipped at ±1.85 dex`.
+- Dateline handling (`_cell_outline` + `_dateline_pieces`): longitudes
+  taken in `[0, 360)`; a cell whose span there exceeds 180° straddles 0°
+  and is made compact by shifting its eastern vertices by −360; a cell with
+  vertices on both sides of 180° (beyond a 1e-6° tolerance) is split with
+  a one-edge Sutherland–Hodgman clip into a western piece ending at 180°
+  and an eastern piece starting at −180°, and the number split is logged
+  at INFO; a cell wholly east of 180° is shifted by −360; every piece is
+  clipped to `[-180, 180]`. The pole vertex of a polar-cap cell comes back
+  from `vec2ang` at longitude 0 whatever the cell (`atan2(0, 0)`), so it is
+  replaced by the circular mean of its two neighbours.
+- `rst._static_comparison_figures`: one `vmax = population.log_ratio_vmax(df,
+  "bbp_bing", "bbp_argo")`, passed to both `matchup_map(...)` →
+  `matchup_map.png` and `healpix_map(...)` → `healpix_map.png`; the old
+  caller-built `ratio` column is gone (and with it the unused `numpy`
+  import). Captions: the dot map states the colour, the symmetric clip
+  ("±1.86 dex, the 2nd-98th percentile of the per-matchup log-ratio;
+  values beyond take the end colours") and the grey dots; the HEALPix map
+  states nside and cell width (`population.healpix_cell_deg`), the ≥ 5
+  rule with the cells drawn / matchups held / cells left out, and "the same
+  scale as the dot map".
+- `requirements.txt`: `cartopy` added after `healpy`. HOWTO §7a: a
+  paragraph on the first-use Natural Earth download, the cache at
+  `~/.local/share/cartopy/shapefiles/natural_earth/physical/` (verified:
+  that is `cartopy.config["data_dir"]` here, and the 110m land/coastline
+  files are present), the fallbacks, and that the Docker image was not
+  rebuilt because `--emit-site` runs on the workstation (F6).
+- Tests. `test_metrics.py` (+7): the old scatter test now calls
+  `matchup_map(..., projection=None)`; a 2,000-point frame with three 1e4
+  runaways renders on plain axes under `MAP_SIZE_BUDGET` (new, 250 KB) with
+  the right limits, title and colorbar label; `log_ratio_vmax` equals
+  `max(|p2|, |p98|)`, stays in (0.3, 0.7) despite the runaways, both maps'
+  norms are exactly `[-vmax, vmax]` when given it, and an all-NaN frame
+  gives 1.0; a 40 + 2 matchup frame yields `healpix_medians` counts [2, 40]
+  with the right median, draws one polygon, titles "1 HEALPix cells … 1
+  sparser cells not drawn", and draws two at `min_count=2`; every nside-8
+  cell's pieces lie in `[-180, 180]`, span between 0.5° and 180° (no
+  degenerate sliver), the straddlers split into a west piece ending at 180
+  and an east piece starting at −180, and a pole cell's pole vertex takes
+  its neighbours' longitude; `sys.modules["cartopy"] = None` → the
+  "not importable" warning and plain axes; `shapereader.natural_earth`
+  raising → the "unavailable" warning on GeoAxes; and one test that takes
+  the real Robinson path for both maps, `skipif` the shapefiles are not
+  already cached (so it never downloads). `test_report.py`: the autouse
+  plain-axes fixture; the at-scale page references and writes both PNGs,
+  quotes "2nd-98th percentile of the per-matchup log-ratio" twice, "only
+  cells holding ≥ 5 matchups are drawn" and, on two matchups, "(0 cells, 0
+  matchups; 2 sparser cells left out)"; the 400-point frame with three
+  runaways gives both captions the same clip, below 0.2 dex. Named tests
+  14 passed; full suite **427 passed, 1 skipped** (420 after E3 → +7);
+  `ruff check pab` clean.
+
+Acceptance on `$PAB_DATA_DIR/v2/pab.db` (15,971 matchups), rendered through
+`_static_comparison_figures` into the scratchpad
+(`…/scratchpad/e4/site/_static/comparisons/`) and looked at:
+
+- **`matchup_map.png`** (137.1 KB, under the 250 KB budget): 15,274
+  coloured dots, 695 grey (697 matchups have no float `b_bp`; 2 of those
+  also have no position); p2 = −1.855, p98 = +0.617, **vmax = 1.855**,
+  with the extremes at −4.5 / +8.2 clipped to the end colours. Land and
+  coastlines are plain; the dots at size 3 no longer over-plot into blobs;
+  the dark-blue (satellite ≪ float) dots are visibly clustered — the
+  Mediterranean, the Arctic shelf seas, the Gulf of Mexico — where the
+  pale-pink majority is not.
+- **`healpix_map.png`** (88.9 KB): 512 occupied nside-8 cells, **453 drawn**
+  (≥ 5 matchups; 15,143 matchups), 59 dropped; **7 cells straddle the
+  dateline and were split** (the equatorial diamonds only touch 180°, the
+  rings beside them cross it); per-cell medians run −1.48 to +0.42. No
+  smears; the Mediterranean cell at −1.48 is the one saturated feature, the
+  subtropical gyres read faintly pink (satellite high), the Southern Ocean
+  faintly blue.
+
+Design iterations, so they are visible:
+
+- **The first HEALPix render was a pale-blue planet.** Three cells (nside-8
+  pixels 32, 72, 696) have an edge *on* the dateline, and the split then
+  produced a zero-width piece with every longitude at 180.0; cartopy
+  projects a degenerate ring as an inside-out polygon, i.e. the whole globe
+  (checked with `Robinson().project_geometry`: area fraction 1.0). Hence
+  the 1e-6° tolerance in the straddle test and the per-piece span assertion
+  in the tests; the split count dropped from 13 to the true 7. A first fix
+  that clipped the outline instead of shifting it made three *other* cells
+  degenerate — the same diagnostic caught it.
+- The single-line HEALPix title overflowed the figure into the colorbar
+  label; the title is two lines and the colorbar label dropped "per cell"
+  (the title says it).
+- `{p:g}th` gave "2th-98th"; `percentile_range()` formats ordinals.
+
+Worth knowing: (1) `healpy.boundaries` in healpy 1.19 has **no `lonlat`
+keyword** (the prompt assumed one); it returns unit vectors, converted with
+`healpy.vec2ang(..., lonlat=True)`. (2) "5° cells" is **nside 8 ≈ 7.3°**:
+`nside_for_cell_size` (via `remote_sensing`) picks the nside whose cells
+are at least the requested size, as `aggregate_healpix` already did. (3)
+The symmetric 2nd–98th rule is set by the low tail alone on these data
+(p2 = −1.86 vs p98 = +0.62), which leaves 88 % of the matchups in the
+palest tints — raised as Q&A/Edits 5 with a recommendation; E4 publishes
+the agreed rule. (4) The 16 of 768 cell outlines that shapely reports as
+clockwise (pole-adjacent and 0°-straddling ones) project correctly;
+orientation only bit on the degenerate pieces.
+
+Next: E5 (galleries; E1b first).
+
+### 2026-10-17 (v2 Edit E5 — representative figure galleries)
+
+Run with Fable. The v2 database was opened read-only (`create=False`); the
+committed `report_site/` was not touched (E6); nothing installed; the only
+Drive traffic was the three `rclone copy … --files-from … --no-traverse`
+fetches from E5 (20 files into `$PAB_DATA_DIR/gallery/{v2_figures,v1_scenes,
+argo_qa}/`; nothing uploaded, nothing under `v1/`). Files changed:
+`pab/pipeline.py`, `pab/report/rst.py`, `pab/tests/test_report.py`,
+`pab/tests/test_pipeline.py`, `pab/tests/test_report_versions.py` (one test
+updated), this file.
+
+**Deviation, approved by the session lead: E1b has not run** (it needs the
+user to launch the pod), so `$PAB_DATA_DIR/gallery/v2_argo_qa/` does not
+exist. E5 says to stop; instead everything was implemented and the acceptance
+run passed `--figure-root /data/v2/pipeline/argo_qa=…/gallery/v2_argo_qa`
+anyway (the remap tolerates a nonexistent root). It turned out not to matter:
+**all 8 selected fits sit on profiles whose Q&A plot is under
+`/data/full/pipeline/argo_qa/`** — none is PVC-only (`/data/v2/…`) and none
+lacks a `qa_path` — so **zero Q&A panels are missing because of E1b**, the
+Q&A gallery shows 8 of 8, and E6 (after E1b) will pick up nothing new for the
+galleries. A note to that effect went into E6 step 1.
+
+What the code does (Q4 = A, F1, Q&A/Edits 1–2):
+
+- `pipeline.py`: repeatable `--figure-root OLD=NEW` on `--emit-site`
+  (`figure_root_pair` parses it, expands `~`/`$VAR` in NEW, rejects a value
+  without `=`), passed as `figure_roots: dict` into `rst.build_site`.
+- `rst.remap_figure_path(src, figure_roots)`: longest-prefix match on whole
+  path components (`/data/v2/pipeline/figures` beats `/data`;
+  `…/figures_old/x.png` does not match `…/figures`). `_stage_static(src,
+  outdir, subdir, *, figure_roots, max_side=GALLERY_MAX_SIDE)` remaps, drops
+  a source that still is not on disk (returns `None`), and writes the copy
+  through `_downscaled_copy`: Pillow shrinks the longest side to 1200 px and
+  re-encodes as PNG **only when the image is larger**; a smaller image, an
+  undecodable file (the tests' `b"png"` stubs) or a build without Pillow gets
+  a verbatim copy. `_thumbnail_gallery` counts the drops and emits **one**
+  `_log.warning` per gallery ("N of M representative files dropped (no
+  recorded path, or not on disk after the --figure-root remap)"), and the
+  intro says "(N of the M chosen have no file reachable at build time and
+  are left out.)" so the page is honest about it.
+- `rst.select_representative_fits(df)` → ≤ 8 rows with `log_ratio`, `reason`
+  and `caption` (`WMO/cycle — reason`) columns, in order: nearest the
+  `REPRESENTATIVE_PERCENTILES` (5, 25, 50, 75, 95) of `log10(bbp_bing /
+  bbp_argo)` over finite positive pairs; the runaway with the largest
+  `bbp_bing` above `BBP_IMPLAUSIBLE` (skipped when none); the matchup nearest
+  the median log-ratio within the clearest and the most productive `chl_bing`
+  tercile. The frame is sorted by `matchup_id` first so every `argmin`/
+  `argmax` tie goes to the smallest id; duplicates are removed keeping the
+  first reason. `select_representative_scenes(df, max_regions=
+  MAX_SCENE_REGIONS)`: one per `add_strata` region (nearest the region's
+  median log-ratio), the most populous regions first (ties alphabetical).
+- `_thumbnail_gallery(..., representative=, representative_intro=)`: above
+  `max_inline`, if a representative list is given it is staged (lazily, as
+  before) and rendered under the intro (a `{n}`/`{k}` template; `k` is the
+  number actually shown); without one the old downloads note stands.
+  `figure_gallery(df, representative=sel)` maps the selection to the URLs in
+  `FIGURE_URL_COL`; `scene_gallery`/`argo_qa_gallery(store, outdir,
+  representative=, figure_roots=)` look up `scene_path`/`qa_path` for the
+  selected `matchup_id`s (the Q&A gallery takes the **fit** selection, so the
+  three galleries tell one story, same order, same captions). The fit intro
+  is built from the reasons present (`_fit_gallery_intro`: "plus one failed
+  retrieval" only when a runaway was selected). The `max_inline` defaults are
+  now resolved at call time (`None` → `MAX_INLINE_FIGURES`) so the threshold
+  can be monkeypatched in tests.
+- `figures_page(store, outdir, df, *, figure_roots)` computes both selections
+  once above `MAX_INLINE_FIGURES`, passes them to the three galleries and logs
+  the staged total ("galleries staged N files, X MB under _static/").
+  `_gather_with_figures(..., figure_roots)` above both thresholds now stages
+  **only** the selected fit figures (URLs set for those rows, `None`
+  elsewhere) instead of nothing; below the thresholds it stages all, as
+  before, since the tap-to-open scatter links them.
+- Tests. `test_report.py` (+7): the selection on a 300-row synthetic frame
+  (log-normal ratio, two runaways, NaN/zero rows) returns 8 rows with the
+  documented reasons in order, the largest runaway (not the smaller one),
+  captions `WMO/cycle — reason`, monotonic percentile picks, the tercile
+  picks inside their terciles, and the same rows/reasons from a shuffled
+  input; without a runaway 7 rows, a 2-row frame de-duplicates, identical
+  ratios pick the smallest `matchup_id`, an empty frame gives an empty frame
+  with the columns; one scene per region, most populous first, with the
+  band's count in the reason, `max_regions` honoured, the pick nearest the
+  band's median; the remap resolves the longest prefix, matches whole
+  components only, leaves unknown paths alone, stages through the remap and
+  drops a missing file (also under a nonexistent root); a 3000×1500 PNG is
+  staged at 1200×600 and smaller than the source, an 800×600 one verbatim,
+  `max_side=None` switches the shrink off; above `max_inline` (patched to 5,
+  12 seeded matchups with fit/scene/Q&A stubs) the Figures page carries
+  exactly the selected thumbnails with their captions, the three intros, one
+  deliberately deleted Q&A file produces exactly one warning and the "(1 of
+  the N chosen …)" note, and only the selected files are staged;
+  `build_site(figure_roots=…)` resolves pod-style prefixes for all three
+  galleries and stages nothing for a prefix without a root.
+  `test_pipeline.py` (+1): `--figure-root` is repeatable, expands `~`,
+  rejects a value without `=`, and reaches `build_site` as a dict.
+  `test_report_versions.py`: `test_fit_figures_not_staged_at_scale` now
+  asserts that exactly the representative rows are staged and linked (its
+  six identical-ratio matchups collapse to one). Named tests 18 passed; full
+  suite **435 passed, 1 skipped** (427 after E4 → +8); `ruff check pab` clean.
+
+Acceptance on `$PAB_DATA_DIR/v2/pab.db` (15,971 matchups). The selection
+(deterministic; the `fits.txt`/`scenes_v1.txt`/`qa.txt` lists are in the
+scratchpad, 8 + 4 + 8 basenames) and the captions as rendered:
+
+- **Fits (8):** 1902383/79 — 5th percentile of sat/float b_bp, ratio 0.188;
+  2903833/36 — 25th percentile, ratio 0.732; 5906450/140 — 50th percentile,
+  ratio 1.15; 3902454/42 — 75th percentile, ratio 1.77; 3901586/105 — 95th
+  percentile, ratio 3.17; 6903874/139 — non-physical retrieval, b_bp =
+  9.3e4 m⁻¹; 4903848/69 — clearest tercile, Chl 0.023 mg m⁻³, ratio 1.36;
+  5907252/5 — most productive tercile, Chl 0.32 mg m⁻³, ratio 0.972. No
+  duplicates, so all eight slots are filled.
+- **Scenes (4, not 6):** 7902104/18 — tropics band, median ratio 1.34
+  (n=5,756); 2903862/81 — temperate, 0.977 (n=5,266); 3902615/1 —
+  subtropics, 1.27 (n=3,081); 4903365/112 — polar, 0.899 (n=1,171).
+  `add_strata` has only four latitude bands, so "6 at most" is four (the
+  Prompt-3 log anticipated this). All four scene paths are 1.0-run
+  (`/data/v1/…`); none of the 1,390 `/data/v2/…` scenes was selected, so
+  `fits.txt` holds only the 8 fit figures.
+- **Argo Q&A (8 of 8):** the same eight profiles, all under `/data/full/…`.
+- `figures.rst` lists 8 / 4 / 8 items with reasons; the three galleries read
+  "15971 matchups — too many to show inline. The 8 below were chosen to span
+  the sat/float agreement from the 5th to the 95th percentile, plus one
+  failed retrieval and the clearest and most productive regimes; …", "15976
+  matchups … The 4 below are one per latitude band …" and "58181 profiles …
+  The 8 below are the profiles behind the representative fit figures above".
+  No drop warnings. **Staged: 20 files, 1,039,562 bytes (1.04 MB)** under
+  `_static/{figures,scenes,argo_qa}`. A `sphinx -b html` of the scratch site
+  built with no warnings and 20 figcaptions.
+- Looked at (Read tool): the median fit (5906450/140 — a clean Rrs fit with
+  a 5–95 % band and a smooth `b_bp(λ)` ≈ 1e-3 m⁻¹), the runaway (below), the
+  tropics scene (a mostly cloudy OCI swath with the float at the edge of a
+  clear patch — exactly what the quick-look is for) and the median profile's
+  Q&A plot (BBP700/CHLA vs pressure, de-spiked trace, MLD 56 dbar). All
+  render correctly at thumbnail size.
+
+Surprising, or worth knowing:
+
+- **The runaway's observed Rrs is negative at 400–430 nm** (6903874/139:
+  Rrs runs from −1.6e-3 sr⁻¹ at 400 nm up through zero near 435 nm to a peak
+  at ~490 nm, with a gap at 590–610 nm). That is a failed atmospheric
+  correction, not a bright scene, and BING answered it with `b_bp` ≈ 9.3e4
+  m⁻¹ and a 5–95 % band of 8e4–1e5 — the fit "converged" with every flag
+  set, as the Prompt-8 investigation found. Negative blue Rrs may be a
+  usable pre-fit screen for the 51 runaways; this belongs with the Outliers
+  prompt, nothing was done here.
+- **The 1200 px downscale never triggers on these data.** The originals
+  are 620–640 × 590 (fits), 490 × 410 (scenes) and 630 × 416 (Q&A) pixels,
+  so every staged copy is verbatim (37–73 KB each). The cap is a guard for
+  larger renders, not a saving today; the committed site will grow by
+  ≈1.0 MB for the galleries.
+- The E5 lists (`fits.txt` etc.) are written by a scratch script from the
+  same `select_representative_*` functions the site uses, so the fetch and
+  the build cannot disagree. A first attempt named that script `select.py`,
+  which shadowed the stdlib `select` module and broke `import pandas` — a
+  reminder of why scratch scripts get distinctive names.
+- `du -sh` on the new `gallery/` folders under-reports (4.5 K for 326 KB of
+  Q&A plots): ZFS compression/metadata on `/mnt/tank`; `ls -l` sizes are
+  right.
+- No new Q&A items.
+
+Next: E1b (user launches the pod), then E6.

@@ -492,7 +492,11 @@ def test_scene_gallery_does_stage_when_it_renders(tmp_path):
 
 
 def test_fit_figures_not_staged_at_scale(tmp_path, monkeypatch):
-    """`_gather_with_figures` staged every fit figure unconditionally."""
+    """`_gather_with_figures` staged every fit figure unconditionally.
+
+    At scale only the representative selection (E5) is staged and linked; every
+    other row's URL is None and no other file is copied.
+    """
     out = tmp_path / "site"
     out.mkdir()
     monkeypatch.setattr(rst, "MAX_INLINE_FIGURES", 2)
@@ -500,10 +504,15 @@ def test_fit_figures_not_staged_at_scale(tmp_path, monkeypatch):
     with Store.open(":memory:") as store:
         _seed_with_figures(store, 6, tmp_path)
         df = rst._gather_with_figures(store, out)
-    assert df[rst.FIGURE_URL_COL].isna().all(), "figure URLs point at unstaged files"
+    chosen = set(rst.select_representative_fits(df)["matchup_id"])
+    assert 0 < len(chosen) < len(df)
+    staged_rows = df[df[rst.FIGURE_URL_COL].notna()]
+    assert set(staged_rows["matchup_id"]) == chosen, "URLs point at unstaged files"
     figs = out / "_static" / "figures"
     staged = list(figs.glob("*.png")) if figs.is_dir() else []
-    assert not staged, f"{len(staged)} fit figures copied with nothing linking to them"
+    assert len(staged) == len(chosen), (
+        f"{len(staged)} fit figures copied for {len(chosen)} that link to them"
+    )
 
 
 def test_fit_figures_staged_below_threshold(tmp_path):

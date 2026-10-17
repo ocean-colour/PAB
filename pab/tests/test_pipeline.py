@@ -345,6 +345,30 @@ def test_cli_emit_site(capsys, tmp_path):
     assert "emitted reporting site" in capsys.readouterr().out
 
 
+def test_cli_figure_root_is_repeatable(tmp_path, monkeypatch):
+    # --figure-root OLD=NEW, repeatable, reaches build_site as a dict
+    args = pipeline.build_parser().parse_args(
+        ["--figure-root", "/data/v2/pipeline/figures=/local/figs", "--figure-root", "/data=~/all"]
+    )
+    roots = dict(args.figure_root)
+    assert roots["/data/v2/pipeline/figures"] == "/local/figs"
+    assert roots["/data"].endswith("/all") and not roots["/data"].startswith("~")
+    assert pipeline.build_parser().parse_args([]).figure_root is None
+    with pytest.raises(SystemExit):
+        pipeline.build_parser().parse_args(["--figure-root", "no-equals-sign"])
+    from pab.report import rst as _rst
+
+    seen = {}
+    monkeypatch.setattr(_rst, "build_site", lambda store, outdir, **kw: seen.update(kw) or {})
+    db = tmp_path / "pab.db"
+    with Store.open(db):
+        pass
+    rc = pipeline.main(
+        ["--db", str(db), "--emit-site", str(tmp_path / "site"), "--figure-root", "/a=/b"]
+    )
+    assert rc == 0 and seen["figure_roots"] == {"/a": "/b"}
+
+
 def test_cli_creates_db_parent_dir(tmp_path):
     # a --db path under a not-yet-existing dir must work (sqlite won't mkdir it)
     db = tmp_path / "new" / "sub" / "pab.db"
