@@ -555,7 +555,7 @@ def test_build_site_includes_nasa_giop_everywhere(tmp_path):
         from pab.metrics import compare
 
         assert compare.GIOP_BBP_SHIFT_FORMULA in methods
-        assert "0.0 % of the slopes sit at the ceiling" in methods
+        assert "0.0 % of the slopes sit at that ceiling" in methods
         assert "not** spectrally adjusted" not in methods
         assert "no spectral adjustment" not in methods
         # the NASA-GIOP table is staged and linked next to the matchup summary

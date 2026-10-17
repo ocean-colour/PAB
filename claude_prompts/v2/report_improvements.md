@@ -386,7 +386,8 @@ no selection bias toward fits that have a plot).
    warnings.
 2. Verify by looking (Read each PNG): the four density panels, the two maps,
    the galleries, and in `comparisons.rst` the GIOP numbers (median ratio
-   ≈ 0.94, ρ ≈ 0.89, ceiling ≈ 14.6 %, the 2.16 quoted once). Check `du -sh
+   ≈ 0.94, ρ ≈ 0.89, ceiling ≈ 14.6 %, the unadjusted 2.15 — E2 measured
+   2.15, not the Q&A's 2.16 — quoted once). Check `du -sh
    report_site` and `git status --short report_site` so the committed tree
    stays small (target: under 10 MB added); no `_build` or stray files.
 3. Docs: update `docs/design/PAB_implementation.md` (reporting section: the
@@ -677,6 +678,23 @@ them (19 GB is not a pod-to-workstation stream job). Options: **A** re-run
 
 **Your answer:**
 
+**4 — Uploading `nasa_giop_summary.{csv,parquet}` to S3 (raised by E2).** The
+Downloads page now links
+`https://s3-west.nrp-nautilus.io/pab/v2/nasa_giop_summary.{csv,parquet}` next
+to the matchup summary, but those objects do not exist yet: `matchup_summary.*`
+reached `s3://pab/v2/` through the Prompt-9 publish step (`NautilusS3Backend`),
+which E6 does not repeat, and `publish.build_manifest` lists only chains and
+figures. Until the upload happens the two new links 404. Options: **A** add
+the upload to E6 — a fresh `export_tables` run against the v2 DB, then
+`NautilusS3Backend(bucket="pab", prefix="v2").upload(...)` per file and a
+re-download + sha256 at the public URL, as Prompt 9 did (needs the S3
+credentials on the workstation; recommended); **B** you upload the two files
+by hand (E2 wrote them only to its scratchpad: `nasa_giop_summary.csv` 8.35 MB,
+`.parquet` 2.89 MB; I can re-export them wherever you like); **C** hide the
+links until the objects exist.
+
+**Your answer:**
+
 ## Logs
 
 ### 2026-10-17 (v2 Prompt 1 — reviewed the report code and data; posted Q1–Q9 for approval)
@@ -861,3 +879,113 @@ is empty even though `v2_backup_job.yaml` was written to fill it, so the 2.0
 chains have no off-site copy. I posted this as Q&A/Edits 3 rather than adding
 19 GB to E1b. E1b records the in-pod chain count and size so the question can
 be answered.
+
+
+### 2026-10-17 (v2 Edit E2 — GIOP b_bp shifted to 700 nm)
+
+Run with Fable, in two sittings. The first run was cut off by a session
+logout while it was reworking the slope-ceiling wording; the user's commit
+`bc6fcec` (titled "E1") holds most of the E2 code — `pab/metrics/compare.py`,
+`pab/report/publish.py`, `pab/report/rst.py`, `pab/tests/test_metrics.py`,
+`pab/tests/test_report.py` — and two small uncommitted hunks in `rst.py` /
+`test_report.py` were the wording edit in progress. The second sitting
+reviewed all of it against the prompt, finished the wording, ran the
+acceptance and wrote this entry. The database was opened read-only
+(`file:…?mode=ro`); the committed `report_site/` was not touched (E6).
+
+What the code does (derive, never persist — Q1 = A, Q2 = A, F3):
+
+- `compare.py`: the wavelengths (`GIOP_BBP_WAVE = 442`, `BING_BBP_WAVE = 700`),
+  GIOP's slope ceiling (`GIOP_BBP_S_CEILING = 2.0`, tolerance 0.01 so the
+  fraction is `bbp_s >= 1.99`) and the reader-facing formula string
+  `GIOP_BBP_SHIFT_FORMULA` are built from the same constants as the helper
+  `giop_bbp_to_700(bbp_442, slope)` — the single source of the
+  `(442/700)^bbp_s` factor; `giop_slope_ceiling_fraction(slope)` computes the
+  pinned fraction (NaN when no finite slope). `gather_nasa_giop` gains a
+  `LEFT JOIN` on `NASA_GIOP_bbp_s` and the columns `bbp_s_nasa`,
+  `bbp_700_nasa`, `bbp_700_nasa_lo/_hi` (value and bounds scaled by the same
+  per-pixel factor; NaN where the slope row is missing, no default slope);
+  every 442 column is kept as stored.
+- `rst.py`: `nasa_giop_section` computes `log_comparison` on `bbp_700_nasa`
+  vs `bbp_bing`, the stats line reads "median NASA(700)/BING(700)", the
+  interim `population.comparison_scatter` panel plots 700 vs 700 with
+  `clip_percentile=99.0` (off-scale count in the title, runaways stay in the
+  statistics — Q6), and the Bokeh branch is relabelled likewise.
+  `_NASA_BBP_CAVEAT` is gone; `_nasa_bbp_note(df)` builds the note from the
+  frame: the formula, that the slope is NASA's own per-pixel `bbp_s`, the
+  computed ceiling fraction with the "least constrained" sentence, and the
+  unadjusted 442-vs-700 median ratio from the same frame quoted once "for
+  continuity with the previous release". The ceiling sentence is shared with
+  the Methods page through `_NASA_BBP_CEILING_CAVEAT` +
+  `_methods_ceiling_sentence(store)` (`methods_page(store=…)`, passed by
+  `build_site`; without a store the sentence defers to the Comparisons page
+  rather than quoting a number). The summary headline is at 700 nm too. No
+  "as-is / no spectral adjustment" phrasing remains in `pab/` (the only
+  copies left are in the committed `report_site/*.rst`, which E6 regenerates).
+- `publish.export_tables` writes `nasa_giop_summary.{csv,parquet}` (keys
+  `nasa_giop_csv/parquet`) when the store holds an ingest; `downloads_page`
+  lists it next to the matchup summary in both the `downloads_base_url`
+  branch and the staged `_static/downloads/` branch (`_DOWNLOAD_TABLES`,
+  skipped when there is no NASA-GIOP fit).
+- Tests: `test_metrics.py` — the helper/ceiling-fraction unit test and a
+  synthetic store with value + bounds + slope checking the 700 nm columns and
+  the null-slope → NaN path; `test_report.py` — the section mentions 700 nm,
+  states the formula and "median NASA(700)/BING(700)", no longer contains
+  "no spectral adjustment"/"as-is", its stats are those of the 700 nm column,
+  the ceiling fraction and the continuity ratio appear once, a null slope
+  drops the pair from `n`, the Methods page carries the formula and the
+  computed fraction (or the deferral without a store), `export_tables` writes
+  the new table and the Downloads page links it only with an ingest.
+- This sitting's edits: the shared ceiling caveat now reads "… sit at GIOP's
+  ceiling of 2.0 — such a slope is a pinned fit rather than a measurement, so
+  those pixels' 700 nm values are the least constrained" on the Comparisons
+  page and "GIOP bounds the slope at 2.0, and 14.6 % of the slopes sit at
+  that ceiling in this release — such a slope is …" on Methods (the first
+  sitting had the ceiling value stated twice in a row); the test string
+  followed. Named tests, full suite (415 passed, 1 skipped) and
+  `ruff check pab` are green.
+
+Acceptance on `$PAB_DATA_DIR/v2/pab.db` (read-only; section, Methods,
+Downloads, tables and the PNG rendered into the scratchpad): the frame has
+15,971 rows (one per BING 2.0 `ExpBPow` fit with a NASA sibling), every row
+has a slope, 7 rows have a null NASA `bbp_442` → n = 15,964. **Median
+NASA(700)/BING(700) = 0.937** (IQR 0.747–1.22), **Spearman ρ = 0.889**,
+log10 offset 0.000156, RMS 0.52; **ceiling fraction 14.57 %** (15,971
+slopes); **unadjusted NASA(442)/BING(700) median 2.154** (ρ 0.874); slope
+median 1.92, IQR 1.76–1.98, 1.4 % below 0.5, median shift factor 0.414 — all
+as Q1 predicted. The figure: a clean log-log cloud along the 1:1 line with the
+median-ratio line just below it, axes 3×10⁻⁶–10⁻² spanning the central 99 %,
+"[173 off-scale]" in the title (the 51 runaways above 1 m⁻¹ among them, kept
+in the statistics). `nasa_giop_summary.csv` is 8.35 MB, the parquet 2.89 MB.
+
+Surprising, or worth knowing:
+
+- **The continuity ratio is 2.15, not 2.16.** On this frame the unadjusted
+  median comes out 2.154; the Q&A's 2.16 was profiled on the Drive copy
+  (byte-identical) but evidently on a slightly different join. The note
+  prints 2.15; I changed E6's "the 2.16 quoted once" check to 2.15.
+- **GIOP has a floor that the shift does not remove.** The panel shows a
+  horizontal band of NASA values at ≈2–4×10⁻⁴ m⁻¹ wherever BING retrieves
+  less than 10⁻⁴ (431 matchups: NASA(700) median 2.95×10⁻⁴ against BING
+  < 10⁻⁴, and 25 % of those slopes are at the ceiling vs 14.6 % overall).
+  It is the 442 nm amplitude that never gets small (1st percentile
+  5.1×10⁻⁴), so it is a GIOP property, not an artefact of the 700 nm
+  extrapolation. Nothing was done about it; it belongs with the Outliers
+  work or E3's density panel, where it will be obvious.
+- **`ruff check pab` was not green on arrival**: nine pre-existing findings
+  in files E2 never touched (`pab/argo/check_argo_coverage.py`,
+  `pab/argo/check_gdac.py`: unsorted/multiple imports and `l` as a name;
+  `pab/fit/nasa_giop.py`: unused `config` import; `pab/fit/run.py`: import
+  block; `pab/pace/cloud.py`: `zip()` without `strict=`;
+  `pab/tests/test_pipeline.py`: unused `as store`). Because the Edits rule
+  wants ruff green I fixed them mechanically (`strict=False` so `cloud.py`
+  keeps its behaviour; the rest are renames/import sorting/removals). Those
+  hunks are separable if you would rather not have them in this commit.
+- **The new Downloads links point at objects that do not exist yet.**
+  `matchup_summary.*` reached `s3://pab/v2/` through the Prompt-9 publish
+  step, which E6 does not repeat, and `build_manifest` lists only chains and
+  figures — so `…/pab/v2/nasa_giop_summary.{csv,parquet}` will 404 until
+  someone uploads them. Posted as Q&A/Edits 4 (recommended: add the upload
+  to E6).
+
+Next: the answer to Q&A/Edits 4, then E3.

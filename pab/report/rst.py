@@ -369,9 +369,8 @@ def _bp_prior_range():
 #: Methods page so the two cannot drift. The *fraction* is computed per frame
 #: (:func:`_nasa_bbp_note`), never quoted.
 _NASA_BBP_CEILING_CAVEAT = (
-    f"GIOP bounds the slope at {compare.GIOP_BBP_S_CEILING:g}, and a slope "
-    "sitting at that ceiling is a pinned fit rather than a measurement, so "
-    "those pixels' 700 nm values are the least constrained."
+    "such a slope is a pinned fit rather than a measurement, so those pixels' "
+    "700 nm values are the least constrained."
 )
 
 
@@ -401,7 +400,7 @@ def _nasa_bbp_note(df) -> str:
     if np.isfinite(ceiling):
         out += (
             f" {ceiling * 100:.1f} % of the {n_slope:,} slopes sit at GIOP's "
-            f"ceiling of {compare.GIOP_BBP_S_CEILING:g}; "
+            f"ceiling of {compare.GIOP_BBP_S_CEILING:.1f} — "
             + _NASA_BBP_CEILING_CAVEAT
         )
     if raw.get("n") and np.isfinite(raw["median_ratio"]):
@@ -1329,14 +1328,15 @@ def _methods_ceiling_sentence(store) -> str:
                 frac = compare.giop_slope_ceiling_fraction(df["bbp_s_nasa"])
         except Exception:  # noqa: BLE001 — the page must build without the frame
             pass
+    lead = f"GIOP bounds the slope at {compare.GIOP_BBP_S_CEILING:.1f}, and "
     if np.isfinite(frac):
-        lead = f"{frac * 100:.1f} % of the slopes sit at the ceiling in this release:"
+        lead += f"{frac * 100:.1f} % of the slopes sit at that ceiling in this release"
     else:
-        lead = (
-            "The *Comparisons* page reports the fraction of slopes at the "
-            "ceiling in this release:"
+        lead += (
+            "the *Comparisons* page reports the fraction of slopes at that "
+            "ceiling in this release"
         )
-    return f"{lead} {_NASA_BBP_CEILING_CAVEAT}"
+    return f"{lead} — {_NASA_BBP_CEILING_CAVEAT}"
 
 
 def methods_page(*, compare_db=None, store=None) -> str:

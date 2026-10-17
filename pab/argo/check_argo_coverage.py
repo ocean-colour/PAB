@@ -7,11 +7,12 @@ Usage:
     python3 check_argo_coverage.py
 """
 
-import urllib.request
 import gzip
 import io
-import pandas as pd
+import urllib.request
+
 import argopy
+import pandas as pd
 from argopy import ArgoIndex
 
 
@@ -23,7 +24,7 @@ def get_gdac_direct(param='BBP700'):
         data = r.read()
     with gzip.open(io.BytesIO(data)) as f:
         lines = f.read().decode('utf-8').splitlines()
-    header = next(i for i, l in enumerate(lines) if not l.startswith('#'))
+    header = next(i for i, line in enumerate(lines) if not line.startswith('#'))
     df = pd.read_csv(io.StringIO('\n'.join(lines[header:])))
     df['wmo'] = df['file'].apply(lambda x: int(x.split('/')[1]))
     return df

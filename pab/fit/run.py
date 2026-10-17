@@ -877,9 +877,8 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
     from collections import defaultdict
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
-    from pab.parallel import PROGRESS_EVERY, mem_breakdown
-
     from pab.pace import extract as _extract
+    from pab.parallel import PROGRESS_EVERY, mem_breakdown
 
     # 'spawn' avoids fork-in-a-multithreaded-parent deadlocks (Py3.13 warns on
     # fork here); workers re-import cleanly and `_fit_only` pickles by qualname.
