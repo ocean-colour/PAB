@@ -394,9 +394,17 @@ def test_downloads_page_links_s3_and_stages_nothing(tmp_path):
         out = rst.downloads_page(store, site, downloads_base_url=base)
         assert f'href="{base}/matchup_summary.csv"' in out
         assert f'href="{base}/matchup_summary.parquet"' in out
+        # no NASA-GIOP ingest -> no link to a table that would not exist
+        assert "nasa_giop_summary" not in out
         # nothing staged into the committed tree
         assert not (site / "_static" / "downloads").exists()
         assert "_static/downloads/" not in out
+        # with an ingest the NASA-GIOP table is linked at the same prefix
+        _seed_nasa_giop(store, "M1")
+        out = rst.downloads_page(store, site, downloads_base_url=base)
+        assert f'href="{base}/nasa_giop_summary.csv"' in out
+        assert f'href="{base}/nasa_giop_summary.parquet"' in out
+        assert not (site / "_static" / "downloads").exists()
 
 
 def test_comparisons_page_static_figures_at_scale(tmp_path):
@@ -413,9 +421,14 @@ def test_comparisons_page_static_figures_at_scale(tmp_path):
         assert ".. raw:: html" not in out  # no multi-MB inline Bokeh embed
 
 
-def _seed_nasa_giop(store, matchup_id, *, bbp_442=3e-3):
+#: ``(442/700) ** 1`` — the 700 nm shift factor for a seeded slope of 1.0.
+_SHIFT_1 = 442.0 / 700.0
+
+
+def _seed_nasa_giop(store, matchup_id, *, bbp_442=3e-3, bbp_s=1.0):
     """Add the parallel NASA_GIOP sibling fit + namespaced results (the
-    ``pab.fit.nasa_giop`` shape) for an already-seeded matchup."""
+    ``pab.fit.nasa_giop`` shape, slope included) for an already-seeded
+    matchup. ``bbp_s=None`` seeds no slope row (the null-slope path)."""
     fit_id = f"{matchup_id}_2_2_NASA_GIOP"
     store.upsert(
         "fits",
@@ -439,24 +452,68 @@ def _seed_nasa_giop(store, matchup_id, *, bbp_442=3e-3):
                 "unit": "m^-1",
             },
         )
+    if bbp_s is not None:
+        store.upsert(
+            "fit_results",
+            {
+                "fit_id": fit_id,
+                "quantity": "NASA_GIOP_bbp_s",
+                "value": bbp_s,
+                "value_lo": None,
+                "value_hi": None,
+                "unit": "",
+            },
+        )
     return fit_id
 
 
 def test_nasa_giop_section_stats_and_caveat():
     pytest.importorskip("bokeh")
+    from pab.metrics import compare
+
     with Store.open(":memory:") as store:
         _two_matchups(store)
-        _seed_nasa_giop(store, "M1", bbp_442=3e-3)
-        _seed_nasa_giop(store, "M2", bbp_442=6e-3)
+        _seed_nasa_giop(store, "M1", bbp_442=3e-3, bbp_s=2.0)  # at GIOP's ceiling
+        _seed_nasa_giop(store, "M2", bbp_442=6e-3, bbp_s=1.0)
         out = rst.nasa_giop_section(store)
         assert "BING vs NASA GIOP" in out
-        # the explicit wavelength caveat (Q3) travels with the figure/stats
-        assert "442 nm" in out and "700 nm" in out
-        assert "no spectral adjustment" in out
-        # log_comparison stats: both ratios are 1.5 -> median 1.5
-        assert "n = 2" in out and "1.5" in out
+        # the comparison is at 700 nm on both sides, with the formula stated
+        assert "700 nm" in out and "no spectral adjustment" not in out
+        assert "as-is" not in out
+        assert compare.GIOP_BBP_SHIFT_FORMULA in out
+        assert "median NASA(700)/BING(700)" in out
+        # the stats are those of the 700 nm column: ratios 1.5*(442/700)**2
+        # and 1.5*(442/700) -> the median is their mean
+        df = compare.gather_nasa_giop(store)
+        stats = compare.log_comparison(df["bbp_700_nasa"], df["bbp_bing"])
+        r1, r2 = 1.5 * _SHIFT_1**2, 1.5 * _SHIFT_1
+        assert stats["median_ratio"] == pytest.approx((r1 + r2) / 2)
+        assert "n = 2" in out and rst._fmt(stats["median_ratio"]) in out
+        # the computed ceiling fraction (one of two slopes at 2.0) ...
+        assert "50.0 % of the 2 slopes" in out
+        assert "least constrained" in out
+        # ... and the unadjusted 442-vs-700 ratio (1.5) quoted once for continuity
+        assert "unadjusted median NASA(442)/BING(700) ratio on the same matchups is 1.5" in out
+        assert out.count("continuity with the previous release") == 1
         # the interactive Bokeh embed is present below the interactive cap
         assert ".. raw:: html" in out
+
+
+def test_nasa_giop_section_null_slope_is_nan_not_default():
+    from pab.metrics import compare
+
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        _seed_nasa_giop(store, "M1", bbp_442=3e-3, bbp_s=1.0)
+        _seed_nasa_giop(store, "M2", bbp_442=6e-3, bbp_s=None)  # no slope row
+        df = compare.gather_nasa_giop(store)
+        by_id = df.set_index("matchup_id")
+        assert by_id.loc["M1", "bbp_700_nasa"] == pytest.approx(3e-3 * _SHIFT_1)
+        assert np.isnan(by_id.loc["M2", "bbp_700_nasa"])
+        # the section's stats drop the NaN pair: n = 1, not 2
+        out = rst.nasa_giop_section(store, sortable=False)
+        assert "n = 1;" in out
+        assert "0.0 % of the 1 slopes" in out
 
 
 def test_nasa_giop_section_empty_without_ingest():
@@ -474,7 +531,7 @@ def test_nasa_giop_section_static_at_scale(tmp_path):
         assert ".. figure:: _static/comparisons/nasa_giop_bbp_scatter.png" in out
         png = tmp_path / "_static" / "comparisons" / "nasa_giop_bbp_scatter.png"
         assert png.is_file()
-        assert "differing wavelengths" in out
+        assert "shifted to 700 nm" in out and "no spectral adjustment" not in out
         assert ".. raw:: html" not in out  # no giant Bokeh embed at scale
 
 
@@ -487,12 +544,31 @@ def test_build_site_includes_nasa_giop_everywhere(tmp_path):
         assert "BING vs NASA GIOP" in written["comparisons"].read_text()
         summary = written["summary"].read_text()
         assert "BING vs NASA GIOP (b_bp)" in summary
-        assert "wavelengths differ by design" in summary
+        assert "median NASA(700 nm)/BING(700 nm)" in summary
         # the parallel NASA_GIOP fits rows must not inflate the BING fit count
         assert "**BING fits:** 2" in summary
         methods = written["methods"].read_text()
         assert "GSM" in methods and "GIOP" in methods
         assert 'pab_version = "1.1"' in methods
+        # Methods carries the formula + the computed ceiling fraction, and no
+        # trace of the old "not spectrally adjusted" stance
+        from pab.metrics import compare
+
+        assert compare.GIOP_BBP_SHIFT_FORMULA in methods
+        assert "0.0 % of the slopes sit at the ceiling" in methods
+        assert "not** spectrally adjusted" not in methods
+        assert "no spectral adjustment" not in methods
+        # the NASA-GIOP table is staged and linked next to the matchup summary
+        downloads = written["downloads"].read_text()
+        assert "_static/downloads/nasa_giop_summary.csv" in downloads
+        assert (tmp_path / "_static" / "downloads" / "nasa_giop_summary.csv").is_file()
+
+
+def test_methods_page_without_store_defers_ceiling_fraction():
+    out = rst.methods_page()
+    assert "Comparisons* page reports the fraction" in out
+    assert "least constrained" in out
+    assert "not** spectrally adjusted" not in out
 
 
 def test_build_site_no_nasa_giop_section_without_ingest(tmp_path):
@@ -570,6 +646,35 @@ def test_export_tables_roundtrip(tmp_path):
         assert out["summary_csv"].exists()
         back = pd.read_csv(out["summary_csv"])
         assert len(back) == 2 and {"bbp_bing", "bbp_argo"} <= set(back.columns)
+        # no NASA-GIOP ingest -> no NASA-GIOP table
+        assert "nasa_giop_csv" not in out
+        assert not (tmp_path / "nasa_giop_summary.csv").exists()
+
+
+def test_export_tables_writes_nasa_giop_table(tmp_path):
+    import pandas as pd
+
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        _seed_nasa_giop(store, "M1", bbp_442=3e-3, bbp_s=1.0)
+        _seed_nasa_giop(store, "M2", bbp_442=6e-3, bbp_s=None)
+        out = publish.export_tables(store, tmp_path)
+        assert out["nasa_giop_csv"] == tmp_path / "nasa_giop_summary.csv"
+        back = pd.read_csv(out["nasa_giop_csv"]).set_index("matchup_id")
+        assert len(back) == 2
+        # the stored 442 nm value, the slope and the derived 700 nm columns all travel
+        assert {
+            "bbp_442_nasa",
+            "bbp_s_nasa",
+            "bbp_700_nasa",
+            "bbp_700_nasa_lo",
+            "bbp_700_nasa_hi",
+            "bbp_bing",
+        } <= set(back.columns)
+        assert back.loc["M1", "bbp_700_nasa"] == pytest.approx(3e-3 * _SHIFT_1)
+        assert np.isnan(back.loc["M2", "bbp_700_nasa"])
+        if "nasa_giop_parquet" in out:
+            assert out["nasa_giop_parquet"].exists()
 
 
 def test_build_manifest_and_stub_upload(tmp_path):

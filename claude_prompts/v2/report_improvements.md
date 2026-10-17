@@ -64,10 +64,11 @@ Use Fable if you can.  Log your work.
 
 ### Edits
 
-Six prompts, to be run **in order on the workstation**, on the
-`report-improvements` branch. Every decision they rely on is recorded in
-**Q&A/v2** (rounds 1 and 2) — read both rounds before starting any of them.
-Common rules for all six: git is the user's (no `git add/commit/push`); each
+Seven prompts (E1, E1b, E2–E6), to be run **in order on the workstation**, on the
+`report-improvements` branch (E1b only has to precede E5). Every decision they
+rely on is recorded in **Q&A/v2** (rounds 1 and 2) and **Q&A/Edits** — read
+them before starting any of them.
+Common rules for all of them: git is the user's (no `git add/commit/push`); each
 prompt ends with `ruff check pab` and the named tests green; each logs its work
 under **Logs** in this file in the usual format; anything surprising goes in the
 log, not silently worked around. Shared constants: the v2 database is
@@ -156,6 +157,51 @@ Notes:
 - The three `rclone copy … --files-from … --no-traverse` commands were
   verified with `--dry-run` on two names each (35–83 KB per file;
   `--no-traverse` avoids listing the 52 k-entry Drive folder).
+- **Superseded by E1b (Q&A/Edits 1 = C):** the "Argo Q&A, 2.0 backfill" row
+  becomes root `$PAB_DATA_DIR/gallery/v2_argo_qa/` (whole folder copied off
+  the PVC) with a Drive copy at `AIOcean:PAB/v2/argo_qa/`.
+
+**E1b — Copy the 2.0-backfill Argo Q&A plots off the PVC and back them up
+(Q&A/Edits 1 = C).** The 5,453 plots under `/data/v2/pipeline/argo_qa/` exist
+only on the (un-backed-up) PVC. Bring the whole folder to the workstation
+once, then `rclone copy` it to Drive, so E5 needs no pod. No code changes;
+nothing on the PVC is written.
+1. Write `nautilus/argo_qa_copy_pod.yaml`: a pod `pab-argoqa-copy` in
+   namespace `sea-meets-the-stars`, image `python:3.12-slim` (has `tar`),
+   `command: ["sleep", "14400"]`, `restartPolicy: Never`,
+   `activeDeadlineSeconds: 14400`, small requests (cpu 500m, 1 Gi), the
+   `pab-data` PVC mounted at `/data` with **`readOnly: true`**; header
+   comment with usage and cleanup, in the style of `nautilus/inspect_pod.yaml`
+   (which exits immediately, so it cannot be used for `kubectl cp`).
+2. **The user launches it.** Stop and ask them to run
+   `! kubectl apply -f nautilus/argo_qa_copy_pod.yaml`, then wait until
+   `kubectl -n sea-meets-the-stars get pod pab-argoqa-copy` is `Running`.
+3. In the pod: `ls /data/v2/pipeline/argo_qa | wc -l`, `du -sh` on it, and an
+   md5 list (`cd /data/v2/pipeline/argo_qa && md5sum *.png > /tmp/qa.md5`,
+   then `cat` it back). Record the count; if it differs from the DB's 5,453
+   `/data/v2/pipeline/argo_qa/` rows, say by how much and copy the whole
+   folder anyway. While the pod is up, also record `ls /data/v2/fit_chains |
+   wc -l` and `du -sh /data/v2/fit_chains` (for Q&A/Edits 3; do not copy them).
+4. Transfer **compressed, as a stream** (HOWTO §5b transfer note: a plain
+   `kubectl cp` has no resume and has died mid-file before):
+   `kubectl -n sea-meets-the-stars exec pab-argoqa-copy -- tar czf - -C
+   /data/v2/pipeline argo_qa > $PAB_DATA_DIR/gallery/v2_argo_qa.tgz`, `gzip -t`
+   it, then extract into `$PAB_DATA_DIR/gallery/` and rename to
+   `$PAB_DATA_DIR/gallery/v2_argo_qa/`. Verify the local file count and
+   `md5sum -c` against the in-pod list (all OK); then delete the `.tgz`.
+5. Back up: `rclone copy $PAB_DATA_DIR/gallery/v2_argo_qa/
+   AIOcean:PAB/v2/argo_qa/ --transfers 8` (**`copy`, never `sync`** — the
+   destination is the shared 1.0/2.0 backup), then `rclone check
+   $PAB_DATA_DIR/gallery/v2_argo_qa/ AIOcean:PAB/v2/argo_qa/ --one-way` (0
+   differences) and the remote count.
+6. Clean up: `kubectl -n sea-meets-the-stars delete pod pab-argoqa-copy`
+   and confirm it is gone. If anything failed before this point, still
+   delete the pod and log where it stopped.
+7. Update E5/E6 if anything differs from what they now assume (root
+   `$PAB_DATA_DIR/gallery/v2_argo_qa/` for prefix
+   `/data/v2/pipeline/argo_qa/`), and add a line to HOWTO's backup paragraph
+   (the one naming `AIOcean:PAB/`) that `v2/argo_qa/` was added on this date.
+   Use Fable if you can. Log your work.
 
 **E2 — GIOP `b_bp` at 700 nm (Q1 = A, Q2 = A, F3 agreed).**
 Derive, never persist. In `pab/metrics/compare.py::gather_nasa_giop` add a
@@ -268,8 +314,11 @@ Q&A plots; the rest is fetched from the Drive backup into
 `$PAB_DATA_DIR/gallery/v2_figures/` (stored prefix
 `/data/v2/pipeline/figures/`), 1.0 scene quick-looks
 `$PAB_DATA_DIR/gallery/v1_scenes/` (`/data/v1/pipeline/figures/`), Argo Q&A
-`$PAB_DATA_DIR/gallery/argo_qa/` (`/data/full/pipeline/argo_qa/`) and the
-existing `$PAB_DATA_DIR/run1k/pipeline/argo_qa/` (`/data/run1k/pipeline/argo_qa/`).
+`$PAB_DATA_DIR/gallery/argo_qa/` (`/data/full/pipeline/argo_qa/`), the 2.0
+backfill Q&A plots `$PAB_DATA_DIR/gallery/v2_argo_qa/`
+(`/data/v2/pipeline/argo_qa/`; the whole folder, copied by E1b — nothing to
+fetch) and the existing `$PAB_DATA_DIR/run1k/pipeline/argo_qa/`
+(`/data/run1k/pipeline/argo_qa/`).
 Fetch only the files selected below: after implementing the selection, write
 the selected basenames to three lists split by stored prefix (`fits.txt` =
 fit figures + any `/data/v2/…` scenes, `scenes_v1.txt` = `/data/v1/…` scenes,
@@ -280,11 +329,11 @@ rclone copy AIOcean:PAB/v2/figures/ $PAB_DATA_DIR/gallery/v2_figures/ --files-fr
 rclone copy AIOcean:PAB/site/_static/scenes/ $PAB_DATA_DIR/gallery/v1_scenes/ --files-from scenes_v1.txt --no-traverse
 rclone copy AIOcean:PAB/site/_static/argo_qa/ $PAB_DATA_DIR/gallery/argo_qa/ --files-from qa.txt --no-traverse
 ```
-(verified with `--dry-run` in E1; ~35–85 KB per file). Q&A plots under
-`/data/v2/pipeline/argo_qa/` (684 of the 15,971 candidate fits) and the 423
-profiles with no `qa_path` cannot be fetched (PVC only, no pod): the Q&A
-gallery drops those panels with the counted warning of step 1 and the log
-says how many — unless Q&A/Edits 1 says otherwise.
+(verified with `--dry-run` in E1; ~35–85 KB per file). If E1b has not been
+run, stop and run it first. Only the 423 candidate fits whose profile has no
+`qa_path` (2.6 %) have no Q&A plot at all: the Q&A gallery drops such a panel
+with the counted warning of step 1 and the log says how many (Q&A/Edits 1:
+no selection bias toward fits that have a plot).
 1. **Path remap.** Add a repeatable `--figure-root OLD=NEW` option to
    `--emit-site` in `pab/pipeline.py`, passed as `figure_roots: dict` into
    `rst.build_site` and applied inside `_stage_static` (longest-prefix
@@ -330,9 +379,9 @@ says how many — unless Q&A/Edits 1 says otherwise.
    --figure-root /data/v2/pipeline/figures=$PAB_DATA_DIR/gallery/v2_figures
    --figure-root /data/v1/pipeline/figures=$PAB_DATA_DIR/gallery/v1_scenes
    --figure-root /data/full/pipeline/argo_qa=$PAB_DATA_DIR/gallery/argo_qa
+   --figure-root /data/v2/pipeline/argo_qa=$PAB_DATA_DIR/gallery/v2_argo_qa
    --figure-root /data/run1k/pipeline/argo_qa=$PAB_DATA_DIR/run1k/pipeline/argo_qa`
-   (one `--figure-root` per stored prefix from E1; `/data/v2/pipeline/argo_qa/`
-   has no off-pod root and is left unmapped on purpose), then
+   (one `--figure-root` per stored prefix from E1/E1b), then
    `python -m sphinx -b html report_site report_site/_build` with no new
    warnings.
 2. Verify by looking (Read each PNG): the four density panels, the two maps,
@@ -615,6 +664,19 @@ under the frozen `v1/`. The alternative is to mirror the PVC layout
 
 **Your answer:** Sure, keep `gallery/`.
 
+**3 — The v2 chains are not in the backup.** `nautilus/v2_backup_job.yaml`
+was written to copy `/data/v2/fit_chains` (15,971 files, ~19 GB) to
+`AIOcean:PAB/v2/fit_chains/`, but E1 found that folder **empty** while the
+figures from the same job arrived (17,361 files). So either the chains step
+never ran or failed, and the 2.0 chains exist only on the un-backed-up PVC.
+E1b records the in-pod count and size while its pod is up but does not copy
+them (19 GB is not a pod-to-workstation stream job). Options: **A** re-run
+`v2_backup_job.yaml` (it is resumable, `copy` not `sync`; needs the temporary
+`aiocean-rclone` secret again), as a separate step outside these prompts
+(recommended); **B** leave it; **C** something else.
+
+**Your answer:**
+
 ## Logs
 
 ### 2026-10-17 (v2 Prompt 1 — reviewed the report code and data; posted Q1–Q9 for approval)
@@ -772,3 +834,30 @@ What I learned, and what was surprising:
 
 Next: answers to Q&A/Edits 1–2, then E2.
 
+
+### 2026-10-17 (v2 — read the Q&A/Edits answers; added E1b, updated E5/E6)
+
+No code changed. The answers were: Q&A/Edits 1 = **C** (bring the 2.0-backfill
+Argo Q&A plots off the PVC with a pod, and Claude may run the `rclone copy` to
+Drive), and Q&A/Edits 2 = keep `$PAB_DATA_DIR/gallery/`. To act on them I added
+a new prompt, **E1b**, between E1 and E2. It only has to run before E5. It
+writes a sleep pod with the PVC mounted read-only (`inspect_pod.yaml` exits
+immediately, so `kubectl cp` cannot use it), asks the user to launch the pod,
+streams the whole `/data/v2/pipeline/argo_qa/` folder as a gzipped tar (per
+the HOWTO §5b transfer note) into `$PAB_DATA_DIR/gallery/v2_argo_qa/`, checks
+it against an in-pod md5 list, `rclone copy`s it (never `sync`) to
+`AIOcean:PAB/v2/argo_qa/` with an `rclone check`, deletes the pod and notes
+the new Drive folder in HOWTO.
+
+Because the whole folder ends up local, E5 needs no PVC fetch. I removed its
+"cannot be fetched" clause; only the 423 fits whose profile has no `qa_path`
+(2.6 %) still lose their Q&A panel. E6 gains a fifth flag,
+`--figure-root /data/v2/pipeline/argo_qa=$PAB_DATA_DIR/gallery/v2_argo_qa`.
+The Edits intro now says seven prompts, and the E1 Findings carry a note that
+E1b replaces the PVC-only row.
+
+Something E1 surfaced that these prompts do not fix: `AIOcean:PAB/v2/fit_chains/`
+is empty even though `v2_backup_job.yaml` was written to fill it, so the 2.0
+chains have no off-site copy. I posted this as Q&A/Edits 3 rather than adding
+19 GB to E1b. E1b records the in-pod chain count and size so the question can
+be answered.

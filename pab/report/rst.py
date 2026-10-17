@@ -180,18 +180,18 @@ def summary_page(store, *, pab_version: str | None = None, compare_db=None) -> s
         )
     nasa_df = compare.gather_nasa_giop(store)
     nasa = (
-        compare.log_comparison(nasa_df["bbp_442_nasa"], nasa_df["bbp_bing"])
+        compare.log_comparison(nasa_df["bbp_700_nasa"], nasa_df["bbp_bing"])
         if len(nasa_df)
         else {}
     )
     if nasa.get("n"):
         out.append(_heading("BING vs NASA GIOP (b_bp)", "-"))
         out.append(
-            f"- n = {nasa['n']}; median NASA(442 nm)/BING(700 nm) ratio = "
+            f"- n = {nasa['n']}; median NASA(700 nm)/BING(700 nm) ratio = "
             f"{_fmt(nasa['median_ratio'])}; Spearman ρ = {_fmt(nasa['spearman'])}. "
-            "**The wavelengths differ by design** — see the "
-            ":doc:`comparisons <comparisons>` and :doc:`Methods <methods>` pages "
-            "before reading this as a bias.\n"
+            "NASA's ``b_bp`` is shifted from 442 nm to 700 nm with its own "
+            "per-pixel slope — see the :doc:`comparisons <comparisons>` and "
+            ":doc:`Methods <methods>` pages for the formula and its caveat.\n"
         )
     out.append(_version_headline(store, compare_db))
     out.append(_heading("Explore the results", "-"))
@@ -320,9 +320,6 @@ def _chl_scatter(df, interactive, np, url_col):
     )
 
 
-#: Reader-facing caveat for every BING-vs-NASA ``b_bp`` figure/stat: the two
-#: values are at different wavelengths, deliberately not spectrally adjusted
-#: (``claude_prompts/pace_giop_gsm.md`` Q3).
 #: What 2.0 changed, **stated once** and reused by the Comparisons section, the
 #: Methods page, and the summary headline — three places that would otherwise
 #: drift apart. Every claim here is read back off the `fits` rows of the v2
@@ -368,14 +365,52 @@ def _bp_prior_range():
         return None
 
 
-_NASA_BBP_CAVEAT = (
-    "**Wavelength caveat:** NASA reports ``b_bp`` at **442 nm** while BING's "
-    "headline ``b_bp`` is at **700 nm** (chosen to match the float ``BBP700``). "
-    "The two are compared **as-is, with no spectral adjustment**, so a ratio "
-    "above 1 is expected simply from the blue-to-red decrease of particulate "
-    "backscatter — read the scatter as a *consistency* check, not a "
-    "like-for-like validation."
+#: The GIOP slope-ceiling caveat, shared by the Comparisons note and the
+#: Methods page so the two cannot drift. The *fraction* is computed per frame
+#: (:func:`_nasa_bbp_note`), never quoted.
+_NASA_BBP_CEILING_CAVEAT = (
+    f"GIOP bounds the slope at {compare.GIOP_BBP_S_CEILING:g}, and a slope "
+    "sitting at that ceiling is a pinned fit rather than a measurement, so "
+    "those pixels' 700 nm values are the least constrained."
 )
+
+
+def _nasa_bbp_note(df) -> str:
+    """The reader-facing note on the 700 nm shift, with its numbers computed
+    from ``df`` (a :func:`~pab.metrics.compare.gather_nasa_giop` frame).
+
+    States the formula (one source: :data:`~pab.metrics.compare.GIOP_BBP_SHIFT_FORMULA`),
+    that the slope is NASA's own per-pixel ``bbp_s``, the fraction of slopes
+    at GIOP's ceiling (``bbp_s >= 1.99``), and -- once, for continuity with
+    the previous release, which compared the two wavelengths as stored -- the
+    unadjusted 442-vs-700 median ratio from the same frame.
+    """
+    import numpy as np
+
+    ceiling = compare.giop_slope_ceiling_fraction(df["bbp_s_nasa"])
+    raw = compare.log_comparison(df["bbp_442_nasa"], df["bbp_bing"])
+    n_slope = int(np.isfinite(np.asarray(df["bbp_s_nasa"], dtype=float)).sum())
+    out = (
+        "**Wavelength note:** NASA reports ``b_bp`` at **442 nm** while BING's "
+        "headline ``b_bp`` is at **700 nm** (chosen to match the float "
+        "``BBP700``). NASA's value is shifted to 700 nm with GIOP's own "
+        f"per-pixel power-law slope ``bbp_s``: ``{compare.GIOP_BBP_SHIFT_FORMULA}`` "
+        "(the credible bounds scale by the same factor), so the comparison "
+        "below is at one wavelength."
+    )
+    if np.isfinite(ceiling):
+        out += (
+            f" {ceiling * 100:.1f} % of the {n_slope:,} slopes sit at GIOP's "
+            f"ceiling of {compare.GIOP_BBP_S_CEILING:g}; "
+            + _NASA_BBP_CEILING_CAVEAT
+        )
+    if raw.get("n") and np.isfinite(raw["median_ratio"]):
+        out += (
+            " For continuity with the previous release, which compared the two "
+            "as stored, the unadjusted median NASA(442)/BING(700) ratio on the "
+            f"same matchups is {_fmt(raw['median_ratio'])}."
+        )
+    return out
 
 
 def nasa_giop_section(
@@ -390,15 +425,16 @@ def nasa_giop_section(
     Mirrors the satellite-vs-float ``b_bp`` treatment: a log-log scatter
     (interactive Bokeh below ``max_interactive`` matchups, a static PNG above
     it) plus :func:`~pab.metrics.compare.log_comparison` summary stats, built
-    on :func:`~pab.metrics.compare.gather_nasa_giop`. Both the figure and the
-    stats carry the explicit 442 nm-vs-700 nm ``b_bp`` wavelength caveat.
-    Returns ``""`` when the store holds no NASA-GIOP ingest (the section
-    simply doesn't appear).
+    on :func:`~pab.metrics.compare.gather_nasa_giop`. The comparison is at
+    **700 nm on both sides** (NASA's 442 nm value shifted with its own
+    per-pixel slope, see :func:`_nasa_bbp_note`); the figure and the stats
+    use the derived ``bbp_700_nasa`` column. Returns ``""`` when the store
+    holds no NASA-GIOP ingest (the section simply doesn't appear).
     """
     df = compare.gather_nasa_giop(store)
     if not len(df):
         return ""
-    stats = compare.log_comparison(df["bbp_442_nasa"], df["bbp_bing"])
+    stats = compare.log_comparison(df["bbp_700_nasa"], df["bbp_bing"])
 
     out = [_heading("BING vs NASA GIOP (L2 IOP)", "-"), ""]
     out.append(
@@ -408,10 +444,10 @@ def nasa_giop_section(
         "See the :doc:`Methods <methods>` page for the product details and "
         "provenance.\n"
     )
-    out.append(_NASA_BBP_CAVEAT + "\n")
+    out.append(_nasa_bbp_note(df) + "\n")
     if stats.get("n"):
         out.append(
-            f"- n = {stats['n']}; median NASA(442)/BING(700) ratio = "
+            f"- n = {stats['n']}; median NASA(700)/BING(700) ratio = "
             f"{_fmt(stats['median_ratio'])} "
             f"(IQR {_fmt(stats['ratio_iqr_lo'])}–{_fmt(stats['ratio_iqr_hi'])}); "
             f"Spearman ρ = {_fmt(stats['spearman'])}; "
@@ -425,20 +461,25 @@ def nasa_giop_section(
 
             dest = Path(outdir) / "_static" / "comparisons"
             dest.mkdir(parents=True, exist_ok=True)
+            # Interim panel (E3 swaps in the density scatter): the 99 % clip
+            # keeps the runaway BING values from setting the axes; they stay
+            # in the statistics and are counted in the title (Q&A/v2 Q6).
             population.comparison_scatter(
                 df,
-                "bbp_442_nasa",
+                "bbp_700_nasa",
                 "bbp_bing",
                 outfile=dest / "nasa_giop_bbp_scatter.png",
                 xlabel="BING $b_{bp}$(700 nm) [m$^{-1}$]",
-                ylabel="NASA GIOP $b_{bp}$(442 nm) [m$^{-1}$]",
+                ylabel="NASA GIOP $b_{bp}$(700 nm) [m$^{-1}$]",
+                clip_percentile=99.0,
             )
             out.append(
                 ".. figure:: _static/comparisons/nasa_giop_bbp_scatter.png\n"
                 "   :width: 520px\n\n"
-                "   NASA GIOP ``b_bp`` (442 nm) vs BING ``b_bp`` (700 nm), "
-                "log-log — **note the differing wavelengths** (no spectral "
-                "adjustment applied).\n"
+                "   NASA GIOP ``b_bp`` shifted to 700 nm vs BING ``b_bp`` "
+                "(700 nm), log-log; axes span the central 99 % of the values "
+                "and the off-scale count is in the title (those matchups stay "
+                "in the statistics).\n"
             )
         except Exception:  # noqa: BLE001 — a bad panel must not break the build
             pass
@@ -448,11 +489,11 @@ def nasa_giop_section(
 
             fig = interactive.comparison_scatter(
                 df,
-                sat_col="bbp_442_nasa",
+                sat_col="bbp_700_nasa",
                 insitu_col="bbp_bing",
-                title="NASA GIOP b_bp(442) vs BING b_bp(700) — wavelengths differ",
+                title="NASA GIOP b_bp(700, shifted from 442) vs BING b_bp(700)",
                 xlabel="BING b_bp(700 nm)",
-                ylabel="NASA GIOP b_bp(442 nm)",
+                ylabel="NASA GIOP b_bp(700 nm)",
             )
             out.append(interactive.raw_html(fig))
         except ImportError:
@@ -622,7 +663,6 @@ def _version_ratio_by_level(df) -> str:
             parts.append(f"{name} {np.median(v2[m] / v1[m]):.2f}")
     if len(parts) < 2:
         return ""
-    lo_r = float(np.median(v2[groups[0][1]] / v1[groups[0][1]]))
     hi_r = float(np.median(v2[groups[2][1]] / v1[groups[2][1]]))
     return (
         _heading("Result: the inelastic correction is a clear-water effect", "~")
@@ -1275,13 +1315,40 @@ def matchup_quality_table(store, *, sortable: bool = True) -> str:
     return "\n".join(out)
 
 
-def methods_page(*, compare_db=None) -> str:
+def _methods_ceiling_sentence(store) -> str:
+    """The Methods page's slope-ceiling sentence, with the fraction computed
+    from ``store`` when one is given (and holds an ingest), else deferred to
+    the Comparisons page -- never a quoted number."""
+    import numpy as np
+
+    frac = float("nan")
+    if store is not None:
+        try:
+            df = compare.gather_nasa_giop(store)
+            if len(df):
+                frac = compare.giop_slope_ceiling_fraction(df["bbp_s_nasa"])
+        except Exception:  # noqa: BLE001 — the page must build without the frame
+            pass
+    if np.isfinite(frac):
+        lead = f"{frac * 100:.1f} % of the slopes sit at the ceiling in this release:"
+    else:
+        lead = (
+            "The *Comparisons* page reports the fraction of slopes at the "
+            "ceiling in this release:"
+        )
+    return f"{lead} {_NASA_BBP_CEILING_CAVEAT}"
+
+
+def methods_page(*, compare_db=None, store=None) -> str:
     """Reader-facing methods/context page: data, protocol, retrieval, how to read
     the figures and metrics, caveats, and references.
 
     ``compare_db`` (the frozen v1 database) adds the two-database provenance
     note; the 2.0 retrieval configuration is described either way, because it
-    describes *this* release whether or not 1.0 is alongside it.
+    describes *this* release whether or not 1.0 is alongside it. ``store``
+    (optional) lets the NASA-GIOP caveat quote the **computed** fraction of
+    slopes at GIOP's ceiling; without it the sentence points at the
+    Comparisons page, which always computes it.
     """
     out = [_heading("Methods"), ""]
     out.append(
@@ -1381,9 +1448,12 @@ def methods_page(*, compare_db=None) -> str:
         "retrieval as a baseline: the operational ``PACE_OCI_L2_IOP`` product "
         "(**GIOP** algorithm, default configuration; Werdell et al. 2013), read "
         "at the **same pixel** used for each BING fit. NASA reports ``b_bp`` at "
-        "**442 nm**, BING at **700 nm**; the comparison is deliberately **not** "
-        "spectrally adjusted, and every figure/stat is labelled accordingly. "
-        "**GSM is absent by NASA product availability, not by choice:** NASA "
+        "**442 nm**, BING at **700 nm**; for the comparison NASA's value is "
+        "shifted to 700 nm with GIOP's own per-pixel power-law slope "
+        f"``bbp_s``: ``{compare.GIOP_BBP_SHIFT_FORMULA}`` (bounds scaled by the "
+        "same factor; nothing is written back to the database). "
+        + _methods_ceiling_sentence(store)
+        + " **GSM is absent by NASA product availability, not by choice:** NASA "
         "does not operationally distribute a GSM (Garver-Siegel-Maritorena) "
         "Level-2 product for PACE — GIOP is the only distributed L2 IOP suite — "
         "so no GSM comparison is possible without reprocessing from Level-1B. "
@@ -1406,8 +1476,24 @@ def methods_page(*, compare_db=None) -> str:
     return "\n".join(out)
 
 
+#: The downloadable summary tables: ``export_tables`` key stem, file stem and
+#: link text. The NASA-GIOP table (one row per matchup with both retrievals,
+#: ``bbp_442_nasa`` as stored plus the derived ``bbp_700_nasa``) is listed only
+#: when the store holds an ingest, so a dev site never links an absent file.
+_DOWNLOAD_TABLES = (
+    ("summary", "matchup_summary", "Matchup summary"),
+    ("nasa_giop", "nasa_giop_summary", "BING vs NASA GIOP summary"),
+)
+
+
+def _has_nasa_giop(store) -> bool:
+    return bool(
+        store.query("SELECT 1 FROM fits WHERE algorithm = 'NASA_GIOP' LIMIT 1")
+    )
+
+
 def downloads_page(store, outdir, *, downloads_base_url: str | None = None) -> str:
-    """The **Downloads** page: links the matchup summary tables.
+    """The **Downloads** page: links the matchup and BING-vs-NASA summary tables.
 
     Default (``downloads_base_url=None``): stage the summary CSV/Parquet
     (``publish.export_tables``) into ``outdir/_static/downloads`` and link them
@@ -1424,13 +1510,13 @@ def downloads_page(store, outdir, *, downloads_base_url: str | None = None) -> s
     links = []
     if downloads_base_url:
         base = downloads_base_url.rstrip("/")
-        links.append(
-            f'<li><a href="{base}/matchup_summary.csv">Matchup summary (CSV)</a></li>'
-        )
-        links.append(
-            f'<li><a href="{base}/matchup_summary.parquet">'
-            "Matchup summary (Parquet)</a></li>"
-        )
+        for key, stem, text in _DOWNLOAD_TABLES:
+            if key == "nasa_giop" and not _has_nasa_giop(store):
+                continue
+            links.append(f'<li><a href="{base}/{stem}.csv">{text} (CSV)</a></li>')
+            links.append(
+                f'<li><a href="{base}/{stem}.parquet">{text} (Parquet)</a></li>'
+            )
     else:
         try:
             tables = publish.export_tables(
@@ -1438,16 +1524,13 @@ def downloads_page(store, outdir, *, downloads_base_url: str | None = None) -> s
             )
         except Exception:  # noqa: BLE001 — downloads are a bonus, not load-bearing
             tables = {}
-        if "summary_csv" in tables:
-            links.append(
-                '<li><a href="_static/downloads/matchup_summary.csv">'
-                "Matchup summary (CSV)</a></li>"
-            )
-        if "summary_parquet" in tables:
-            links.append(
-                '<li><a href="_static/downloads/matchup_summary.parquet">'
-                "Matchup summary (Parquet)</a></li>"
-            )
+        for key, stem, text in _DOWNLOAD_TABLES:
+            for ext, fmt in (("csv", "CSV"), ("parquet", "Parquet")):
+                if f"{key}_{ext}" in tables:
+                    links.append(
+                        f'<li><a href="_static/downloads/{stem}.{ext}">'
+                        f"{text} ({fmt})</a></li>"
+                    )
     if links:
         out.append(".. raw:: html\n")
         out.extend("   " + ln for ln in ["<ul>", *links, "</ul>"])
@@ -1709,7 +1792,7 @@ def build_site(
             + matchup_quality_table(store, sortable=sortable)
         ),
         "methods": (
-            methods_page(compare_db=compare_db)
+            methods_page(compare_db=compare_db, store=store)
             + "\n"
             + provenance_block(pab_version=pab_version)
         ),

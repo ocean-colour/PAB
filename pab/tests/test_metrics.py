@@ -301,6 +301,85 @@ def test_gather_nasa_giop_joins_bing_and_nasa_fits():
         assert row["bbp_442_nasa"] == pytest.approx(3e-3)
         assert row["adg_442_nasa"] == pytest.approx(0.03)
         assert row["aph_442_nasa"] is None or np.isnan(row["aph_442_nasa"])
+        # no NASA_GIOP_bbp_s row -> the 700 nm columns are NaN, not a guess
+        assert np.isnan(row["bbp_s_nasa"])
+        for c in ("bbp_700_nasa", "bbp_700_nasa_lo", "bbp_700_nasa_hi"):
+            assert c in df.columns and np.isnan(row[c])
+
+
+def test_giop_bbp_to_700_helper_and_ceiling_fraction():
+    factor = (442.0 / 700.0) ** 1.5
+    assert compare.giop_bbp_to_700(3e-3, 1.5) == pytest.approx(3e-3 * factor)
+    # a null slope gives NaN (per-pixel slope only, no default)
+    assert np.isnan(compare.giop_bbp_to_700(3e-3, None))
+    assert np.isnan(compare.giop_bbp_to_700(None, 1.5))
+    out = compare.giop_bbp_to_700([1e-3, 2e-3], [0.0, np.nan])
+    assert out[0] == pytest.approx(1e-3) and np.isnan(out[1])
+    # the formula text is built from the same constants as the helper
+    assert compare.GIOP_BBP_SHIFT_FORMULA == "b_bp(700) = b_bp(442) × (442/700)^bbp_s"
+    # ceiling fraction: 1.99 counts as pinned at 2.0, NaN is ignored
+    assert compare.giop_slope_ceiling_fraction([2.0, 1.99, 1.5, 0.3, np.nan]) == (
+        pytest.approx(0.5)
+    )
+    assert np.isnan(compare.giop_slope_ceiling_fraction([np.nan]))
+
+
+def test_gather_nasa_giop_shifts_bbp_to_700():
+    with Store.open(":memory:") as store:
+        _seed(
+            store,
+            "M1",
+            7902226,
+            5,
+            lat=27.0,
+            lon=-46.0,
+            time="2025-02-18T20:00:00",
+            bbp_argo=1e-3,
+            chla=0.1,
+            bbp_bing=2e-3,
+        )
+        store.upsert(
+            "fits",
+            {
+                "fit_id": "M1_2_2_NASA_GIOP",
+                "matchup_id": "M1",
+                "algorithm": "NASA_GIOP",
+                "pab_version": "1.1",
+            },
+        )
+        store.upsert_many(
+            "fit_results",
+            [
+                {
+                    "fit_id": "M1_2_2_NASA_GIOP",
+                    "quantity": "NASA_GIOP_bbp_442",
+                    "value": 3e-3,
+                    "value_lo": 2.5e-3,
+                    "value_hi": 3.5e-3,
+                    "unit": "m^-1",
+                },
+                {
+                    "fit_id": "M1_2_2_NASA_GIOP",
+                    "quantity": "NASA_GIOP_bbp_s",
+                    "value": 1.5,
+                    "value_lo": None,
+                    "value_hi": None,
+                    "unit": "",
+                },
+            ],
+        )
+        df = compare.gather_nasa_giop(store)
+        assert len(df) == 1
+        row = df.iloc[0]
+        factor = (442.0 / 700.0) ** 1.5
+        assert row["bbp_s_nasa"] == pytest.approx(1.5)
+        # value and both bounds scale by the same per-pixel factor
+        assert row["bbp_700_nasa"] == pytest.approx(3e-3 * factor)
+        assert row["bbp_700_nasa_lo"] == pytest.approx(2.5e-3 * factor)
+        assert row["bbp_700_nasa_hi"] == pytest.approx(3.5e-3 * factor)
+        # the 442 nm columns are kept as stored
+        assert row["bbp_442_nasa"] == pytest.approx(3e-3)
+        assert row["bbp_442_nasa_lo"] == pytest.approx(2.5e-3)
 
 
 def test_add_oc_chl_from_granule():

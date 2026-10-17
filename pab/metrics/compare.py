@@ -35,6 +35,67 @@ import numpy as np
 DEFAULT_BBP_QUANTITY = "bbp700"
 DEFAULT_CHL_QUANTITY = "chl"
 
+#: The two ``b_bp`` reference wavelengths (nm) the BING-vs-NASA comparison has
+#: to reconcile: NASA's GIOP reports ``bbp_442`` (``pab.pace.iop.IOP_REF_WAVE``
+#: — the product variable is 442, not 443) and BING's headline ``bbp700`` is
+#: at the float's ``BBP700`` wavelength.
+GIOP_BBP_WAVE = 442.0
+BING_BBP_WAVE = 700.0
+#: GIOP's upper bound on the fitted power-law slope ``bbp_s``; a slope at the
+#: ceiling is a pinned fit, not a measurement, so its 700 nm extrapolation is
+#: the least constrained. :func:`giop_slope_ceiling_fraction` counts slopes
+#: within ``GIOP_BBP_S_CEILING_TOL`` of it (``bbp_s >= 1.99``).
+GIOP_BBP_S_CEILING = 2.0
+GIOP_BBP_S_CEILING_TOL = 0.01
+#: The shift formula as reader-facing text, built from the same constants the
+#: code uses so the Methods/Comparisons wording cannot drift from
+#: :func:`giop_bbp_to_700`.
+GIOP_BBP_SHIFT_FORMULA = (
+    f"b_bp({BING_BBP_WAVE:g}) = b_bp({GIOP_BBP_WAVE:g}) × "
+    f"({GIOP_BBP_WAVE:g}/{BING_BBP_WAVE:g})^bbp_s"
+)
+
+
+def giop_bbp_to_700(bbp_442, slope):
+    """Shift NASA GIOP ``b_bp`` from 442 nm to 700 nm with its own slope.
+
+    GIOP models particulate backscatter as a power law,
+    ``b_bp(λ) = b_bp(442) × (442/λ)^bbp_s``, and reports both the 442 nm
+    amplitude and the fitted per-pixel slope ``bbp_s``. Evaluating that model
+    at BING's 700 nm puts the two retrievals at one wavelength without any
+    assumption GIOP did not already make. The **single source** of the
+    ``(442/700)^bbp_s`` factor: the value, its bounds and the report text all
+    come through here.
+
+    Args:
+        bbp_442: NASA ``bbp_442`` (scalar or array; a ``None``/``NaN`` passes
+            through as ``NaN``).
+        slope: NASA ``bbp_s`` for the same pixel(s). ``None``/``NaN`` (the
+            slope was not ingested) gives ``NaN`` -- there is no default
+            slope, by design (Q&A/v2 Q1 = per-pixel).
+
+    Returns:
+        ``b_bp(700)`` as a float ``ndarray`` (0-d for scalar input).
+    """
+    bbp_442 = np.asarray(bbp_442, dtype=float)
+    slope = np.asarray(slope, dtype=float)
+    return bbp_442 * (GIOP_BBP_WAVE / BING_BBP_WAVE) ** slope
+
+
+def giop_slope_ceiling_fraction(slope) -> float:
+    """Fraction of finite GIOP slopes pinned at the ceiling (``bbp_s >= 1.99``).
+
+    Computed, never quoted: the report states this number next to the 700 nm
+    comparison because those pixels' extrapolation is the least constrained.
+    ``NaN`` when no finite slope is present.
+    """
+    slope = np.asarray(slope, dtype=float)
+    slope = slope[np.isfinite(slope)]
+    if not slope.size:
+        return float("nan")
+    at_ceiling = slope >= GIOP_BBP_S_CEILING - GIOP_BBP_S_CEILING_TOL
+    return float(np.count_nonzero(at_ceiling) / slope.size)
+
 
 def log_comparison(sat, insitu) -> dict[str, Any]:
     """Log-space comparison statistics between paired satellite & in-situ values.
@@ -272,13 +333,14 @@ def gather_nasa_giop(store, *, model_pair: str = "ExpBPow"):
 
     One row per matchup that has **both** a BING fit (for ``model_pair``) and
     a NASA-GIOP ingest (``pab.fit.nasa_giop.build_nasa_giop``): BING's
-    ``b_bp(700)`` alongside NASA's ``bbp_442``, plus NASA's ``adg_442`` and
-    ``aph_442`` for reference. NASA's ``bbp`` is reported at 442 nm only,
-    while BING's headline ``bbp`` is at 700 nm — this wavelength offset is a
-    known, deliberately-unadjusted mismatch (design *Comparison & metrics*;
-    ``claude_prompts/pace_giop_gsm.md`` Q3), so any comparison built on this
-    frame must carry that caveat rather than treating the two as directly
-    equivalent.
+    ``b_bp(700)`` alongside NASA's ``bbp_442`` (kept as stored) **and** the
+    same value shifted to 700 nm (``bbp_700_nasa`` + ``_lo``/``_hi``) with
+    NASA's own per-pixel power-law slope ``bbp_s`` via
+    :func:`giop_bbp_to_700`, plus NASA's ``adg_442`` and ``aph_442`` for
+    reference. The 700 nm columns are **derived here, never persisted**
+    (Q&A/v2 Q2): they are reproducible from the stored rows and carry no new
+    ``pab_version``. Where the slope row is missing (the ``LEFT JOIN`` finds
+    none) they are ``NaN`` rather than a fixed-slope guess.
 
     Args:
         store: An open :class:`pab.db.store.Store`.
@@ -296,6 +358,7 @@ def gather_nasa_giop(store, *, model_pair: str = "ExpBPow"):
                fnasa.fit_id AS nasa_fit_id,
                fn_bbp.value AS bbp_442_nasa,
                fn_bbp.value_lo AS bbp_442_nasa_lo, fn_bbp.value_hi AS bbp_442_nasa_hi,
+               fn_s.value AS bbp_s_nasa,
                fn_adg.value AS adg_442_nasa,
                fn_aph.value AS aph_442_nasa
         FROM matchups m
@@ -306,13 +369,28 @@ def gather_nasa_giop(store, *, model_pair: str = "ExpBPow"):
         JOIN fits fnasa ON fnasa.matchup_id = m.matchup_id AND fnasa.algorithm = 'NASA_GIOP'
         LEFT JOIN fit_results fn_bbp
                ON fn_bbp.fit_id = fnasa.fit_id AND fn_bbp.quantity = 'NASA_GIOP_bbp_442'
+        LEFT JOIN fit_results fn_s
+               ON fn_s.fit_id = fnasa.fit_id AND fn_s.quantity = 'NASA_GIOP_bbp_s'
         LEFT JOIN fit_results fn_adg
                ON fn_adg.fit_id = fnasa.fit_id AND fn_adg.quantity = 'NASA_GIOP_adg_442'
         LEFT JOIN fit_results fn_aph
                ON fn_aph.fit_id = fnasa.fit_id AND fn_aph.quantity = 'NASA_GIOP_aph_442'
         ORDER BY m.matchup_id
     """
-    return store.query_df(sql, (model_pair, bbp_q))
+    df = store.query_df(sql, (model_pair, bbp_q))
+    # The 700 nm columns, derived with the per-pixel slope. The bounds scale by
+    # the same factor (the slope's own uncertainty is not propagated: NASA
+    # reports none), so a NaN slope leaves all three NaN together. A missing
+    # slope row arrives as ``None`` (object dtype); make the column numeric so
+    # the ceiling fraction and the exported table see NaN, not ``None``.
+    df["bbp_s_nasa"] = df["bbp_s_nasa"].astype(float)
+    for src, dst in (
+        ("bbp_442_nasa", "bbp_700_nasa"),
+        ("bbp_442_nasa_lo", "bbp_700_nasa_lo"),
+        ("bbp_442_nasa_hi", "bbp_700_nasa_hi"),
+    ):
+        df[dst] = giop_bbp_to_700(df[src], df["bbp_s_nasa"])
+    return df
 
 
 def add_oc_chl(df, store, *, opener=None, rank: int = 1):

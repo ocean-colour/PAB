@@ -41,24 +41,33 @@ def file_checksum(path) -> str | None:
 
 
 def export_tables(store, outdir, *, model_pair: str = "ExpBPow") -> dict[str, Path]:
-    """Write the summary tables (matchup comparison + wide fit results) to disk.
+    """Write the summary tables to disk: the matchup comparison
+    (``matchup_summary``) and, when the store holds a NASA-GIOP ingest, the
+    BING-vs-NASA table (``nasa_giop_summary``, one row per matchup with both
+    retrievals, carrying NASA's stored 442 nm ``b_bp`` *and* the derived
+    700 nm value + bounds -- the only place the 700 nm numbers are
+    distributed, since they are never persisted).
 
-    Returns ``{name: path}`` for the CSV and Parquet exports. The raw SQLite file
-    is never written here.
+    Returns ``{name: path}`` for the CSV and Parquet exports (``summary_*`` and
+    ``nasa_giop_*``). The raw SQLite file is never written here.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    df = compare.gather_matchups(store, model_pair=model_pair)
     out: dict[str, Path] = {}
-    csv = outdir / "matchup_summary.csv"
-    df.to_csv(csv, index=False)
-    out["summary_csv"] = csv
-    try:
-        pq = outdir / "matchup_summary.parquet"
-        df.to_parquet(pq, index=False)
-        out["summary_parquet"] = pq
-    except Exception:  # noqa: BLE001 — parquet engine optional; CSV is the floor
-        pass
+    tables = [("summary", "matchup_summary", compare.gather_matchups(store, model_pair=model_pair))]
+    nasa = compare.gather_nasa_giop(store, model_pair=model_pair)
+    if len(nasa):
+        tables.append(("nasa_giop", "nasa_giop_summary", nasa))
+    for key, stem, df in tables:
+        csv = outdir / f"{stem}.csv"
+        df.to_csv(csv, index=False)
+        out[f"{key}_csv"] = csv
+        try:
+            pq = outdir / f"{stem}.parquet"
+            df.to_parquet(pq, index=False)
+            out[f"{key}_parquet"] = pq
+        except Exception:  # noqa: BLE001 — parquet engine optional; CSV is the floor
+            pass
     return out
 
 
