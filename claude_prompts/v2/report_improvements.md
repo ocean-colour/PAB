@@ -451,6 +451,74 @@ Use Fable if you can. Log your work.
 
 ### Outliers
 
+Raised by Outliers 1 (`versions/v2/high_bbp_outliers.md`). The short version:
+the 51 fits above 1 m⁻¹ are all above 10⁴ m⁻¹; they are marginal-sea
+spectra (25 Baltic, 9 tropical Atlantic, 7 Arabian Sea …) with a depressed
+or negative blue Rrs (40 of 51 negative at 400–450 nm); the LM warm-start
+delivered every one of the 51 chains to the `Bnw` prior ceiling (10⁵ m⁻¹)
+and the 1 % walker ball never left it, although a physical basin with a
+*better* χ² exists in every re-fitted case (`b_bp`(700) within ~2× of the
+float). They are not the "ultra-oligotrophic tail" the run report §2.5 says.
+
+**1 — What the v2 report does with the 51 now.** Options: **A** leave them
+in every statistic and flag them (what the site does today); **B** drop them
+from the `b_bp` statistics behind the existing `BBP_IMPLAUSIBLE = 1 m⁻¹`
+gate, with the count ("51 failed retrievals, 0.32 %, excluded") in the
+captions and the Methods page (recommended — they are optimiser failures,
+not measurements, and the gate is already defined); **C** wait for the
+re-fit (item 2) and show the re-fitted values. B now and C when the re-fit
+is done are compatible.
+
+**Your answer:**
+
+**2 — Re-fit the 51 under a new `pab_version`?** The spurious basin is a
+property of the prior ceiling (`Bnw` log-uniform to 10⁵ m⁻¹) plus a
+start-sensitive LM. Options: **A** re-fit only the 51 under `pab_version`
+2.1 with a physical ceiling on the priors (`b_bp`(600) ≤ 0.1 m⁻¹, `A_dg`,
+`A_ph` ≤ 10 m⁻¹) applied as a PAB-side override of `expb_pow`'s priors
+(BING untouched), and a check that step 0 of each chain is below the wall
+(recommended; ~51 × 3 min on the workstation or a short pod job);
+**B** also add a multi-start LM (best of N perturbed starts, or seeded from
+the 1.0 Gordon solution) to the fit stage for every future fit; **C** change
+the ceiling in BING's `expb_pow` itself (affects every BING user); **D** leave
+the 51 as they are. If A or B, say whether the re-fit should go into the v2
+report as a second version or wait for a v3.
+
+**Your answer:**
+
+**3 — An Rrs QA flag.** "Any Rrs < 0 at 400–450 nm" catches 40 of the 51 and
+flags ≈0.7 % of the rest (2 of 300 sampled, both themselves doubtful fits);
+no spectral screen separates the 11 all-positive Baltic runaways from good
+Baltic fits. Options: **A** store the count of negative 400–450 nm bands per
+fit (a `fit_results` quantity, no schema change) and show it in the report
+and the downloadable table, without refusing to fit (recommended);
+**B** refuse to fit pixels with a negative blue band (loses 2903902/30-type
+cases that fit well in the right basin); **C** nothing.
+
+**Your answer:**
+
+**4 — Amend the run report §2.5 and the Comparisons-page wording?** The
+"ultra-oligotrophic regime" reading rests on the retrieved Chl (0.01), which
+is part of the failed fit; the floats say Chl 0.93 mg m⁻³ and `b_bp`
+3.6×10⁻³ m⁻¹ (productive marginal seas). Options: **A** amend
+`docs/design/PAB_v2_run_report.md` §2.5 and the report's non-physical note
+with a pointer to `versions/v2/high_bbp_outliers.md` (recommended; small
+edit); **B** leave the run report as a record of what was believed at the
+time and only link the new report.
+
+**Your answer:**
+
+**5 — Emulator out-of-domain policy.** BING calls `robust.rt.forward` with
+the default `on_out_of_domain="warn"`, which is silent under `jit`; the
+runaway basin is evaluated with the emulator extrapolating at `u ≈ 1`.
+`robust` offers `"ztt"` (analytic backbone outside the training range).
+Options: **A** a slice test (the 51 + ~50 ordinary fits) with `"ztt"` to see
+whether the basin survives — a BING-side change, so it would be a question
+for the bing repo (recommended as a side experiment, not blocking items
+1–4); **B** ignore for now.
+
+**Your answer:**
+
 ### v2
 
 Numbers below were read from a copy of the v2 database
@@ -1794,3 +1862,74 @@ push **to the branch it tracks** — the published URL is
 `…/en/develop/`, so a push to `report-improvements` alone will not update the
 site until that branch is merged into `develop` (or the RTD project is pointed
 at it).
+
+### 2026-10-18 (v2 Outliers 1 — high-b_bp runaway fits investigated)
+
+Run with Fable. No code changed under `pab/`; the v2 database (and v1 for
+one lookup) opened read-only (`file:…?mode=ro`); nothing written to any DB or
+under `v1/`; no pod; Drive traffic was `rclone copy … --files-from …
+--no-traverse` only (51 + 300 chain NPZs ≈ 420 MB and 51 fit figures + 3
+scenes into `/tmp/claude-1000/pab-outliers/`). Files created:
+`versions/v2/high_bbp_outliers.md` (the report) and
+`versions/v2/high_bbp_outliers/` (4 diagnostic PNGs + 6 fit figures + 2
+scene quick-looks, 0.88 MB); Q&A/Outliers 1–5 in this file. No `versions/`
+folder existed anywhere in the repo, so it was created at the root as the
+prompt names it.
+
+What was found:
+
+- **The prompt's "> 1e4" and the report's "> 1" select the same 51 fits.**
+  The 52nd-largest 2.0 `b_bp`(700) is 0.03 m⁻¹; the 51 span 5.0–9.3×10⁴.
+  Every posterior is pressed against `expb_pow`'s `Bnw` ceiling (log-uniform
+  to 10⁵ m⁻¹), with `A_dg` co-scaled to 10²–10⁴ m⁻¹ (`Bnw`–`A_dg`
+  correlation +0.9) — only `a/b_b` is constrained once `b_b ≫ a`.
+- **They are not clear water.** 25 Baltic, 9 tropical Atlantic/Caribbean,
+  7 Arabian Sea, and singles in the Black, Ligurian, Barents, Labrador seas,
+  Kuroshio, NE Pacific coast, California, Agulhas; float Chl median 0.93
+  (population 0.15), float `b_bp` 3.6×10⁻³ (6.9×10⁻⁴). The run report's
+  "ultra-oligotrophic tail" (§2.5, Prompt 8 Q1) was reading the *retrieved*
+  Chl, which is part of the failed fit. Three floats give 25 of the 51.
+- **The spectra are blue-depressed.** The Rrs is not in the DB
+  (`matchup_pixels` holds pixel index, flags and geometry only); it is in
+  the chain NPZs, which is why the fetch was needed. 40 of 51 have negative
+  Rrs at 400–450 nm (type A; down to −4.3×10⁻³, median minimum −1.2 σ of
+  `Rrs_unc`; none carry an `l2_flags` bit from the standard mask); the 11
+  others (type B, all Baltic) are positive with Rrs(440)/Rrs(555) 0.24–0.55
+  (population median 4.1). All 51 peak at 490–580 nm.
+- **The failure is the LM warm-start, not the sampler or the data.** Step 0
+  of every one of the 51 chains already has median `Bnw` 4.7–4.99, and no
+  walker ever went below 2.9: the 1 % walker ball around `curve_fit`'s answer
+  cannot cross the χ² wall (reduced χ² 10²–10⁵ at `b_bp` ≈ 1–10 m⁻¹, where
+  `u → 1` and the hybrid emulator leaves its domain — BING uses
+  `on_out_of_domain="warn"`, silent under `jit`). Exploratory LM re-fits
+  (CPU, no MCMC) of four outliers found a physical basin in every case with
+  a *better* χ² (1.81 vs 11.1, 0.45 vs 10.5, 2.35 vs 7.0, 0.21 vs 1.7) and
+  `b_bp`(700) within ~2× of the float and of the 1.0 Gordon fit; from the
+  production initial guess the LM reproduces the ceiling for 3 of 4, and
+  ±0.3 dex perturbed starts go to the ceiling 0/2/6/3 times out of 12.
+  Masking the negative bands does **not** remove the basin (2 of 3 still run
+  away) — the depressed-blue shape does it, which is why the all-positive
+  Baltic spectra fail the same way.
+- **Screen numbers.** "Any Rrs < 0 at 400–450 nm": 40/51 caught, 2 of 300
+  sampled non-outliers flagged (≈0.7 %, ≈100 fits, both themselves doubtful).
+  Adding Rrs(440)/Rrs(555) < 0.6 reaches 50/51 at ≈1 % but the extra flags
+  are good Baltic/subpolar fits. "Any negative anywhere" flags 7 % (red
+  bands dip below zero on ordinary clear-water spectra).
+- Surprising: the 2903902/30 runaway has χ² = 1.7 and is the `A_ph`-mirror
+  mode (`A_ph` 330 m⁻¹, Chl 5,900; `A_dg` 0.01), so χ² and `A_dg` cannot gate
+  them either; 4 consecutive cycles of 4903784 on one granule are all
+  runaways while the same float series has good fits in the sample; 3 of the
+  51 have θ_s > 60°, outside the emulator's supported range (8.8 % of all
+  fits do, so not the cause). The workstation LM found the physical basin for
+  6903874/139 where the pod's (GPU, float32) evidently did not — the
+  optimiser is path-sensitive next to the wall; the chains settle where
+  production ended regardless.
+
+Figures were made with matplotlib against the dataviz palette (blue/orange
+for the two types, grey population), all looked at. Recommended next steps
+(report gate now; re-fit the 51 under a new `pab_version` with a physical
+prior ceiling and/or multi-start LM; a stored negative-blue QA count; an
+emulator-policy slice test; amend §2.5) are in the report §6 and as
+Q&A/Outliers 1–5 with recommendations. Nothing committed — git is yours:
+`versions/v2/high_bbp_outliers.md`, `versions/v2/high_bbp_outliers/*.png`
+and this file.
