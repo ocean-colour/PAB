@@ -265,6 +265,20 @@ The pre-backfill seed it replaced is kept as
 `$PAB_DATA_DIR/v2/pab_pre_backfill_2026-09-14.db` (14,610 matchups, 0 2.0 fits)
 rather than overwritten, and the run logs are under `$PAB_DATA_DIR/v2/logs/`.
 
+**Negative-blue QA backfill and the chains on the workstation (2026-10-18,
+O4 of `claude_prompts/v2/report_improvements.md`).** The 2.0 chains are now
+also on the workstation: `rclone copy AIOcean:PAB/v2/fit_chains/
+$PAB_DATA_DIR/v2/fit_chains/` (15,971 files, 19 GB; `rclone check --one-way`:
+0 differences), so the table row below is true. `python -m
+pab.fit.rrs_qa_backfill` then added one `BING_ExpBPow_n_neg_blue` row per 2.0
+fit (`fit_results` 303,489 → 319,460; every other table and every pre-existing
+row checksum-identical; `integrity_check` ok). The live
+`$PAB_DATA_DIR/v2/pab.db` is now 220,520,448 B, sha256
+`a9959626bfb68cd09344195487cdbfad806a2de1ec6a9b5ad098babff808201d`; the copy it
+replaced (217,325,568 B, sha256 `1e69f6ee…8a3f8`, the one on `s3://pab/v2/`)
+is kept as `$PAB_DATA_DIR/v2/pab_pre_negblue_20261018.db`. Log:
+`$PAB_DATA_DIR/v2/logs/rrs_qa_backfill_20261018.log`.
+
 **Transfer note:** copy it **compressed**. `kubectl cp` of the 207 MB file in one
 stream has no resume and died at 36.9 MB on a flaky link, leaving a malformed
 file at the canonical path. `gzip -c` in-pod gives 40 MB (5.1x), transfers in

@@ -1264,3 +1264,88 @@ def test_publish_release_with_s3_backend_writes_real_urls(tmp_path):
         assert res["n_uploaded"] == 1
         urls = [r["url"] for r in res["manifest"] if r["kind"] == "chains"]
         assert urls == ["https://s3-west.nrp-nautilus.io/pab/artifacts/M1.npz"]
+
+
+# -- the negative-blue QA count (O4) --------------------------------------------
+def _record_neg_blue(store, **counts):
+    """Seed ``BING_ExpBPow_n_neg_blue`` rows, e.g. ``M1=0, M2=3``."""
+    for m, n in counts.items():
+        store.upsert(
+            "fit_results",
+            {
+                "fit_id": f"{m}_2_2_ExpBPow",
+                "quantity": "BING_ExpBPow_n_neg_blue",
+                "value": float(n), "value_lo": float(n), "value_hi": float(n),
+                "unit": "bands",
+            },
+        )
+
+
+_NEG_BLUE_ONE_OF_TWO = (
+    "1 of 2 fitted spectra (50.00 %) have at least one negative band at "
+    "400–450 nm (``n_neg_blue`` ≥ 1); 1 of the 1 failed retrieval does."
+)
+
+
+def test_neg_blue_sentence_is_computed_and_omitted_when_unrecorded():
+    import pandas as pd
+
+    assert rst._neg_blue_sentence(None) == ""
+    assert rst._neg_blue_sentence(pd.DataFrame({"bbp_bing": [1.0]})) == ""
+    # the column exists but nothing is recorded (before the backfill): omitted,
+    # never "0 of 0"
+    df = pd.DataFrame({"n_neg_blue": [np.nan, np.nan], "bbp_bing_implausible": [0, 1]})
+    assert rst._neg_blue_sentence(df) == ""
+    # a partial backfill counts only the recorded fits
+    df = pd.DataFrame(
+        {"n_neg_blue": [np.nan, 2.0, 0.0, 1.0], "bbp_bing_implausible": [1, 1, 0, 0]}
+    )
+    assert rst._neg_blue_sentence(df) == (
+        "2 of 3 fitted spectra with the count recorded (66.67 %) have at least "
+        "one negative band at 400–450 nm (``n_neg_blue`` ≥ 1); 1 of the 2 "
+        "failed retrievals do."
+    )
+    # without the flag column the second clause is dropped
+    df = pd.DataFrame({"n_neg_blue": [0.0, 0.0]})
+    assert rst._neg_blue_sentence(df) == (
+        "0 of 2 fitted spectra (0.00 %) have at least one negative band at "
+        "400–450 nm (``n_neg_blue`` ≥ 1)."
+    )
+
+
+def test_methods_page_defines_n_neg_blue_and_quotes_the_rate_only_when_recorded():
+    with Store.open(":memory:") as store:
+        _one_runaway(store)
+        out = rst.methods_page(store=store)
+        assert "**Negative-blue QA count.**" in out
+        assert "``BING_ExpBPow_n_neg_blue``" in out and "``n_neg_blue`` column" in out
+        assert "between 400 and 450 nm (inclusive)" in out
+        assert "a flag, not a screen" in out
+        # nothing recorded yet: no rate, and it says so
+        assert "no rate is quoted" in out and "fitted spectra (" not in out
+        # the paragraph sits with the retrieval description
+        assert out.index("**Failed retrievals.**") < out.index("**Negative-blue QA count.**")
+        assert out.index("**Negative-blue QA count.**") < out.index("Retrieval configuration (2.0)")
+
+        _record_neg_blue(store, M1=0, M2=3)
+        out = rst.methods_page(store=store)
+        assert f"In this release {_NEG_BLUE_ONE_OF_TWO}" in out
+        assert "no rate is quoted" not in out
+    # without a store: the definition, no numbers
+    out = rst.methods_page()
+    assert "**Negative-blue QA count.**" in out and "fitted spectra (" not in out
+
+
+def test_export_tables_carry_n_neg_blue(tmp_path):
+    import pandas as pd
+
+    with Store.open(":memory:") as store:
+        _one_runaway(store)
+        _record_neg_blue(store, M2=3)
+        out = publish.export_tables(store, tmp_path)
+        back = pd.read_csv(out["summary_csv"]).set_index("matchup_id")
+        assert back.loc["M2", "n_neg_blue"] == 3.0
+        assert np.isnan(back.loc["M1", "n_neg_blue"])  # not recorded, not 0
+        if "summary_parquet" in out:
+            pq = pd.read_parquet(out["summary_parquet"]).set_index("matchup_id")
+            assert pq.loc["M2", "n_neg_blue"] == 3.0 and np.isnan(pq.loc["M1", "n_neg_blue"])

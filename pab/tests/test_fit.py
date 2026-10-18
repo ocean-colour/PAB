@@ -368,6 +368,15 @@ def test_fit_spectrum_recovers_bbp():
     assert bbp700["value_lo"] < bbp700["value"] < bbp700["value_hi"]
     assert 0.0 <= result.accept_frac <= 1.0
     assert result.chisq < 5.0  # near-perfect fit to a noise-free spectrum
+    # the negative-blue QA count rides along: an all-positive spectrum -> 0
+    neg = next(q for q in result.quantities if q["quantity"] == "n_neg_blue")
+    assert neg == {
+        "quantity": "n_neg_blue",
+        "value": 0.0,
+        "value_lo": 0.0,
+        "value_hi": 0.0,
+        "unit": "bands",
+    }
 
 
 # --- 2.0 configuration (Prompt 3 Task 1) ------------------------------------
@@ -670,6 +679,10 @@ def test_robust_fit_has_six_columns_and_recovers_bbp():
     assert bbp700["value"] == pytest.approx(0.004 * (600.0 / 700.0), rel=0.5)
     assert bbp700["value_lo"] < bbp700["value"] < bbp700["value_hi"]
     assert np.isfinite(result.chisq)
+    # 11 BING quantities (5 params + Bp + 2x2 IOPs at 440/700 + chl) + n_neg_blue
+    names = [q["quantity"] for q in result.quantities]
+    assert names[-1] == "n_neg_blue" and len(names) == 12
+    assert result.quantities[-1]["value"] == 0.0
 
 
 def test_robust_fit_without_geometry_raises():
@@ -1046,3 +1059,124 @@ def test_reconstruct_rrs_accepts_a_per_sample_bp_against_the_real_backend():
     )
     assert out.shape == (n, models[0].wave.size)
     assert np.all(np.isfinite(out))
+
+
+# -- the negative-blue QA count (O4, Q&A/Outliers 3 = A) ---------------------
+def test_rrs_qa_quantities_counts_negative_blue_bands():
+    """One quantity, ``n_neg_blue``: finite bands with Rrs < 0 inside the
+    inclusive 400–450 nm window; NaN bands and bands outside it are ignored."""
+    assert run.BLUE_QA_BAND == (400.0, 450.0)
+    wave = np.array([395.0, 400.0, 410.0, 430.0, 450.0, 451.0, 560.0, 700.0])
+
+    # all positive -> 0, and the dict has the fit_results shape
+    out = run.rrs_qa_quantities(wave, np.full(wave.size, 1e-3))
+    assert out == [
+        {
+            "quantity": "n_neg_blue",
+            "value": 0.0,
+            "value_lo": 0.0,
+            "value_hi": 0.0,
+            "unit": "bands",
+        }
+    ]
+    assert out[0]["quantity"] == run.NEG_BLUE_QUANTITY
+
+    # three negative bands inside the window (400 and 450 are inclusive edges),
+    # plus negatives at 395, 451 and 700 that must not count
+    rrs = np.array([-1.0, -1e-4, 1e-3, -2e-4, -3e-4, -1e-3, 1e-3, -1e-5])
+    (q,) = run.rrs_qa_quantities(wave, rrs)
+    assert q["value"] == 3 and q["value_lo"] == 3 and q["value_hi"] == 3
+    assert isinstance(q["value"], float)
+
+    # a NaN band inside the window is neither negative nor counted
+    rrs_nan = rrs.copy()
+    rrs_nan[1] = np.nan
+    assert run.rrs_qa_quantities(wave, rrs_nan)[0]["value"] == 2
+    # zero is not negative
+    assert run.rrs_qa_quantities(wave, np.zeros(wave.size))[0]["value"] == 0
+    # lists are fine too
+    assert run.rrs_qa_quantities([420.0], [-1e-3])[0]["value"] == 1
+
+
+def test_persist_fit_writes_n_neg_blue():
+    """The count rides along in ``fit_results`` as ``BING_ExpBPow_n_neg_blue``
+    -- no schema change, same prefix as every other quantity."""
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        result = _fake_result()
+        result.quantities = [*result.quantities, *run.rrs_qa_quantities([440.0], [-1e-3])]
+        artifacts.persist_fit(
+            store,
+            fit_id="F1",
+            matchup_id=matchup_id,
+            pixel_id=pixel_id,
+            result=result,
+            config=FitConfig(),
+        )
+        row = store.query(
+            "SELECT * FROM fit_results WHERE quantity = 'BING_ExpBPow_n_neg_blue'"
+        )
+        assert len(row) == 1
+        assert row[0]["value"] == 1.0 and row[0]["value_lo"] == 1.0
+        assert row[0]["value_hi"] == 1.0 and row[0]["unit"] == "bands"
+        assert store.count("fit_results") == 3
+
+
+def _qa_recording_stub(wave, Rrs, Rrs_unc, chl, config, geom=None):
+    """`_stub_fit_only` plus the real QA count on the prepared spectrum -- the
+    wiring ``fit_spectrum`` does, without the MCMC."""
+    result = _fake_result()
+    wave_w, Rrs_w, _ = run.prepare_spectrum(wave, Rrs, Rrs_unc, config=config)
+    result.quantities = [*result.quantities, *run.rrs_qa_quantities(wave_w, Rrs_w)]
+    return result
+
+
+def test_build_fits_fits_a_negative_blue_spectrum_and_records_the_count(
+    monkeypatch, tmp_path
+):
+    """Never a refusal: a pixel with Rrs < 0 at 440 nm is fitted as before and
+    its row carries ``n_neg_blue = 1`` (Q&A/Outliers 3 = A, not B)."""
+    pytest.importorskip("bing")
+    from pab.tests.test_pace import make_granule
+
+    monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(run, "_fit_only", _qa_recording_stub)
+    ds = make_granule()
+    ds["Rrs"].values[2, 2, 0] = -1e-3  # the 440 nm band of the fitted pixel
+
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store)
+        out = run.build_fits(store, config=FitConfig(), opener=lambda _s: ds)
+        fit_id = run.make_fit_id(matchup_id, 2, 2, "ExpBPow")
+        assert out["written"] == [fit_id] and out["failed"] == []
+        row = store.query(
+            "SELECT value FROM fit_results WHERE fit_id = ? AND quantity = ?",
+            (fit_id, "BING_ExpBPow_n_neg_blue"),
+        )
+        assert row == [{"value": 1.0}]
+        # the chains NPZ holds the windowed spectrum the count was taken on
+        npz = artifacts.load_chains(fit_id)
+        assert run.rrs_qa_quantities(npz["wave"], npz["Rrs"])[0]["value"] == 0  # stub
+
+
+def test_fit_spectrum_fits_a_negative_blue_spectrum():
+    """The real path (1.0 Gordon, short chain): two negative blue bands are
+    counted, and the fit runs rather than refusing."""
+    pytest.importorskip("bing")
+    pytest.importorskip("emcee")
+    np.random.seed(0)
+    config = FitConfig.v1(nsteps=300, nburn=100, analysis_burn=100)
+    wave = np.arange(405.0, 700.0, 8.0)
+    truth = [0.02, 0.017, 0.03, 0.004, 1.0]
+    try:
+        rrs = _synth_rrs(config, wave, truth, 0.1)
+    except FileNotFoundError as exc:
+        pytest.skip(f"BING aph-basis data unavailable: {exc}")
+    rrs = rrs.copy()
+    rrs[:2] = -2e-4  # 405 and 413 nm below zero, as on a runaway's spectrum
+    result = run.fit_spectrum(wave, rrs, 0.02 * rrs, Chl=0.1, config=config)
+    neg = next(q for q in result.quantities if q["quantity"] == "n_neg_blue")
+    assert neg["value"] == 2 and neg["unit"] == "bands"
+    assert np.isfinite(result.chains).all()
+    # the 1.0 path's 10 BING quantities (5 params, no Bp, 2x2 IOPs, chl) + n_neg_blue
+    assert len(result.quantities) == 11 and result.quantities[-1]["quantity"] == "n_neg_blue"

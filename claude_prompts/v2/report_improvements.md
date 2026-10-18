@@ -2554,3 +2554,223 @@ Worth knowing:
 - Nothing needed a decision: **no new Q&A items.**
 
 Hand-off (nothing committed — git is yours): the eight files above. Next: O4.
+
+### 2026-10-18 (v2 Outliers O4, part 1 — code and tests; data steps deferred)
+
+Run with Fable. **No database written, nothing transferred, nothing
+uploaded, nothing under `$PAB_DATA_DIR` or `v1/` touched**: the live
+`$PAB_DATA_DIR/v2/pab.db` is byte-identical before and after
+(`1e69f6ee…8a3f8`, no `-journal`/`-wal`), v1 likewise (`09de0a6d…8273`,
+opened only read-only by the attach). The data steps of O4 — the 18.3 GiB
+`rclone copy` of the chains, the backfill against the live DB, the HOWTO §5b
+sha update — are **deferred until you approve them**; the exact commands are
+below. Files changed: `pab/fit/run.py`, `pab/fit/__init__.py`,
+**`pab/fit/rrs_qa_backfill.py` (new)**, `pab/metrics/compare.py`,
+`pab/report/rst.py`, `pab/tests/{test_fit,test_metrics,test_report,
+test_report_versions}.py`, **`pab/tests/test_rrs_qa_backfill.py` (new)**, this
+file. Scratch (safe to delete):
+`/tmp/claude-1000/-mnt-tank-Oceanography-python-PAB/4eee58f6-84e1-4496-a8d7-900c2eab85b4/scratchpad/o4/`
+(a scratch copy of the v2 DB, its backup copy, a symlinked chains root, the
+dry-run/real-run logs, two small scripts).
+
+What the code does (Q&A/Outliers 3 = A, 7 = A):
+
+- **Step 1, `pab/fit/run.py`.** `BLUE_QA_BAND = (400.0, 450.0)`,
+  `NEG_BLUE_QUANTITY = "n_neg_blue"` and the pure `rrs_qa_quantities(wave,
+  Rrs) -> list[dict]`: one quantity, value = the number of finite bands with
+  `Rrs < 0` and `400 ≤ λ ≤ 450` (edges inclusive; NaN bands and bands outside
+  the window ignored), `value_lo = value_hi = value`, unit `"bands"`.
+  `fit_spectrum` appends it to `quantities` **after** `extract_quantities`,
+  computed on `wave_w`/`Rrs_w` from `prepare_spectrum` — exactly what
+  `save_chains` stores, so a fit-time value and a backfilled one agree by
+  construction. `persist_fit` is untouched and writes it as
+  `BING_ExpBPow_n_neg_blue` (12 quantities per 2.0 fit now, 11 per 1.0 fit).
+  Nothing refuses: `build_fits`/`fit_spectrum` fit a negative-blue spectrum
+  as before (tested on both the stubbed `build_fits` path and the real 1.0
+  Gordon path).
+- **Step 2, `pab/fit/rrs_qa_backfill.py` + CLI** (`python -m
+  pab.fit.rrs_qa_backfill --db … --chains-root DIR [--pab-version 2.0]
+  [--model-pair ExpBPow] [--dry-run] [--replace] [--backup-copy PATH]`).
+  `plan()` selects the BING fits of that version/pair with a LEFT JOIN on the
+  existing quantity; `resolve_chain()` joins `fits.chains_path` (the PVC
+  `/data/v2/fit_chains/…` paths) to `--chains-root` by **basename**;
+  `count_from_npz()` decompresses only `wave`/`Rrs` (not the chains) and calls
+  the same `rrs_qa_quantities`; `backfill()` upserts **only** the `n_neg_blue`
+  row per fit in batches of 1,000 (each batch one transaction, so an
+  interrupted run resumes), skips (and counts) a fit that already has the row
+  unless `--replace`, counts a missing or unreadable NPZ and skips it with
+  **one** summary warning, and under `--dry-run` computes everything and
+  writes nothing. Write discipline (the preamble), built in rather than left
+  to the operator: `--dry-run` opens the DB **read-only** (`file:…?mode=ro`);
+  a real run **refuses** to start without `--backup-copy PATH` — a byte copy
+  (`shutil.copyfile`, so no mode bits) made by the tool and sha-verified, or
+  an existing file whose sha256 equals the DB's (a stale one is refused);
+  refuses any path under `v1/` and a DB with a `-journal`/`-wal` sidecar;
+  prints a **fingerprint before and after** (file sha256 + size, every
+  table's row count, the `n_neg_blue` row count, a sha256 over every `fits`
+  row and every `fit_results` row *other than* the QA quantity, `PRAGMA
+  integrity_check`) and then **verifies**: no table but `fit_results` changed,
+  the non-QA `fit_results` count unchanged, `n_neg_blue` rows = before +
+  written (non-replace), the two checksums identical, integrity ok — any
+  violation exits 1 and prints the `cp backup db` to restore. `prior_set`,
+  `pab_version` and every other `fits` column stay as they are (a QA
+  backfill at the same version, the 1.0 Chl-a/CDOM precedent).
+- **Step 3, report + table.** `compare.gather_matchups` LEFT JOINs the
+  quantity as `n_neg_blue` (float; **NaN** where absent, never 0), so
+  `export_tables`' `matchup_summary.{csv,parquet}` carry the column with no
+  further change. `rst._neg_blue_sentence(df)` computes "N of M fitted
+  spectra (x.xx %) have at least one negative band at 400–450 nm
+  (``n_neg_blue`` ≥ 1); K of the F failed retrievals do." and returns `""`
+  when the column is absent or **all NaN** — so before the backfill every
+  page builds exactly as today, with no "0 of 0"; a *partial* backfill says
+  "of M fitted spectra with the count recorded". `_version_failure_note`
+  (the Comparisons retrieval-failure paragraph) inserts it after the
+  "depressed or *negative* blue ``Rrs`` at 400–450 nm" clause, computed from
+  the store's `gather_matchups` frame (the same seam the float-Chl medians
+  use; omitted without a store). Methods *Retrieval (BING)* gained a
+  **Negative-blue QA count** paragraph after *Failed retrievals*: the
+  definition (band window from `BLUE_QA_BAND`, the stored quantity name, the
+  table column, "a flag, not a screen", why 400–450 and not "anywhere", the
+  backfill) plus the computed rate when recorded or "no rate is quoted" when
+  not; the two Methods paragraphs now share one `gather_matchups` query.
+- **Step 4, tests** (+25; `ruff check pab` clean; full suite **469 passed, 1 skipped**, was 444; the four report/metrics/backfill files re-run green after the last wording change).
+  `test_fit.py`: `rrs_qa_quantities` on synthetic spectra (0 and 3 bands,
+  both edges inclusive, NaN ignored, out-of-window negatives ignored, zero
+  not negative, list input); `persist_fit` writes
+  `BING_ExpBPow_n_neg_blue` with lo = hi = value and unit `bands`;
+  `build_fits` on a granule whose fitted pixel has `Rrs(440) < 0` writes the
+  fit (not `failed`) with `n_neg_blue = 1`; a **real** 1.0 `fit_spectrum` on
+  a synthetic spectrum with two negative blue bands returns a finite chain
+  and `n_neg_blue = 2`; both known-answer tests now assert the quantity is
+  present and 0 (and the 2.0 one that there are 12 quantities, the last
+  being `n_neg_blue`). `test_rrs_qa_backfill.py` (16 tests, synthetic store +
+  tmp NPZs, file DBs under `tmp_path`): writes one row per fit with the
+  right values, idempotent (second run writes 0, skips 3), `--replace`
+  overwrites without duplicating, `--dry-run` writes nothing and leaves the
+  file byte-identical, a missing *and* an unreadable NPZ are counted with
+  exactly one warning and picked up by a re-run, the other `fit_results`
+  rows and the `fits` rows are untouched (row-for-row and by checksum,
+  through a plain and a `--replace` run), version/model-pair scoping, the
+  CLI refuses a real run without `--backup-copy` (exit 2, file unchanged),
+  makes the backup and verifies (+3 rows, checksums printed twice and equal,
+  integrity ok twice), accepts a matching backup and refuses a stale one,
+  refuses `v1/` and a `-journal` sidecar, and `verify_after` catches a
+  tampered pre-existing row and a lost non-QA row. `test_metrics.py`:
+  `gather_matchups` carries `n_neg_blue` as float NaN where absent and the
+  value where present, and `gate_bbp` leaves it alone. `test_report.py`:
+  `_neg_blue_sentence` (None / no column / all-NaN → `""`; partial; no flag
+  column → no second clause), the Methods paragraph (definition always,
+  rate only once recorded, placement between *Failed retrievals* and the
+  2.0 configuration), `export_tables` CSV/Parquet carry the column with NaN
+  for the unrecorded fit. `test_report_versions.py`: the failure note omits
+  the sentence before the backfill and quotes "1 of 2 fitted spectra
+  (50.00 %) … 1 of the 1 failed retrieval does." after.
+
+**Dry run against a scratch copy** (read-only facts; the copy is in
+scratch, the original untouched). With the 51 + 300 chain NPZs Outliers 1
+fetched to `/tmp/claude-1000/pab-outliers/` symlinked into one
+`chains_root/`: `fits in scope 15,971; chain NPZ missing 15,620; computed
+351; with n_neg_blue ≥ 1: 42`, in 4.5 s including the two checksums and
+`integrity_check` on the 217 MB file. Split by the fetch lists: **runaways
+40 of 51** (78 %; median 12 negative bands, max 21), **sample 2 of 300**
+(0.67 %) — and the two are `4903784/178` (19 bands) and `3902472/64` (13),
+the same two the report §5 names. Exactly the expected 40/51 and ~2/300. A
+**real run on the scratch copy** (never the original) then exercised the
+whole write path on the real schema: backup copy made and sha-verified
+(`1e69f6ee…`), 351 rows upserted, `fit_results` 303,489 → 303,840, both
+checksums identical before/after, `integrity_check ok`, exit 0, 6.5 s. On
+that partially backfilled copy the Methods paragraph and the failure note
+render "42 of 351 fitted spectra with the count recorded (11.97 %) …; 40 of
+the 51 failed retrievals do." — the wording for a partial state, which the
+full backfill will replace with ≈ "≈150 of 15,971 (≈0.9 %)".
+
+**Deferred data steps — run verbatim after approval** (`ocean14`;
+`$PAB_DATA_DIR` = `/home/xavier/Oceanography/data/Color/PAB`, on `/mnt/tank`
+with 8.6 T free as of today, so the 18.3 GiB is not a problem):
+
+```bash
+# 0. space and the source size (expect 15,971 files / 18.3 GiB)
+df -h "$PAB_DATA_DIR"
+rclone size AIOcean:PAB/v2/fit_chains/
+
+# 1. the chains (Q&A/Outliers 7 = A); also makes HOWTO §5b's workstation row true
+rclone copy AIOcean:PAB/v2/fit_chains/ "$PAB_DATA_DIR/v2/fit_chains/" --transfers 8 --progress
+rclone check AIOcean:PAB/v2/fit_chains/ "$PAB_DATA_DIR/v2/fit_chains/" --one-way
+ls "$PAB_DATA_DIR/v2/fit_chains" | wc -l        # 15971
+
+# 2. dry run: read-only open; prints sha/counts/checksums/integrity + the plan
+cd /mnt/tank/Oceanography/python/PAB
+conda run -n ocean14 python -m pab.fit.rrs_qa_backfill \
+    --db "$PAB_DATA_DIR/v2/pab.db" --chains-root "$PAB_DATA_DIR/v2/fit_chains" --dry-run
+#    expect: sha256 1e69f6ee…8a3f8 (217,325,568 B); fits in scope 15,971;
+#    chain NPZ missing 0; computed 15,971; with n_neg_blue >= 1 ≈ 150 (≈0.9 %)
+
+# 3. the real run: makes the dated copy itself, verifies, exits non-zero on any violation
+mkdir -p "$PAB_DATA_DIR/v2/logs"
+conda run -n ocean14 python -m pab.fit.rrs_qa_backfill \
+    --db "$PAB_DATA_DIR/v2/pab.db" --chains-root "$PAB_DATA_DIR/v2/fit_chains" \
+    --backup-copy "$PAB_DATA_DIR/v2/pab_pre_negblue_$(date +%Y%m%d).db" \
+    | tee "$PAB_DATA_DIR/v2/logs/rrs_qa_backfill_$(date +%Y%m%d).log"
+#    expect: "verified: only fit_results changed (+15,971 rows), pre-existing rows
+#    identical, integrity ok"; fit_results 303,489 -> 319,460; fits 31,947 unchanged
+
+# 4. verification independent of the tool
+sha256sum "$PAB_DATA_DIR/v2/pab.db" "$PAB_DATA_DIR/v2/pab_pre_negblue_"*.db "$PAB_DATA_DIR/v1/pab.db"
+#    v1 must still be 09de0a6d334dc02e73494b198567a37707e1942e5cfd1173c89822b35f978273
+conda run -n ocean14 python -c "
+import sqlite3; c = sqlite3.connect('file:$PAB_DATA_DIR/v2/pab.db?mode=ro', uri=True)
+print(c.execute(\"SELECT COUNT(*), SUM(value>=1), MAX(value) FROM fit_results WHERE quantity='BING_ExpBPow_n_neg_blue'\").fetchone())
+print(c.execute('PRAGMA integrity_check').fetchone(), c.execute('SELECT COUNT(*) FROM fit_results').fetchone())"
+#    expect (15971, ~150, 21-ish), ('ok',), (319460,)
+#    the 40/51 vs 2/300 split on the fetched lists (reads only):
+conda run -n ocean14 python -I /tmp/claude-1000/-mnt-tank-Oceanography-python-PAB/4eee58f6-84e1-4496-a8d7-900c2eab85b4/scratchpad/o4/split_counts.py \
+    /tmp/claude-1000/-mnt-tank-Oceanography-python-PAB/4eee58f6-84e1-4496-a8d7-900c2eab85b4/scratchpad/o4
+#    (it reads pab_scratch.db in that folder; point it at a fresh scratch copy of the live DB
+#     with `cp "$PAB_DATA_DIR/v2/pab.db" …/o4/pab_scratch.db` first)
+
+# 5. HOWTO §5b, by hand: in "Which v2 copy is authoritative" replace the size/sha
+#    parenthesis with the post-backfill values from step 4, add one sentence
+#    "2026-10-xx (O4): +15,971 BING_ExpBPow_n_neg_blue rows; the pre-backfill file is
+#    v2/pab_pre_negblue_<date>.db (sha256 1e69f6ee…8a3f8)", and change "The chains stay
+#    on the PVC … only the database came back" to say the workstation now holds
+#    $PAB_DATA_DIR/v2/fit_chains/ (15,971 files, rclone'd from AIOcean:PAB/v2/fit_chains/).
+
+# 6. a scratch rebuild of the site to read the new sentences (never into report_site/ — O9)
+conda run -n ocean14 pab --db "$PAB_DATA_DIR/v2/pab.db" --compare-db "$PAB_DATA_DIR/v1/pab.db" \
+    --emit-site /tmp/claude-1000/pab-o4-site \
+    --downloads-base-url https://s3-west.nrp-nautilus.io/pab/v2 \
+    --figure-root /data/v2/pipeline/figures="$PAB_DATA_DIR/gallery/v2_figures" \
+    --figure-root /data/v1/pipeline/figures="$PAB_DATA_DIR/gallery/v1_scenes" \
+    --figure-root /data/full/pipeline/argo_qa="$PAB_DATA_DIR/gallery/argo_qa" \
+    --figure-root /data/v2/pipeline/argo_qa="$PAB_DATA_DIR/gallery/v2_argo_qa" \
+    --figure-root /data/run1k/pipeline/argo_qa="$PAB_DATA_DIR/run1k/pipeline/argo_qa"
+grep -n "n_neg_blue" /tmp/claude-1000/pab-o4-site/methods.rst /tmp/claude-1000/pab-o4-site/comparisons.rst
+```
+
+Worth knowing:
+
+- **The toy reproduces the runaway on the 1.0 path.** The new real-fit test
+  (Gordon, 300 steps) sets two blue bands of a noise-free synthetic spectrum
+  to −2×10⁻⁴ sr⁻¹; the fit returned `A_dg` ≈ 2.5×10³ m⁻¹ and `b_bp`(440) ≈
+  2.3 m⁻¹ — the ceiling basin of the outliers report, from a negative blue
+  alone, with the elastic model. The test asserts only that it *ran* and
+  counted 2 (never a refusal), but it is a one-line reproducer for O5/O8 if
+  one is wanted.
+- The 1.0 configuration has 10 BING quantities (no `Bp`), so 1.0-style fits
+  now carry 11 and 2.0 fits 12 — the Outliers 2 log's "12 after O4" is the
+  2.0 number.
+- `Store.open(path, create=False)` is what the real run uses (no migration
+  attempt); the dry run uses the `file:…?mode=ro` URI through the same
+  `Store.open`, so even a bug in the dry-run path cannot write.
+- The sentence's denominator is the fits **with the count recorded**, not
+  all fits; on a fully backfilled DB the two coincide and the wording drops
+  the qualifier. The percentages are `.2f` like the gate clause.
+- `rows_checksum` excludes the QA quantity so the invariant also holds for
+  `--replace`; it hashes `repr(tuple(row))` in key order, ~1 s on the 303 k
+  rows.
+- Nothing needed a decision: **no new Q&A items.** The one thing to confirm
+  before step 3 is the backup name (`v2/pab_pre_negblue_<date>.db`, the
+  `pab_pre_nasagiop_20261003.db` precedent).
+
+Hand-off (nothing committed — git is yours): the nine files above. Next:
+your approval for steps 0–6, then O5.

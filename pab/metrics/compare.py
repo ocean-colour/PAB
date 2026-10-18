@@ -34,6 +34,9 @@ import numpy as np
 #: ``BING_<model_pair>_`` prefix is added per call).
 DEFAULT_BBP_QUANTITY = "bbp700"
 DEFAULT_CHL_QUANTITY = "chl"
+#: The negative-blue QA count (``pab.fit.run.rrs_qa_quantities``), stored per
+#: fit as ``BING_<model_pair>_n_neg_blue`` since O4.
+NEG_BLUE_QUANTITY = "n_neg_blue"
 
 #: The two ``b_bp`` reference wavelengths (nm) the BING-vs-NASA comparison has
 #: to reconcile: NASA's GIOP reports ``bbp_442`` (``pab.pace.iop.IOP_REF_WAVE``
@@ -265,10 +268,14 @@ def gather_matchups(store, *, model_pair: str = "ExpBPow", pab_version=None):
         satellite values are **as stored** -- nothing is gated here -- plus a
         derived 0/1 column ``bbp_bing_implausible`` (:func:`implausible_bbp`)
         so the exported table can be filtered by a reader; the report applies
-        :func:`gate_bbp` itself where it computes statistics.
+        :func:`gate_bbp` itself where it computes statistics. ``n_neg_blue``
+        is the fit's negative-blue QA count (:data:`NEG_BLUE_QUANTITY`: the
+        number of fitted bands with ``Rrs < 0`` at 400–450 nm), **NaN** for a
+        fit that predates the quantity and has not been backfilled.
     """
     bbp_q = f"BING_{model_pair}_{DEFAULT_BBP_QUANTITY}"
     chl_q = f"BING_{model_pair}_{DEFAULT_CHL_QUANTITY}"
+    neg_q = f"BING_{model_pair}_{NEG_BLUE_QUANTITY}"
     if pab_version is None:
         pab_version = newest_bing_version(store)
     sql = """
@@ -278,7 +285,8 @@ def gather_matchups(store, *, model_pair: str = "ExpBPow", pab_version=None):
                fb.value AS bbp_bing,
                fb.value_lo AS bbp_bing_lo, fb.value_hi AS bbp_bing_hi,
                fc.value AS chl_bing,
-               fc.value_lo AS chl_bing_lo, fc.value_hi AS chl_bing_hi
+               fc.value_lo AS chl_bing_lo, fc.value_hi AS chl_bing_hi,
+               fn.value AS n_neg_blue
         FROM matchups m
         JOIN profiles p ON p.profile_id = m.profile_id
         JOIN mld_summary ms ON ms.profile_id = m.profile_id
@@ -290,13 +298,19 @@ def gather_matchups(store, *, model_pair: str = "ExpBPow", pab_version=None):
                ON fb.fit_id = f.fit_id AND fb.quantity = ?
         LEFT JOIN fit_results fc
                ON fc.fit_id = f.fit_id AND fc.quantity = ?
+        LEFT JOIN fit_results fn
+               ON fn.fit_id = f.fit_id AND fn.quantity = ?
         ORDER BY m.matchup_id
     """
-    df = store.query_df(sql, (model_pair, pab_version, pab_version, bbp_q, chl_q))
+    df = store.query_df(
+        sql, (model_pair, pab_version, pab_version, bbp_q, chl_q, neg_q)
+    )
     # A missing quantity row arrives as ``None`` (object dtype) from the LEFT
-    # JOIN; the flag and the gate both want a float column.
-    if "bbp_bing" in df.columns:
-        df["bbp_bing"] = df["bbp_bing"].astype(float)
+    # JOIN; the flag and the gate both want a float column, and so does the
+    # QA count (NaN = not recorded for this fit).
+    for col in ("bbp_bing", "n_neg_blue"):
+        if col in df.columns:
+            df[col] = df[col].astype(float)
     df["bbp_bing_implausible"] = implausible_bbp(df.get("bbp_bing", [])).astype(int)
     return df
 

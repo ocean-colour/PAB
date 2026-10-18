@@ -876,3 +876,36 @@ def test_fit_figure_smoke(tmp_path, monkeypatch):
             pytest.skip(f"BING aph-basis data unavailable: {exc}")
         out = fit_fig.fit_figure(store, fit_id, outfile=tmp_path / "fit.png")
         assert out.exists() and out.stat().st_size < fit_fig.SIZE_BUDGET
+
+
+def test_gather_matchups_carries_n_neg_blue_nan_where_absent():
+    """O4: the negative-blue QA count is LEFT JOINed as ``n_neg_blue`` -- the
+    stored value where a fit has one, NaN (not 0) where it was never recorded."""
+    with Store.open(":memory:") as store:
+        _seed(
+            store, "M1", 7902226, 5, lat=27.0, lon=-46.0,
+            time="2025-02-18T20:00:00", bbp_argo=1e-3, chla=0.1, bbp_bing=2e-3,
+        )
+        _seed(
+            store, "M2", 7902136, 8, lat=4.0, lon=-137.0,
+            time="2025-07-25T13:00:00", bbp_argo=2e-3, chla=0.2, bbp_bing=5e4,
+        )
+        df = compare.gather_matchups(store).set_index("matchup_id")
+        assert "n_neg_blue" in df.columns
+        assert df["n_neg_blue"].isna().all()  # nothing recorded yet
+        assert df["n_neg_blue"].dtype.kind == "f"
+
+        store.upsert(
+            "fit_results",
+            {
+                "fit_id": "M2_2_2_ExpBPow",
+                "quantity": f"BING_ExpBPow_{compare.NEG_BLUE_QUANTITY}",
+                "value": 3.0, "value_lo": 3.0, "value_hi": 3.0, "unit": "bands",
+            },
+        )
+        df = compare.gather_matchups(store).set_index("matchup_id")
+        assert df.loc["M2", "n_neg_blue"] == 3.0
+        assert np.isnan(df.loc["M1", "n_neg_blue"])
+        # the gate leaves the QA column alone
+        gated, _ = compare.gate_bbp(df)
+        assert gated.loc["M2", "n_neg_blue"] == 3.0

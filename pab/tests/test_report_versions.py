@@ -629,3 +629,27 @@ def test_pages_have_no_malformed_inline_literals(tmp_path):
                 if re.search(r"[^`]``[\(]", line):
                     bad.append(f"{name}.rst:{i}: {line[:90]}")
     assert not bad, "malformed inline literals:\n" + "\n".join(bad)
+
+
+def test_failure_note_quotes_the_negative_blue_rate_when_recorded(tmp_path):
+    """O4: once the 2.0 fits carry ``n_neg_blue`` the failure note says how
+    many spectra have a negative blue band and how many of the failures do --
+    computed from the store, omitted while the column is all NaN."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4))
+        out = rst.version_section(store, v1, sortable=False)
+        assert "fitted spectra (" not in out  # nothing recorded yet
+        for m, n in (("M1", 0), ("M2", 2)):
+            store.upsert(
+                "fit_results",
+                {"fit_id": f"{m}_v2.0", "quantity": "BING_ExpBPow_n_neg_blue", "value": n},
+            )
+        out = rst.version_section(store, v1, sortable=False)
+        assert (
+            "400–450 nm (the floats under them report a median Chl of 0.10 mg m⁻³, "
+            "against 0.10 for the population). In this release 1 of 2 fitted "
+            "spectra (50.00 %) have at least one negative band at 400–450 nm "
+            "(``n_neg_blue`` ≥ 1); 1 of the 1 failed retrieval does. On such a "
+            "spectrum" in out
+        )

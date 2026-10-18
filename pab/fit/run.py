@@ -452,6 +452,46 @@ def extract_quantities(models, chains, rt_dict, *, config: FitConfig):
     return out
 
 
+#: The blue window (nm, inclusive) the negative-``Rrs`` QA count looks at.
+#: ``versions/v2/high_bbp_outliers.md`` §5: a negative band here catches 40 of
+#: the 51 runaway 2.0 fits and flags ≈0.7 % of the rest, while "negative
+#: anywhere" flags 7 % (ordinary clear-water spectra dip below zero in the red).
+BLUE_QA_BAND = (400.0, 450.0)
+
+#: Name of the negative-blue QA quantity (bare; ``persist_fit`` prefixes it
+#: with ``BING_<model_pair>_`` like every other quantity).
+NEG_BLUE_QUANTITY = "n_neg_blue"
+
+
+def rrs_qa_quantities(wave, Rrs) -> list[dict[str, Any]]:
+    """Input-spectrum QA scalars, in the same dict shape as
+    :func:`extract_quantities` so they ride along in ``fit_results``.
+
+    One quantity today: ``n_neg_blue`` — the number of finite bands with
+    ``Rrs < 0`` inside :data:`BLUE_QA_BAND` (edges inclusive). It is a count,
+    so ``value_lo == value_hi == value`` and the unit is ``"bands"``. Call it
+    on the **windowed** spectrum (:func:`prepare_spectrum`'s output, which is
+    exactly what the chain NPZs store) so a fit-time value and one backfilled
+    from the NPZ agree by construction. This is a flag, never a refusal: a
+    negative blue band is recorded, and the spectrum is fitted as before
+    (Q&A/Outliers 3 = A).
+    """
+    wave = np.asarray(wave, dtype=float)
+    Rrs = np.asarray(Rrs, dtype=float)
+    lo, hi = BLUE_QA_BAND
+    blue = np.isfinite(wave) & (wave >= lo) & (wave <= hi)
+    n_neg = int(np.sum(blue & np.isfinite(Rrs) & (Rrs < 0)))
+    return [
+        {
+            "quantity": NEG_BLUE_QUANTITY,
+            "value": float(n_neg),
+            "value_lo": float(n_neg),
+            "value_hi": float(n_neg),
+            "unit": "bands",
+        }
+    ]
+
+
 def fit_spectrum(
     wave,
     Rrs,
@@ -544,6 +584,8 @@ def fit_spectrum(
     accept_frac = float(np.mean(sampler.acceptance_fraction))
 
     quantities = extract_quantities(models, chains, rt_dict, config=config)
+    # input-spectrum QA (the negative-blue count), on the windowed spectrum
+    quantities.extend(rrs_qa_quantities(wave_w, Rrs_w))
     chisq, aic, bic = _fit_diagnostics(
         models, chains, rt_dict, Rrs_w, varRrs_w, config, geom=geom
     )

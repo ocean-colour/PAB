@@ -26,6 +26,7 @@ from pab.fit.run import (
     fit_spectrum,
     make_fit_id,
     prepare_spectrum,
+    rrs_qa_quantities,
 )
 
 __all__ = [
@@ -46,4 +47,5 @@ __all__ = [
     "ingest_nasa_giop_matchup",
     "make_fit_id",
     "prepare_spectrum",
+    "rrs_qa_quantities",
 ]

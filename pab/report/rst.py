@@ -836,6 +836,59 @@ def _float_chl_medians(store, matchup_ids, runaway_ids):
     return med(bad), med(every)
 
 
+def _neg_blue_sentence(df) -> str:
+    """``"N of M fitted spectra (x.xx %) have at least one negative band at
+    400–450 nm; K of the F failed retrievals do."`` -- computed from the
+    ``n_neg_blue`` column of a :func:`~pab.metrics.compare.gather_matchups`
+    frame. Returns ``""`` when the column is absent or **all NaN** (a store
+    whose fits predate the quantity and have not been backfilled), so a page
+    never quotes a zero that means "not recorded"."""
+    import numpy as np
+
+    if df is None or "n_neg_blue" not in df.columns:
+        return ""
+    n = np.asarray(df["n_neg_blue"], dtype=float)
+    have = np.isfinite(n)
+    m = int(have.sum())
+    if not m:
+        return ""
+    neg = have & (n >= 1)
+    n_neg = int(neg.sum())
+    lo, hi = _blue_qa_band()
+    # a partial backfill: say what the denominator is, so "N of M" is honest
+    noun = "fitted spectra" if m == len(df) else "fitted spectra with the count recorded"
+    text = (
+        f"{n_neg:,} of {m:,} {noun} ({100.0 * n_neg / m:.2f} %) have at "
+        f"least one negative band at {lo:g}–{hi:g} nm (``n_neg_blue`` ≥ 1)"
+    )
+    if "bbp_bing_implausible" in df.columns:
+        bad = np.asarray(df["bbp_bing_implausible"], dtype=float) == 1
+        n_bad = int(bad.sum())
+        if n_bad:
+            k = int((bad & neg).sum())
+            noun = "failed retrieval does" if n_bad == 1 else "failed retrievals do"
+            text += f"; {k} of the {n_bad} {noun}"
+    return text + "."
+
+
+def _blue_qa_band():
+    """The QA window, from where it is defined (``pab.fit.run.BLUE_QA_BAND``)."""
+    from pab.fit.run import BLUE_QA_BAND
+
+    return BLUE_QA_BAND
+
+
+def _neg_blue_from_store(store) -> str:
+    """:func:`_neg_blue_sentence` on the store's matchup frame; ``""`` without
+    a store or when the frame cannot be built (the page must still build)."""
+    if store is None:
+        return ""
+    try:
+        return _neg_blue_sentence(compare.gather_matchups(store))
+    except Exception:  # noqa: BLE001 — the page must build without the frame
+        return ""
+
+
 def _version_failure_note(df, store=None) -> str:
     """Count and explain the 2.0 fits that returned a non-physical ``b_bp``.
 
@@ -894,12 +947,14 @@ def _version_failure_note(df, store=None) -> str:
         if np.isfinite(chl_bad) and np.isfinite(chl_all)
         else ""
     )
+    neg_blue = _neg_blue_from_store(store)
+    neg_blue = f" In this release {neg_blue}" if neg_blue else ""
     bits.append(
         "\n**What they are.** These are not a clear-water tail — their own "
         "retrieved chlorophyll of ~0.01 mg m⁻³ is part of the failed fit. They "
         "are marginal-sea spectra (the Baltic above all, the tropical Atlantic, "
         "the Arabian Sea) with a depressed or *negative* blue ``Rrs`` at "
-        f"400–450 nm{water}. On such a spectrum the Levenberg–Marquardt "
+        f"400–450 nm{water}.{neg_blue} On such a spectrum the Levenberg–Marquardt "
         "warm-start delivers the walkers to the ``Bnw`` prior ceiling of "
         "10⁵ m⁻¹, where ``b_b ≫ a`` and the reflectance saturates, and the "
         "chains never leave it — although a physical basin with a *better* χ² "
@@ -1885,19 +1940,57 @@ def _methods_ceiling_sentence(store) -> str:
     return f"{lead} — {_NASA_BBP_CEILING_CAVEAT}"
 
 
-def _methods_failed_retrievals(store) -> str:
+def _methods_matchups(store):
+    """The store's matchup frame for the Methods page's computed numbers, or
+    ``None`` (no store, or the frame cannot be built -- the page must build)."""
+    if store is None:
+        return None
+    try:
+        df = compare.gather_matchups(store)
+    except Exception:  # noqa: BLE001 — the page must build without the frame
+        return None
+    return df if len(df) else None
+
+
+def _methods_neg_blue(df) -> str:
+    """The Methods page's definition of ``n_neg_blue`` (O4, Q&A/Outliers
+    3 = A) plus, when ``df`` carries it, the computed rate in this release."""
+    lo, hi = _blue_qa_band()
+    rate = _neg_blue_sentence(df)
+    rate = (
+        f" In this release {rate}"
+        if rate
+        else (
+            " Where the count has not been recorded the column is empty and no "
+            "rate is quoted."
+        )
+    )
+    return (
+        "**Negative-blue QA count.** Every fit also records ``n_neg_blue``: the "
+        f"number of bands of the fitted spectrum with ``Rrs < 0`` between {lo:g} "
+        f"and {hi:g} nm (inclusive), stored as the ``BING_ExpBPow_n_neg_blue`` "
+        "quantity and carried as the ``n_neg_blue`` column of the downloadable "
+        "summary table. It is a flag, not a screen: a spectrum with a negative "
+        "blue band is fitted exactly like any other. It is recorded because a "
+        "depressed or negative blue ``Rrs`` is what the failed retrievals have "
+        "in common, while a negative band *anywhere* in the window is ordinary "
+        "(the red bands of clear-water spectra dip below zero). Fits made before "
+        "the quantity existed were backfilled from the spectrum stored with "
+        "their chains, so fit-time and backfilled counts are the same number."
+        + rate
+        + "\n"
+    )
+
+
+def _methods_failed_retrievals(df) -> str:
     """The Methods page's "Failed retrievals" paragraph: the gate, the count
-    computed from ``store`` (deferred to the Comparisons page without one),
-    what is and is not gated, and the pointer to the investigation."""
+    computed from the store's matchup frame ``df`` (deferred to the
+    Comparisons page when it is ``None``), what is and is not gated, and the
+    pointer to the investigation."""
     count = ""
-    if store is not None:
-        try:
-            df = compare.gather_matchups(store)
-            if len(df):
-                _, clause = _gated(df, "bbp_bing")
-                count = f" In this release that is {clause}."
-        except Exception:  # noqa: BLE001 — the page must build without the frame
-            pass
+    if df is not None:
+        _, clause = _gated(df, "bbp_bing")
+        count = f" In this release that is {clause}."
     if not count:
         count = " The *Comparisons* page reports how many fits this excludes in this release."
     return (
@@ -1972,7 +2065,9 @@ def methods_page(*, compare_db=None, store=None) -> str:
         "is a genuine retrieval compared against the in-situ value. An independent "
         "**OC4** band-ratio Chl is shown as a cross-check when available.\n"
     )
-    out.append(_methods_failed_retrievals(store))
+    matchups_df = _methods_matchups(store)  # one query for both paragraphs
+    out.append(_methods_failed_retrievals(matchups_df))
+    out.append(_methods_neg_blue(matchups_df))
 
     out.append(_heading("Retrieval configuration (2.0) & the two databases", "-"))
     out.append(V2_CHANGES)
