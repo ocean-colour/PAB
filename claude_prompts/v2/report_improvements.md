@@ -451,6 +451,362 @@ Use Fable if you can. Log your work.
 Please generate a series of prompts in this Prompts/Outliers section starting with #3 that I will execute to complete the work.
 Use Fable if you can. Log your work.
 
+*Seven prompts (O3–O9), to be run **in order on the workstation** (`ocean14`)
+on the `report-improvements` branch; O8 is independent and can run any time
+after the chains are local. The decisions they rely on are **Q&A/Outliers**
+1–5 (answered) and **6–9** (new — answer each before the prompt that cites
+it). The Edits rules carry over: git is the user's; each prompt ends with
+`ruff check pab` and the named tests green; each logs under **Logs**;
+surprises go in the log, not silently worked around. What is new: **O4 and O6
+write to `$PAB_DATA_DIR/v2/pab.db`** (the live copy, HOWTO §5b), which the
+E-series never did. Write discipline for both: a dated copy first
+(`v2/pab_pre_<step>_<date>.db`, the `pab_pre_nasagiop_20261003.db`
+precedent), sha256 + per-table counts before and after, **no existing 2.0 row
+changed** (a checksum over the 2.0 `fits`/`fit_results` rows identical before
+and after — the design's provenance rule), `v1/` read-only as always, and
+`PAB_DATA_DIR=$PAB_DATA_DIR/v2` for anything that writes chains (they land at
+`$PAB_DATA_DIR/fit_chains/`, never next to `--db`). Facts from the report and
+the code the prompts lean on: the 51 runaways are the BING `pab_version='2.0'`
+fits with `BING_ExpBPow_bbp700 > 1` (the same set at > 10⁴);
+`bing.parameters.standard.expb_pow` puts log-uniform [10⁻⁶, 10⁵] priors on
+`Adg`, `Aph` (ExpBricaud pnames `['Adg','Sdg','Aph']`) and `Bnw` (Pow pnames
+`['Bnw','beta']`, `Bnw` = `b_bp` at the 600 nm pivot); `expb_pow(**kwargs)`
+forwards `apriors=`/`bpriors=` into the `p` namedtuple and
+`set_standard_priors` uses them verbatim, so PAB can cap the ceilings without
+touching BING; `fits.prior_set` (today always `"bing_standard"`) is where a
+changed prior set is recorded, no schema change needed.*
+
+3. **O3 — Gate the 51 out of the `b_bp` statistics; amend the run report
+   (Q&A/Outliers 1 = B, 4 = A; Q&A/Outliers 6).** No re-fit, no DB write.
+   1. Move `BBP_IMPLAUSIBLE = 1.0` to `pab/metrics/compare.py` (keep
+      `rst.BBP_IMPLAUSIBLE` importable) and add `compare.implausible_bbp(values)
+      -> mask` and `compare.gate_bbp(df, col="bbp_bing") -> (df_gated,
+      n_excluded)` (the column set to NaN where the mask is true; nothing else
+      touched). Feed the gated frame to **every `b_bp` statistic and figure**
+      built from `bbp_bing`/`bbp700_v2`: `summary_page` headline,
+      `_static_comparison_figures` (the `b_bp` density panel, `matchup_map`,
+      `healpix_map` — gated matchups become "without a ratio", grey), the
+      `aggregate.aggregate_by`/`aggregate_healpix` callers (Aggregates page),
+      `nasa_giop_section` (BING side) and `version_section` (`bbp700_v2` in
+      the stats line, `_version_ratio_by_level`, `_ratio_figure_block`,
+      `_version_static_figures`). Do **not** gate `select_representative_fits`
+      (the gallery keeps its "non-physical retrieval" pick) or the exported
+      tables (raw values stay; add a derived 0/1 column `bbp_bing_implausible`
+      in `gather_matchups` so a reader can filter). Chl of the same fits: per
+      Q&A/Outliers 6 (default if unanswered: gate `b_bp` only).
+   2. Wording, computed never hard-coded: every gated caption and stats line
+      carries "N failed retrievals (x.xx %, ``b_bp`` > 1 m⁻¹) excluded";
+      `_version_failure_note` says excluded instead of "left in"; **delete
+      `_runaway_regime_note` and `_RUNAWAY_CHL_EDGES`** (the Chl-rate table *is*
+      the misreading) and put one paragraph in their place: marginal-sea
+      spectra with a depressed or negative blue Rrs (float Chl median 0.93
+      mg m⁻³ — not clear water), the LM warm-start delivered to the `Bnw`
+      prior ceiling of 10⁵ m⁻¹ while a better physical basin exists in every
+      re-fitted case, a re-fit under 2.0.1 is pending (O7 rewrites this
+      sentence), and a pointer to
+      `https://github.com/ocean-colour/PAB/blob/main/versions/v2/high_bbp_outliers.md`.
+      Methods page: a "Failed retrievals" paragraph with the gate, the
+      computed count and the same pointer.
+   3. `docs/design/PAB_v2_run_report.md` §2.5: replace the regime paragraph
+      and the Chl-rate table with the corrected reading, keeping one line that
+      says what was believed on 2026-10-07 and when/why it was corrected; §7
+      item 2 → resolved, with the pointer. `PAB_implementation.md` §13.5 and
+      §5e.2: a one-line pointer each.
+   4. Tests: `test_metrics.py` — `gate_bbp` masks only above the gate, counts,
+      leaves other columns; `test_report_versions.py` —
+      `test_failure_note_counts_non_physical_bbp` asserts "excluded" and that
+      the Chl-rate table is gone; `test_report.py` — summary/comparisons/
+      methods text carries the count and the pointer, aggregates come from the
+      gated frame, `export_tables` keeps raw values plus the flag column.
+      Acceptance on the real v2 DB (read-only, throw-away `outdir`): the
+      `b_bp` headline n drops by the number of runaways that have a float
+      value (50–51 of 15,274); record the new median ratio / ρ / RMS next to
+      the old 1.15 / 0.41 / 0.65 in the log. Use Fable if you can. Log your
+      work.
+
+4. **O4 — The negative-blue QA count as a `fit_results` quantity
+   (Q&A/Outliers 3 = A; Q&A/Outliers 7 for the chains).**
+   1. `pab/fit/run.py`: `BLUE_QA_BAND = (400.0, 450.0)` and a pure
+      `rrs_qa_quantities(wave, Rrs) -> list[dict]` returning one quantity
+      `n_neg_blue` (value = number of finite bands with `Rrs < 0` and
+      `400 ≤ λ ≤ 450`; `value_lo = value_hi = value`; unit `"bands"`), computed
+      on the **windowed** spectrum (`wave_w`, `Rrs_w` from `prepare_spectrum`
+      — exactly what the chain NPZs store, so fit-time and backfilled values
+      agree by construction). `fit_spectrum` appends it to `quantities`; the
+      existing `persist_fit` writes it as `BING_ExpBPow_n_neg_blue` — no
+      schema change. **Never a refusal:** `build_fits` fits such a spectrum as
+      before (test it).
+   2. Backfill for the 15,971 existing 2.0 fits: `python -m
+      pab.fit.rrs_qa_backfill --db … --chains-root DIR [--pab-version 2.0]
+      [--dry-run] [--replace]` — resolves `fits.chains_path` by **basename**
+      under `--chains-root` (the stored paths are PVC paths
+      `/data/v2/fit_chains/…`), reads `wave`/`Rrs` from each NPZ, upserts
+      **only** the `n_neg_blue` row per fit (refuses a fit that already has
+      one unless `--replace`; a missing NPZ is counted and skipped with one
+      summary warning), prints the plan under `--dry-run`. This is a QA
+      backfill on existing records at the same version — the design's
+      documented precedent (the 1.0 Chl-a/CDOM re-ingest) — not a
+      re-analysis. Chains: per Q&A/Outliers 7 (recommended: `rclone copy
+      AIOcean:PAB/v2/fit_chains/ $PAB_DATA_DIR/v2/fit_chains/ --transfers 8`,
+      15,971 files / 18.3 GiB, then `rclone check … --one-way`; this also
+      makes HOWTO §5b's workstation row true — check `df -h` first). Write
+      discipline as in the preamble; after: `fit_results` +15,971 rows, every
+      other table and every pre-existing `fit_results` row identical,
+      `PRAGMA integrity_check` ok. Expected: ≈ 0.7 % of the non-runaways and
+      40 of the 51 with `n_neg_blue ≥ 1` (report §5).
+   3. Report + table: `gather_matchups` LEFT JOINs the quantity as
+      `n_neg_blue` (NaN where absent); the Comparisons failure note gains a
+      computed sentence ("N of M spectra (x %) have at least one negative
+      band at 400–450 nm; K of the N failed retrievals do"); the Methods
+      *Retrieval* section defines the quantity; `matchup_summary.{csv,parquet}`
+      carry the column (re-uploaded in O9).
+   4. Tests: `test_fit.py` — `rrs_qa_quantities` on synthetic spectra (0 and 3
+      bands, the 450 nm edge inclusive, NaN bands ignored, bands outside
+      400–450 ignored), `fit_spectrum`'s quantities include it (extend the
+      robust known-answer test), `persist_fit` writes it; new
+      `test_rrs_qa_backfill.py` — synthetic store + tmp NPZ: writes the row,
+      idempotent, `--dry-run` writes nothing, `--replace` overwrites, a
+      missing NPZ is counted not fatal, other `fit_results` rows untouched;
+      `test_metrics.py`/`test_report.py` — the column and the sentence. Use
+      Fable if you can. Log your work.
+
+5. **O5 — The 2.0.1 configuration: physical prior ceilings, step-0 check,
+   replay seam (Q&A/Outliers 2 = A; Q&A/Outliers 8).** Code and tests only —
+   nothing fitted, no DB write.
+   1. `FitConfig` gains `bbp600_max: float | None = 0.1`, `adg_max: float |
+      None = 10.0`, `aph_max: float | None = 10.0` (m⁻¹; `None` = BING's
+      10⁵). `build_models` applies them as a **PAB-side override**: call the
+      factory as now, then `p = p._replace(apriors=…, bpriors=…)` with copies
+      of the factory's own prior dicts whose `pmax` is `log10(ceiling)` for
+      `Adg` (index 0 of `['Adg','Sdg','Aph']`), `Aph` (index 2) and `Bnw`
+      (index 0 of `['Bnw','beta']`; confirm the 600 nm pivot in
+      `bing/models/bbnw.py` before naming it), nothing else changed.
+      `set_standard_priors` takes `p.apriors`/`p.bpriors` verbatim, so BING is
+      untouched and both `_prior_bounds` (the LM bounds) and BING's `log_prob`
+      see the ceiling. `persist_fit` stamps `prior_set` from the config
+      (`"bing_standard"` when all three are `None`, else
+      `"bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"`, built by one
+      helper so text and bounds cannot drift). Add `FitConfig.v2_0()` — the
+      frozen, unceilinged 2.0 configuration, like `v1()` — and make `v1()` set
+      the three to `None` (the 1.0 priors must not change retroactively).
+      Rename `test_fitconfig_defaults_are_the_2_0_configuration` to the 2.0.1
+      one; add `v2_0()` and `v1()` ceiling tests.
+   2. `pab.config.pab_version = "2.0.1"` and `setup.py` to match (`pip install
+      -e . --no-deps`; `test_pab_version_is_2_0` → `_is_2_0_1`). `make_fit_id`
+      then yields `…_v2.0.1`, so the new rows coexist with the 2.0 ones (a new
+      record, never an overwrite). Say in the `pab_version` docstring what
+      2.0.1 is: same data, physics and matchups as 2.0, priors capped at
+      physical ceilings, applied as a **patch** to the runaways (O7 defines
+      how the report overlays it).
+   3. Step-0 check: `pab.fit.run.chain_start_report(chains, param_names,
+      config) -> dict` — the step-0 walker-median of each capped parameter in
+      dex below its ceiling and a boolean `started_below_wall` (`Bnw` median
+      ≥ 0.5 dex under `log10(bbp600_max)`; `Adg`/`Aph` likewise);
+      `fit_spectrum` logs a **warning** when it is false (never fails) and
+      `FitSpectrumResult` carries the dict, so O6 can tabulate it from the
+      NPZs as well.
+   4. Replay seam (only if Q&A/Outliers 8 = C): `build_fits(…, spectra=None)`
+      and `fit_matchup(…, spectrum=None)` accept a callable `inp -> (wave,
+      Rrs, Rrs_unc)`; when given, **no granule is opened**.
+      `pab.fit.replay.spectrum_from_chains(root)` returns such a callable: it
+      names the **2.0** fit of the same matchup/pixel
+      (`make_fit_id(…, version="2.0")`), loads its NPZ under `root` by
+      basename and returns `wave`, `Rrs`, `sqrt(varRrs)` — the spectrum the
+      2.0 fit saw. `rrs_source` is stamped `"L2_AOP:replay:<2.0 fit_id>"`.
+      CLI: `--replay-chains DIR` on the `fit` stage (`pab/pipeline.py`; HOWTO
+      §3 row). If Q&A 8 = A or B, skip this step.
+   5. `fit_fig._config_from_row` must still rebuild a config from a row (it
+      needs no priors; test that a ceiling `prior_set` string round-trips).
+      Tests for 1–4 in `test_fit.py`: `_prior_bounds` returns the `log10`
+      ceilings, a `None` leaves BING's 5, the `prior_set` string, the replay
+      callable reproduces the NPZ spectrum, `build_fits` with `spectra=` never
+      calls the opener. Use Fable if you can. Log your work.
+
+6. **O6 — Re-fit the 51 under 2.0.1 (the run; Q&A/Outliers 8).** On the
+   workstation; ~51 × 3 min of CPU over `--jobs 8` plus the one-time JAX
+   compile — under an hour. The v2 database is **written** here.
+   1. Pre-flight: O5 in the working tree, `pytest pab/tests -q` green,
+      `python -c "from pab.config import pab_version; print(pab_version)"` →
+      `2.0.1` and `pip show pab` the same. Dated copy
+      `$PAB_DATA_DIR/v2/pab_pre_v201_<date>.db`; record sha256, per-table
+      counts, and a checksum over the 15,971 2.0 `fits` rows + their
+      `fit_results`.
+   2. The selection, by SQL, never from Appendix A: the 2.0 BING fits with
+      `BING_ExpBPow_bbp700 > 1` → `versions/v2/high_bbp_outliers/refit_51.csv`
+      (`matchup_id, fit_id_2_0, pixel_id, wmo, cycle, bbp700_2_0`; 51 rows).
+      Chains for the replay: nothing to fetch if O4's `rclone` brought all of
+      `v2/fit_chains/`; else `rclone copy AIOcean:PAB/v2/fit_chains/
+      $PAB_DATA_DIR/v2/fit_chains/ --files-from <51 basenames> --no-traverse`.
+   3. Run (replay path, Q&A 8 = C): `PAB_DATA_DIR=$PAB_DATA_DIR/v2 pab --db
+      $PAB_DATA_DIR/v2/pab.db --outdir $PAB_DATA_DIR/v2/pipeline --stage fit
+      --jobs 8 --matchups-csv versions/v2/high_bbp_outliers/refit_51.csv
+      --replay-chains $PAB_DATA_DIR/v2/fit_chains 2>&1 | tee
+      $PAB_DATA_DIR/v2/logs/refit_51_<date>.log`. The `PAB_DATA_DIR` override
+      puts the new NPZs in `v2/fit_chains/`; the `--matchups-csv` is the only
+      thing between this command and a 15,971-fit re-run under 2.0.1 (the 2.0
+      `fit_id`s do not block the 2.0.1 ones) — the log line "fit: selection
+      restricts to 51" must appear before anything is fitted. (Q&A 8 = A:
+      drop `--replay-chains`, add `--download --cache-dir
+      $PAB_DATA_DIR/granules`, budget ~25 GB and hours; = B: write
+      `nautilus/v201_refit_job.yaml` on the `v2_fit_slice_job.yaml` pattern —
+      rebuilt image, DB-local dance, DB returned compressed — and the user
+      applies it.) Then `PAB_DATA_DIR=$PAB_DATA_DIR/v2 pab --db … --outdir …
+      --stage figure --figure-version 2.0.1 --jobs 4` (fit figures only;
+      every scene exists).
+   4. Verify: exactly 51 rows with `pab_version='2.0.1'`, `fit_id` ending
+      `_v2.0.1`, `prior_set` the ceiling string, `rrs_source` the replay
+      stamp, `success=1`, `chains_path` under `v2/fit_chains/`, `figure_path`
+      set, `n_neg_blue` present (O4); the 2.0 checksum unchanged; `fits` +51,
+      `fit_results` +12 × 51 (the 11 quantities + `n_neg_blue`);
+      `integrity_check` ok. Science: `chain_start_report` over the 51 NPZs
+      (all started below the wall — list any that did not); posterior
+      `bbp600`/`Adg`/`Aph` upper bounds versus the ceilings (within 5 % of
+      one is a finding, not a success); χ²(2.0.1) vs χ²(2.0) per fit (expect
+      lower in all or nearly all — §4 saw 1.5–23×); `b_bp`(700) at 2.0.1 vs
+      float, 1.0 and GIOP (Appendix A has the columns). Append **Appendix C —
+      the 2.0.1 re-fit** to `versions/v2/high_bbp_outliers.md`: the 51-row
+      table, a two-panel figure (2.0 vs float with the 51 in orange; 2.0.1 vs
+      float) in `high_bbp_outliers/`, and a short reading — how many are now
+      physical, how many still sit at a ceiling and what those look like.
+   5. Back up: `rclone copy` the 51 NPZs to `AIOcean:PAB/v2/fit_chains/` and
+      the 51 figures to `AIOcean:PAB/v2/figures/` (`copy`, never `sync`), a
+      dated DB copy to `AIOcean:PAB/pab_v2_<date>.db`, `rclone check …
+      --one-way`; HOWTO §5b: new DB sha/size, the 2.0.1 rows, the chains now
+      on the workstation. Nothing on the PVC is touched. Use Fable if you can.
+      Log your work.
+
+7. **O7 — Show the 2.0.1 values in the report: the patch-version overlay
+   (Q&A/Outliers 1 = C).** Today the gatherers either filter to **one**
+   `pab_version` (`gather_matchups` via `newest_bing_version`, and
+   `_version_key` already ranks `2.0.1` above `2.0` — so after O6 the site
+   would silently shrink to **51 matchups**) or to **none**
+   (`gather_nasa_giop` and `gather_version_pair` join `fits` on `model_pair`
+   only — the 51 matchups would appear **twice**). One rule fixes both.
+   1. `compare.version_family(store, version=None) -> (base, patches)`: a
+      patch version `X.Y.Z` reports its base `X.Y` superseded, per
+      `(matchup_id, pixel_id)`, by the patch rows; `compare.overlay_patch(df)`
+      drops a base row where a patch row exists for the same matchup **and
+      pixel**. Apply it in `gather_matchups`, `gather_nasa_giop`,
+      `gather_version_pair` (those 51 pairs become 1.0 vs 2.0.1) and the
+      figure stage's default version (`--figure-version` stays explicit).
+      Every frame keeps its per-row `pab_version` so the exported tables say
+      which rows are patched. `summary_page`: "BING fits: 15,971 (15,920 at
+      2.0, 51 re-fitted at 2.0.1)", computed. `publish.build_manifest` and
+      the Downloads page list the chains/figures of both versions.
+   2. Text: `_version_failure_note` becomes the 2.0.1 story — in 2.0, N fits
+      (computed from the 2.0 rows, which stay in the database) ran away; they
+      were re-fitted under 2.0.1 with the physical ceilings (quote
+      `prior_set`); K of them now sit below the gate and are what every
+      statistic on this page uses; any still above it remain excluded by O3's
+      gate (count computed; the gate stays permanently). Methods: the
+      `pab_version` paragraph gains 2.0.1 and the overlay rule in one
+      sentence; the *Retrieval* section names the ceilings.
+      `select_representative_fits`: the "non-physical retrieval" slot becomes
+      "re-fitted runaway" — the matchup with the largest **2.0** `b_bp`, shown
+      with its 2.0.1 figure and the caption "2.0 ``b_bp`` 9.3e4 → 2.0.1 x m⁻¹
+      (float y)"; the old behaviour stays when no patch exists (test both).
+   3. `docs/design/PAB_design.md` *Provenance & versioning*: a paragraph on
+      patch versions (same database and matchup set; rows keep their own
+      stamp; the report overlays by matchup **and pixel**; base rows are never
+      deleted). `docs/fitting.rst` and HOWTO §5b: the 2.0.1 semantics in one
+      line each.
+   4. Tests (`test_metrics.py`, `test_compare_versions.py`, `test_report.py`,
+      `test_report_versions.py`): a synthetic store with a 2.0 and a 2.0.1 fit
+      on the same pixel → one row with the 2.0.1 values; a 2.0.1 fit on a
+      *different* pixel of the same matchup does not supersede; no duplicates
+      in the NASA-GIOP and version-pair frames; `version_family` on a
+      2.0-only store → `("2.0", [])`; the summary sentence; the gallery slot
+      in both regimes; `export_tables` rows carry `pab_version`. Acceptance on
+      the real DB (read-only): 15,971 rows, 51 of them `2.0.1`, the `b_bp`
+      headline now excludes only what is still above the gate (expected
+      0–few); record median/ρ/RMS again next to O3's. Use Fable if you can.
+      Log your work.
+
+8. **O8 — The emulator out-of-domain slice test, `on_out_of_domain="ztt"`
+   (Q&A/Outliers 5 = A).** BING-side and **non-blocking**: run any time after
+   the chains are local (O4/O6); no database or BING code changes, nothing
+   persisted. `bing.evaluate` builds its jitted forward model with
+   `robust_rt.forward(…, mode, inelastic, corrections=False, emulator=…)` and
+   never passes `on_out_of_domain`, so production runs the default `"warn"`
+   (silent under `jit`); `"ztt"` is traceable (`robust/rt/hybrid.py`, zeroes
+   the emulator correction outside the training range) and the default
+   emulator **does carry a domain** (`load_default().domain.shape == (2, 7)`,
+   checked 2026-10-18), so the policy would act.
+   1. Script `versions/v2/ztt_slice/run_ztt_slice.py` (kept in the repo; run
+      with `PAB_DATA_DIR=<scratch>` so no chain can land in `v2/`): installs
+      `robust.rt.forward = functools.partial(forward,
+      on_out_of_domain="ztt")` **before** `bing.evaluate` builds (and
+      `lru_cache`s) its forward function — in the parent and in every worker
+      initializer — and proves the patch is live on a known out-of-domain IOP
+      set (`"ztt"` must equal `mode="ztt"` there). Inputs from the NPZs: the
+      51 runaways + 50 ordinary 2.0 fits (seed 42; the report's 300-fit sample
+      list if it survives in scratch, else re-drawn), geometry and Chl seed
+      from the DB (read-only). Arms, both under the **2.0 priors**
+      (`FitConfig.v2_0()` — the question is whether the basin survives, not
+      whether the ceiling hides it): (i) `"warn"` control, (ii) `"ztt"`. LM
+      only for all 101 × 2 (seconds each); full MCMC (production `nsteps`)
+      for 8 runaways + 8 ordinary × 2 arms (~1.5 h at 8 jobs). Record per
+      spectrum and arm: `emulator.out_of_domain(...)` at the LM solution and
+      the `DomainWarning`s BING raises at the initial guess and posterior
+      median (`warnings.catch_warnings(record=True)`; do **not** set
+      `PYTHONWARNINGS=ignore` as the pods do).
+   2. Questions, each answered with a number: of the 51, how many LM runs end
+      at the 10⁵ ceiling under `"warn"` (the CPU control; §4 saw 3 of 4) and
+      under `"ztt"`; the χ² profile versus fixed `Bnw` (§4 method) for the
+      four report cases under `"ztt"` — does the wall at 1–10 m⁻¹ move,
+      vanish or stay; for the 50 ordinary fits, `Δlog10 b_bp(700)` and `Δχ²`
+      between arms (≈ 0 if production never leaves the domain in the physical
+      basin — if not, that is the bigger finding); the out-of-domain fraction
+      at the ordinary posterior medians.
+   3. Write-up `versions/v2/ztt_slice.md` (figures in `ztt_slice/`): method,
+      the numbers, a reading, and a closing section **"Question for the bing
+      repo"** — whether `on_out_of_domain` should be exposed through
+      `rt_dict`/`FitConfig` and what its default should be, with the evidence
+      — phrased for the user to carry into the bing repo; no BING change
+      here. Link it from `high_bbp_outliers.md` §6 item 4. Use Fable if you
+      can. Log your work.
+
+9. **O9 — Rebuild the site, publish the amended tables, docs, close out
+   (Q&A/Outliers 9).** After O3–O7 (O8 optional).
+   1. Regenerate with the E6 command (HOWTO §7a: the five `--figure-root`
+      flags, `--compare-db`, `--downloads-base-url`), zero dropped-figure
+      warnings, `python -m sphinx -b html report_site /tmp/…` with 0 warnings.
+      Both databases byte-identical before and after (the site build never
+      writes).
+   2. Verify by looking (Read each PNG and `.rst`): the `b_bp` panels, maps
+      and aggregates built from the gated, overlaid frame; the summary
+      "15,971 (15,920 at 2.0, 51 at 2.0.1)"; the failure note with its
+      computed counts and pointer; the negative-blue sentence; the Methods
+      paragraphs; the gallery's re-fitted-runaway slot; `du -sh` /
+      `git status --short report_site` (committable tree still a few MB, no
+      `_build`).
+   3. Publish: `publish.export_tables` into scratch; **this time the S3
+      objects are replaced on purpose** — `v2/matchup_summary.{csv,parquet}`
+      (new columns `n_neg_blue`, `bbp_bing_implausible`, `pab_version`; 51
+      changed rows) and `v2/nasa_giop_summary.{csv,parquet}` (51 changed
+      rows). First download the current objects to
+      `$PAB_DATA_DIR/v2/s3_prev_<date>/` and confirm their sha256 against
+      HOWTO §5b / run report §6 (`6622a78c…`, `4754e237…`, `21b4b6ce…`,
+      `66f6cb27…`), then upload with `NautilusS3Backend(bucket="pab",
+      prefix="v2")`, re-download, compare, and record old/new sizes + sha256.
+      The database itself per Q&A/Outliers 9 (recommended: upload the
+      2026-10-07 file first under the dated key `v2/pab_2026-10-07.db`, then
+      replace `v2/pab.db`; verify both by re-download).
+   4. Docs: `PAB_implementation.md` new §14 (the gate, `n_neg_blue` + the
+      backfill, the 2.0.1 ceilings / `prior_set` / replay seam / step-0
+      check, the patch overlay, what the re-fit showed, the O8 pointer);
+      HOWTO (§3 `--replay-chains`, §4 `fit` row: ceilings are the default
+      from 2.0.1, §5b S3/sha rows and backup folders); `docs/fitting.rst`
+      (priors, the QA quantity); `docs/reporting.rst` (gate + overlay);
+      `PAB_v2_run_report.md` §6 (a dated row for the amended objects — do not
+      rewrite the 2026-10-07 shas) and §7 item 2 resolved;
+      `versions/v2/high_bbp_outliers.md` gets a **Status** block at the top
+      listing what O3–O8 did, with dates.
+   5. `pytest pab/tests -q`, `ruff check pab`. Hand-off: files to commit
+      (code, tests, docs, `report_site/`, `versions/v2/…`, `setup.py`), the
+      DB/chain backups made, and the RTD reminder (`…/en/develop/` tracks
+      `develop`). Do not commit. Use Fable if you can. Log your work.
+
 ## Q&A
 
 ### Outliers
@@ -522,6 +878,61 @@ for the bing repo (recommended as a side experiment, not blocking items
 1–4); **B** ignore for now.
 
 **Your answer:** Let's go with A.
+
+Raised by Outliers 2 (writing O3–O9). Each is cited by the prompt that needs
+it; the recommended option is what the prompt assumes if the answer is blank.
+
+**6 — Gate the Chl of the same 51 fits (O3)?** Answer 1 = B says "the `b_bp`
+statistics". The retrieval failed as a whole, though: the retrieved Chl of
+the 51 is 0.01 mg m⁻³ (the `Aph` mirror cases 900–5,900), and it sits in
+the Chl headline, density panel and aggregates today (51 of 15,154 Chl pairs,
+0.34 %). Options: **A** gate `b_bp` only, as written; **B** gate the whole
+fit — `b_bp` *and* Chl — behind the same `b_bp > 1 m⁻¹` rule, with both
+counts in the captions (recommended; one rule, one explanation). Either way
+O7's overlay makes it moot for any matchup whose 2.0.1 fit lands physical.
+
+**Your answer:**
+
+**7 — Where the 2.0 chains come from for the `n_neg_blue` backfill (O4).**
+The spectra live only in the chain NPZs, and the chains are **not** on the
+workstation (HOWTO §5b's text: "only the database came back"; its table row
+`v2/fit_chains/` is aspirational) — they are on the PVC and on Drive
+(`AIOcean:PAB/v2/fit_chains/`, 15,971 files, 18.3 GiB). Options: **A**
+`rclone copy` the whole folder to `$PAB_DATA_DIR/v2/fit_chains/` once
+(recommended: one transfer, also gives O6 and O8 their inputs and makes the
+HOWTO row true; costs 18.3 GB of disk — check `df -h $PAB_DATA_DIR`); **B**
+run the backfill in a pod against the PVC (needs an image rebuild carrying
+O4 and a DB round trip, since the workstation copy is the authoritative one);
+**C** skip the backfill — only new fits carry the quantity (the report then
+cannot show the rate).
+
+**Your answer:**
+
+**8 — What the 2.0.1 re-fit reads as its input spectrum (O5 step 4, O6).**
+Options: **A** the production path on the workstation — re-read the pixel
+from the granule with `--download` (47 granules × ~0.5 GB ≈ 25 GB of cache,
+hours; and NASA may have reprocessed the L2 files since the 2.0 run, so a
+different Rrs would confound a test whose only intended change is the
+prior); **B** the production path in a pod (in-region, but an image rebuild,
+the DB-local dance and a DB round trip; the same reprocessing caveat);
+**C** replay the 2.0 spectrum from its own chain NPZ (`wave`, `Rrs`,
+`varRrs` exactly as `prepare_spectrum` produced them; geometry and Chl seed
+from the DB; minutes; stamped `rrs_source = "L2_AOP:replay:<2.0 fit_id>"` so
+the provenance says so) — recommended: bit-identical input, so 2.0 → 2.0.1
+differs by the prior and nothing else.
+
+**Your answer:**
+
+**9 — Publish the amended v2 database to S3 (O9)?** After O4 and O6 the
+workstation `v2/pab.db` has 15,971 new `fit_results` rows and 51 new fits;
+the public `s3://pab/v2/pab.db` is the 2026-10-07 file (`1e69f6ee…`).
+Options: **A** replace `v2/pab.db`, after uploading the 2026-10-07 file under
+a dated key `v2/pab_2026-10-07.db`, and update HOWTO §5b / run report §6 with
+the new sha (recommended — otherwise the site describes rows the public
+database does not hold); **B** leave `v2/pab.db` at 2026-10-07, publish only
+the tables, and say so on the Downloads page.
+
+**Your answer:**
 
 ### v2
 
@@ -1937,3 +2348,72 @@ emulator-policy slice test; amend §2.5) are in the report §6 and as
 Q&A/Outliers 1–5 with recommendations. Nothing committed — git is yours:
 `versions/v2/high_bbp_outliers.md`, `versions/v2/high_bbp_outliers/*.png`
 and this file.
+
+### 2026-10-18 (v2 Outliers 2 — wrote the seven Outliers prompts O3–O9)
+
+Run with Fable. No code changed, no database opened, nothing under `v1/`
+touched; the only file edited is this one. Read the Q&A/Outliers answers
+(1 = B now + C later, 2 = A as **2.0.1**, 3 = A, 4 = A, 5 = A), the outliers
+report §4–§6, the E-series prompts as the model, and enough code to make the
+prompts name real seams: `pab/fit/{models,run,artifacts}.py`,
+`pab/metrics/compare.py`, `pab/report/{rst,publish,aggregate}.py`,
+`pab/pipeline.py` (the `fit`/`figure` stages and CLI), `pab/db/schema.py`,
+`pab/config.py`, the design doc's *Provenance & versioning*, run report §2.5,
+HOWTO §3/§5b, `nautilus/v2_fit_slice_job.yaml`/`v2_bp_attribution.py`, and on
+the BING/robust side `bing/parameters/standard.py`, `bing/priors/priors.py`,
+`bing/evaluate.py`, `robust/rt/hybrid.py` and `emulator.py`.
+
+The cut: **O3** the `b_bp` gate + the §2.5 correction (no re-fit; retires the
+Chl-rate "clear-water tail" table), **O4** the `n_neg_blue` quantity + a
+backfill driver for the 15,971 existing fits, **O5** the 2.0.1 code (prior
+ceilings as a PAB-side override, `prior_set` stamp, version bump, step-0
+check, a replay seam), **O6** the 51-fit run with verification and an
+Appendix C, **O7** the patch-version overlay that lets the report show the
+2.0.1 values, **O8** the `"ztt"` slice experiment (independent,
+non-blocking), **O9** rebuild/publish/docs close-out. Four new Q&A items
+(6–9): gate Chl of the same fits; where the chains come from; what the
+re-fit reads (replay recommended); publish the amended DB.
+
+What the code reading changed about the plan — worth knowing before O5–O7:
+
+- **The report's version handling would break the moment a 2.0.1 fit
+  exists.** `gather_matchups` filters to `newest_bing_version()`, and
+  `_version_key` already ranks `"2.0.1"` above `"2.0"`, so the site would
+  silently shrink to the 51 re-fitted matchups; `gather_nasa_giop` and
+  `gather_version_pair` have **no** version filter at all (they join `fits`
+  on `model_pair` only), so the 51 would appear twice there. O7 exists for
+  this: a `version_family`/overlay rule keyed on matchup **and pixel**, the
+  design's own cross-version join rule.
+- **The prior override is trivial on the PAB side.** `expb_pow(**kwargs)`
+  does `params.update(kwargs)` into a namedtuple, and `set_standard_priors`
+  takes `p.apriors`/`p.bpriors` verbatim, so `p._replace(apriors=…,
+  bpriors=…)` after the factory call caps `Adg`/`Aph`/`Bnw` with BING
+  untouched; `_prior_bounds` (the LM bounds) reads the same objects, so the
+  warm-start sees the ceiling too. `fits.prior_set` (always
+  `"bing_standard"` today) records it without a schema change.
+- **BING never passes `on_out_of_domain`** to `robust_rt.forward` (two call
+  sites in `bing/evaluate.py`), and the default emulator *does* carry a
+  domain (`load_default().domain.shape == (2, 7)`, checked in `ocean14`), so
+  the `"ztt"` policy would act and O8 is a real test, not a no-op. The pods
+  run with `PYTHONWARNINGS=ignore`, so the `DomainWarning`s BING raises at
+  the initial guess and posterior median were never seen in production.
+- **The chains are not on the workstation.** HOWTO §5b's table lists
+  `$PAB_DATA_DIR/v2/fit_chains/` but its text says only the database came
+  back; the spectra live only in the NPZs (`matchup_pixels` has no Rrs).
+  Hence Q&A 7 (18.3 GiB from Drive) and the replay option in Q&A 8.
+- **Replay beats a granule re-read for this test.** The NPZ holds `wave`,
+  `Rrs`, `varRrs` exactly as `prepare_spectrum` produced them; a re-read
+  would cost ~25 GB of downloads off-cloud or a pod image rebuild, and NASA
+  reprocessing since September could change the Rrs — confounding a test
+  whose only intended change is the prior.
+- Smaller things the prompts encode: `make_fit_id` embeds the version, so
+  2.0.1 rows cannot collide with or overwrite 2.0 rows; chains land at
+  `$PAB_DATA_DIR/fit_chains/` regardless of `--db`, so O6 sets
+  `PAB_DATA_DIR=…/v2`; `--matchups-csv` is the only guard against a
+  15,971-fit re-run under the new version; `test_pab_version_is_2_0` ties
+  `pab_version` to the installed distribution, so the bump needs `pip install
+  -e .`; every BING fit has 11 quantities, 12 after O4; the figure stage's
+  `--figure-version 2.0.1` renders only the new fits and needs no granule
+  (every scene exists).
+
+Nothing committed — git is yours: this file.
