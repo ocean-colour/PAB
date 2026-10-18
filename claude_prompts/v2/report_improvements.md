@@ -443,9 +443,13 @@ Use Fable if you can. Log your work.
 ### Outliers
 
 1. Now, let us dig in on the outliers in the b_bp figure.  Please identify these -- they have satellite b_bp > 1e4.  Create a separate file named "versions/v2/high_bbp_outliers.md" with a report showing a few of these fits and discuss what may have gone wrong.
+If you have any questions or suggestions for next steps, 
+put them under Q&A/Outliers.
 Use Fable if you can. Log your work.
 
 ## Q&A
+
+### Outliers
 
 ### v2
 
