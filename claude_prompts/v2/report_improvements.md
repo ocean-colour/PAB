@@ -771,7 +771,7 @@ recorded in the HOWTO backup paragraph by E1b (recommended); **B** still run
 a full-hash `rclone check` from a pod (the job's own check was
 `--size-only`); **C** re-run the job anyway.
 
-**Your answer:**
+**Your answer:** A
 
 ## Logs
 
