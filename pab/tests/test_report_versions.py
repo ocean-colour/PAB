@@ -202,7 +202,9 @@ def test_a_v1_sharing_no_matchup_is_logged(caplog, tmp_path):
 
 # -- the retrieval-failure note ----------------------------------------------
 def test_failure_note_counts_non_physical_bbp(tmp_path):
-    """0.33 % of real 2.0 fits return b_bp > 1 m^-1; the report must say so."""
+    """0.33 % of real 2.0 fits return b_bp > 1 m^-1; the report must say so --
+    and, since O3 (Q&A/Outliers 1 = B), that they are *excluded* from the
+    b_bp statistics, with the corrected reading in place of the Chl-rate table."""
     v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3))
     with Store.open(":memory:") as store:
         _v2_store(store, bbps=(1e-3, 5.0e4))  # the second fit is non-physical
@@ -211,7 +213,51 @@ def test_failure_note_counts_non_physical_bbp(tmp_path):
         assert "1 of 2" in out
         # and that 1.0 produced none of them, which is what makes it 2.0's
         assert "1.0 produce 0 such values" in out
-        assert "left in" in out  # not silently filtered
+        # gated, not left in: the note says so with the computed clause, and
+        # the b_bp stats line is built from the gated frame (n = 1) while the
+        # Chl line is not gated (n = 2; Q&A/Outliers 6 = A)
+        assert "**excluded**" in out and "left in" not in out
+        gate = "1 failed retrieval (50.00 %, ``b_bp`` > 1 m⁻¹) excluded"
+        assert gate in out
+        assert "- **b_bp(700 nm)** — n = 1; median 2.0/1.0 ratio = 0.5" in out
+        assert "- **chlorophyll** — n = 2;" in out
+        assert "n = 2; median 2.0/1.0 ratio = 1.2" in out
+        assert "chlorophyll of the same fits is not gated" in out
+        # the "clear-water tail" misreading and its retrieved-Chl rate table
+        # are gone, replaced by the corrected reading and the pointer
+        assert "Rate by retrieved chlorophyll" not in out
+        assert "clear-water tail" not in out.replace("not a clear-water tail", "")
+        assert not hasattr(rst, "_runaway_regime_note")
+        assert not hasattr(rst, "_RUNAWAY_CHL_EDGES")
+        assert "not a clear-water tail" in out
+        assert "negative* blue ``Rrs``" in out
+        assert "``Bnw`` prior ceiling of 10⁵ m⁻¹" in out
+        assert "physical basin with a *better* χ²" in out
+        assert "2.0.1" in out and "pending" in out
+        assert (
+            "https://github.com/ocean-colour/PAB/blob/main/versions/v2/"
+            "high_bbp_outliers.md" in out
+        )
+        # the float Chl under the failed fit, computed from this store
+        # (every seeded profile has chla = 0.1)
+        assert "median Chl of 0.10 mg m⁻³, against 0.10 for the population" in out
+
+
+def test_failure_note_without_a_store_still_explains(tmp_path):
+    """The note's float-Chl numbers need the store; without one the paragraph
+    stands on its own rather than quoting NaN."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "matchup_id": ["A", "B"],
+            "bbp700_v1": [2e-3, 4e-3],
+            "bbp700_v2": [1e-3, 5e4],
+        }
+    )
+    out = rst._version_failure_note(df)
+    assert "**excluded**" in out and "nan" not in out.lower()
+    assert "median Chl of" not in out and "high_bbp_outliers.md" in out
 
 
 def test_no_failure_note_when_every_fit_is_physical(tmp_path):

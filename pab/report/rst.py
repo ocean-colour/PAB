@@ -123,6 +123,10 @@ def summary_page(store, *, pab_version: str | None = None, compare_db=None) -> s
         "AND (? IS NULL OR pab_version = ?)",
         (_bing_version, _bing_version),
     )[0]["n"]
+    # The b_bp headline is computed on the gated frame (Q&A/Outliers 1 = B);
+    # the Chl headline is not gated (Q&A/Outliers 6 = A) and `gate_bbp` only
+    # touches `bbp_bing`, so one gated frame serves both.
+    df, bbp_clause = _gated(df, "bbp_bing")
     bbp = (
         compare.log_comparison(df.get("bbp_bing"), df.get("bbp_argo"))
         if len(df)
@@ -180,7 +184,8 @@ def summary_page(store, *, pab_version: str | None = None, compare_db=None) -> s
         out.append(
             f"- n = {bbp['n']}; median sat/float ratio = "
             f"{_fmt(bbp['median_ratio'])}; Spearman ρ = {_fmt(bbp['spearman'])}; "
-            f"log10 bias = {_fmt(bbp['log_bias'])}, RMS = {_fmt(bbp['log_rms'])}.\n"
+            f"log10 bias = {_fmt(bbp['log_bias'])}, RMS = {_fmt(bbp['log_rms'])}. "
+            f"{bbp_clause} — see the :doc:`Methods <methods>` page.\n"
         )
     else:
         out.append("- (no matchups with a BING fit yet)\n")
@@ -190,7 +195,7 @@ def summary_page(store, *, pab_version: str | None = None, compare_db=None) -> s
             f"- n = {chl['n']}; median sat/float ratio = "
             f"{_fmt(chl['median_ratio'])}; Spearman ρ = {_fmt(chl['spearman'])}.\n"
         )
-    nasa_df = compare.gather_nasa_giop(store)
+    nasa_df, nasa_clause = _gated(compare.gather_nasa_giop(store), "bbp_bing")
     nasa = (
         compare.log_comparison(nasa_df["bbp_700_nasa"], nasa_df["bbp_bing"])
         if len(nasa_df)
@@ -200,7 +205,8 @@ def summary_page(store, *, pab_version: str | None = None, compare_db=None) -> s
         out.append(_heading("BING vs NASA GIOP (b_bp)", "-"))
         out.append(
             f"- n = {nasa['n']}; median NASA(700 nm)/BING(700 nm) ratio = "
-            f"{_fmt(nasa['median_ratio'])}; Spearman ρ = {_fmt(nasa['spearman'])}. "
+            f"{_fmt(nasa['median_ratio'])}; Spearman ρ = {_fmt(nasa['spearman'])}; "
+            f"{nasa_clause}. "
             "NASA's ``b_bp`` is shifted from 442 nm to 700 nm with its own "
             "per-pixel slope — see the :doc:`comparisons <comparisons>` and "
             ":doc:`Methods <methods>` pages for the formula and its caveat.\n"
@@ -240,6 +246,7 @@ def _version_headline(store, compare_db) -> str:
         return ""
     if not len(df):
         return ""
+    df, bbp_clause = _gated(df, "bbp700_v2")
     lines = []
     for key, label in (("bbp700", "b_bp(700 nm)"), ("chl", "chlorophyll")):
         c1, c2 = f"{key}_v1", f"{key}_v2"
@@ -247,9 +254,10 @@ def _version_headline(store, compare_db) -> str:
             continue
         st = compare.log_comparison(df[c2], df[c1])
         if st.get("n"):
+            tail = f"; {bbp_clause}" if key == "bbp700" else ""
             lines.append(
                 f"- **{label}** — median 2.0/1.0 ratio = "
-                f"{_fmt(st['median_ratio'])} (n = {st['n']:,})\n"
+                f"{_fmt(st['median_ratio'])} (n = {st['n']:,}{tail})\n"
             )
     if not lines:
         return ""
@@ -277,6 +285,9 @@ def interactive_figures(df, *, artifact_url_col: str = FIGURE_URL_COL) -> str:
     """
     if not len(df):
         return ""
+    # The gate applies to the interactive page too: the b_bp scatter and the
+    # map are b_bp figures; the Chl scatter reads an untouched column.
+    df, bbp_clause = _gated(df, "bbp_bing")
     try:
         import numpy as np
 
@@ -298,7 +309,7 @@ def interactive_figures(df, *, artifact_url_col: str = FIGURE_URL_COL) -> str:
         "Satellite-vs-float ``b_bp`` (700 nm) and chlorophyll, plus the matchup "
         "map. **Hover** a point for its values; **tap** a scatter point to open "
         "that matchup's fit figure. Per-matchup detail is reached here, not as "
-        "individual pages.\n"
+        f"individual pages. ``b_bp``: {bbp_clause}.\n"
     ]
     out.append(interactive.raw_html(scatter))
     if chl is not None:
@@ -464,6 +475,10 @@ def nasa_giop_section(
     df = compare.gather_nasa_giop(store)
     if not len(df):
         return ""
+    # BING's runaways are gated out of this comparison too (the NASA side has
+    # no such failure mode); the note's continuity ratio, the stats line and
+    # the panel all read the gated frame, so one count describes all three.
+    df, bbp_clause = _gated(df, "bbp_bing")
     stats = compare.log_comparison(df["bbp_700_nasa"], df["bbp_bing"])
 
     out = [_heading("BING vs NASA GIOP (L2 IOP)", "-"), ""]
@@ -482,7 +497,7 @@ def nasa_giop_section(
             f"(IQR {_fmt(stats['ratio_iqr_lo'])}–{_fmt(stats['ratio_iqr_hi'])}); "
             f"Spearman ρ = {_fmt(stats['spearman'])}; "
             f"log10 offset = {_fmt(stats['log_bias'])}, "
-            f"RMS = {_fmt(stats['log_rms'])}.\n"
+            f"RMS = {_fmt(stats['log_rms'])}; BING {bbp_clause}.\n"
         )
 
     if outdir is not None and len(df) > max_interactive:
@@ -492,9 +507,9 @@ def nasa_giop_section(
             dest = Path(outdir) / "_static" / "comparisons"
             dest.mkdir(parents=True, exist_ok=True)
             # Density-plus-dots (Q&A/v2 Q5), its own hue so the page reads as
-            # three different comparisons. The 99 % clip keeps the runaway
-            # BING values from setting the axes; they stay in the statistics
-            # and are counted in the title and caption (Q6).
+            # three different comparisons. The frame is gated, so the BING
+            # runaways are out of the panel and its statistics alike; the
+            # caption says how many (Q&A/Outliers 1 = B).
             population.density_scatter(
                 df,
                 "bbp_700_nasa",
@@ -510,7 +525,7 @@ def nasa_giop_section(
                 "   NASA GIOP ``b_bp`` shifted to 700 nm vs BING ``b_bp`` "
                 "(700 nm), log-log; axes span the central 99 % of the values. "
                 + _density_caption(df, "bbp_700_nasa", "bbp_bing")
-                + "\n"
+                + f" BING {bbp_clause}.\n"
             )
         except Exception:  # noqa: BLE001 — a bad panel must not break the build
             pass
@@ -599,25 +614,30 @@ def version_section(
         ("bbp700", "b_bp(700 nm)", "m$^{-1}$", "m^-1"),
         ("chl", "chlorophyll", "mg m$^{-3}$", "mg m^-3"),
     )
+    # `df` stays the RAW pair frame: the failure note counts the runaways from
+    # it, and every b_bp helper below gates for itself (once, on the raw frame,
+    # so each quotes the same count). The stats lines use this gated copy.
+    gated, bbp_clause = _gated(df, "bbp700_v2")
     for key, label, _unit, _plain in pairs:
         c1, c2 = f"{key}_v1", f"{key}_v2"
-        if c1 not in df or c2 not in df:
+        if c1 not in gated or c2 not in gated:
             continue
-        st = compare.log_comparison(df[c2], df[c1])
+        st = compare.log_comparison(gated[c2], gated[c1])
         if not st.get("n"):
             continue
+        tail = f"; {bbp_clause}" if key == "bbp700" else ""
         out.append(
             f"- **{label}** — n = {st['n']:,}; median 2.0/1.0 ratio = "
             f"{_fmt(st['median_ratio'])} "
             f"(IQR {_fmt(st['ratio_iqr_lo'])}–{_fmt(st['ratio_iqr_hi'])}); "
             f"Spearman ρ = {_fmt(st['spearman'])}; "
             f"log10 offset = {_fmt(st['log_bias'])}, "
-            f"RMS = {_fmt(st['log_rms'])}.\n"
+            f"RMS = {_fmt(st['log_rms'])}{tail}.\n"
         )
     out.append(_version_ratio_by_level(df))
     if outdir is not None:
         out.append(_ratio_figure_block(df, outdir))
-    out.append(_version_failure_note(df))
+    out.append(_version_failure_note(df, store=store))
     out.append(
         "(The Chl figures are also the ``A_ph`` figures: BING's chlorophyll is "
         "a fixed rescaling of the fitted phytoplankton absorption amplitude, "
@@ -656,10 +676,37 @@ def version_section(
     return "\n".join(x for x in out if x)
 
 
-#: Above this ``b_bp(700 nm)`` a retrieval is not a measurement of seawater:
-#: open-ocean particulate backscatter at 700 nm spans roughly 1e-4 to 1e-1
-#: m^-1, so a value above 1 is a failed fit, not a bright scene.
-BBP_IMPLAUSIBLE = 1.0
+#: The runaway gate lives in :mod:`pab.metrics.compare` (with the gate helpers
+#: that every ``b_bp`` statistic goes through); re-exported here so the old
+#: ``rst.BBP_IMPLAUSIBLE`` import keeps working.
+BBP_IMPLAUSIBLE = compare.BBP_IMPLAUSIBLE
+
+
+def _gate_clause(n_excluded: int, n_total: int) -> str:
+    """``"51 failed retrievals (0.32 %, ``b_bp`` > 1 m⁻¹) excluded"`` -- the
+    clause every gated caption and stats line carries, computed from the
+    counts (``n_total`` = the values the gate looked at), never quoted."""
+    pct = 100.0 * n_excluded / n_total if n_total else 0.0
+    noun = "failed retrieval" if n_excluded == 1 else "failed retrievals"
+    return (
+        f"{n_excluded:,} {noun} ({pct:.2f} %, ``b_bp`` > "
+        f"{compare.BBP_IMPLAUSIBLE:g} m⁻¹) excluded"
+    )
+
+
+def _gated(df, col: str = "bbp_bing"):
+    """:func:`~pab.metrics.compare.gate_bbp` on ``df`` plus the reader-facing
+    clause: ``(df_gated, clause)``. Call it **once per frame**, on the raw
+    frame -- a second pass sees nothing left to exclude and would say "0"."""
+    import numpy as np
+
+    n_total = (
+        int(np.isfinite(np.asarray(df[col], dtype=float)).sum())
+        if col in df.columns
+        else 0
+    )
+    gated, n_excluded = compare.gate_bbp(df, col)
+    return gated, _gate_clause(n_excluded, n_total)
 
 
 def _version_ratio_by_level(df) -> str:
@@ -676,6 +723,7 @@ def _version_ratio_by_level(df) -> str:
 
     if "bbp700_v1" not in df or "bbp700_v2" not in df:
         return ""
+    df, _ = _gated(df, "bbp700_v2")  # the runaways would sit in a tercile
     v1 = np.asarray(df["bbp700_v1"], dtype=float)
     v2 = np.asarray(df["bbp700_v2"], dtype=float)
     ok = np.isfinite(v1) & np.isfinite(v2) & (v1 > 0) & (v2 > 0)
@@ -735,6 +783,7 @@ def _ratio_figure_block(df, outdir) -> str:
         return ""
     if "bbp700_v1" not in df or "bbp700_v2" not in df:
         return ""
+    df, bbp_clause = _gated(df, "bbp700_v2")
     v1 = np.asarray(df["bbp700_v1"], dtype=float)
     if np.isfinite(v1).sum() < 200:  # the curve needs populated bins
         return ""
@@ -758,124 +807,110 @@ def _ratio_figure_block(df, outdir) -> str:
         "interquartile band. The curve rises from ~0.02 in the clearest water "
         "to ~0.95 in the most scattering: the inelastic correction is large "
         "where the elastic signal is weak and vanishes where it is strong. "
-        "Bins with fewer than 20 matchups are not plotted.\n"
+        f"Bins with fewer than 20 matchups are not plotted; {bbp_clause}.\n"
     )
 
-def _version_failure_note(df) -> str:
-    """Count and report 2.0 fits that returned a non-physical ``b_bp``.
+def _float_chl_medians(store, matchup_ids, runaway_ids):
+    """``(median float Chl of the runaway matchups, median over all)`` from
+    ``mld_summary``, or ``(nan, nan)`` without a store -- so the note can say
+    what water the failed fits sit over with this build's numbers, not the
+    investigation's."""
+    import numpy as np
 
-    Computed from the frame rather than hard-coded: the point of the note is
-    that the number is checked at every build, so a regression that multiplies
-    these shows up in the report instead of hiding behind a robust median.
-    Returns ``""`` when there are none.
+    if store is None:
+        return float("nan"), float("nan")
+    try:
+        rows = store.query(
+            "SELECT m.matchup_id, ms.chla FROM matchups m "
+            "JOIN mld_summary ms ON ms.profile_id = m.profile_id"
+        )
+    except Exception:  # noqa: BLE001 — the note must build without the join
+        return float("nan"), float("nan")
+    chl = {r["matchup_id"]: r["chla"] for r in rows if r["chla"] is not None}
+    every = np.asarray([chl[m] for m in matchup_ids if m in chl], dtype=float)
+    bad = np.asarray([chl[m] for m in runaway_ids if m in chl], dtype=float)
+
+    def med(a):
+        return float(np.median(a)) if a.size else float("nan")
+
+    return med(bad), med(every)
+
+
+def _version_failure_note(df, store=None) -> str:
+    """Count and explain the 2.0 fits that returned a non-physical ``b_bp``.
+
+    Computed from the **raw** pair frame rather than hard-coded: the number is
+    checked at every build, so a regression that multiplies these shows up in
+    the report instead of hiding behind a robust median. The explanation is
+    the corrected reading of ``versions/v2/high_bbp_outliers.md`` (2026-10-18;
+    it replaced a retrieved-Chl rate table that read the failed fits' own Chl
+    as "clear water"): marginal-sea spectra with a depressed or negative blue
+    ``Rrs``, the LM warm-start delivered to the ``Bnw`` prior ceiling, a better
+    physical basin in every re-fitted case. ``store`` lets the note quote the
+    float Chl under the failed fits from this build. Returns ``""`` when there
+    are none.
     """
     import numpy as np
 
     if "bbp700_v2" not in df:
         return ""
     v2 = np.asarray(df["bbp700_v2"], dtype=float)
-    bad2 = int(np.count_nonzero(np.isfinite(v2) & (v2 > BBP_IMPLAUSIBLE)))
+    bad_mask = compare.implausible_bbp(v2)
+    bad2 = int(bad_mask.sum())
     if not bad2:
         return ""
     n = int(np.isfinite(v2).sum())
     bits = [
         f"**Retrieval failures.** {bad2} of {n:,} 2.0 fits "
         f"({bad2 / n * 100:.2f} %) return ``b_bp(700 nm)`` above "
-        f"{BBP_IMPLAUSIBLE:g} m⁻¹, which is not a possible value for seawater "
-        "(the open ocean spans roughly 1e-4 to 1e-1 m⁻¹); the largest is "
-        f"{np.nanmax(v2):.3g} m⁻¹."
+        f"{compare.BBP_IMPLAUSIBLE:g} m⁻¹, which is not a possible value for "
+        "seawater (the open ocean spans roughly 1e-4 to 1e-1 m⁻¹); the largest "
+        f"is {np.nanmax(v2):.3g} m⁻¹."
     ]
     if "bbp700_v1" in df:
         v1 = np.asarray(df["bbp700_v1"], dtype=float)
-        bad1 = int(np.count_nonzero(np.isfinite(v1) & (v1 > BBP_IMPLAUSIBLE)))
+        bad1 = int(compare.implausible_bbp(v1).sum())
         bits.append(
             f" The same matchups fitted in 1.0 produce {bad1} such value"
             f"{'' if bad1 == 1 else 's'} (maximum {np.nanmax(v1):.3g} m⁻¹), so "
             "these are specific to the 2.0 configuration."
         )
     bits.append(
-        " They are **left in** every statistic on this page — the medians and "
-        "Spearman ρ are rank-based and barely move — and are flagged here "
-        "rather than filtered, so the failure rate stays visible.\n"
+        f" They are **excluded** from every ``b_bp`` statistic and figure on "
+        f"this site ({_gate_clause(bad2, n)}); the chlorophyll of the same fits "
+        "is not gated, the gallery still shows one of them, and the "
+        "downloadable table keeps the raw values with a "
+        "``bbp_bing_implausible`` flag.\n"
     )
-    bits.append(_runaway_regime_note(df))
+    chl_bad, chl_all = (float("nan"), float("nan"))
+    if "matchup_id" in df:
+        ids = list(df["matchup_id"])
+        chl_bad, chl_all = _float_chl_medians(
+            store, ids, [m for m, b in zip(ids, bad_mask, strict=True) if b]
+        )
+    water = (
+        f" (the floats under them report a median Chl of {chl_bad:.2f} mg m⁻³, "
+        f"against {chl_all:.2f} for the population)"
+        if np.isfinite(chl_bad) and np.isfinite(chl_all)
+        else ""
+    )
+    bits.append(
+        "\n**What they are.** These are not a clear-water tail — their own "
+        "retrieved chlorophyll of ~0.01 mg m⁻³ is part of the failed fit. They "
+        "are marginal-sea spectra (the Baltic above all, the tropical Atlantic, "
+        "the Arabian Sea) with a depressed or *negative* blue ``Rrs`` at "
+        f"400–450 nm{water}. On such a spectrum the Levenberg–Marquardt "
+        "warm-start delivers the walkers to the ``Bnw`` prior ceiling of "
+        "10⁵ m⁻¹, where ``b_b ≫ a`` and the reflectance saturates, and the "
+        "chains never leave it — although a physical basin with a *better* χ² "
+        "and a ``b_bp`` within a factor of ~2 of the float exists in every "
+        "case re-fitted so far. A re-fit of these fits under ``pab_version`` "
+        "2.0.1, with physical ceilings on the priors, is pending; until then "
+        "they are gated, not corrected. The full investigation is "
+        f"`high_bbp_outliers.md <{compare.BBP_OUTLIERS_URL}>`__.\n"
+    )
     return "".join(bits)
 
-
-#: Retrieved-Chl bin edges for the runaway-rate table. Chosen to straddle the
-#: ultra-oligotrophic range where the failures live; the rates are computed, so
-#: a shift in the data changes the table rather than falsifying it.
-_RUNAWAY_CHL_EDGES = (0.0, 0.01, 0.02, 0.05, 0.1, 0.3, float("inf"))
-
-
-def _runaway_regime_note(df) -> str:
-    """Where the non-physical retrievals live, as a rate by retrieved Chl.
-
-    The investigation behind this (Prompt 8 Q1) ruled out a node, granule or
-    sampler cause — the failures spread over 47 distinct granules with every
-    convergence flag set and viewing geometry indistinguishable from the rest.
-    What does separate them is the regime, and that makes them the extreme
-    tail of the clear-water result above rather than a separate defect. Worth
-    a table rather than a sentence, because the rate is zero over most of the
-    range and a single average would hide that.
-    """
-    import numpy as np
-
-    if "chl_v2" not in df or "bbp700_v2" not in df:
-        return ""
-    chl = np.asarray(df["chl_v2"], dtype=float)
-    bbp = np.asarray(df["bbp700_v2"], dtype=float)
-    ok = np.isfinite(chl) & np.isfinite(bbp)
-    if ok.sum() < 500:
-        return ""
-    chl, bbp = chl[ok], bbp[ok]
-    bad = bbp > BBP_IMPLAUSIBLE
-    if not bad.any():
-        return ""
-    rows = []
-    for lo, hi in zip(_RUNAWAY_CHL_EDGES[:-1], _RUNAWAY_CHL_EDGES[1:], strict=False):
-        m = (chl >= lo) & (chl < hi)
-        if not m.sum():
-            continue
-        label = f"{lo:g}–{hi:g}" if np.isfinite(hi) else f"> {lo:g}"
-        if lo == 0:
-            label = f"< {hi:g}"
-        rows.append((label, int(m.sum()), int((m & bad).sum())))
-    if len(rows) < 3:
-        return ""
-    out = [
-        "\n**They are not scattered at random — they are the clear-water tail.** "
-        "The failures spread over many granules, carry every convergence flag "
-        "set, and have viewing geometry, separation and spectrum count "
-        "indistinguishable from the rest; what separates them is the regime. "
-        "Rate by retrieved chlorophyll:\n",
-        "",
-        ".. list-table::",
-        "   :header-rows: 1",
-        "",
-        "   * - Chl [mg m⁻³]",
-        "     - matchups",
-        "     - non-physical",
-        "     - rate",
-    ]
-    for label, n, nb in rows:
-        out += [
-            f"   * - {label}",
-            f"     - {n:,}",
-            f"     - {nb}",
-            f"     - {nb / n * 100:.2f} %",
-        ]
-    out.append("")
-    out.append(
-        "So the same mechanism that makes the inelastic correction large in "
-        "clear water also makes the retrieval ill-conditioned there, and in a "
-        "small number of cases it fails outright. **No single-variable filter "
-        "isolates them**: a χ² cut that catches most of them flags fourteen "
-        "times as many sound fits, and so does a chlorophyll cut. They are the "
-        "tail of a continuum, not a separable population, which is why they "
-        "are reported rather than removed.\n"
-    )
-    return "\n".join(out)
 
 def _version_static_figures(df, outdir) -> str:
     """Static 2.0-vs-1.0 ``bbp700``/``chl`` scatters for the large-N page."""
@@ -886,6 +921,7 @@ def _version_static_figures(df, outdir) -> str:
     dest = Path(outdir) / "_static" / "comparisons"
     dest.mkdir(parents=True, exist_ok=True)
     figs: list[tuple[str, str]] = []
+    df, bbp_clause = _gated(df, "bbp700_v2")
     # Two labels per row, deliberately: `mpl` is Matplotlib mathtext for the
     # axis, `rst` is what goes in the caption. Reusing one put a literal
     # "$b_{bp}$" into the rendered page.
@@ -898,11 +934,10 @@ def _version_static_figures(df, outdir) -> str:
             continue
         try:
             # Same hues as the satellite-vs-float panels above (F4), so the
-            # page reads as one set. A handful of 2.0 fits return non-physical
-            # values (see the retrieval-failure note in the section text);
-            # the 99 % clip keeps them from setting the axes, the off-scale
-            # count is printed in the panel and caption, and they stay in
-            # the statistics.
+            # page reads as one set. The 2.0 fits that returned a
+            # non-physical b_bp (the retrieval-failure note in the section
+            # text) are gated out of the b_bp panel and its statistics; the
+            # caption carries the count. The Chl panel is not gated.
             population.density_scatter(
                 df,
                 c2,
@@ -917,7 +952,8 @@ def _version_static_figures(df, outdir) -> str:
                     f"v2_vs_v1_{key}.png",
                     f"2.0 (inelastic) vs 1.0 (elastic) {rst_label}, log-log, "
                     "same matchup and same pixel. "
-                    + _density_caption(df, c2, c1),
+                    + _density_caption(df, c2, c1)
+                    + (f" {bbp_clause}." if key == "bbp700" else ""),
                 )
             )
         except Exception:  # noqa: BLE001 — a bad panel must not break the build
@@ -1010,10 +1046,14 @@ def _static_comparison_figures(df, outdir) -> str:
     dest = Path(outdir) / "_static" / "comparisons"
     dest.mkdir(parents=True, exist_ok=True)
     figs: list[tuple[str, str]] = []
-    # Density-plus-dots panels (Q&A/v2 Q5): the 51 non-physical BING `b_bp`
-    # retrievals and the low-end pile-up at the prior floor no longer set the
-    # axes (the 99 % clip), the dense core shows its structure instead of one
-    # blob, and each quantity has its own hue.
+    # The gate (Q&A/Outliers 1 = B): the non-physical BING `b_bp` retrievals
+    # are NaN in this frame, so the b_bp panel, both maps and their statistics
+    # never see them, and every caption says how many were excluded. The Chl
+    # panel reads an untouched column (Q&A/Outliers 6 = A).
+    df, bbp_clause = _gated(df, "bbp_bing")
+    # Density-plus-dots panels (Q&A/v2 Q5): the low-end pile-up at the prior
+    # floor does not set the axes (the 99 % clip), the dense core shows its
+    # structure instead of one blob, and each quantity has its own hue.
     try:
         population.density_scatter(
             df,
@@ -1029,7 +1069,8 @@ def _static_comparison_figures(df, outdir) -> str:
                 "bbp_scatter.png",
                 "Satellite vs float ``b_bp`` (700 nm), log-log; axes span the "
                 "central 99 % of the values. "
-                + _density_caption(df, "bbp_bing", "bbp_argo"),
+                + _density_caption(df, "bbp_bing", "bbp_argo")
+                + f" {bbp_clause}.",
             )
         )
     except Exception:  # noqa: BLE001 — a bad panel must not break the build
@@ -1074,13 +1115,24 @@ def _static_comparison_figures(df, outdir) -> str:
             df, "bbp_bing", "bbp_argo", vmax=vmax
         )
         pct = f"{100.0 * sat / n_ratio:.1f} %" if n_ratio else "0 %"
+        # The grey dots as the map draws them: positioned, but no finite
+        # ratio (a retracted position is on neither count).
+        import numpy as np
+
+        positioned = np.isfinite(np.asarray(df["longitude"], dtype=float)) & np.isfinite(
+            np.asarray(df["latitude"], dtype=float)
+        )
+        n_grey = int(
+            (positioned & ~np.isfinite(population.log_ratio(df, "bbp_bing", "bbp_argo"))).sum()
+        )
         figs.append(
             (
                 "matchup_map.png",
                 f"Matchup locations (one dot per matchup); {scale}. The "
                 f"{sat:,} matchups ({pct} of the {n_ratio:,} with a ratio) at "
-                f"or beyond ±{vmax:g} dex saturate to the end colours. "
-                "Matchups without a float ``b_bp`` are grey.",
+                f"or beyond ±{vmax:g} dex saturate to the end colours. The "
+                f"{n_grey:,} matchups without a ratio (no float ``b_bp``, or a "
+                f"failed retrieval) are grey; {bbp_clause}.",
             )
         )
     except Exception:  # noqa: BLE001
@@ -1105,7 +1157,7 @@ def _static_comparison_figures(df, outdir) -> str:
                 f"{len(cells) - len(drawn)} sparser cells left out). The same "
                 f"scale as the dot map: {scale}; saturated (median at or "
                 f"beyond ±{vmax:g} dex): {sat_cells} of the {len(drawn)} "
-                "drawn cells.",
+                f"drawn cells. {bbp_clause}.",
             )
         )
     except Exception:  # noqa: BLE001
@@ -1744,7 +1796,8 @@ def aggregates_page(store, *, sortable: bool = True) -> str:
     """
     from pab.report import aggregate as agg
 
-    df = compare.add_strata(compare.gather_matchups(store))
+    # Every table below is a b_bp statistic, so the frame is gated once here.
+    df, bbp_clause = _gated(compare.add_strata(compare.gather_matchups(store)))
     out = [_heading("Aggregate results"), ""]
     out.append(
         "Population statistics binned by region and season, and an equal-area "
@@ -1754,6 +1807,10 @@ def aggregates_page(store, *, sortable: bool = True) -> str:
     if not len(df):
         out.append("(no matchups yet)\n")
         return "\n".join(out)
+    out.append(
+        f"All tables compare satellite and float ``b_bp`` (700 nm); {bbp_clause} "
+        "(see the :doc:`Methods <methods>` page).\n"
+    )
     out.append(_heading("By region", "-"))
     out.append(_table_block(agg.aggregate_by(df, "region"), sortable=sortable))
     out.append(_heading("By season", "-"))
@@ -1828,6 +1885,38 @@ def _methods_ceiling_sentence(store) -> str:
     return f"{lead} — {_NASA_BBP_CEILING_CAVEAT}"
 
 
+def _methods_failed_retrievals(store) -> str:
+    """The Methods page's "Failed retrievals" paragraph: the gate, the count
+    computed from ``store`` (deferred to the Comparisons page without one),
+    what is and is not gated, and the pointer to the investigation."""
+    count = ""
+    if store is not None:
+        try:
+            df = compare.gather_matchups(store)
+            if len(df):
+                _, clause = _gated(df, "bbp_bing")
+                count = f" In this release that is {clause}."
+        except Exception:  # noqa: BLE001 — the page must build without the frame
+            pass
+    if not count:
+        count = " The *Comparisons* page reports how many fits this excludes in this release."
+    return (
+        "**Failed retrievals.** A BING ``b_bp`` (700 nm) above "
+        f"{compare.BBP_IMPLAUSIBLE:g} m⁻¹ is not a measurement of seawater (the "
+        "open ocean spans roughly 1e-4 to 1e-1 m⁻¹) but an optimiser failure: "
+        "the fit ran to the prior ceiling on a spectrum with a depressed or "
+        "negative blue ``Rrs``. Such fits are **excluded from every ``b_bp`` "
+        "statistic and figure** on this site — the headline, the density "
+        "panels, both maps, the aggregates and the NASA-GIOP and 1.0-vs-2.0 "
+        "comparisons — and each caption says how many." + count + " The "
+        "chlorophyll of the same fits is not gated, the figure gallery shows "
+        "one such fit on purpose, and the downloadable summary table keeps the "
+        "raw values with a 0/1 ``bbp_bing_implausible`` column so a reader can "
+        "apply or lift the gate. What went wrong and why is in "
+        f"`high_bbp_outliers.md <{compare.BBP_OUTLIERS_URL}>`__.\n"
+    )
+
+
 def methods_page(*, compare_db=None, store=None) -> str:
     """Reader-facing methods/context page: data, protocol, retrieval, how to read
     the figures and metrics, caveats, and references.
@@ -1883,6 +1972,7 @@ def methods_page(*, compare_db=None, store=None) -> str:
         "is a genuine retrieval compared against the in-situ value. An independent "
         "**OC4** band-ratio Chl is shown as a cross-check when available.\n"
     )
+    out.append(_methods_failed_retrievals(store))
 
     out.append(_heading("Retrieval configuration (2.0) & the two databases", "-"))
     out.append(V2_CHANGES)

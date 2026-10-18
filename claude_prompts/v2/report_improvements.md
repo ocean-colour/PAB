@@ -454,8 +454,8 @@ Use Fable if you can. Log your work.
 *Seven prompts (O3–O9), to be run **in order on the workstation** (`ocean14`)
 on the `report-improvements` branch; O8 is independent and can run any time
 after the chains are local. The decisions they rely on are **Q&A/Outliers**
-1–5 (answered) and **6–9** (new — answer each before the prompt that cites
-it). The Edits rules carry over: git is the user's; each prompt ends with
+1–9 (all answered 2026-10-18: 6 = A, 7–9 = the recommended options; the
+prompts below are written to those answers). The Edits rules carry over: git is the user's; each prompt ends with
 `ruff check pab` and the named tests green; each logs under **Logs**;
 surprises go in the log, not silently worked around. What is new: **O4 and O6
 write to `$PAB_DATA_DIR/v2/pab.db`** (the live copy, HOWTO §5b), which the
@@ -492,8 +492,8 @@ changed prior set is recorded, no schema change needed.*
       `_version_static_figures`). Do **not** gate `select_representative_fits`
       (the gallery keeps its "non-physical retrieval" pick) or the exported
       tables (raw values stay; add a derived 0/1 column `bbp_bing_implausible`
-      in `gather_matchups` so a reader can filter). Chl of the same fits: per
-      Q&A/Outliers 6 (default if unanswered: gate `b_bp` only).
+      in `gather_matchups` so a reader can filter). Chl of the same fits is **not**
+      gated (Q&A/Outliers 6 = A: gate `b_bp` only).
    2. Wording, computed never hard-coded: every gated caption and stats line
       carries "N failed retrievals (x.xx %, ``b_bp`` > 1 m⁻¹) excluded";
       `_version_failure_note` says excluded instead of "left in"; **delete
@@ -525,7 +525,7 @@ changed prior set is recorded, no schema change needed.*
       work.
 
 4. **O4 — The negative-blue QA count as a `fit_results` quantity
-   (Q&A/Outliers 3 = A; Q&A/Outliers 7 for the chains).**
+   (Q&A/Outliers 3 = A; Q&A/Outliers 7 = A for the chains).**
    1. `pab/fit/run.py`: `BLUE_QA_BAND = (400.0, 450.0)` and a pure
       `rrs_qa_quantities(wave, Rrs) -> list[dict]` returning one quantity
       `n_neg_blue` (value = number of finite bands with `Rrs < 0` and
@@ -546,7 +546,7 @@ changed prior set is recorded, no schema change needed.*
       summary warning), prints the plan under `--dry-run`. This is a QA
       backfill on existing records at the same version — the design's
       documented precedent (the 1.0 Chl-a/CDOM re-ingest) — not a
-      re-analysis. Chains: per Q&A/Outliers 7 (recommended: `rclone copy
+      re-analysis. Chains: Q&A/Outliers 7 = A (`rclone copy
       AIOcean:PAB/v2/fit_chains/ $PAB_DATA_DIR/v2/fit_chains/ --transfers 8`,
       15,971 files / 18.3 GiB, then `rclone check … --one-way`; this also
       makes HOWTO §5b's workstation row true — check `df -h` first). Write
@@ -571,7 +571,7 @@ changed prior set is recorded, no schema change needed.*
       Fable if you can. Log your work.
 
 5. **O5 — The 2.0.1 configuration: physical prior ceilings, step-0 check,
-   replay seam (Q&A/Outliers 2 = A; Q&A/Outliers 8).** Code and tests only —
+   replay seam (Q&A/Outliers 2 = A; Q&A/Outliers 8 = C).** Code and tests only —
    nothing fitted, no DB write.
    1. `FitConfig` gains `bbp600_max: float | None = 0.1`, `adg_max: float |
       None = 10.0`, `aph_max: float | None = 10.0` (m⁻¹; `None` = BING's
@@ -605,7 +605,7 @@ changed prior set is recorded, no schema change needed.*
       `fit_spectrum` logs a **warning** when it is false (never fails) and
       `FitSpectrumResult` carries the dict, so O6 can tabulate it from the
       NPZs as well.
-   4. Replay seam (only if Q&A/Outliers 8 = C): `build_fits(…, spectra=None)`
+   4. Replay seam (Q&A/Outliers 8 = C): `build_fits(…, spectra=None)`
       and `fit_matchup(…, spectrum=None)` accept a callable `inp -> (wave,
       Rrs, Rrs_unc)`; when given, **no granule is opened**.
       `pab.fit.replay.spectrum_from_chains(root)` returns such a callable: it
@@ -614,7 +614,7 @@ changed prior set is recorded, no schema change needed.*
       basename and returns `wave`, `Rrs`, `sqrt(varRrs)` — the spectrum the
       2.0 fit saw. `rrs_source` is stamped `"L2_AOP:replay:<2.0 fit_id>"`.
       CLI: `--replay-chains DIR` on the `fit` stage (`pab/pipeline.py`; HOWTO
-      §3 row). If Q&A 8 = A or B, skip this step.
+      §3 row).
    5. `fit_fig._config_from_row` must still rebuild a config from a row (it
       needs no priors; test that a ceiling `prior_set` string round-trips).
       Tests for 1–4 in `test_fit.py`: `_prior_bounds` returns the `log10`
@@ -622,7 +622,7 @@ changed prior set is recorded, no schema change needed.*
       callable reproduces the NPZ spectrum, `build_fits` with `spectra=` never
       calls the opener. Use Fable if you can. Log your work.
 
-6. **O6 — Re-fit the 51 under 2.0.1 (the run; Q&A/Outliers 8).** On the
+6. **O6 — Re-fit the 51 under 2.0.1 (the run; Q&A/Outliers 8 = C).** On the
    workstation; ~51 × 3 min of CPU over `--jobs 8` plus the one-time JAX
    compile — under an hour. The v2 database is **written** here.
    1. Pre-flight: O5 in the working tree, `pytest pab/tests -q` green,
@@ -645,12 +645,7 @@ changed prior set is recorded, no schema change needed.*
       puts the new NPZs in `v2/fit_chains/`; the `--matchups-csv` is the only
       thing between this command and a 15,971-fit re-run under 2.0.1 (the 2.0
       `fit_id`s do not block the 2.0.1 ones) — the log line "fit: selection
-      restricts to 51" must appear before anything is fitted. (Q&A 8 = A:
-      drop `--replay-chains`, add `--download --cache-dir
-      $PAB_DATA_DIR/granules`, budget ~25 GB and hours; = B: write
-      `nautilus/v201_refit_job.yaml` on the `v2_fit_slice_job.yaml` pattern —
-      rebuilt image, DB-local dance, DB returned compressed — and the user
-      applies it.) Then `PAB_DATA_DIR=$PAB_DATA_DIR/v2 pab --db … --outdir …
+      restricts to 51" must appear before anything is fitted. Then `PAB_DATA_DIR=$PAB_DATA_DIR/v2 pab --db … --outdir …
       --stage figure --figure-version 2.0.1 --jobs 4` (fit figures only;
       every scene exists).
    4. Verify: exactly 51 rows with `pab_version='2.0.1'`, `fit_id` ending
@@ -767,7 +762,7 @@ changed prior set is recorded, no schema change needed.*
       can. Log your work.
 
 9. **O9 — Rebuild the site, publish the amended tables, docs, close out
-   (Q&A/Outliers 9).** After O3–O7 (O8 optional).
+   (Q&A/Outliers 9 = A).** After O3–O7 (O8 optional).
    1. Regenerate with the E6 command (HOWTO §7a: the five `--figure-root`
       flags, `--compare-db`, `--downloads-base-url`), zero dropped-figure
       warnings, `python -m sphinx -b html report_site /tmp/…` with 0 warnings.
@@ -789,7 +784,7 @@ changed prior set is recorded, no schema change needed.*
       HOWTO §5b / run report §6 (`6622a78c…`, `4754e237…`, `21b4b6ce…`,
       `66f6cb27…`), then upload with `NautilusS3Backend(bucket="pab",
       prefix="v2")`, re-download, compare, and record old/new sizes + sha256.
-      The database itself per Q&A/Outliers 9 (recommended: upload the
+      The database itself per Q&A/Outliers 9 = A (upload the
       2026-10-07 file first under the dated key `v2/pab_2026-10-07.db`, then
       replace `v2/pab.db`; verify both by re-download).
    4. Docs: `PAB_implementation.md` new §14 (the gate, `n_neg_blue` + the
@@ -2417,3 +2412,145 @@ What the code reading changed about the plan — worth knowing before O5–O7:
   (every scene exists).
 
 Nothing committed — git is yours: this file.
+
+### 2026-10-18 (v2 Outliers O3 — the 51 gated out of every `b_bp` statistic; run report §2.5 corrected)
+
+Run with Fable. No re-fit, no database write: `$PAB_DATA_DIR/v2/pab.db` and
+`v1/pab.db` were opened only by the CLI's `Store.open(create=False)` path and
+are **byte-identical before and after** (v2 `1e69f6ee…8a3f8`, v1
+`09de0a6d…8273`; no `-journal`/`-wal`); nothing under `v1/` touched; the
+committed `report_site/` was **not** rebuilt (O9). Files changed:
+`pab/metrics/compare.py`, `pab/report/rst.py`,
+`pab/tests/{test_metrics,test_report,test_report_versions}.py`,
+`docs/design/PAB_v2_run_report.md` (§2.5, §7 item 2),
+`docs/design/PAB_implementation.md` (§5e.2, §13.5), this file. Scratch:
+`/tmp/claude-1000/-mnt-tank-Oceanography-python-PAB/4eee58f6-84e1-4496-a8d7-900c2eab85b4/scratchpad/o3_site2/`
+(the acceptance site + a Sphinx build of it).
+
+What the code does (Q&A/Outliers 1 = B, 4 = A, 6 = A):
+
+- **`compare.py`.** `BBP_IMPLAUSIBLE = 1.0` moved here (with
+  `BBP_OUTLIERS_URL`, the GitHub pointer every page uses);
+  `rst.BBP_IMPLAUSIBLE` is a re-export, so the old import still works.
+  `implausible_bbp(values)` → finite & `> 1` (NaN/None are missing, not
+  implausible); `gate_bbp(df, col="bbp_bing")` → `(df_gated, n_excluded)`:
+  a copy with only that column set to NaN where the mask is true — the row,
+  the bounds, the Chl of the same fit and the input frame are untouched, and
+  a frame without the column passes through. `gather_matchups` casts
+  `bbp_bing` to float and adds the derived 0/1 `bbp_bing_implausible`
+  column; its values stay raw (the exported table is deliberately ungated).
+- **`rst.py`.** One helper `_gated(df, col)` → `(df_gated, clause)` where the
+  clause is the computed "N failed retrievals (x.xx %, ``b_bp`` > 1 m⁻¹)
+  excluded" (denominator = the finite values of that column before gating;
+  singular for N = 1; printed even when N = 0, like E3's "0 matchups lie
+  outside the axes", so a dev site says the gate exists). Fed to every
+  `b_bp` statistic and figure: `summary_page` (the `b_bp` headline, with a
+  pointer to Methods; the NASA headline; `_version_headline`'s `b_bp` line),
+  `interactive_figures` (the Bokeh `b_bp` scatter and map at small N — the
+  intro carries the clause), `_static_comparison_figures` (the `b_bp`
+  density panel, `matchup_map`, `healpix_map` — gated matchups become grey
+  "without a ratio" dots, and that caption now counts them the way the map
+  does: positioned but no finite ratio), `aggregates_page` (one gated frame
+  for `aggregate_by`/`aggregate_healpix`, plus a sentence), `nasa_giop_section`
+  (BING side; stats line, panel caption and the continuity ratio all on the
+  gated frame) and `version_section` (`bbp700_v2` in the stats line,
+  `_version_ratio_by_level`, `_ratio_figure_block`, `_version_static_figures`
+  — each gates once, on the raw frame it receives, so every quoted count is
+  the same). Not gated, on purpose: the Chl headline/panel/aggregates and
+  the Chl lines of the version section (6 = A), `select_representative_fits`
+  (the gallery still shows 6903874/139 at 9.3e4) and `export_tables`.
+- **Text.** `_version_failure_note(df, store=None)` now says the failures
+  are **excluded** (with the clause) and what is not gated; the
+  `_runaway_regime_note`/`_RUNAWAY_CHL_EDGES` Chl-rate table is **deleted**
+  and replaced by one "What they are" paragraph: not a clear-water tail
+  (their retrieved Chl is part of the failed fit), marginal-sea spectra with
+  a depressed or *negative* blue Rrs, the LM warm-start delivered to the
+  `Bnw` prior ceiling of 10⁵ m⁻¹ while a better physical basin exists in
+  every re-fitted case, the 2.0.1 re-fit pending (O7 rewrites that
+  sentence), and the pointer. The float Chl under the failed fits is
+  **computed from the store** (`_float_chl_medians`, one query over
+  `matchups ⋈ mld_summary`) rather than quoted — on the real DB it prints
+  "0.93 mg m⁻³, against 0.15 for the population", the report's numbers;
+  without a store the parenthesis is simply omitted. Methods gained a
+  "Failed retrievals" paragraph in the *Retrieval (BING)* section (the gate,
+  the computed count via `gather_matchups` or a deferral to Comparisons
+  without a store, what is and is not gated, the flag column, the pointer).
+- **Docs.** Run report §2.5 keeps the first paragraph and the "not a node,
+  granule or sampler artifact" line, then a *Corrected 2026-10-18* paragraph
+  saying what was believed on 2026-10-07 (the retrieved-Chl rate table and
+  the "clear-water tail") and why it was overturned, the corrected reading
+  (regions, float Chl/`b_bp`, the negative-blue 40 + Baltic 11, the
+  warm-start/ceiling mechanism, the physical basin), what the report does
+  now and the acceptance numbers; §7 item 2 → *Resolved*, with the pointer
+  and the O4–O8 follow-ons. `PAB_implementation.md` §5e.2 and §13.5 each
+  gained a short pointer.
+- **Tests** (+9; full suite **444 passed, 1 skipped**, was 435; `ruff check
+  pab` clean). `test_metrics.py`: `gate_bbp` masks only `> 1` (1.0 itself
+  stays), counts, leaves every other column and the input frame alone, is
+  idempotent, and `gather_matchups` carries the raw 5e4 with the flag = 1.
+  `test_report_versions.py`: `test_failure_note_counts_non_physical_bbp`
+  asserts "**excluded**" and no "left in", the gated `b_bp` line (n = 1) next
+  to the ungated Chl line (n = 2), no "Rate by retrieved chlorophyll", the
+  two deleted names gone, the corrected paragraph's claims, the pointer and
+  the computed float-Chl medians; plus the no-store variant. `test_report.py`:
+  the summary headline (gated n and clause, Chl n ungated, fit count
+  unchanged), the Methods paragraph with and without a store, aggregates
+  from the gated frame (the runaway's region bin shows n = 0), the Bokeh
+  path, `export_tables` raw values + flag in CSV and Parquet, the gallery
+  pick unaffected; the E3 caption test was rewritten to the gated behaviour
+  (nothing off-scale once the runaways are gated, 397 with a ratio, the 3
+  grey, the clause 3× on the comparisons page and once on the 2.0-vs-1.0
+  `b_bp` panel only).
+
+**Acceptance on the real v2 DB** (the E6 command into scratch; 10 s, zero
+dropped-figure warnings, Sphinx 0 warnings; PNGs looked at):
+
+| statistic | 2026-10-07 site | gated (O3) |
+|---|---|---|
+| `b_bp` headline (sat vs float) | n = 15,274; median 1.15; ρ 0.415; bias +0.010; RMS 0.645 | **n = 15,224; median 1.14; ρ 0.411; bias −0.014; RMS 0.492** |
+| NASA(700)/BING(700) | n = 15,964; 0.937; ρ 0.889; RMS 0.52 | n = 15,913; 0.939; ρ 0.890; RMS 0.293 |
+| 2.0/1.0 `b_bp` | n = 14,604; 0.75; ρ 0.924; RMS 0.536 | n = 14,556; 0.749; ρ 0.926; RMS 0.325 |
+| Chl headline | n = 15,154; 0.943; ρ 0.733 | unchanged |
+
+The headline n drops by **50** (of 51; one runaway, 2902272/215, has no float
+`bbp700` — the "50–51" the prompt predicted), the NASA n by 51, the pair n by
+48 (three runaways are 2.0-backfill matchups with no 1.0 fit). The clause
+reads "51 failed retrievals (0.32 %, ``b_bp`` > 1 m⁻¹) excluded" on the
+summary, comparisons, aggregates and Methods pages and "48 … (0.33 %)" in the
+1.0-vs-2.0 section. The medians and ρ barely move, as the old note said; the
+**log-RMS does** — 0.645 → 0.492, 0.52 → 0.29, 0.536 → 0.325 — which is the
+honest reason to gate: 51 points seven decades off dominated a mean-square
+statistic over 15,000. In the PNGs the runaways were already off-scale (E3's
+99 % clip), so the visible change is the title line and the maps: the dot
+map now has 745 grey dots (was 695) and 1,808 (11.9 %) saturated (was 1,858,
+12.2 %); the HEALPix map holds 15,093 matchups in its 453 drawn cells (was
+15,143) and has **2 saturated cells** instead of 1 — the Mediterranean as
+before, and now the **Baltic**, whose median log-ratio drops below −0.5 dex
+once its 25 runaways (at +7 dex) are out. That is a real result the runaways
+were hiding: the satellite under-retrieves Baltic `b_bp` by more than 3×.
+
+Worth knowing:
+
+- **The off-scale count on the `b_bp` panel went up, 155 → 186.** Removing 51
+  values at 10⁴–10⁵ lowers the 99.5th percentile of the pooled values, so the
+  upper axis limit (×1.4 padding) comes down a little and 81 more ordinary
+  high points fall outside it, while the 50 gated runaways no longer count.
+  Computed, consistent, and still "counted in the statistics" as the caption
+  says — just a different set.
+- **The E2 "2.15 not 2.16" mystery is explained.** On the gated frame the
+  unadjusted NASA(442)/BING(700) continuity ratio prints **2.16** — the
+  Q&A/v2 number. The Q&A profile evidently excluded the runaways; E2/E6's
+  2.15 had them in. Nothing to do; the note now says 2.16.
+- `_version_ratio_by_level`'s tercile edges moved from 0.000975 to 0.000974
+  and the per-tercile medians and the "19 %" are unchanged — the runaways
+  were too few to move a median.
+- `docs/reporting.rst` line 82 still says the non-physical retrievals "are
+  not hidden" — now stale, but `docs/reporting.rst` (gate + overlay) is O9's
+  item 4, so it was left for O9 rather than half-updated here.
+- Naming matched the code throughout; nothing in the prompt had to be
+  re-interpreted. The one addition beyond the letter of O3 is gating the
+  small-N Bokeh branch of the Comparisons page too (it is a `b_bp` figure;
+  the real site never takes that branch).
+- Nothing needed a decision: **no new Q&A items.**
+
+Hand-off (nothing committed — git is yours): the eight files above. Next: O4.

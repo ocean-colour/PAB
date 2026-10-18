@@ -462,20 +462,25 @@ def test_comparisons_captions_quote_the_offscale_count(tmp_path):
     )
     df.loc[[0, 1, 2], "bbp_bing"] = 1e4  # three non-physical runaways
     out = rst.comparisons_page(df, outdir=tmp_path, max_interactive=1)
-    # the b_bp caption counts them; the Chl caption (no runaways) says 0
-    assert "3 matchups lie outside the axes and are counted" in out
-    assert "0 matchups lie outside the axes and are counted" in out
-    # the maps' shared colour clip is a fixed ±0.5 dex (Q&A/v2 Edits 5 = B):
-    # the three runaways (log-ratio ~ +7) cannot stretch it, both captions
-    # quote it, and the dot-map caption counts exactly those three (every
-    # other ratio is 1.2, i.e. 0.08 dex) as saturated
+    # The gate (O3, Q&A/Outliers 1 = B): the three runaways are excluded from
+    # the b_bp panel, so nothing is off-scale on either panel, and the b_bp
+    # captions (panel, dot map, HEALPix map) all carry the computed count.
+    assert out.count("0 matchups lie outside the axes and are counted") == 2
+    assert "3 matchups lie outside the axes" not in out
+    gate = "3 failed retrievals (0.75 %, ``b_bp`` > 1 m⁻¹) excluded"
+    assert out.count(gate) == 3
+    # the maps' shared colour clip is a fixed ±0.5 dex (Q&A/v2 Edits 5 = B);
+    # with the runaways gated no matchup saturates (every other ratio is 1.2,
+    # i.e. 0.08 dex), the 397 with a ratio are counted, and the three gated
+    # matchups are the grey "without a ratio" dots
     assert out.count("clipped at a fixed ±0.5 dex") == 2
     assert (
-        "The 3 matchups (0.8 % of the 400 with a ratio) at or beyond ±0.5 dex "
+        "The 0 matchups (0.0 % of the 397 with a ratio) at or beyond ±0.5 dex "
         "saturate to the end colours"
     ) in out
+    assert "The 3 matchups without a ratio (no float ``b_bp``, or a failed retrieval) are grey" in out
     assert "saturated (median at or beyond ±0.5 dex): 0 of the" in out
-    # the 2.0-vs-1.0 panels carry the same caption form
+    # the 2.0-vs-1.0 panels carry the same caption form, gated on bbp700_v2
     df2 = pd.DataFrame(
         {
             "bbp700_v1": insitu,
@@ -487,7 +492,8 @@ def test_comparisons_captions_quote_the_offscale_count(tmp_path):
     out2 = rst._version_static_figures(df2, tmp_path)
     assert ".. figure:: _static/comparisons/v2_vs_v1_bbp700.png" in out2
     assert ".. figure:: _static/comparisons/v2_vs_v1_chl.png" in out2
-    assert "3 matchups lie outside the axes and are counted" in out2
+    assert out2.count("0 matchups lie outside the axes and are counted") == 2
+    assert out2.count(gate) == 1  # the b_bp panel only; the Chl panel is not gated
     assert out2.count("Filled cells where ≥ 5 matchups fall in a cell") == 2
     for name in ("v2_vs_v1_bbp700.png", "v2_vs_v1_chl.png"):
         assert (tmp_path / "_static" / "comparisons" / name).is_file()
@@ -677,6 +683,116 @@ def test_summary_coverage_stats(tmp_path):
         summary = rst.summary_page(store)
         assert "Profiles ingested:" in summary
         assert "Median separation:" in summary and "Median Δtime:" in summary
+
+
+def _one_runaway(store):
+    """M1 a sound fit, M2 a runaway (b_bp 5e4 m^-1) -- the O3 gate fixture."""
+    _seed(
+        store, "M1", 7902226, 5, lat=27.0, lon=-46.0, time="2025-02-18T20:00:00",
+        bbp_argo=1e-3, bbp_bing=2e-3, chla=0.1, chl_bing=0.15,
+    )
+    _seed(
+        store, "M2", 7902136, 8, lat=4.0, lon=-137.0, time="2025-07-25T13:00:00",
+        bbp_argo=2e-3, bbp_bing=5e4, chla=0.2, chl_bing=0.3,
+    )
+
+
+_GATE_ONE_OF_TWO = "1 failed retrieval (50.00 %, ``b_bp`` > 1 m⁻¹) excluded"
+_OUTLIERS_URL = (
+    "https://github.com/ocean-colour/PAB/blob/main/versions/v2/high_bbp_outliers.md"
+)
+
+
+def test_summary_headline_is_gated_and_says_so():
+    """O3 (Q&A/Outliers 1 = B): the b_bp headline excludes the runaway and
+    carries the computed clause; the Chl headline is not gated (6 = A)."""
+    with Store.open(":memory:") as store:
+        _one_runaway(store)
+        out = rst.summary_page(store)
+        assert "- n = 1; median sat/float ratio = 2;" in out  # M1 only
+        assert _GATE_ONE_OF_TWO in out
+        assert "see the :doc:`Methods <methods>` page" in out
+        # Chl: both fits, 1.5x each
+        assert "- n = 2; median sat/float ratio = 1.5;" in out
+        # BING fits counted as fits, not as gated pairs
+        assert "**BING fits:** 2" in out
+
+
+def test_methods_page_failed_retrievals_paragraph():
+    with Store.open(":memory:") as store:
+        _one_runaway(store)
+        out = rst.methods_page(store=store)
+        assert "**Failed retrievals.**" in out
+        assert "above 1 m⁻¹" in out
+        assert f"In this release that is {_GATE_ONE_OF_TWO}." in out
+        assert "``bbp_bing_implausible``" in out
+        assert _OUTLIERS_URL in out
+        # the paragraph sits with the retrieval description, before 2.0's config
+        assert out.index("**Failed retrievals.**") < out.index("Retrieval configuration (2.0)")
+    # without a store the count is deferred, never quoted
+    out = rst.methods_page()
+    assert "**Failed retrievals.**" in out and _OUTLIERS_URL in out
+    assert "*Comparisons* page reports how many fits this excludes" in out
+    assert "failed retrieval (" not in out
+
+
+def test_aggregates_come_from_the_gated_frame():
+    with Store.open(":memory:") as store:
+        _one_runaway(store)
+        out = rst.aggregates_page(store, sortable=False)
+        assert _GATE_ONE_OF_TWO in out
+        # M2 (tropics) is the runaway: its region bin has no pair left, while
+        # M1's (subtropics) keeps its ratio of 2
+        assert "   * - tropics\n     - 0\n     - —" in out
+        assert "   * - subtropics\n     - 1\n     - 2\n" in out
+
+
+def test_comparisons_page_gates_the_interactive_figures_too():
+    """Below `max_interactive` the Bokeh b_bp scatter/map get the gated frame
+    (the intro carries the clause); the Chl scatter still has both fits."""
+    pytest.importorskip("bokeh")
+    from pab.metrics import compare
+
+    with Store.open(":memory:") as store:
+        _one_runaway(store)
+        df = compare.gather_matchups(store)
+        out = rst.comparisons_page(df, sortable=True)
+        assert f"``b_bp``: {_GATE_ONE_OF_TWO}." in out
+        assert ".. raw:: html" in out
+
+
+def test_export_tables_keep_raw_values_and_add_the_flag(tmp_path):
+    import pandas as pd
+
+    with Store.open(":memory:") as store:
+        _one_runaway(store)
+        out = publish.export_tables(store, tmp_path)
+        back = pd.read_csv(out["summary_csv"]).set_index("matchup_id")
+        assert back.loc["M2", "bbp_bing"] == 5e4  # raw, not NaN
+        assert back.loc["M1", "bbp_bing"] == 2e-3
+        assert list(back["bbp_bing_implausible"]) == [0, 1]
+        if "summary_parquet" in out:
+            pq = pd.read_parquet(out["summary_parquet"]).set_index("matchup_id")
+            assert pq.loc["M2", "bbp_bing"] == 5e4
+            assert list(pq["bbp_bing_implausible"]) == [0, 1]
+
+
+def test_gallery_selection_is_not_gated():
+    """The representative gallery keeps its "non-physical retrieval" pick: it
+    is built from the raw frame (the whole point of the slot)."""
+    from pab.metrics import compare
+
+    with Store.open(":memory:") as store:
+        _one_runaway(store)
+        df = compare.gather_matchups(store)
+        # on two rows the runaway is already the 95th-percentile pick (the
+        # "non-physical" reason de-duplicates away); what matters is that it
+        # is selectable from the raw frame and would not be from the gated one
+        assert "M2" in set(rst.select_representative_fits(df)["matchup_id"])
+        gated, _ = compare.gate_bbp(df)
+        assert "M2" not in set(rst.select_representative_fits(gated)["matchup_id"])
+    # and the old import location still works
+    assert rst.BBP_IMPLAUSIBLE == compare.BBP_IMPLAUSIBLE == 1.0
 
 
 def test_figure_gallery_guarded_above_threshold():

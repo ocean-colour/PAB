@@ -580,7 +580,12 @@ are lazily-imported seams; the aggregation math and manifest are pure.
   Above `MAX_INTERACTIVE_MATCHUPS` the Comparisons page switches to the static
   `pab.plotting.population` figures (density-plus-dots panels and the two
   maps) and above `MAX_INLINE_FIGURES` the Figures page shows a deterministic
-  representative selection — see §13.
+  representative selection — see §13. Every `b_bp` statistic and figure
+  passes through `pab.metrics.compare.gate_bbp` (`BBP_IMPLAUSIBLE = 1 m⁻¹`,
+  O3 of `claude_prompts/v2/report_improvements.md`, 2026-10-18): the failed
+  retrievals are excluded with the computed count in each caption, the Chl,
+  the gallery pick and the exported raw values are not — see §13.5 and
+  `versions/v2/high_bbp_outliers.md`.
 
 ### 5e.3 Interactive (`pab/report/interactive.py`)
 
@@ -1235,6 +1240,17 @@ subpolar North Pacific and Arctic shelves blue on both maps, with the
 Mediterranean the one saturated HEALPix cell (median −1.48); and the selected
 runaway's observed Rrs **negative** at 400–430 nm — a failed atmospheric
 correction, not a bright scene, which the Outliers prompt should pick up.
+
+The Outliers work did pick it up (2026-10-18, `versions/v2/high_bbp_outliers.md`):
+the 51 fits above 1 m⁻¹ are LM warm-starts delivered to the `Bnw` prior
+ceiling on depressed-blue marginal-sea spectra, not a clear-water tail. Since
+O3 they are gated out of every `b_bp` statistic and figure by
+`compare.gate_bbp` (`compare.BBP_IMPLAUSIBLE`, still importable as
+`rst.BBP_IMPLAUSIBLE`), each caption and the Methods page carry the computed
+"N failed retrievals (x.xx %) excluded" clause, `gather_matchups` adds a
+`bbp_bing_implausible` flag to the exported table, and the run report §2.5
+was corrected; the `b_bp` headline moved from n = 15,274 / 1.15 / ρ 0.415 /
+RMS 0.645 to 15,224 / 1.14 / 0.411 / 0.492.
 
 ---
 

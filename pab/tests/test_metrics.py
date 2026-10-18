@@ -236,6 +236,65 @@ def test_gather_matchups_filters_by_model_pair():
         assert df["bbp_bing"].iloc[0] == pytest.approx(2e-3)  # ExpBPow, not Cst's 9e-3
 
 
+def test_gate_bbp_masks_only_above_the_gate():
+    """O3: `gate_bbp` NaNs the named column above `BBP_IMPLAUSIBLE` and
+    nothing else -- not the row, not the bounds, not the Chl of the same fit
+    (Q&A/Outliers 6 = A), not the input frame."""
+    import pandas as pd
+
+    assert compare.BBP_IMPLAUSIBLE == 1.0
+    vals = [1e-3, 2.0, np.nan, 1.0, 5e4, None]
+    df = pd.DataFrame(
+        {
+            "bbp_bing": vals,
+            "bbp_bing_lo": [v if v is not None else np.nan for v in vals],
+            "chl_bing": [0.1, 0.01, 0.2, 0.3, 0.01, 0.4],
+            "bbp_argo": [1e-3] * 6,
+        }
+    )
+    before = df.copy()
+    mask = compare.implausible_bbp(df["bbp_bing"])
+    assert list(mask) == [False, True, False, False, True, False]  # > 1, not ≥ 1
+    gated, n = compare.gate_bbp(df)
+    assert n == 2
+    assert np.isnan(gated["bbp_bing"].iloc[1]) and np.isnan(gated["bbp_bing"].iloc[4])
+    assert gated["bbp_bing"].iloc[0] == 1e-3 and gated["bbp_bing"].iloc[3] == 1.0
+    for col in ("bbp_bing_lo", "chl_bing", "bbp_argo"):
+        pd.testing.assert_series_equal(gated[col], df[col])
+    assert len(gated) == len(df)
+    pd.testing.assert_frame_equal(df, before)  # a copy, never in place
+    # the gate is idempotent, counts nothing the second time, and a frame
+    # without the column (or with another column named) passes through
+    again, n2 = compare.gate_bbp(gated)
+    assert n2 == 0 and again is gated
+    same, n3 = compare.gate_bbp(df, col="bbp700_v2")
+    assert n3 == 0 and same is df
+    # the statistics see only the gated pairs
+    assert compare.compare(gated, "bbp_bing", "bbp_argo")["n"] == 2
+    assert compare.compare(df, "bbp_bing", "bbp_argo")["n"] == 4
+
+
+def test_gather_matchups_flags_implausible_bbp_but_keeps_the_value():
+    """The exported frame is raw: the runaway's value travels as stored, with a
+    0/1 `bbp_bing_implausible` column for the reader to filter on."""
+    with Store.open(":memory:") as store:
+        _seed(
+            store, "M1", 7902226, 5, lat=27.0, lon=-46.0,
+            time="2025-02-18T20:00:00", bbp_argo=1e-3, chla=0.1, bbp_bing=2e-3,
+        )
+        _seed(
+            store, "M2", 7902136, 8, lat=4.0, lon=-137.0,
+            time="2025-07-25T13:00:00", bbp_argo=2e-3, chla=0.2, bbp_bing=5e4,
+        )
+        df = compare.gather_matchups(store).set_index("matchup_id")
+        assert df.loc["M2", "bbp_bing"] == 5e4
+        assert list(df["bbp_bing_implausible"]) == [0, 1]
+        assert df["bbp_bing_implausible"].dtype.kind in "iu"
+        gated, n = compare.gate_bbp(df)
+        assert n == 1 and np.isnan(gated.loc["M2", "bbp_bing"])
+        assert gated.loc["M2", "bbp_bing_implausible"] == 1  # the flag survives
+
+
 def test_gather_nasa_giop_joins_bing_and_nasa_fits():
     with Store.open(":memory:") as store:
         _seed(

@@ -55,6 +55,64 @@ GIOP_BBP_SHIFT_FORMULA = (
     f"({GIOP_BBP_WAVE:g}/{BING_BBP_WAVE:g})^bbp_s"
 )
 
+#: Above this ``b_bp(700 nm)`` (m⁻¹) a retrieval is not a measurement of
+#: seawater: open-ocean particulate backscatter at 700 nm spans roughly 1e-4 to
+#: 1e-1 m⁻¹, so a value above 1 is a failed fit, not a bright scene. The 2.0
+#: runaways (``versions/v2/high_bbp_outliers.md``) all sit at 5–9 × 10⁴ m⁻¹,
+#: pressed against the ``Bnw`` prior ceiling; the 52nd-largest 2.0 value is
+#: 0.03 m⁻¹, so the gate is not near anything real. :func:`gate_bbp` keeps
+#: them out of every ``b_bp`` statistic (Q&A/Outliers 1 = B).
+BBP_IMPLAUSIBLE = 1.0
+#: Where the failed retrievals are documented; the report text points here.
+BBP_OUTLIERS_URL = (
+    "https://github.com/ocean-colour/PAB/blob/main/versions/v2/high_bbp_outliers.md"
+)
+
+
+def implausible_bbp(values):
+    """Boolean mask: finite ``values`` above :data:`BBP_IMPLAUSIBLE`.
+
+    ``NaN``/``None`` are *not* implausible (they are simply missing), so a
+    column that is partly unretrieved is masked only where a number exists.
+    """
+    values = np.asarray(values, dtype=float)
+    with np.errstate(invalid="ignore"):
+        return np.isfinite(values) & (values > BBP_IMPLAUSIBLE)
+
+
+def gate_bbp(df, col: str = "bbp_bing"):
+    """Set ``col`` to ``NaN`` where it is implausible; touch nothing else.
+
+    The one gate every ``b_bp`` statistic and figure in the report passes
+    through: the summary headline, the density panel, both maps, the
+    aggregates, the NASA-GIOP and 1.0-vs-2.0 comparisons. Only the named
+    column changes -- the row stays (so the matchup count and the map's grey
+    "without a ratio" dots are honest), the Chl of the same fit stays
+    (Q&A/Outliers 6 = A) and the bounds columns stay, because nothing
+    downstream reads a bound without the value. The exported tables and the
+    gallery selection are built from the **ungated** frame on purpose: a
+    reader filters on the ``bbp_bing_implausible`` column instead.
+
+    Args:
+        df: A gathered frame. A frame without ``col`` is returned as is.
+        col: The satellite ``b_bp`` column (``"bbp_bing"`` in the matchup and
+            NASA-GIOP frames, ``"bbp700_v2"`` in the version-pair frame).
+
+    Returns:
+        ``(df_gated, n_excluded)`` -- a copy with the masked values ``NaN``,
+        and how many were masked.
+    """
+    if col not in df.columns:
+        return df, 0
+    mask = implausible_bbp(df[col])
+    n = int(mask.sum())
+    if not n:
+        return df, 0
+    out = df.copy()
+    out[col] = out[col].astype(float)
+    out.loc[mask, col] = np.nan
+    return out, n
+
 
 def giop_bbp_to_700(bbp_442, slope):
     """Shift NASA GIOP ``b_bp`` from 442 nm to 700 nm with its own slope.
@@ -203,7 +261,11 @@ def gather_matchups(store, *, model_pair: str = "ExpBPow", pab_version=None):
             one the report is about.
 
     Returns:
-        A :class:`pandas.DataFrame` (empty when no matched fits exist).
+        A :class:`pandas.DataFrame` (empty when no matched fits exist). The
+        satellite values are **as stored** -- nothing is gated here -- plus a
+        derived 0/1 column ``bbp_bing_implausible`` (:func:`implausible_bbp`)
+        so the exported table can be filtered by a reader; the report applies
+        :func:`gate_bbp` itself where it computes statistics.
     """
     bbp_q = f"BING_{model_pair}_{DEFAULT_BBP_QUANTITY}"
     chl_q = f"BING_{model_pair}_{DEFAULT_CHL_QUANTITY}"
@@ -230,7 +292,13 @@ def gather_matchups(store, *, model_pair: str = "ExpBPow", pab_version=None):
                ON fc.fit_id = f.fit_id AND fc.quantity = ?
         ORDER BY m.matchup_id
     """
-    return store.query_df(sql, (model_pair, pab_version, pab_version, bbp_q, chl_q))
+    df = store.query_df(sql, (model_pair, pab_version, pab_version, bbp_q, chl_q))
+    # A missing quantity row arrives as ``None`` (object dtype) from the LEFT
+    # JOIN; the flag and the gate both want a float column.
+    if "bbp_bing" in df.columns:
+        df["bbp_bing"] = df["bbp_bing"].astype(float)
+    df["bbp_bing_implausible"] = implausible_bbp(df.get("bbp_bing", [])).astype(int)
+    return df
 
 
 def gather_version_pair(store, v1_path, *, model_pair: str = "ExpBPow"):
