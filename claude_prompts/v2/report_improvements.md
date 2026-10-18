@@ -447,6 +447,10 @@ If you have any questions or suggestions for next steps,
 put them under Q&A/Outliers.
 Use Fable if you can. Log your work.
 
+2. I have read your report and then answered your questions.  
+Please generate a series of prompts in this Prompts/Outliers section starting with #3 that I will execute to complete the work.
+Use Fable if you can. Log your work.
+
 ## Q&A
 
 ### Outliers
@@ -469,7 +473,7 @@ not measurements, and the gate is already defined); **C** wait for the
 re-fit (item 2) and show the re-fitted values. B now and C when the re-fit
 is done are compatible.
 
-**Your answer:**
+**Your answer:** Yes, let's go with B now and C when the re-fit is done.
 
 **2 — Re-fit the 51 under a new `pab_version`?** The spurious basin is a
 property of the prior ceiling (`Bnw` log-uniform to 10⁵ m⁻¹) plus a
@@ -484,7 +488,7 @@ the ceiling in BING's `expb_pow` itself (affects every BING user); **D** leave
 the 51 as they are. If A or B, say whether the re-fit should go into the v2
 report as a second version or wait for a v3.
 
-**Your answer:**
+**Your answer:** Let's go with A, but call it v2.0.1
 
 **3 — An Rrs QA flag.** "Any Rrs < 0 at 400–450 nm" catches 40 of the 51 and
 flags ≈0.7 % of the rest (2 of 300 sampled, both themselves doubtful fits);
@@ -495,7 +499,7 @@ and the downloadable table, without refusing to fit (recommended);
 **B** refuse to fit pixels with a negative blue band (loses 2903902/30-type
 cases that fit well in the right basin); **C** nothing.
 
-**Your answer:**
+**Your answer:** Let's go with A.
 
 **4 — Amend the run report §2.5 and the Comparisons-page wording?** The
 "ultra-oligotrophic regime" reading rests on the retrieved Chl (0.01), which
@@ -506,7 +510,7 @@ with a pointer to `versions/v2/high_bbp_outliers.md` (recommended; small
 edit); **B** leave the run report as a record of what was believed at the
 time and only link the new report.
 
-**Your answer:**
+**Your answer:** Let's go with A.
 
 **5 — Emulator out-of-domain policy.** BING calls `robust.rt.forward` with
 the default `on_out_of_domain="warn"`, which is silent under `jit`; the
@@ -517,7 +521,7 @@ whether the basin survives — a BING-side change, so it would be a question
 for the bing repo (recommended as a side experiment, not blocking items
 1–4); **B** ignore for now.
 
-**Your answer:**
+**Your answer:** Let's go with A.
 
 ### v2
 
