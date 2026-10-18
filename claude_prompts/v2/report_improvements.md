@@ -891,7 +891,7 @@ fit — `b_bp` *and* Chl — behind the same `b_bp > 1 m⁻¹` rule, with both
 counts in the captions (recommended; one rule, one explanation). Either way
 O7's overlay makes it moot for any matchup whose 2.0.1 fit lands physical.
 
-**Your answer:**
+**Your answer:** Let's go with A.
 
 **7 — Where the 2.0 chains come from for the `n_neg_blue` backfill (O4).**
 The spectra live only in the chain NPZs, and the chains are **not** on the
@@ -906,7 +906,7 @@ O4 and a DB round trip, since the workstation copy is the authoritative one);
 **C** skip the backfill — only new fits carry the quantity (the report then
 cannot show the rate).
 
-**Your answer:**
+**Your answer:** Follow your recommendation.
 
 **8 — What the 2.0.1 re-fit reads as its input spectrum (O5 step 4, O6).**
 Options: **A** the production path on the workstation — re-read the pixel
@@ -921,7 +921,7 @@ from the DB; minutes; stamped `rrs_source = "L2_AOP:replay:<2.0 fit_id>"` so
 the provenance says so) — recommended: bit-identical input, so 2.0 → 2.0.1
 differs by the prior and nothing else.
 
-**Your answer:**
+**Your answer:** Follow your recommendation.
 
 **9 — Publish the amended v2 database to S3 (O9)?** After O4 and O6 the
 workstation `v2/pab.db` has 15,971 new `fit_results` rows and 51 new fits;
@@ -932,7 +932,7 @@ the new sha (recommended — otherwise the site describes rows the public
 database does not hold); **B** leave `v2/pab.db` at 2026-10-07, publish only
 the tables, and say so on the Downloads page.
 
-**Your answer:**
+**Your answer:** Follow your recommendation.
 
 ### v2
 
