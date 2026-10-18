@@ -435,9 +435,12 @@ def test_comparisons_page_static_figures_at_scale(tmp_path):
         for name in ("matchup_map.png", "healpix_map.png"):
             assert f".. figure:: _static/comparisons/{name}" in out
             assert (tmp_path / "_static" / "comparisons" / name).is_file()
-        assert out.count("2nd-98th percentile of the per-matchup log-ratio") == 2
+        # Q&A/v2 Edits 5 = B: a fixed ±0.5 dex clip, with the saturated count
+        assert out.count("clipped at a fixed ±0.5 dex (a factor of 3.2 either way)") == 2
+        assert "at or beyond ±0.5 dex saturate to the end colours" in out
         assert "only cells holding ≥ 5 matchups are drawn" in out
         assert "(0 cells, 0 matchups; 2 sparser cells left out)" in out
+        assert "saturated (median at or beyond ±0.5 dex): 0 of the 0 drawn cells" in out
 
 
 def test_comparisons_captions_quote_the_offscale_count(tmp_path):
@@ -462,14 +465,16 @@ def test_comparisons_captions_quote_the_offscale_count(tmp_path):
     # the b_bp caption counts them; the Chl caption (no runaways) says 0
     assert "3 matchups lie outside the axes and are counted" in out
     assert "0 matchups lie outside the axes and are counted" in out
-    # the maps' shared colour clip is the 2nd-98th percentile: the three
-    # runaways (log-ratio ~ +7) cannot stretch it, and both captions quote
-    # the same value (computed once by the caller)
-    import re
-
-    clips = re.findall(r"clipped at ±([0-9.]+) dex", out)
-    assert len(clips) == 2 and clips[0] == clips[1]
-    assert float(clips[0]) < 0.2
+    # the maps' shared colour clip is a fixed ±0.5 dex (Q&A/v2 Edits 5 = B):
+    # the three runaways (log-ratio ~ +7) cannot stretch it, both captions
+    # quote it, and the dot-map caption counts exactly those three (every
+    # other ratio is 1.2, i.e. 0.08 dex) as saturated
+    assert out.count("clipped at a fixed ±0.5 dex") == 2
+    assert (
+        "The 3 matchups (0.8 % of the 400 with a ratio) at or beyond ±0.5 dex "
+        "saturate to the end colours"
+    ) in out
+    assert "saturated (median at or beyond ±0.5 dex): 0 of the" in out
     # the 2.0-vs-1.0 panels carry the same caption form
     df2 = pd.DataFrame(
         {

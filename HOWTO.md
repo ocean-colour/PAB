@@ -427,6 +427,12 @@ local. The full DB is now **published** at
 `https://s3-west.nrp-nautilus.io/pab/full/pab.db` (public-read), and the whole
 dataset (`pab.db`, `fit_chains/` = 18.09 GiB, `site/`) is also backed up off-site to
 the Google shared drive **`AIOcean:PAB/`** (Nautilus PVCs are not backed up).
+The 2.0 artifacts sit under `AIOcean:PAB/v2/`: `fit_chains/` (15,971 files,
+18.33 GiB) and `figures/` (17,361) from the 2026-10-07 `v2_backup_job.yaml`
+run, and `argo_qa/` — the 5,453 backfill Argo Q&A plots from
+`/data/v2/pipeline/argo_qa/` — added on 2026-10-17 (E1b of
+`claude_prompts/v2/report_improvements.md`; the workstation copy is
+`$PAB_DATA_DIR/gallery/v2_argo_qa/`).
 
 **Chl-a/CDOM provenance backfill (2026-09-05/06, still `pab_version = 1.0`).**
 `pab.db` was re-ingested in place (schema v4 — see `docs/db_schema.rst`) to add

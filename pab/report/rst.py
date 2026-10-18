@@ -1055,26 +1055,32 @@ def _static_comparison_figures(df, outdir) -> str:
             )
         except Exception:  # noqa: BLE001
             pass
-    # The two maps (Q&A/v2 Q8, F5) share one symmetric colour scale, computed
-    # once here from the per-matchup log-ratio; the maps compute the ratio
-    # themselves, so no runaway reaches the colorbar through this caller.
-    vmax = population.log_ratio_vmax(df, "bbp_bing", "bbp_argo")
+    # The two maps (Q&A/v2 Q8, F5, Edits 5 = B) share one fixed symmetric
+    # colour scale, ±0.5 dex; the maps compute the ratio themselves, so no
+    # runaway reaches the colorbar through this caller, and the captions
+    # count what the clip saturates.
+    vmax = population.LOG_RATIO_VMAX
     scale = (
         "colour = log10(satellite / float ``b_bp``), symmetric about 0 and "
-        f"clipped at ±{vmax:.2f} dex (the {population.percentile_range()} "
-        "percentile of the per-matchup log-ratio; values beyond take the end "
-        "colours)"
+        f"clipped at a fixed ±{vmax:g} dex (a factor of {10 ** vmax:.1f} "
+        "either way)"
     )
     try:
         population.matchup_map(
             df, sat_col="bbp_bing", insitu_col="bbp_argo", vmax=vmax,
             outfile=dest / "matchup_map.png",
         )
+        sat, n_ratio = population.log_ratio_saturated(
+            df, "bbp_bing", "bbp_argo", vmax=vmax
+        )
+        pct = f"{100.0 * sat / n_ratio:.1f} %" if n_ratio else "0 %"
         figs.append(
             (
                 "matchup_map.png",
-                f"Matchup locations (one dot per matchup); {scale}. Matchups "
-                "without a float ``b_bp`` are grey.",
+                f"Matchup locations (one dot per matchup); {scale}. The "
+                f"{sat:,} matchups ({pct} of the {n_ratio:,} with a ratio) at "
+                f"or beyond ±{vmax:g} dex saturate to the end colours. "
+                "Matchups without a float ``b_bp`` are grey.",
             )
         )
     except Exception:  # noqa: BLE001
@@ -1088,6 +1094,7 @@ def _static_comparison_figures(df, outdir) -> str:
         drawn = cells[cells["n"] >= population.HEALPIX_MIN_COUNT]
         nside = int(cells["nside"].iloc[0]) if len(cells) else 0
         width = f"≈ {population.healpix_cell_deg(nside):.0f}° cells" if nside else ""
+        sat_cells = population.saturated_count(drawn["median_log_ratio"], vmax)
         figs.append(
             (
                 "healpix_map.png",
@@ -1096,7 +1103,9 @@ def _static_comparison_figures(df, outdir) -> str:
                 f"{population.HEALPIX_MIN_COUNT} matchups are drawn "
                 f"({len(drawn)} cells, {int(drawn['n'].sum()):,} matchups; "
                 f"{len(cells) - len(drawn)} sparser cells left out). The same "
-                f"scale as the dot map: {scale}.",
+                f"scale as the dot map: {scale}; saturated (median at or "
+                f"beyond ±{vmax:g} dex): {sat_cells} of the {len(drawn)} "
+                "drawn cells.",
             )
         )
     except Exception:  # noqa: BLE001

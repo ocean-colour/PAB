@@ -587,35 +587,71 @@ def test_matchup_map_plain_axes_file_and_budget(tmp_path):
     assert type(ax).__name__ == "Axes"  # not a cartopy GeoAxes
     assert ax.get_xlim() == (-180.0, 180.0) and ax.get_ylim() == (-90.0, 90.0)
     assert "2,000 matchups" in ax.get_title()
-    assert "2nd-98th percentile" in ax.get_title()
+    assert "colour clipped at ±0.5 dex" in ax.get_title()
     assert any("log10(satellite / float b_bp)" in a.get_ylabel() for a in fig.axes[1:])
     plt.close(fig)
 
 
-def test_log_ratio_vmax_is_symmetric_and_ignores_runaways():
+def test_maps_clip_at_fixed_symmetric_vmax_and_count_the_saturated():
     import matplotlib.pyplot as plt
 
+    # Q&A/v2 Edits 5 = B: a fixed ±0.5 dex, not a percentile of the data
+    vmax = population.LOG_RATIO_VMAX
+    assert vmax == 0.5
     df = _map_frame()
-    vmax = population.log_ratio_vmax(df, "bbp_bing", "bbp_argo")
     lr = population.log_ratio(df, "bbp_bing", "bbp_argo")
-    fin = lr[np.isfinite(lr)]
-    assert fin.size == len(df)
-    p2, p98 = np.percentile(fin, [2, 98])
-    assert vmax == pytest.approx(max(abs(p2), abs(p98)))
-    # the three 1e4 runaways (log-ratio ~ +7) do not reach the scale
-    assert 0.3 < vmax < 0.7
-    # ... and both maps, given that vmax, colour on exactly [-vmax, vmax]
-    fig = population.matchup_map(df, vmax=vmax, projection=None)
+    assert np.isfinite(lr).all()
+    expected = int((np.abs(lr) >= 0.5).sum())
+    # the three 1e4 runaways (log-ratio ~ +7) are among the saturated, plus
+    # the ~1.5 % tail of a σ = 0.2 dex distribution -- never the majority
+    assert 3 <= expected < 100
+    assert population.saturated_count(lr) == expected
+    assert population.log_ratio_saturated(df, "bbp_bing", "bbp_argo") == (expected, 2000)
+    # NaN ratios are neither saturated nor counted
+    part = df.copy()
+    part.loc[part.index[-10:], "bbp_argo"] = np.nan
+    sat, n = population.log_ratio_saturated(part, "bbp_bing", "bbp_argo")
+    assert n == 1990 and sat <= expected
+    # both maps colour on exactly [-0.5, 0.5] by default and say so, with the
+    # count of what the clip saturates
+    fig = population.matchup_map(df, projection=None)
     norm = fig.axes[0].collections[-1].norm
     assert (norm.vmin, norm.vmax) == (-vmax, vmax)
+    title = fig.axes[0].get_title()
+    assert f"±0.5 dex ({expected} ({100 * expected / 2000:.1f} %) at or beyond)" in title
     plt.close(fig)
-    fig = population.healpix_map(df, vmax=vmax, projection=None)
+    fig = population.healpix_map(df, projection=None)
     norm = fig.axes[0].collections[-1].norm
     assert (norm.vmin, norm.vmax) == (-vmax, vmax)
+    cells = population.healpix_medians(df, "bbp_bing", "bbp_argo")
+    drawn = cells[cells["n"] >= population.HEALPIX_MIN_COUNT]
+    sat_cells = int((np.abs(drawn["median_log_ratio"]) >= 0.5).sum())
+    assert sat_cells < len(drawn) // 10  # the medians sit well inside the clip
+    assert f"colour clipped at ±0.5 dex ({sat_cells} cells saturated)" in fig.axes[0].get_title()
     plt.close(fig)
-    # with no finite ratio at all the limit falls back to 1 dex, not NaN
+    # a cell whose median is pushed past the clip is counted as saturated
+    far = df.copy()
+    far.loc[far.index[:200], "bbp_bing"] = far["bbp_argo"][:200] * 10 ** -0.8
+    far.loc[far.index[:200], ["latitude", "longitude"]] = [[10.0, 10.0]] * 200
+    fig = population.healpix_map(far, projection=None)
+    far_cells = population.healpix_medians(far, "bbp_bing", "bbp_argo")
+    far_drawn = far_cells[far_cells["n"] >= population.HEALPIX_MIN_COUNT]
+    far_sat = population.saturated_count(far_drawn["median_log_ratio"])
+    assert far_sat >= 1
+    noun = "cell" if far_sat == 1 else "cells"
+    assert f"({far_sat} {noun} saturated)" in fig.axes[0].get_title()
+    plt.close(fig)
+    # a caller may still pass its own limit
+    fig = population.matchup_map(df, vmax=1.0, projection=None)
+    norm = fig.axes[0].collections[-1].norm
+    assert (norm.vmin, norm.vmax) == (-1.0, 1.0)
+    plt.close(fig)
+    # an all-NaN frame: nothing saturated, nothing counted, maps still draw
     empty = df.assign(bbp_argo=np.nan)
-    assert population.log_ratio_vmax(empty, "bbp_bing", "bbp_argo") == 1.0
+    assert population.log_ratio_saturated(empty, "bbp_bing", "bbp_argo") == (0, 0)
+    fig = population.matchup_map(empty, projection=None)
+    assert "0 matchups; colour clipped at ±0.5 dex (0 at or beyond)" in fig.axes[0].get_title()
+    plt.close(fig)
 
 
 def test_healpix_map_drops_thin_cells(tmp_path):
@@ -742,11 +778,10 @@ def test_maps_on_robinson_axes_with_cached_coastlines(tmp_path):
     import matplotlib.pyplot as plt
 
     df = _map_frame()
-    vmax = population.log_ratio_vmax(df, "bbp_bing", "bbp_argo")
     for fn, name in ((population.matchup_map, "dots"), (population.healpix_map, "cells")):
-        out = fn(df, vmax=vmax, outfile=tmp_path / f"{name}.png", projection="robinson")
+        out = fn(df, outfile=tmp_path / f"{name}.png", projection="robinson")
         assert out.exists() and out.stat().st_size < population.MAP_SIZE_BUDGET
-        fig = fn(df, vmax=vmax, projection="robinson")
+        fig = fn(df, projection="robinson")
         assert type(fig.axes[0]).__name__ == "GeoAxes"
         plt.close(fig)
 

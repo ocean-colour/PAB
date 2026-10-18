@@ -160,6 +160,10 @@ Notes:
 - **Superseded by E1b (Q&A/Edits 1 = C):** the "Argo Q&A, 2.0 backfill" row
   becomes root `$PAB_DATA_DIR/gallery/v2_argo_qa/` (whole folder copied off
   the PVC) with a Drive copy at `AIOcean:PAB/v2/argo_qa/`.
+- **Correction (E1b, 2026-10-17):** the two `fit_chains/` folders are *not*
+  empty — `rclone size` gives `AIOcean:PAB/fit_chains/` 14,654 files /
+  18.087 GiB (1.0) and `AIOcean:PAB/v2/fit_chains/` 15,971 / 18.327 GiB
+  (2.0, matching the PVC). See Q&A/Edits 6.
 
 **E1b — Copy the 2.0-backfill Argo Q&A plots off the PVC and back them up
 (Q&A/Edits 1 = C).** The 5,453 plots under `/data/v2/pipeline/argo_qa/` exist
@@ -747,6 +751,27 @@ one-line change (`LOG_RATIO_PERCENTILES` → a fixed `LOG_RATIO_VMAX`) either
 way; nothing in E4 depends on it.
 
 **Your answer:** I choose B
+
+**6 — The v2 chains *are* in the backup; item 3 / the side task rest on a
+false reading (raised by E1b).** `/data/v2/backup.log` on the PVC says the
+2026-10-07 `v2_backup_job.yaml` run finished normally (`chains local=15971
+remote=15971`, `0 differences found`, `15971 matching files`,
+`V2_BACKUP_DONE`), and today `rclone size AIOcean:PAB/v2/fit_chains/`
+returns 15,971 objects / 18.327 GiB (and `AIOcean:PAB/fit_chains/`, the 1.0
+chains also called "empty" in E1, has 14,654 / 18.087 GiB — the HOWTO's
+18.09 GiB). Nothing is in the Drive trash and there are no duplicate-named
+folders, so E1 simply misread the remote (most likely `rclone lsd`, which
+lists only sub-directories and prints nothing for a flat folder of files).
+The only real blemish in the log is a harmless rclone `Failed to save
+config … read-only file system` (the token refresh could not be written back
+to the mounted secret; transfers were unaffected). Options: **A** drop the
+side task — nothing to re-run, no secret to create; the count/size match
+with the PVC (15,971 files, 19,678,573,593 B vs 18.3G `du`) is already
+recorded in the HOWTO backup paragraph by E1b (recommended); **B** still run
+a full-hash `rclone check` from a pod (the job's own check was
+`--size-only`); **C** re-run the job anyway.
+
+**Your answer:**
 
 ## Logs
 
@@ -1488,3 +1513,121 @@ Surprising, or worth knowing:
 - No new Q&A items.
 
 Next: E1b (user launches the pod), then E6.
+
+### 2026-10-17 (v2 Edit E1b — copied the 2.0 Argo Q&A plots off the PVC; Drive backup)
+
+Run with Fable. No code changed; nothing written on the PVC (mounted
+read-only). Files changed: `HOWTO.md` (one addition to the backup paragraph),
+this file (Q&A/Edits 6, a correction bullet in the E1 Findings, this entry);
+`nautilus/argo_qa_copy_pod.yaml` is the new pod spec from step 1 (untracked).
+New data: `$PAB_DATA_DIR/gallery/v2_argo_qa/` (5,453 PNGs, 226,830,227 B)
+and `$PAB_DATA_DIR/gallery/v2_argo_qa.md5` (the in-pod md5 list, kept next
+to the folder); `AIOcean:PAB/v2/argo_qa/`. E5/E6 needed no change — they
+already assume root `$PAB_DATA_DIR/gallery/v2_argo_qa/` for prefix
+`/data/v2/pipeline/argo_qa/`, and that is what exists now.
+
+What happened, step by step:
+
+- Pod `pab-argoqa-copy` (`python:3.12-slim`, `sleep 14400`, PVC read-only)
+  was applied by the user and was `Running` within a minute on
+  `tu.gp-engine.greatplains.net`.
+- In-pod: `ls /data/v2/pipeline/argo_qa | wc -l` = **5,453**, all `.png`,
+  exactly the DB's 5,453 `/data/v2/pipeline/argo_qa/` rows; `du -sh` =
+  **218M**. `md5sum *.png > /tmp/qa.md5` (5,453 lines, list md5
+  `abf70331…`) and `cat` back — this took ~12 min (CephFS reads from a
+  1-CPU pod while the tar stream ran concurrently). Also recorded:
+  `ls /data/v2/fit_chains | wc -l` = **15,971**, `du -sh` = **19G**
+  (`backup.log` says 18.3G), and `/data/v2/` holds `pab.db` (217,325,568 B,
+  the workstation copy's size), `pab.db.pre-task3-bak`, `backup.log` and
+  the run logs.
+- Transfer: `kubectl exec … tar czf - -C /data/v2/pipeline argo_qa >
+  gallery/v2_argo_qa.tgz` streamed 210,237,944 B in ~12 min without an
+  error (PNGs barely compress: 0.93x). `gzip -t` OK, 5,453 entries;
+  extracted into a temp dir, renamed to `gallery/v2_argo_qa/`; local count
+  5,453; `md5sum -c` against the in-pod list: **5,453 OK, 0 failed**;
+  `.tgz` deleted.
+- Drive: `rclone lsf AIOcean:PAB/v2/` before = `figures/ fit_chains/
+  site/` (no `argo_qa/`, nothing to collide with). `rclone copy … --transfers
+  8` finished in ~30 min; `rclone check … --one-way`: **0 differences,
+  5,453 matching files**; `rclone size AIOcean:PAB/v2/argo_qa/` = 5,453
+  objects, 226,830,227 B — byte-for-byte the local total.
+- Pod deleted (`kubectl … delete pod pab-argoqa-copy`); `get pod` now
+  returns NotFound and `get jobs,pods` shows nothing in the namespace.
+- HOWTO: the backup paragraph naming `AIOcean:PAB/` now lists the three
+  `v2/` folders with their counts and the 2026-10-17 date for `argo_qa/`.
+
+**The chains side task's premise is wrong — the 2.0 chains have been on
+Drive since 2026-10-07.** `tail -40 /data/v2/backup.log` is the complete log
+of the `v2_backup_job.yaml` run (it is only 1,628 B) and it ends well:
+
+```
+=== CHAINS -> AIOcean:PAB/v2/fit_chains 2026-10-07T15:51:35+00:00 ===
+2026/10/07 16:50:06 ERROR : Failed to save config after 20 tries: failed to create temp file for new config: open /cfg/..data/rclone.conf3092218986: read-only file system
+=== FIGURES -> AIOcean:PAB/v2/figures 2026-10-07T17:00:11+00:00 ===
+…
+=== VERIFY — source vs destination counts 2026-10-07T18:14:19+00:00 ===
+chains  local=15971 remote=15971
+figures local=17361 remote=17361
+=== CHECK — re-read a sample and compare hashes 2026-10-07T18:15:58+00:00 ===
+2026/10/07 18:16:43 NOTICE: Google drive root 'PAB/v2/fit_chains': 0 differences found
+2026/10/07 18:16:43 NOTICE: Google drive root 'PAB/v2/fit_chains': 15971 matching files
+=== V2_BACKUP_DONE 2026-10-07T18:16:43+00:00 ===
+```
+
+The chains step ran 15:51–17:00 (18.3 GB in 69 min, ~4.4 MB/s), the figures
+17:00–18:14, and the job's own verify and `--size-only` check passed. The
+only errors are rclone's `Failed to save config … read-only file system`:
+the Drive token was refreshed and rclone tried to write it back to the
+secret mount, which is read-only — harmless (the refreshed token lives in
+memory for the rest of the run), but the same message will recur on every
+in-cluster run; `--config` on a writable copy (`cp /cfg/rclone.conf /tmp/`)
+would silence it. No `--stats` lines appear because `--stats` logs at INFO
+and the job runs at the default NOTICE level. Today, from the workstation:
+`rclone size AIOcean:PAB/v2/fit_chains/` = **15,971 objects, 18.327 GiB
+(19,678,573,593 B)**, and `AIOcean:PAB/fit_chains/` (also called "empty"
+in E1) = 14,654 objects, 18.087 GiB — the HOWTO's 18.09 GiB for the 1.0
+chains. `--drive-trashed-only` lists nothing in either, and `lsf -F pi
+--dirs-only` shows one folder per name (no Drive duplicate-name confusion).
+So E1 misread the remote; the likely mechanism is `rclone lsd` (the command
+the E1 prompt names), which lists sub-directories only and prints nothing
+for a flat folder of files — the E1 log does not say which command produced
+the "empty". Consequence: Q&A/Edits 3 = A (re-run the backup job) is
+unnecessary; posted as **Q&A/Edits 6** with the recommendation to drop the
+side task. The E1 Findings carry a correction bullet; the side-task text
+itself was left for the user to retire.
+
+Other things worth knowing:
+
+- `rclone about AIOcean:` prints nothing (shared drives report no quota).
+- The in-pod `md5sum` of 218 MB taking ~12 min is the CephFS small-file
+  read rate from this pod class (and it shared one CPU with gzip); the
+  tar stream itself was limited by the same reads, not by the network.
+- `du -sh` on `gallery/v2_argo_qa/` under-reports on ZFS as E5 noted; the
+  `226,830,227` figure is `du -sb --apparent-size`, and matches Drive.
+- Scratch outputs (pod inventory, backup.log tail, md5 check, rclone check)
+  were written under the session scratchpad
+  (`…/scratchpad/e1b/`); the md5 list is the only one kept permanently,
+  as `$PAB_DATA_DIR/gallery/v2_argo_qa.md5`.
+
+Next: E6 (which can now pass the `v2_argo_qa` root to a folder that
+exists); the chains side task awaits the Q&A/Edits 6 answer.
+
+### 2026-10-17 (v2 — Q&A/Edits 5 = B: maps clipped at a fixed ±0.5 dex)
+
+Run with Fable, in parallel with E1b; that agent did not edit this file, so
+the session lead wrote this entry. It replaces E4's symmetric 2nd–98th
+percentile clip. In `pab/plotting/population.py`, `LOG_RATIO_VMAX = 0.5`
+replaces `LOG_RATIO_PERCENTILES`. `log_ratio_vmax` and `percentile_range` are
+gone, so E4's log entry describing them is now historical. `matchup_map` and
+`healpix_map` take `vmax=LOG_RATIO_VMAX`, and the new `saturated_count` and
+`log_ratio_saturated` feed the titles and captions. `_static_comparison_figures`
+captions now state the fixed clip ("a factor of 3.2 either way") and computed
+saturation counts. On the v2 DB, 1,858 of the 15,274 matchups with a ratio
+(12.2 %) are at or beyond ±0.5 dex (1,090 low, 768 high). Only one of the 453
+drawn HEALPix cells saturates: the Mediterranean, with median −1.48 and n = 70.
+The regional pattern now reads at a glance: the subtropical gyres are red and
+the Southern Ocean, the subpolar North Pacific and the Nordic/Arctic shelves are
+blue. Sizes: dot map 163 KB, HEALPix map 104 KB (budget 250 KB). One test was
+replaced, so the full suite stays at 435 passed, 1 skipped; `ruff check pab` is
+clean. HOWTO and docs never mentioned the percentile rule, so they are
+unchanged.

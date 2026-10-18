@@ -40,9 +40,12 @@ DENSITY_MIN_COUNT = 5
 #: but a separate knob: one is a histogram cell, the other a patch of ocean.
 HEALPIX_MIN_COUNT = 5
 
-#: The percentiles of the per-matchup log-ratio that set the maps' symmetric
-#: colour limit (Q&A/v2 Q8: 2nd-98th), ``vmax = max(|p2|, |p98|)``.
-LOG_RATIO_PERCENTILES = (2.0, 98.0)
+#: The maps' fixed symmetric colour limit on ``log10(satellite / float)``
+#: (Q&A/v2 Edits 5 = B): ±0.5 dex, i.e. a factor of ≈ 3 either way. Fixed
+#: rather than data-driven, so the 1.0-vs-2.0 maps and future runs read on
+#: one scale; matchups at or beyond it saturate to the end colours and the
+#: captions count them (:func:`log_ratio_saturated`).
+LOG_RATIO_VMAX = 0.5
 
 #: The map projection the report uses: ``"robinson"`` (cartopy) or ``None``
 #: (plain lon/lat axes, no cartopy, no Natural Earth download). The map
@@ -464,43 +467,41 @@ def log_ratio(df, sat_col: str = "bbp_bing", insitu_col: str = "bbp_argo"):
     return out
 
 
-def log_ratio_vmax(
+def saturated_count(values, vmax: float = LOG_RATIO_VMAX) -> int:
+    """How many finite ``values`` lie at or beyond ``±vmax`` -- the ones a
+    colour scale clipped there shows in its end colours."""
+    values = np.asarray(values, dtype=float)
+    return int(np.count_nonzero(np.abs(values[np.isfinite(values)]) >= vmax))
+
+
+def log_ratio_saturated(
     df,
     sat_col: str = "bbp_bing",
     insitu_col: str = "bbp_argo",
     *,
-    percentiles: tuple[float, float] = LOG_RATIO_PERCENTILES,
-) -> float:
-    """The maps' shared symmetric colour limit: ``max(|p_lo|, |p_hi|)`` of the
-    per-matchup log-ratio at the given percentiles (Q&A/v2 Q8, F5).
-
-    Computed once by the caller and passed to both :func:`matchup_map` and
-    :func:`healpix_map`, so the dot map and the cell map share one scale and
-    neither can be stretched by the handful of non-physical retrievals
-    (``b_bp`` ratios of 10⁵ and more) that an autoscaled colorbar would show
-    as the only feature. ``1.0`` when no finite ratio exists.
+    vmax: float = LOG_RATIO_VMAX,
+) -> tuple[int, int]:
+    """``(saturated, n)``: the matchups whose ``log10(sat / insitu)`` is at or
+    beyond ``±vmax`` -- drawn in the end colours of :func:`matchup_map` --
+    and the number with a finite ratio at all. For the captions (Q&A/v2
+    Edits 5), which quote the fixed clip and the fraction it saturates.
     """
     values = log_ratio(df, sat_col, insitu_col)
-    values = values[np.isfinite(values)]
-    if not values.size:
-        return 1.0
-    lo, hi = np.percentile(values, list(percentiles))
-    vmax = float(max(abs(lo), abs(hi)))
-    return vmax if vmax > 0 else 1.0
+    n = int(np.isfinite(values).sum())
+    return saturated_count(values, vmax), n
 
 
-def _ordinal(value: float) -> str:
-    n = int(value)
-    if float(value) != n:
-        return f"{value:g}th"
-    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"{n}{suffix}"
+def _plural(n: int, noun: str) -> str:
+    return f"{n:,} {noun}{'' if n == 1 else 's'}"
 
 
-def percentile_range(percentiles=LOG_RATIO_PERCENTILES) -> str:
-    """``"2nd-98th"`` for the titles and captions that quote the clip."""
-    lo, hi = percentiles
-    return f"{_ordinal(lo)}-{_ordinal(hi)}"
+def _saturated_phrase(values, vmax: float) -> str:
+    """``"1,900 (12.3 %) at or beyond"`` for the map titles."""
+    values = np.asarray(values, dtype=float)
+    n = int(np.isfinite(values).sum())
+    sat = saturated_count(values, vmax)
+    pct = f" ({100.0 * sat / n:.1f} %)" if n else ""
+    return f"{sat:,}{pct} at or beyond"
 
 
 def _map_axes(projection, figsize=(7.0, 4.0)):
@@ -582,8 +583,7 @@ def matchup_map(
     sat_col: str = "bbp_bing",
     insitu_col: str = "bbp_argo",
     color_col: str | None = None,
-    vmax: float | None = None,
-    percentiles: tuple[float, float] = LOG_RATIO_PERCENTILES,
+    vmax: float = LOG_RATIO_VMAX,
     projection: str | None = "default",
     outfile=None,
     dpi: int = 100,
@@ -592,20 +592,20 @@ def matchup_map(
 
     A Robinson map (cartopy; see :func:`_map_axes` for the fallbacks) with
     light-grey land, one dot per matchup (marker size 3, alpha 0.6) on a
-    red-blue scale **symmetric about 0** and clipped at ``vmax``: by default
-    ``max(|p2|, |p98|)`` of the per-matchup log-ratio (:func:`log_ratio_vmax`),
-    which the caller computes once and shares with :func:`healpix_map`. The
-    ratio is computed here from the two columns -- the caller does not pass a
-    ratio column -- so a runaway retrieval cannot reach the colour scale
-    through a caller (Q&A/v2 Q8). Matchups with a position but no finite
-    ratio (no float value) are drawn as small grey dots underneath.
+    red-blue scale **symmetric about 0** and clipped at the fixed ``vmax``
+    (:data:`LOG_RATIO_VMAX`, ±0.5 dex; Q&A/v2 Q8, Edits 5), the same scale
+    as :func:`healpix_map`; matchups at or beyond the clip take the end
+    colours and the title counts them. The ratio is computed here from the
+    two columns -- the caller does not pass a ratio column -- so a runaway
+    retrieval cannot reach the colour scale through a caller. Matchups with
+    a position but no finite ratio (no float value) are drawn as small grey
+    dots underneath.
 
     Args:
         color_col: Colour by this column of ready-made values instead of the
             log-ratio of ``sat_col``/``insitu_col`` (the colorbar is then
             labelled with the column name); the same symmetric scale.
-        vmax: The symmetric colour limit; ``None`` → :func:`log_ratio_vmax`
-            of the values at ``percentiles``.
+        vmax: The symmetric colour limit, in dex.
         projection: ``"robinson"``, ``None`` (plain lon/lat axes; never
             touches cartopy or the network -- what the tests use) or
             ``"default"`` → :data:`MAP_PROJECTION`.
@@ -626,13 +626,6 @@ def matchup_map(
     positioned = np.isfinite(lon) & np.isfinite(lat)
     coloured = positioned & np.isfinite(values)
     grey = positioned & ~coloured
-    if vmax is None:
-        finite = values[coloured]
-        if finite.size:
-            lo, hi = np.percentile(finite, list(percentiles))
-            vmax = float(max(abs(lo), abs(hi))) or 1.0
-        else:
-            vmax = 1.0
 
     fig, ax, kw = _map_axes(projection)
     if grey.any():
@@ -656,8 +649,8 @@ def matchup_map(
     _ratio_colorbar(fig, sc, ax, label)
     n = int(coloured.sum())
     title = (
-        f"{n:,} matchups; colour clipped at ±{vmax:.2f} dex "
-        f"({percentile_range(percentiles)} percentile)"
+        f"{n:,} matchups; colour clipped at ±{vmax:g} dex "
+        f"({_saturated_phrase(values[coloured], vmax)})"
     )
     if grey.any():
         title += f"; {int(grey.sum()):,} without a ratio in grey"
@@ -802,8 +795,7 @@ def healpix_map(
     insitu_col: str = "bbp_argo",
     cell_size_deg: float = 5.0,
     min_count: int = HEALPIX_MIN_COUNT,
-    vmax: float | None = None,
-    percentiles: tuple[float, float] = LOG_RATIO_PERCENTILES,
+    vmax: float = LOG_RATIO_VMAX,
     projection: str | None = "default",
     outfile=None,
     dpi: int = 100,
@@ -817,10 +809,11 @@ def healpix_map(
     (Q&A/v2 F5), as polygons from ``healpy.boundaries`` (16 vertices each)
     through ``PlateCarree`` onto the Robinson/land background. Cells that
     straddle the dateline are split in two (:func:`_dateline_pieces`; the
-    number is logged). ``vmax`` is meant to come from the caller's one
-    :func:`log_ratio_vmax` call so both maps share one scale. The title
-    gives the cells drawn, the matchups they hold and the sparser cells left
-    out.
+    number is logged). The colour scale is the fixed ``vmax``
+    (:data:`LOG_RATIO_VMAX`, ±0.5 dex) shared with :func:`matchup_map`. The
+    title gives the cells drawn, the matchups they hold, the sparser cells
+    left out and the drawn cells whose median is at or beyond the clip
+    (saturated).
 
     Returns:
         The Matplotlib ``Figure`` (or the written ``Path`` when ``outfile``).
@@ -831,8 +824,6 @@ def healpix_map(
     cells = healpix_medians(
         df, sat_col, insitu_col, cell_size_deg=cell_size_deg
     )
-    if vmax is None:
-        vmax = log_ratio_vmax(df, sat_col, insitu_col, percentiles=percentiles)
     drawn = cells[cells["n"] >= min_count]
     nside = int(cells["nside"].iloc[0]) if len(cells) else 0
     verts, colours, n_split = [], [], 0
@@ -867,7 +858,8 @@ def healpix_map(
         f"{len(drawn)} HEALPix cells (nside {nside}, ≈{res:.1f}°) with "
         f"≥ {min_count} matchups, holding {int(drawn['n'].sum()):,} matchups\n"
         f"{len(cells) - len(drawn)} sparser cells not drawn; "
-        f"colour clipped at ±{vmax:.2f} dex",
+        f"colour clipped at ±{vmax:g} dex "
+        f"({_plural(saturated_count(drawn['median_log_ratio'], vmax), 'cell')} saturated)",
         fontsize=9,
     )
     return _finish(fig, outfile, dpi)
