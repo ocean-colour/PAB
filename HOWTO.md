@@ -286,7 +286,7 @@ v1, attach v1 read-only rather than copying rows into it.
 | --- | --- | --- |
 | workstation | `$PAB_DATA_DIR/v1/pab.db` — the old `full/pab.db`, renamed. `$PAB_DATA_DIR/full` is now a **symlink to `v1`**, so existing commands and docs that say `full/pab.db` keep working. | `$PAB_DATA_DIR/v2/pab.db`, `$PAB_DATA_DIR/v2/fit_chains/` |
 | PVC (Nautilus) | `/data/v1/` — the 1.0 run's outputs, re-laid out 2026-09-17. **`/data/v1/pab.db` does not exist**: the database that was at `/data/full/pab.db` is the *stale* pre-`cdom_chl`, pre-NASA-GIOP one (138,854,400 B), so it was renamed `/data/v1/pab_stale_2026-08-20.db` rather than left at a path the sha256 above defines. The 14,633 chain files under `/data/v1/fit_chains/` **are** the genuine 1.0 chains — but `fits.chains_path` in the v1 database still records the old `/data/fit_chains/...` paths, deliberately not rewritten because v1 is frozen; prepend `/data/v1` when resolving them. | `/data/v2/pab.db`, `/data/v2/fit_chains/`, `/data/v2/pipeline/` — set `PAB_DATA_DIR=/data/v2` so chains key there |
-| S3 | `s3://pab/v1/pab.db` (public, immutable). The **`s3://pab/full/` objects stay put** — the live site's download links point at them, and `full/pab.db` is byte-identical to `v1/pab.db`. | `s3://pab/v2/pab.db` + `v2/matchup_summary.*` |
+| S3 | `s3://pab/v1/pab.db` (public, immutable). The **`s3://pab/full/` objects stay put** — the live site's download links point at them, and `full/pab.db` is byte-identical to `v1/pab.db`. | `s3://pab/v2/pab.db` + `v2/matchup_summary.*` + `v2/nasa_giop_summary.{csv,parquet}` (added 2026-10-18, E6 of `claude_prompts/v2/report_improvements.md`: 8,350,324 B sha256 `21b4b6ce…f60a` / 2,891,643 B sha256 `66f6cb27…91e2`; the BING-vs-NASA table with the derived 700 nm `b_bp`, re-exportable byte-identically with `publish.export_tables`) |
 | backup | `AIOcean:PAB/` | `AIOcean:PAB/pab_v2_<date>.db` (dated copy, not a sync) |
 
 Public URLs are `https://s3-west.nrp-nautilus.io/pab/<key>`; the bucket policy
@@ -366,15 +366,57 @@ per-matchup figures/MCMC chains belong in the object store (§7b), not git.
 **Regenerate and publish (current dev workflow):**
 
 ```bash
-# 1. (Re)generate the site sources from the populated store into the repo
-pab --db "$PAB_DATA_DIR/pab.db" --emit-site report_site
+# 1. (Re)generate the site sources from the populated store into the repo.
+#    This is the exact command behind the committed 2.0 site (2026-10-18, E6 of
+#    claude_prompts/v2/report_improvements.md); it runs in ~10 s on the
+#    workstation and never writes to either database.
+pab --db "$PAB_DATA_DIR/v2/pab.db" --compare-db "$PAB_DATA_DIR/v1/pab.db" \
+    --emit-site report_site \
+    --downloads-base-url https://s3-west.nrp-nautilus.io/pab/v2 \
+    --figure-root /data/v2/pipeline/figures="$PAB_DATA_DIR/gallery/v2_figures" \
+    --figure-root /data/v1/pipeline/figures="$PAB_DATA_DIR/gallery/v1_scenes" \
+    --figure-root /data/full/pipeline/argo_qa="$PAB_DATA_DIR/gallery/argo_qa" \
+    --figure-root /data/v2/pipeline/argo_qa="$PAB_DATA_DIR/gallery/v2_argo_qa" \
+    --figure-root /data/run1k/pipeline/argo_qa="$PAB_DATA_DIR/run1k/pipeline/argo_qa"
 
 # 2. (optional) preview locally — needs sphinx + sphinx-rtd-theme
 python -m sphinx -b html report_site report_site/_build   # _build is git-ignored
 # open report_site/_build/index.html
+# (building into a scratch directory instead keeps report_site/ pristine:
+#  python -m sphinx -b html report_site /tmp/pab_site_build)
 
 # 3. commit report_site/ and push; RTD rebuilds on push
 ```
+
+**The `--emit-site` flags (2026-10-18, E6).** `--compare-db` attaches the
+frozen 1.0 database **read-only** (`file:…?mode=ro`) and adds the 1.0-vs-2.0
+section, the summary headline and the two-database provenance note; omit it and
+they simply do not appear. `--downloads-base-url` links the summary tables
+(`matchup_summary.*`, `nasa_giop_summary.*`) at that public prefix instead of
+staging multi-MB CSV/Parquet into the committed site — the objects must already
+be in `s3://pab/v2/` (§5b; upload with `NautilusS3Backend`, §7b).
+`--figure-root OLD=NEW` (repeatable) translates the **pod paths recorded in the
+database** (`fits.figure_path`, `matchups.scene_path`, `mld_summary.qa_path`
+start with `/data/v2/pipeline/figures/`, `/data/v1/pipeline/figures/`,
+`/data/full/pipeline/argo_qa/`, `/data/v2/pipeline/argo_qa/` or
+`/data/run1k/pipeline/argo_qa/`) to where the files live on the workstation:
+the `$PAB_DATA_DIR/gallery/{v2_figures,v1_scenes,argo_qa}/` folders hold only
+the handful of files the galleries need, fetched from the Drive backup with
+`rclone copy … --files-from … --no-traverse` (E1/E5), `gallery/v2_argo_qa/` is
+the whole 5,453-file backfill set (E1b), and `run1k/pipeline/argo_qa/` is the
+run1k render. The longest matching `OLD` wins; a file still missing after the
+remap is dropped from its gallery with **one counted warning per gallery** (the
+page then says "N of the M chosen have no file reachable at build time"), and a
+`NEW` that does not exist is tolerated. Above `MAX_INLINE_FIGURES` the Figures
+page shows only the deterministic **representative** selection (8 fit figures
+spanning the 5th–95th percentile of sat/float `b_bp` plus one runaway and the
+clearest / most productive Chl terciles; one scene per latitude band; the 8
+Argo Q&A plots behind the selected fits), staged with the longest side capped at
+1200 px — so a rebuild adds ~1 MB to `report_site/` and the 2.0 tree is
+≈2.6 MB in git. Expect `git status --short report_site` to list the pages, the
+comparison PNGs and the `_static/{figures,scenes,argo_qa}/` files, and nothing
+under `_build/`; `aggregates.rst` always differs because its Bokeh embeds carry
+fresh UUIDs, which is noise, not a change.
 
 **One-time RTD setup:** on readthedocs.org → *Add project* → connect GitHub →
 authorize the `ocean-colour` org → pick `PAB` (import the same repo a second time;
