@@ -2774,3 +2774,45 @@ Worth knowing:
 
 Hand-off (nothing committed — git is yours): the nine files above. Next:
 your approval for steps 0–6, then O5.
+
+### 2026-10-18 (v2 Outliers O4, part 2 — chains copied; n_neg_blue backfilled into the live v2 DB)
+
+Approved by the user ("go ahead with the O4 backfill"); run with Opus (the
+part-1 code was Fable's). The data steps from the part-1 entry, steps 0–6:
+
+- **Chains.** The user launched the copy (`nohup rclone copy
+  AIOcean:PAB/v2/fit_chains/ $PAB_DATA_DIR/v2/fit_chains/ --transfers 8`, log
+  `v2/logs/fit_chains_copy_20261018.log`), 12:58–~13:40, ~19 GB. `rclone
+  check … --one-way`: **15,971 matching files, 0 differences**. (A
+  background wait-loop of mine never exited — its `pgrep -f` pattern matched
+  its own command line; caught at the 13:47 check and stopped. Use
+  `pgrep -x rclone` or a pid next time.)
+- **Dry run** (read-only open): in scope 15,971; NPZ missing 0; computed
+  15,971; `n_neg_blue ≥ 1` **156 (0.98 %)**; max 21, median 0, mean 0.122.
+- **Real run** (`--backup-copy $PAB_DATA_DIR/v2/pab_pre_negblue_20261018.db`,
+  log `v2/logs/rrs_qa_backfill_20261018.log`, exit 0, ~10 s): backup sha =
+  pre-run sha `1e69f6ee…8a3f8` (217,325,568 B); 15,971 rows upserted;
+  `fit_results` 303,489 → 319,460, all other tables unchanged (fits 31,947,
+  matchups 15,976, …); checksum over `fits` (`0c8852b7…`) and over the non-QA
+  `fit_results` rows (`c628bcdb…`) identical before and after; integrity ok.
+  New live DB: **220,520,448 B, sha256
+  `a9959626bfb68cd09344195487cdbfad806a2de1ec6a9b5ad098babff808201d`**.
+- **Independent check** (read-only): 15,971 QA rows, 156 ≥ 1, max 21;
+  **runaways 40/51** (the 2.0 fits with `bbp700 > 1`), **the rest 116/15,920
+  (0.73 %)** — consistent with the outliers report's 40/51 and 2/300.
+  `v1/pab.db` still `09de0a6d…8273`.
+- **HOWTO §5b**: a dated paragraph (chains now on the workstation, the new
+  size/sha, the pre-backfill copy and its sha, the log). The 2026-10-03
+  "authoritative" paragraph is left as the historical record.
+- **Scratch site rebuild** (HOWTO §7a E6 command into
+  `/tmp/claude-1000/pab-o4-site/`, the session scratchpad having been
+  removed): exit 0, no warnings; Methods carries the "Negative-blue QA count"
+  definition; the Comparisons failure note reads "156 of 15,971 fitted
+  spectra (0.98 %) have at least one negative band at 400–450 nm; 40 of the
+  51 failed retrievals do." The build left the DB sha unchanged.
+  `report_site/` not rebuilt; nothing uploaded (both O9).
+
+Note for O9: the public `s3://pab/v2/pab.db` is now the *pre*-backfill file
+(`1e69f6ee…`), i.e. `pab_pre_negblue_20261018.db` — Q&A/Outliers 9 = A
+covers publishing the new one. Files changed this part: `HOWTO.md`, this
+file. Next: O5.
