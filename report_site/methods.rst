@@ -56,7 +56,7 @@ Caveats & provenance
 
 - **Sample size.** This release may cover a small development set; treat the aggregate statistics accordingly.
 - **Granule access.** Run out-of-region (outside AWS ``us-west-2``), PACE reads are slow; PAB pre-downloads granules for reliability. This affects *how* the data were read, not the results.
-- **BING vs NASA GIOP.** The *Comparisons* page includes NASA's own retrieval as a baseline: the operational ``PACE_OCI_L2_IOP`` product (**GIOP** algorithm, default configuration; Werdell et al. 2013), read at the **same pixel** used for each BING fit. NASA reports ``b_bp`` at **442 nm**, BING at **700 nm**; the comparison is deliberately **not** spectrally adjusted, and every figure/stat is labelled accordingly. **GSM is absent by NASA product availability, not by choice:** NASA does not operationally distribute a GSM (Garver-Siegel-Maritorena) Level-2 product for PACE — GIOP is the only distributed L2 IOP suite — so no GSM comparison is possible without reprocessing from Level-1B. The NASA-GIOP records carry ``pab_version = "1.1"`` (they were added alongside the existing ``1.0`` BING fits; the BING results are unchanged).
+- **BING vs NASA GIOP.** The *Comparisons* page includes NASA's own retrieval as a baseline: the operational ``PACE_OCI_L2_IOP`` product (**GIOP** algorithm, default configuration; Werdell et al. 2013), read at the **same pixel** used for each BING fit. NASA reports ``b_bp`` at **442 nm**, BING at **700 nm**; for the comparison NASA's value is shifted to 700 nm with GIOP's own per-pixel power-law slope ``bbp_s``: ``b_bp(700) = b_bp(442) × (442/700)^bbp_s`` (bounds scaled by the same factor; nothing is written back to the database). GIOP bounds the slope at 2.0, and 14.6 % of the slopes sit at that ceiling in this release — such a slope is a pinned fit rather than a measurement, so those pixels' 700 nm values are the least constrained. **GSM is absent by NASA product availability, not by choice:** NASA does not operationally distribute a GSM (Garver-Siegel-Maritorena) Level-2 product for PACE — GIOP is the only distributed L2 IOP suite — so no GSM comparison is possible without reprocessing from Level-1B. The NASA-GIOP records carry ``pab_version = "1.1"`` (they were added alongside the existing ``1.0`` BING fits; the BING results are unchanged).
 - **Provenance.** Every record is stamped with a ``pab_version``; the landing page shows the version and build date for this site. Per-matchup MCMC chains and figures are published as downloads (see the release manifest), keyed by matchup id.
 
 References
@@ -69,7 +69,7 @@ Provenance
 ----------
 
 
-Built from ``pab_version`` ``2.0`` on 2026-10-05. Installed package versions:
+Built from ``pab_version`` ``2.0`` on 2026-10-18. Installed package versions:
 
 .. list-table::
    :header-rows: 1
@@ -106,7 +106,7 @@ Source revisions (the editable installs all report ``0.0.dev0``, so the commit i
    * - repository
      - commit
    * - PAB
-     - 920ab22
+     - 603d97d
    * - bing
      - bf56f6d
    * - ocpy

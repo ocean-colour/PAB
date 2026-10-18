@@ -63,6 +63,38 @@ alongside ``b_bp``; its ``extra_series`` overlays the independent **OC4**
 band-ratio Chl (``chl_oc``) when a granule opener is supplied to
 :func:`~pab.report.rst.build_site`.
 
+Static figures at scale
+-----------------------
+
+Above :data:`~pab.report.rst.MAX_INTERACTIVE_MATCHUPS` (2,000) the Comparisons
+page uses pre-rendered PNGs from :mod:`pab.plotting.population` instead of Bokeh
+embeds — this is what the published 2.0 site (≈16,000 matchups) shows:
+
+* :func:`~pab.plotting.population.density_scatter` — the ``b_bp``, chlorophyll,
+  GIOP-vs-BING and 1.0-vs-2.0 panels. Log–log axes span the central 99 % of the
+  pooled values; cells of a 50 × 50 2-D histogram holding
+  ≥ :data:`~pab.plotting.population.DENSITY_MIN_COUNT` (5) matchups are filled
+  on a sequential single-hue colormap (Blues / Greens / Purples) with a log
+  count colorbar, and every matchup in a sparser cell is drawn as an individual
+  dot in the same hue. The 1:1 line, the dashed median-ratio line and the
+  ``n ρ bias RMS`` title are kept; matchups outside the axes are counted in
+  the title (``[N off-scale]``) and **kept in the statistics**, so the
+  non-physical retrievals no longer set the axes but are not hidden.
+* :func:`~pab.plotting.population.matchup_map` and
+  :func:`~pab.plotting.population.healpix_map` — a cartopy Robinson dot map
+  (grey land, coastlines) and a HEALPix map of per-cell median
+  ``log10(satellite / float b_bp)`` for cells with
+  ≥ :data:`~pab.plotting.population.HEALPIX_MIN_COUNT` (5) matchups. Both use
+  the same diverging scale, symmetric about 0 and clipped at a fixed
+  ±:data:`~pab.plotting.population.LOG_RATIO_VMAX` (0.5 dex); the captions state
+  how many matchups (or cells) saturate. Without cartopy, or without its cached
+  Natural Earth shapefiles and no network, the maps fall back to plain axes
+  with a warning (``projection=None`` forces that path in the tests).
+* The NASA GIOP panel compares at **one wavelength**: NASA's 442 nm ``b_bp`` is
+  shifted to 700 nm with its own per-pixel slope
+  (:func:`pab.metrics.compare.giop_bbp_to_700`), derived in
+  :func:`~pab.metrics.compare.gather_nasa_giop` and never persisted.
+
 Beyond the interactive plots, :mod:`pab.report.rst` surfaces the quality-assurance
 imagery and provenance the pipeline now records:
 
@@ -71,7 +103,19 @@ imagery and provenance the pipeline now records:
   **Argo profile Q&A** plots (:func:`~pab.report.rst.argo_qa_gallery`, from
   ``mld_summary.qa_path``) — each an **N-guarded** thumbnail gallery
   (:data:`~pab.report.rst.MAX_INLINE_FIGURES`) served from ``_static/`` via the
-  shared :func:`~pab.report.rst._stage_static` copier.
+  shared :func:`~pab.report.rst._stage_static` copier. Above the guard the
+  galleries show a deterministic **representative** subset instead of nothing:
+  :func:`~pab.report.rst.select_representative_fits` (the matchups nearest the
+  5th/25th/50th/75th/95th percentiles of the sat/float ``b_bp`` ratio, the
+  largest non-physical retrieval, and the clearest and most productive Chl
+  terciles — ≤ 8, each captioned with why it was chosen),
+  :func:`~pab.report.rst.select_representative_scenes` (one per latitude band),
+  and the Argo Q&A plots behind the selected fits. Only those files are staged,
+  downscaled to :data:`~pab.report.rst.GALLERY_MAX_SIDE` px. Because the
+  database records the paths where the figures were rendered (in-pod), the
+  ``pab --emit-site`` CLI takes a repeatable ``--figure-root OLD=NEW`` remap
+  (:func:`~pab.report.rst.remap_figure_path`); a file still missing after the
+  remap is dropped with one counted warning per gallery.
 * A **matchup-quality table** (:func:`~pab.report.rst.matchup_quality_table`:
   distance / Δtime / spectra count) on the aggregates page.
 * A **provenance block** (:func:`~pab.report.rst.provenance_block`: ``pab_version``

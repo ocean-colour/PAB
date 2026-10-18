@@ -7,17 +7,22 @@ Satellite vs float comparisons
 .. figure:: _static/comparisons/bbp_scatter.png
    :width: 520px
 
-   Satellite vs float ``b_bp`` (700 nm), log-log.
+   Satellite vs float ``b_bp`` (700 nm), log-log; axes span the central 99 % of the values. Filled cells where ≥ 5 matchups fall in a cell, individual points elsewhere; 155 matchups lie outside the axes and are counted in the statistics. The dashed line is the median ratio; the solid line is 1:1.
 
 .. figure:: _static/comparisons/chl_scatter.png
    :width: 520px
 
-   Satellite vs float chlorophyll, log-log.
+   Satellite vs float chlorophyll, log-log; axes span the central 99 % of the values. Filled cells where ≥ 5 matchups fall in a cell, individual points elsewhere; 166 matchups lie outside the axes and are counted in the statistics. The dashed line is the median ratio; the solid line is 1:1.
 
 .. figure:: _static/comparisons/matchup_map.png
    :width: 520px
 
-   Matchup locations, coloured by sat/float ``b_bp`` ratio.
+   Matchup locations (one dot per matchup); colour = log10(satellite / float ``b_bp``), symmetric about 0 and clipped at a fixed ±0.5 dex (a factor of 3.2 either way). The 1,858 matchups (12.2 % of the 15,274 with a ratio) at or beyond ±0.5 dex saturate to the end colours. Matchups without a float ``b_bp`` are grey.
+
+.. figure:: _static/comparisons/healpix_map.png
+   :width: 520px
+
+   Median log10(satellite / float ``b_bp``) per HEALPix cell (nside 8, ≈ 7° cells); only cells holding ≥ 5 matchups are drawn (453 cells, 15,143 matchups; 59 sparser cells left out). The same scale as the dot map: colour = log10(satellite / float ``b_bp``), symmetric about 0 and clipped at a fixed ±0.5 dex (a factor of 3.2 either way); saturated (median at or beyond ±0.5 dex): 1 of the 453 drawn cells.
 
 BING vs NASA GIOP (L2 IOP)
 --------------------------
@@ -25,14 +30,14 @@ BING vs NASA GIOP (L2 IOP)
 
 The same PACE overpasses, retrieved two ways: **BING** (this project) against NASA's own **GIOP** retrieval, read from the operational ``PACE_OCI_L2_IOP`` product at the *same pixel* used for the BING fit. See the :doc:`Methods <methods>` page for the product details and provenance.
 
-**Wavelength caveat:** NASA reports ``b_bp`` at **442 nm** while BING's headline ``b_bp`` is at **700 nm** (chosen to match the float ``BBP700``). The two are compared **as-is, with no spectral adjustment**, so a ratio above 1 is expected simply from the blue-to-red decrease of particulate backscatter — read the scatter as a *consistency* check, not a like-for-like validation.
+**Wavelength note:** NASA reports ``b_bp`` at **442 nm** while BING's headline ``b_bp`` is at **700 nm** (chosen to match the float ``BBP700``). NASA's value is shifted to 700 nm with GIOP's own per-pixel power-law slope ``bbp_s``: ``b_bp(700) = b_bp(442) × (442/700)^bbp_s`` (the credible bounds scale by the same factor), so the comparison below is at one wavelength. 14.6 % of the 15,971 slopes sit at GIOP's ceiling of 2.0 — such a slope is a pinned fit rather than a measurement, so those pixels' 700 nm values are the least constrained. For continuity with the previous release, which compared the two as stored, the unadjusted median NASA(442)/BING(700) ratio on the same matchups is 2.15.
 
-- n = 15964; median NASA(442)/BING(700) ratio = 2.15 (IQR 1.68–2.89); Spearman ρ = 0.874; log10 offset = 0.359, RMS = 0.648.
+- n = 15964; median NASA(700)/BING(700) ratio = 0.937 (IQR 0.747–1.22); Spearman ρ = 0.889; log10 offset = 0.000156, RMS = 0.52.
 
 .. figure:: _static/comparisons/nasa_giop_bbp_scatter.png
    :width: 520px
 
-   NASA GIOP ``b_bp`` (442 nm) vs BING ``b_bp`` (700 nm), log-log — **note the differing wavelengths** (no spectral adjustment applied).
+   NASA GIOP ``b_bp`` shifted to 700 nm vs BING ``b_bp`` (700 nm), log-log; axes span the central 99 % of the values. Filled cells where ≥ 5 matchups fall in a cell, individual points elsewhere; 173 matchups lie outside the axes and are counted in the statistics. The dashed line is the median ratio; the solid line is 1:1.
 
 1.0 vs 2.0 — elastic vs inelastic retrieval
 -------------------------------------------
@@ -113,12 +118,12 @@ So the same mechanism that makes the inelastic correction large in clear water a
 .. figure:: _static/comparisons/v2_vs_v1_bbp700.png
    :width: 520px
 
-   2.0 (inelastic) vs 1.0 (elastic) ``b_bp`` (700 nm), log-log, same matchup and same pixel. The dashed line is the median ratio; the solid line is 1:1.
+   2.0 (inelastic) vs 1.0 (elastic) ``b_bp`` (700 nm), log-log, same matchup and same pixel. Filled cells where ≥ 5 matchups fall in a cell, individual points elsewhere; 156 matchups lie outside the axes and are counted in the statistics. The dashed line is the median ratio; the solid line is 1:1.
 
 .. figure:: _static/comparisons/v2_vs_v1_chl.png
    :width: 520px
 
-   2.0 (inelastic) vs 1.0 (elastic) chlorophyll, log-log, same matchup and same pixel. The dashed line is the median ratio; the solid line is 1:1.
+   2.0 (inelastic) vs 1.0 (elastic) chlorophyll, log-log, same matchup and same pixel. Filled cells where ≥ 5 matchups fall in a cell, individual points elsewhere; 90 matchups lie outside the axes and are counted in the statistics. The dashed line is the median ratio; the solid line is 1:1.
 
 .. figure:: _static/comparisons/v2_bp_hist.png
    :width: 520px

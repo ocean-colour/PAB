@@ -422,6 +422,9 @@ no selection bias toward fits that have a plot).
    to the branch the report project tracks. Do not commit. Use Fable if you
    can. Log your work.
 
+*Retired (Q&A/Edits 6 = A, 2026-10-18): E1b found the v2 chains already on
+Drive (15,971 files, 18.33 GiB); nothing to re-run. Kept for the record.*
+
 **Side task (not part of the E-sequence; Q&A/Edits 3 = A) — re-run the v2
 chains backup.** Any time after E1b (which records the chain count/size and
 the tail of `/data/v2/backup.log`). Read `nautilus/v2_backup_job.yaml` and
@@ -1631,3 +1634,159 @@ blue. Sizes: dot map 163 KB, HEALPix map 104 KB (budget 250 KB). One test was
 replaced, so the full suite stays at 435 passed, 1 skipped; `ruff check pab` is
 clean. HOWTO and docs never mentioned the percentile rule, so they are
 unchanged.
+
+### 2026-10-18 (v2 Edit E6 — rebuilt report_site, verified, closed out)
+
+Run with Fable. No code changed. Both databases were opened by the CLI's
+`Store.open(create=False)` path and are **byte-identical before and after**
+(v2 `1e69f6ee…8a3f8`, 217,325,568 B; v1 `09de0a6d…8273`, 169,938,944 B; no
+`-journal`/`-wal` files appeared). Nothing was written under `v1/`, no pod, no
+rclone. Files changed: `report_site/` (regenerated), `HOWTO.md` (§5b S3 row,
+§7a rebuild command and a paragraph on the `--emit-site` flags),
+`docs/design/PAB_implementation.md` (new §13 and a pointer in §5e.2),
+`docs/reporting.rst` (a "Static figures at scale" section and the galleries
+bullet), this file. Scratch under `/tmp/claude-1000/pab-e6/` (sphinx builds,
+exports, re-downloads, logs).
+
+**Step 1 — regeneration.** Before: `du -sh report_site` = 13M (16,026,833 B
+apparent, of which 1,362,563 B is the 18 tracked files; the rest is a stale,
+git-ignored `report_site/_build/` from 2026-10-05), `git status --short
+report_site` clean. A sphinx build of the pre-regeneration tree into scratch
+gave **0 warnings** (the baseline). The E6 command ran exactly as written
+(five `--figure-root` flags, `--downloads-base-url
+https://s3-west.nrp-nautilus.io/pab/v2`, `--compare-db $PAB_DATA_DIR/v1/pab.db`)
+in **10.4 s**; its log: "staging only the 8 representative fit figures",
+"healpix_map: 7 of 453 cells straddle the dateline and were split", "galleries
+staged 20 files, 1.04 MB under _static/" — **zero dropped-figure warnings,
+zero warnings of any kind.** Then `python -m sphinx -b html report_site
+/tmp/claude-1000/pab-e6/_build` — built **outside** `report_site/` on purpose
+(E6 says `report_site/_build`; that path is git-ignored so it would not have
+been committed either way, but building to scratch leaves the tree with
+nothing untracked but the new figures): **0 warnings**, same as the baseline.
+HOWTO §7a now shows the scratch variant as an option.
+
+**Step 2 — verification.** After: `du -sh report_site` = 15M (17,251,318 B
+apparent, still dominated by the stale `_build/`); the committable tree
+(everything except `_build/`) is **2,587,048 B, up 1,224,485 B (+1.22 MB)**
+from 1,362,563 — well under the 10 MB target. `git status --short
+report_site`: 12 modified (six comparison PNGs: `bbp_scatter` 41→60 KB,
+`chl_scatter` 69→75, `matchup_map` 53→163, `nasa_giop_bbp_scatter` 41→52,
+`v2_vs_v1_bbp700` 59→54, `v2_vs_v1_chl` 161→90; and `aggregates/comparisons/
+downloads/figures/methods/summary.rst`) and 21 untracked (`healpix_map.png`,
+8 `_static/figures/`, 4 `_static/scenes/`, 8 `_static/argo_qa/`). **No
+deleted files** — the 1.0 site never committed per-matchup figures, so
+there was nothing to drop. Unchanged by the rebuild: `conf.py`, `index.rst`,
+`.readthedocs.yaml`, `requirements.txt`, `v2_bp_hist.png` and
+`v2_v1_ratio_vs_level.png` (re-rendered byte-identical). `aggregates.rst`'s
+24-line diff is only Bokeh embed UUIDs; `methods.rst`/`summary.rst` carry the
+new build date, commit `603d97d` and the 700 nm headline. No `_build`, no
+`__pycache__`, no stray files. Looked at with the Read tool:
+- `bbp_scatter.png` (Blues): n = 15,274, ρ = 0.41, bias +0.01, RMS 0.65,
+  median 1.15, [155 off-scale]; axes 3×10⁻⁶–6×10⁻²; dense core at
+  5×10⁻⁴–3×10⁻³ on 1:1, the vertical prior-floor pile at 3×10⁻⁶–10⁻⁴ under
+  float 5×10⁻⁴–10⁻³ clearly visible.
+- `chl_scatter.png` (Greens): n = 15,154, ρ = 0.73, bias −0.09, RMS 0.59,
+  median 0.94, [166 off-scale]; core 0.05–1 mg m⁻³ just below 1:1; the spray
+  of satellite Chl below 10⁻² at every float Chl is the obvious tail.
+- `nasa_giop_bbp_scatter.png` (Purples): n = 15,964, ρ = 0.89, bias 0.00,
+  RMS 0.52, median 0.94, [173 off-scale]; the arc follows 1:1 above 10⁻³,
+  the GIOP floor band at 2–4×10⁻⁴ wherever BING < 10⁻⁴ is plain.
+- `v2_vs_v1_bbp700.png` (Blues): n = 14,604, ρ = 0.92, bias −0.16, RMS 0.54,
+  median 0.75, [156 off-scale]; cells on 1:1 above ~2×10⁻³, peeling to the
+  3×10⁻⁶ floor below.
+- `v2_vs_v1_chl.png` (Greens): n = 14,604, ρ = 0.70, bias +0.19, RMS 0.64,
+  median 1.17, [90 off-scale]; tight core just above 1:1 with a wide halo.
+- `matchup_map.png`: Robinson, grey land, coastlines, dots at size 3; title
+  "15,274 matchups; colour clipped at ±0.5 dex (1,858 (12.2 %) at or beyond);
+  695 without a ratio in grey"; colorbar −0.4…+0.4 with `extend` arrows;
+  gyres red, Southern Ocean / subpolar North Pacific / Arctic shelves blue.
+- `healpix_map.png`: "453 HEALPix cells (nside 8, ≈7.3°) with ≥ 5 matchups,
+  holding 15,143 matchups / 59 sparser cells not drawn; colour clipped at
+  ±0.5 dex (1 cell saturated)"; the Mediterranean is the dark-blue cell; no
+  smears at the dateline.
+- Gallery thumbnails: the runaway fit 6903874/139 (observed Rrs negative at
+  400–430 nm, BING `b_bp` ≈ 9.3×10⁴ m⁻¹ with an 8×10⁴–10⁵ band), the
+  subtropics scene 3902615/1 (false-colour 645/555/470 swath, float star in
+  the analysed pixels), and the Q&A plot 1902383/79 (the 5th-percentile pick:
+  BBP700/CHLA vs pressure, MLD 18 dbar, a deep Chl maximum at ~100 dbar under
+  a very shallow mixed layer — a plausible reason the satellite sees 0.19× the
+  float's `b_bp`). All render correctly.
+- `comparisons.rst`: "median NASA(700)/BING(700) ratio = 0.937 (IQR
+  0.747–1.22); Spearman ρ = 0.889"; the wavelength note states the formula,
+  "14.6 % of the 15,971 slopes sit at GIOP's ceiling of 2.0", and the
+  unadjusted ratio **2.15 exactly once** ("for continuity with the previous
+  release"); no "no spectral adjustment"/"as-is" phrasing anywhere in
+  `report_site/*.rst`. The captions quote the ≥ 5 rule, the off-scale counts
+  (155/166/173/156/90), the fixed ±0.5 dex clip ("a factor of 3.2 either
+  way"), 1,858 (12.2 %) saturated and the 453/15,143/59 HEALPix counts.
+  `figures.rst` lists 8 / 4 / 8 items with the E5 captions; `downloads.rst`
+  links the four S3 tables.
+
+**Step 2b — the NASA-GIOP table is on S3.** `publish.export_tables` against
+the v2 DB (opened `file:…?mode=ro`) into scratch wrote
+`nasa_giop_summary.csv` 8,350,324 B sha256
+`21b4b6ceeeb776eb23d6e3dbb7560a9d6b56b6669a6840781580518459c0f60a` and
+`nasa_giop_summary.parquet` 2,891,643 B sha256
+`66f6cb2705493cac5ffc2e4af894bd45ac93621813a3da50c69e5abd912d91e2` (and, as a
+free reproducibility check, `matchup_summary.{csv,parquet}` **byte-identical**
+to the objects Prompt 9 published on 2026-10-07: 6,102,869 B
+`6622a78c…0f74` / 2,645,441 B `4754e237…c627c`). Anonymous `curl -sI` on both
+public URLs returned **403** (absent) before the upload. Credentials: no
+`AWS_*` environment variables; `~/.aws/credentials` holds a `[default]`
+profile with an access key (the profile Prompt 9 used, per
+`build_v2_prompt_9.md`; values not printed), so the boto3 chain was
+configured and the upload went ahead with `NautilusS3Backend(bucket="pab",
+prefix="v2")`: 0.6 s + 0.3 s. Re-downloaded from
+`https://s3-west.nrp-nautilus.io/pab/v2/nasa_giop_summary.csv` and
+`…/nasa_giop_summary.parquet`: sizes and sha256 **identical** to the local
+files (`cmp` clean); `curl -sI` now gives HTTP 200, `last-modified Sun, 18
+Oct 2026 12:15:02/03 GMT`. `v2/matchup_summary.csv` and `.parquet` are
+**untouched** (same ETag `9e8bbb22…`/`a5b54e43…` and `last-modified Wed, 07
+Oct 2026 15:49:48 GMT` as before). HOWTO §5b's S3 row lists the two objects.
+
+**Step 3 — docs.** HOWTO §7a's "regenerate" block is now the E6 command
+(the old one pointed `--db` at `$PAB_DATA_DIR/pab.db`, which no longer
+exists) plus a paragraph on `--compare-db`, `--downloads-base-url`,
+`--figure-root` (the five stored prefixes and their `gallery/` roots, the
+longest-prefix rule, the counted drop warning), the representative galleries
+and what `git status` should show after a rebuild (the `aggregates.rst` UUID
+noise included). `PAB_implementation.md` §13 records the 700 nm derivation,
+`density_scatter`, the two maps with the fixed ±0.5 dex clip and why, the
+galleries and `--figure-root`, and what the rebuild showed; §5e.2 points to
+it. `docs/reporting.rst` gained "Static figures at scale" (density panels,
+maps, the one-wavelength GIOP comparison) and the galleries bullet now
+describes the representative selection and the remap; a `sphinx -b html docs`
+into scratch built with **0 warnings** (all the new `:func:`/`:data:` targets
+resolve).
+
+**Step 4.** `pytest pab/tests -q`: **435 passed, 1 skipped** (the live L1B
+read) in 149 s — unchanged from E5; `ruff check pab`: all checks passed.
+
+Worth knowing:
+- `$PAB_DATA_DIR` resolves to `/home/xavier/Oceanography/data/Color/PAB`
+  (`~/Oceanography` is the symlink to `/mnt/tank/Oceanography`); the HOWTO's
+  `/mnt/tank/…` spelling and this one are the same files.
+- The stale `report_site/_build/` (2026-10-05, 13.5 MB, git-ignored) still
+  sits in the working tree; it is harmless but makes `du -sh report_site`
+  read 15M when the committable tree is 2.6 MB. Delete it if the number
+  bothers you.
+- `docs/reporting.rst` still says, further down, that `NautilusS3Backend`
+  "and `ZenodoBackend` are explicit `NotImplementedError` stubs until
+  activated" — stale since the S3 backend went live, but outside E6's
+  figure-description scope, so left alone.
+- Nothing in this prompt needed a decision: **no new Q&A items.**
+
+**Hand-off (nothing committed — git is yours).** Files to commit:
+`report_site/` (the 12 modified + 21 new files; nothing under `_build/`),
+`HOWTO.md`, `docs/design/PAB_implementation.md`, `docs/reporting.rst`,
+`claude_prompts/v2/report_improvements.md`, and — if not already committed
+from E2–E5 — `pab/metrics/compare.py`, `pab/report/{rst,publish}.py`,
+`pab/plotting/population.py`, `pab/pipeline.py`,
+`pab/tests/{test_metrics,test_report,test_report_versions,test_pipeline}.py`,
+`requirements.txt`, `nautilus/argo_qa_copy_pod.yaml` (E1b). At commit
+`603d97d` all of those are already tracked and clean — only this file, the
+docs and `report_site/` are dirty, so the code is already in. Reminder: the `pab-report` RTD project rebuilds on
+push **to the branch it tracks** — the published URL is
+`…/en/develop/`, so a push to `report-improvements` alone will not update the
+site until that branch is merged into `develop` (or the RTD project is pointed
+at it).

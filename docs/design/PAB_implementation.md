@@ -577,6 +577,10 @@ are lazily-imported seams; the aggregation math and manifest are pure.
   `sphinx-build <outdir> <outdir>/_build`). The binned tables are **sortable**
   Bokeh `DataTable` embeds when `bokeh` is present (`aggregates_page(sortable=)`),
   falling back to a static `list-table`. **No per-matchup page** is ever emitted.
+  Above `MAX_INTERACTIVE_MATCHUPS` the Comparisons page switches to the static
+  `pab.plotting.population` figures (density-plus-dots panels and the two
+  maps) and above `MAX_INLINE_FIGURES` the Figures page shows a deterministic
+  representative selection — see §13.
 
 ### 5e.3 Interactive (`pab/report/interactive.py`)
 
@@ -1117,6 +1121,120 @@ Each major version now lives in its own file (the rationale is in
 - **`population.comparison_scatter` gained `clip_percentile`**, which bounds the
   axes and **counts** the off-scale points in the panel title rather than
   dropping them.
+
+---
+
+## 13. Report improvements (2026-10-17/18, `claude_prompts/v2/report_improvements.md`)
+
+Six edits (E1–E6) to the 2.0 report, driven by reading the published site. The
+decisions are recorded in that file's Q&A; this section records what the code
+now does. The committed `report_site/` was regenerated on 2026-10-18 with the
+command in HOWTO §7a.
+
+### 13.1 NASA-GIOP `b_bp` compared at 700 nm (derived, never persisted)
+
+NASA's GIOP `b_bp` is stored at 442 nm and BING's headline value at 700 nm;
+the 1.0 report compared them as stored. `compare.gather_nasa_giop` now
+`LEFT JOIN`s NASA's own per-pixel power-law slope (`NASA_GIOP_bbp_s`) and
+derives `bbp_700_nasa` (+ `_lo`/`_hi`, scaled by the same factor) with
+`compare.giop_bbp_to_700(bbp_442, slope)` = `bbp_442 × (442/700)^bbp_s` — the
+one place the factor lives (`GIOP_BBP_WAVE`, `BING_BBP_WAVE` and the
+reader-facing `GIOP_BBP_SHIFT_FORMULA` are built from the same constants, so
+the Methods text cannot drift from the code). NaN where the slope row is
+missing (no default slope); every 442 column is kept. Nothing is written to the
+database — the value is reproducible from stored rows, so no new `pab_version`
+— and the 700 nm numbers are distributed only through the new
+`nasa_giop_summary.{csv,parquet}` download (`publish.export_tables`, uploaded
+to `s3://pab/v2/`). `compare.giop_slope_ceiling_fraction` computes the share of
+slopes pinned at GIOP's ceiling of 2.0 (`bbp_s ≥ 1.99`), quoted by the
+Comparisons note and the Methods page rather than hard-coded. On the 2.0 data:
+median NASA(700)/BING(700) = 0.94 (was 2.15 unadjusted, quoted once for
+continuity), Spearman 0.89, 14.6 % of slopes at the ceiling.
+
+### 13.2 `population.density_scatter` — the comparison panels
+
+The five static comparison panels (`b_bp`, Chl, GIOP-vs-BING, and the two
+1.0-vs-2.0 panels) were all-dots scatters whose axes were set by 51
+non-physical BING `b_bp` retrievals (up to 9.3 × 10⁴ m⁻¹). They now share
+`density_scatter(df, sat_col, insitu_col, *, cmap, bins=50, min_count=5,
+clip_percentile=99.0)`: log–log axes spanning the central 99 % of the pooled
+values (× 0.7 / × 1.4, the `comparison_scatter` rule, factored into
+`_clipped_range`), a `numpy.histogram2d` whose cells with ≥ `DENSITY_MIN_COUNT`
+matchups are drawn as a `pcolormesh` with a `LogNorm` count colorbar, and every
+matchup in a sparser cell as an individual dot in a dark shade of the same hue;
+the 1:1 and median-ratio lines, a legend and the `n ρ bias RMS [N off-scale]`
+title with statistics from `log_comparison` on **all** finite positive pairs
+(runaways stay in the statistics, off the axes). Hues: Blues for `b_bp`, Greens
+for Chl, Purples for GIOP. `population.offscale_count` gives captions the same
+`N` as the title. The minor log grid is off (it cost 25 KB per PNG and
+cluttered the light cells); all panels sit under `SIZE_BUDGET`.
+`comparison_scatter` is kept for small runs and the tests.
+
+### 13.3 The two maps — Robinson dots and HEALPix medians, fixed ±0.5 dex
+
+`population.matchup_map` draws on cartopy `Robinson` axes with Natural Earth
+land (110m, facecolor 0.85) and coastlines, dots at marker size 3, colour =
+`log10(satellite / float b_bp)` computed inside the function (a caller can no
+longer leak a runaway-driven `ratio` column into the colour scale) on `RdBu_r`,
+symmetric about 0 and **clipped at a fixed `LOG_RATIO_VMAX = 0.5` dex**
+(Q&A/Edits 5 = B: the agreed 2nd–98th-percentile rule came out at ±1.86 dex
+because the low tail alone set it, leaving 88 % of matchups in the palest
+tints; a fixed limit also makes releases comparable). The title and captions
+state the saturated count (`saturated_count` / `log_ratio_saturated`: 1,858 of
+15,274, 12.2 %, on the 2.0 data) and draw matchups without a ratio in grey.
+`population.healpix_map` draws the per-cell median log-ratio
+(`healpix_medians` via `aggregate.assign_healpix`, nside 8 ≈ 7.3° for the
+requested 5°) for cells holding ≥ `HEALPIX_MIN_COUNT = 5` matchups as
+`healpy.boundaries` polygons through `PlateCarree`, on the same scale; cells
+straddling the dateline are split (Sutherland–Hodgman against ±180°, with a
+tolerance so an edge *on* the dateline cannot produce a degenerate ring that
+cartopy projects as the whole globe) and the pole vertex of a polar-cap cell
+takes its neighbours' longitude. Fallbacks live in `_map_axes`: no cartopy →
+plain lon/lat axes with a warning; cartopy but no cached/downloadable
+shapefiles → Robinson without land with a warning; `projection=None` forces the
+plain path so the tests never touch the network. `cartopy` is in
+`requirements.txt`; the Docker image was not rebuilt because `--emit-site`
+runs on the workstation.
+
+### 13.4 Representative galleries and `--figure-root`
+
+The Figures page above `MAX_INLINE_FIGURES` showed nothing ("too many").
+`rst.select_representative_fits(df)` now picks ≤ 8 matchups deterministically
+— nearest the 5th/25th/50th/75th/95th percentiles of `log10(bbp_bing /
+bbp_argo)`, the runaway with the largest `bbp_bing` above `BBP_IMPLAUSIBLE`,
+and the matchup nearest the median ratio within the clearest and the most
+productive `chl_bing` terciles (ties → smallest `matchup_id`; de-duplicated in
+order) — each with a `WMO/cycle — <why>` caption; `select_representative_scenes`
+picks one per `add_strata` latitude band (four exist). The Argo Q&A gallery
+shows the profiles behind the selected fits, so the three galleries tell one
+story. `_gather_with_figures` and `_thumbnail_gallery(representative=)` stage
+**only** those files, through `_downscaled_copy` (longest side
+`GALLERY_MAX_SIDE = 1200` px; verbatim when smaller), and log the bytes staged
+(20 files, 1.04 MB on the 2.0 data). Because the database records PVC paths,
+`pab --emit-site` gained a repeatable `--figure-root OLD=NEW`
+(`pipeline.figure_root_pair`, `rst.remap_figure_path`: longest whole-component
+prefix wins) applied inside `_stage_static`; a file still missing is dropped
+with one counted `_log.warning` per gallery and the page says so. The files
+the galleries need were fetched from the Drive backup into
+`$PAB_DATA_DIR/gallery/` (E1 findings; E1b brought the 5,453 backfill Q&A
+plots, which only existed on the PVC, to the workstation and to
+`AIOcean:PAB/v2/argo_qa/`).
+
+### 13.5 What the rebuild showed (E6, 2026-10-18)
+
+The regeneration ran in 10 s with zero dropped-figure warnings and both
+databases byte-identical before and after; `sphinx -b html` built with zero
+warnings. `report_site/` in git grew from 1.36 MB to 2.59 MB (+1.22 MB: the
+20 gallery files, `healpix_map.png`, and larger density/map PNGs). Things the
+new figures make visible that the old ones hid: a vertical pile of satellite
+`b_bp` at 3 × 10⁻⁶–10⁻⁴ m⁻¹ (the prior floor) under float values of
+5 × 10⁻⁴–10⁻³; a horizontal GIOP floor at 2–4 × 10⁻⁴ m⁻¹ wherever BING retrieves
+less than 10⁻⁴ (a 442 nm amplitude that never gets small, not an artefact of
+the shift); the subtropical gyres red (satellite high) and the Southern Ocean,
+subpolar North Pacific and Arctic shelves blue on both maps, with the
+Mediterranean the one saturated HEALPix cell (median −1.48); and the selected
+runaway's observed Rrs **negative** at 400–430 nm — a failed atmospheric
+correction, not a bright scene, which the Outliers prompt should pick up.
 
 ---
 
