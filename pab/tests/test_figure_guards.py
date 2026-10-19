@@ -236,3 +236,28 @@ def test_render_figure_skips_the_granule_when_scene_not_wanted(monkeypatch, tmp_
         )
         assert seen == ["M1"]
         assert spath2 is not None
+
+
+def test_default_figure_version_overlays_the_patch(monkeypatch, tmp_path):
+    """O7: the default family is base + patch with the overlay -- the 2.0 fit
+    a 2.0.1 re-fit supersedes is not rendered; an explicit version still is."""
+    calls = _capture(monkeypatch)
+    with Store.open(":memory:") as store:
+        _seed_fit(store, "M1", algorithm="BING", version="2.0")
+        _seed_fit(store, "M2", algorithm="BING", version="2.0", wmo=7902227)
+        store.upsert(
+            "fits",
+            {
+                "fit_id": "M1_BING_2.0.1",
+                "matchup_id": "M1",
+                "algorithm": "BING",
+                "model_pair": "ExpBPow",
+                "pab_version": "2.0.1",
+                "success": 1,
+            },
+        )
+        figure(store, PipelineConfig(outdir=tmp_path, jobs=1))
+        assert sorted(c[0] for c in calls) == ["M1_BING_2.0.1", "M2_BING_2.0"]
+        calls.clear()
+        figure(store, PipelineConfig(outdir=tmp_path, jobs=1, figure_version="2.0", replace=True))
+        assert sorted(c[0] for c in calls) == ["M1_BING_2.0", "M2_BING_2.0"]

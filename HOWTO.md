@@ -302,9 +302,13 @@ files) and the 51 fit figures `$PAB_DATA_DIR/v2/pipeline/figures/<fit_id>_fit.pn
 `AIOcean:PAB/pab_v2_2026-10-18.db` (md5 verified). The PVC was not touched and
 nothing was uploaded to S3 (O9). Logs: `v2/logs/refit_51_20261018.log`,
 `v2/logs/refit_51_figures_20261018.log`; the science is Appendix C of
-`versions/v2/high_bbp_outliers.md`. Until O7 lands, the report's gatherers
-resolve `newest_bing_version()` to `2.0.1` — do not rebuild the site from this
-database before O7.
+`versions/v2/high_bbp_outliers.md`. **2.0.1 semantics (O7):** a patch version
+shares its base's database and matchup set; its rows keep their own stamp, and
+the report, the `figure` stage's default and the download manifest **overlay** a
+2.0.1 row on the 2.0 row of the same matchup *and* pixel
+(`compare.version_family` / `compare.overlay_patch`; 15,920 at 2.0 + 51 at 2.0.1
+= 15,971) — the 2.0 rows are never deleted, and an explicit `--figure-version
+2.0` means exactly 2.0.
 
 **Transfer note:** copy it **compressed**. `kubectl cp` of the 207 MB file in one
 stream has no resume and died at 36.9 MB on a flaky link, leaving a malformed

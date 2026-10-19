@@ -622,6 +622,26 @@ because they are easy to get wrong:
   the same code in both releases and stay at `1.1`. Re-stamping them `2.0` would
   claim a re-analysis that did not happen.
 
+**A patch version shares the database (adopted at 2.0.1).** Between a major
+version and a backfill sits the case where a *subset* of fits is re-done under a
+changed configuration — 2.0.1 re-fitted the 51 fits that had run to the `Bnw`
+prior ceiling, with the priors capped at physical values, on the same spectra.
+That is a re-analysis (it earns a version), but it changes neither the schema
+nor the matchup set, so it does not earn a database. A patch version `X.Y.Z`
+therefore lives in its base's database: its fits are **new rows** (the `fit_id`
+carries `_vX.Y.Z`, `prior_set` records the changed priors, `rrs_source` the
+replayed spectrum), every row keeps its own `pab_version` stamp, and the base
+rows are **never deleted or edited** — the provenance rule above. What makes the
+patch visible is a **report-side overlay, keyed on matchup *and* pixel**
+(`compare.version_family` / `compare.overlay_patch`): the gatherers, the
+`figure` stage's default and the download manifest select the base version plus
+its patches and drop a base row wherever a patch row exists for the same
+`(matchup_id, pixel_id)`; a patch fit of a different pixel supersedes nothing. An
+explicit version (`--figure-version 2.0`, `gather_matchups(pab_version="2.0")`)
+means exactly that version, with no overlay. The exported tables carry each
+row's `pab_version` plus `fit_id_superseded`/`bbp_bing_superseded`, so a reader
+can tell a patched row from a base row and recover the value it replaced.
+
 **The "end = today" backfill rule.** A mission-length run has no fixed end date:
 the Argo and PACE archives keep growing, so "the full mission" means
 *start → today*, and the end moves every time the pipeline is re-run. Record the

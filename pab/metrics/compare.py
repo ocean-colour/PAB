@@ -223,21 +223,280 @@ def _version_key(v: str) -> tuple:
     return tuple(parts)
 
 
+def _bing_versions(store) -> list[str]:
+    """The distinct BING ``pab_version`` strings in ``store``, oldest first."""
+    rows = store.query(
+        "SELECT DISTINCT pab_version FROM fits "
+        "WHERE algorithm = 'BING' AND pab_version IS NOT NULL"
+    )
+    return sorted({str(r["pab_version"]) for r in rows}, key=_version_key)
+
+
 def newest_bing_version(store) -> str | None:
     """The newest ``pab_version`` among the store's BING fits, or ``None``.
 
     The v2 database holds BING **2.0** fits alongside NASA-GIOP **1.1** rows,
     and a store that has been fitted twice would hold 1.0 and 2.0 BING fits for
     the same matchup. Metrics must pick one, and the newest is the one the
-    report is about -- so this is the default rather than something every
-    caller has to remember to pass.
+    report is about. Since 2.0.1 the newest may be a **patch** version, so the
+    report's gatherers resolve the whole :func:`version_family` instead and
+    overlay the patch rows on their base (:func:`overlay_patch`).
     """
-    rows = store.query(
-        "SELECT DISTINCT pab_version FROM fits "
-        "WHERE algorithm = 'BING' AND pab_version IS NOT NULL"
+    versions = _bing_versions(store)
+    return versions[-1] if versions else None
+
+
+def is_patch_version(version) -> bool:
+    """``"2.0.1"`` is a patch version (three components); ``"2.0"`` is not."""
+    return len(str(version).split(".")) > 2
+
+
+def base_version(version) -> str:
+    """The base ``X.Y`` of a patch ``X.Y.Z``; a two-part version is its own base."""
+    parts = str(version).split(".")
+    return ".".join(parts[:2]) if len(parts) > 2 else str(version)
+
+
+def version_family(store, version=None) -> tuple[str | None, list[str]]:
+    """``(base, patches)`` -- the BING version the report is about and the
+    patch versions that supersede parts of it.
+
+    A **patch** version ``X.Y.Z`` (:data:`pab.config.pab_version` 2.0.1 is the
+    first) is the same data, physics and matchup set as its base ``X.Y``, with
+    some fits re-done under a changed configuration and stored as **new rows**
+    next to the base rows. The report must show one value per matchup and
+    pixel, so a patch row supersedes the base row of the same ``(matchup_id,
+    pixel_id)`` -- that is :func:`overlay_patch` -- and the base rows stay in
+    the database untouched (the design's provenance rule).
+
+    Args:
+        store: An open :class:`pab.db.store.Store`.
+        version: The version to report. ``None`` → the store's newest BING
+            version. A patch version reports its base plus every patch of
+            that base up to and including itself; a base version given
+            **explicitly** reports exactly itself (``("2.0", [])`` on the v2
+            database), which is what ``--figure-version 2.0`` means.
+
+    Returns:
+        ``(base, patches)`` with ``patches`` ascending; ``("2.0", [])`` on a
+        2.0-only store, ``("2.0", ["2.0.1"])`` on the v2 database after the
+        re-fit, ``(None, [])`` on a store with no BING fit.
+    """
+    versions = _bing_versions(store)
+    if version is None:
+        if not versions:
+            return None, []
+        version = versions[-1]
+    version = str(version)
+    base = base_version(version)
+    patches = [
+        v
+        for v in versions
+        if is_patch_version(v)
+        and base_version(v) == base
+        and _version_key(v) <= _version_key(version)
+    ]
+    return base, patches
+
+
+def resolve_versions(store, pab_version=None) -> list[str]:
+    """The ``pab_version`` values a gatherer filters on.
+
+    ``None`` → the newest :func:`version_family` (base + patches, to be
+    overlaid); a string → exactly that version, no overlay; a list/tuple →
+    those versions, overlaid. An empty list means "no version filter" (a
+    store with no BING fit -- nothing to filter).
+    """
+    if pab_version is None:
+        base, patches = version_family(store)
+        return [base, *patches] if base is not None else []
+    if isinstance(pab_version, (list, tuple, set)):
+        return [str(v) for v in pab_version]
+    return [str(pab_version)]
+
+
+def _version_clause(column: str, versions: list[str]) -> tuple[str, tuple]:
+    """``("AND col IN (?, ?)", params)``; no clause for an empty list."""
+    if not versions:
+        return "", ()
+    marks = ", ".join("?" for _ in versions)
+    return f"AND {column} IN ({marks})", tuple(versions)
+
+
+OVERLAY_KEYS = ("matchup_id", "pixel_id")
+
+
+def overlay_patch(df, *, version_col: str = "pab_version", carry=()):
+    """Drop a base row where a patch row exists for the same matchup **and
+    pixel**; keep the newest version per key.
+
+    The one rule that makes a patch version visible in the report: among the
+    rows of one ``(matchup_id, pixel_id)`` -- plus ``model_pair`` when the
+    frame carries it -- only the rows at the newest :func:`_version_key` are
+    kept. A patch fit of a *different* pixel of the same matchup supersedes
+    nothing. Rows keep their own ``version_col`` value, so a frame says which
+    rows are patched. A key that is ``NULL`` (an old fit with no
+    ``pixel_id``) matches only other ``NULL`` keys of the same matchup.
+
+    Args:
+        df: A frame with :data:`OVERLAY_KEYS` and ``version_col`` (a frame
+            without the version column, or empty, is returned unchanged).
+        version_col: The column holding each row's ``pab_version``.
+        carry: Column names whose value **on the superseded row** is kept on
+            the superseding row as ``<name>_superseded`` (NaN where the row
+            superseded nothing) -- how the exported table and the gallery
+            still know the 2.0 value a 2.0.1 fit replaced.
+
+    Returns:
+        A new frame in the input order with the superseded rows removed and
+        the ``carry`` columns added.
+    """
+    import numpy as np
+    import pandas as pd
+
+    carry = [c for c in carry if c in df.columns]
+    if not len(df) or version_col not in df.columns:
+        out = df.copy()
+        for c in carry:
+            out[f"{c}_superseded"] = np.nan
+        return out
+    keys = [k for k in OVERLAY_KEYS if k in df.columns]
+    if "model_pair" in df.columns:
+        keys.append("model_pair")
+    if not keys:
+        raise ValueError(f"overlay_patch needs {OVERLAY_KEYS} in the frame")
+    work = df.copy()
+    versions = sorted({str(v) for v in work[version_col]}, key=_version_key)
+    rank = {v: i for i, v in enumerate(versions)}
+    work["_vrank"] = work[version_col].astype(str).map(rank)
+    groups = work.groupby(keys, dropna=False, sort=False)
+    work["_gid"] = groups.ngroup()
+    best = groups["_vrank"].transform("max")
+    superseded = work["_vrank"] < best
+    kept = work[~superseded].copy()
+    if carry:
+        sup = work[superseded].sort_values("_vrank", kind="stable")
+        last = sup.groupby("_gid")[carry].last() if len(sup) else None
+        for c in carry:
+            if last is None:
+                kept[f"{c}_superseded"] = np.nan
+            else:
+                # missing (nothing superseded) is NaN whatever the dtype --
+                # pandas' string dtype has no other sentinel; test with isna()
+                mapped = kept["_gid"].map(last[c])
+                kept[f"{c}_superseded"] = (
+                    mapped.astype(float) if pd.api.types.is_numeric_dtype(df[c]) else mapped
+                )
+    return kept.drop(columns=["_vrank", "_gid"]).reset_index(drop=True)
+
+
+def fit_version_counts(store, pab_version=None) -> dict[str, int]:
+    """``{pab_version: n}`` BING fits per version **after the overlay** --
+    the summary page's "15,971 (15,920 at 2.0, 51 re-fitted at 2.0.1)",
+    computed. Keys are in version order; a version with every row superseded
+    is still listed with 0. All model pairs count (the overlay keys include
+    ``model_pair`` when present).
+    """
+    versions = resolve_versions(store, pab_version)
+    clause, params = _version_clause("pab_version", versions)
+    df = store.query_df(
+        "SELECT fit_id, matchup_id, pixel_id, model_pair, pab_version FROM fits "
+        f"WHERE algorithm = 'BING' {clause}",
+        params,
     )
-    versions = [r["pab_version"] for r in rows]
-    return max(versions, key=_version_key) if versions else None
+    kept = overlay_patch(df)
+    counts = kept["pab_version"].astype(str).value_counts() if len(kept) else {}
+    order = versions or sorted({str(v) for v in df["pab_version"]}, key=_version_key)
+    return {v: int(counts.get(v, 0)) for v in order}
+
+
+#: Below this retrieved Chl (mg m⁻³) a BING fit has its ``A_ph`` at or near
+#: the 10⁻⁶ prior floor: the absorption landed on ``A_dg`` instead (the
+#: ``A_ph``-mirror mode of ``versions/v2/high_bbp_outliers.md`` §4). The
+#: report *states* how many re-fitted runaways do this (Q&A/Outliers 11 = A);
+#: it does not gate them (6 = A).
+REFIT_CHL_FLOOR = 0.01
+
+
+def patch_refit_summary(store, *, model_pair: str = "ExpBPow"):
+    """The numbers behind the report's retrieval-failure note once a patch
+    version exists -- every one computed from the store, none quoted.
+
+    Returns ``None`` when the newest :func:`version_family` has no patch (the
+    note then describes the base fits alone). Otherwise a dict:
+
+    ``base``, ``patches``, ``prior_sets`` (the distinct ``fits.prior_set``
+    of the patch rows), ``n_base`` / ``n_base_runaway`` / ``max_base_bbp`` /
+    ``runaway_matchup_ids`` (the base fits and those above
+    :data:`BBP_IMPLAUSIBLE`), ``n_patch`` (patch fits), ``n_patch_of_runaway``
+    (patch fits whose superseded base fit was a runaway),
+    ``n_patch_below_gate`` / ``n_patch_above_gate`` / ``n_patch_no_bbp``,
+    ``n_runaway_unpatched`` (base runaways no patch row supersedes -- still
+    gated), ``n_still_above_gate`` (what the gate excludes after the overlay:
+    patched-and-still-above plus unpatched), ``n_patch_chl_low`` (patch fits
+    with Chl below :data:`REFIT_CHL_FLOOR`), ``patch_success0`` (``[(wmo,
+    cycle), …]`` of patch fits with ``success = 0``), ``n_base_success0``.
+    """
+    import numpy as np
+
+    base, patches = version_family(store)
+    if base is None or not patches:
+        return None
+    versions = [base, *patches]
+    clause, params = _version_clause("f.pab_version", versions)
+    bbp_q = f"BING_{model_pair}_{DEFAULT_BBP_QUANTITY}"
+    chl_q = f"BING_{model_pair}_{DEFAULT_CHL_QUANTITY}"
+    df = store.query_df(
+        f"""
+        SELECT f.fit_id, f.matchup_id, f.pixel_id, f.pab_version, f.success,
+               f.prior_set, p.wmo, p.cycle,
+               fb.value AS bbp, fc.value AS chl
+        FROM fits f
+        JOIN matchups m ON m.matchup_id = f.matchup_id
+        JOIN profiles p ON p.profile_id = m.profile_id
+        LEFT JOIN fit_results fb ON fb.fit_id = f.fit_id AND fb.quantity = ?
+        LEFT JOIN fit_results fc ON fc.fit_id = f.fit_id AND fc.quantity = ?
+        WHERE f.algorithm = 'BING' AND f.model_pair = ? {clause}
+        ORDER BY f.matchup_id
+        """,
+        (bbp_q, chl_q, model_pair, *params),
+    )
+    for col in ("bbp", "chl", "success"):
+        df[col] = df[col].astype(float)
+    is_base = df["pab_version"].astype(str) == base
+    base_df = df[is_base]
+    patch_df = df[~is_base]
+    base_bad = implausible_bbp(base_df["bbp"])
+    runaway_ids = set(base_df.loc[base_bad, "fit_id"])
+    kept = overlay_patch(df, carry=("fit_id", "bbp"))
+    kept_patch = kept[kept["pab_version"].astype(str) != base]
+    patched_runaways = kept_patch["fit_id_superseded"].isin(runaway_ids)
+    superseded_ids = set(kept_patch["fit_id_superseded"].dropna())
+    unpatched = int(len(runaway_ids - superseded_ids))
+    pbbp = kept_patch["bbp"].to_numpy(dtype=float)
+    above = int(implausible_bbp(pbbp).sum())
+    below = int((np.isfinite(pbbp) & ~implausible_bbp(pbbp)).sum())
+    pchl = patch_df["chl"].to_numpy(dtype=float)
+    s0 = patch_df[patch_df["success"] == 0].sort_values(["wmo", "cycle"])
+    return {
+        "base": base,
+        "patches": patches,
+        "prior_sets": sorted({str(s) for s in patch_df["prior_set"] if s}),
+        "n_base": int(len(base_df)),
+        "n_base_runaway": int(base_bad.sum()),
+        "max_base_bbp": float(np.nanmax(base_df["bbp"])) if len(base_df) else float("nan"),
+        "runaway_matchup_ids": list(base_df.loc[base_bad, "matchup_id"]),
+        "n_patch": int(len(patch_df)),
+        "n_patch_of_runaway": int(patched_runaways.sum()),
+        "n_patch_below_gate": below,
+        "n_patch_above_gate": above,
+        "n_patch_no_bbp": int((~np.isfinite(pbbp)).sum()),
+        "n_runaway_unpatched": unpatched,
+        "n_still_above_gate": above + unpatched,
+        "n_patch_chl_low": int((np.isfinite(pchl) & (pchl < REFIT_CHL_FLOOR)).sum()),
+        "patch_success0": [(int(w), int(c)) for w, c in zip(s0["wmo"], s0["cycle"], strict=True)],
+        "n_base_success0": int((base_df["success"] == 0).sum()),
+    }
 
 
 def gather_matchups(store, *, model_pair: str = "ExpBPow", pab_version=None):
@@ -250,37 +509,47 @@ def gather_matchups(store, *, model_pair: str = "ExpBPow", pab_version=None):
     ``model_pair`` so a second model pair (or other fits on the same matchup) does
     not produce duplicate rows.
 
-    The join is also filtered to ``algorithm = 'BING'`` and a **single
-    ``pab_version``**. Without the version filter a store holding both 1.0 and
-    2.0 fits for one matchup yields *two* rows, silently doubling every count
-    and mixing two physics configurations into one scatter.
+    The join is also filtered to ``algorithm = 'BING'`` and to **one version
+    family** (:func:`version_family`): the base version plus its patch
+    versions, with a patch row superseding the base row of the same matchup
+    **and pixel** (:func:`overlay_patch`). Without the version filter a store
+    holding both 1.0 and 2.0 fits for one matchup yields *two* rows, silently
+    doubling every count and mixing two physics configurations into one
+    scatter; without the overlay the v2 database after the 2.0.1 re-fit would
+    show its 51 re-fitted matchups twice.
 
     Args:
         store: An open :class:`pab.db.store.Store`.
         model_pair: Which BING fit to pull (default ``"ExpBPow"`` →
             ``BING_ExpBPow_bbp700`` / ``BING_ExpBPow_chl``).
-        pab_version: Which BING version to report. ``None`` (the default) picks
-            the store's newest via :func:`newest_bing_version`, which is the
-            one the report is about.
+        pab_version: Which BING version to report. ``None`` (the default) is
+            the store's newest :func:`version_family`, overlaid -- the one the
+            report is about. A single version string selects exactly that
+            version (no overlay); a list of versions is overlaid
+            (:func:`resolve_versions`).
 
     Returns:
-        A :class:`pandas.DataFrame` (empty when no matched fits exist). The
-        satellite values are **as stored** -- nothing is gated here -- plus a
-        derived 0/1 column ``bbp_bing_implausible`` (:func:`implausible_bbp`)
-        so the exported table can be filtered by a reader; the report applies
-        :func:`gate_bbp` itself where it computes statistics. ``n_neg_blue``
-        is the fit's negative-blue QA count (:data:`NEG_BLUE_QUANTITY`: the
-        number of fitted bands with ``Rrs < 0`` at 400–450 nm), **NaN** for a
-        fit that predates the quantity and has not been backfilled.
+        A :class:`pandas.DataFrame` (empty when no matched fits exist), one
+        row per matchup, each carrying its own ``pab_version``, ``fit_id`` and
+        ``pixel_id``. The satellite values are **as stored** -- nothing is
+        gated here -- plus a derived 0/1 column ``bbp_bing_implausible``
+        (:func:`implausible_bbp`) so the exported table can be filtered by a
+        reader; the report applies :func:`gate_bbp` itself where it computes
+        statistics. A patched row also carries ``fit_id_superseded`` and
+        ``bbp_bing_superseded`` -- the base fit it replaced and that fit's
+        ``b_bp`` (``None``/NaN on every other row). ``n_neg_blue`` is the
+        fit's negative-blue QA count (:data:`NEG_BLUE_QUANTITY`: the number
+        of fitted bands with ``Rrs < 0`` at 400–450 nm), **NaN** for a fit
+        that predates the quantity and has not been backfilled.
     """
     bbp_q = f"BING_{model_pair}_{DEFAULT_BBP_QUANTITY}"
     chl_q = f"BING_{model_pair}_{DEFAULT_CHL_QUANTITY}"
     neg_q = f"BING_{model_pair}_{NEG_BLUE_QUANTITY}"
-    if pab_version is None:
-        pab_version = newest_bing_version(store)
-    sql = """
+    versions = resolve_versions(store, pab_version)
+    clause, vparams = _version_clause("f.pab_version", versions)
+    sql = f"""
         SELECT m.matchup_id, p.wmo, p.cycle, p.latitude, p.longitude, p.time,
-               f.fit_id, f.chisq, f.pab_version,
+               f.fit_id, f.pixel_id, f.chisq, f.pab_version,
                ms.bbp700 AS bbp_argo, ms.chla AS chla_argo,
                fb.value AS bbp_bing,
                fb.value_lo AS bbp_bing_lo, fb.value_hi AS bbp_bing_hi,
@@ -293,7 +562,7 @@ def gather_matchups(store, *, model_pair: str = "ExpBPow", pab_version=None):
         JOIN fits f ON f.matchup_id = m.matchup_id
                    AND f.algorithm = 'BING'
                    AND f.model_pair = ?
-                   AND (? IS NULL OR f.pab_version = ?)
+                   {clause}
         LEFT JOIN fit_results fb
                ON fb.fit_id = f.fit_id AND fb.quantity = ?
         LEFT JOIN fit_results fc
@@ -302,15 +571,17 @@ def gather_matchups(store, *, model_pair: str = "ExpBPow", pab_version=None):
                ON fn.fit_id = f.fit_id AND fn.quantity = ?
         ORDER BY m.matchup_id
     """
-    df = store.query_df(
-        sql, (model_pair, pab_version, pab_version, bbp_q, chl_q, neg_q)
-    )
+    df = store.query_df(sql, (model_pair, *vparams, bbp_q, chl_q, neg_q))
     # A missing quantity row arrives as ``None`` (object dtype) from the LEFT
     # JOIN; the flag and the gate both want a float column, and so does the
     # QA count (NaN = not recorded for this fit).
     for col in ("bbp_bing", "n_neg_blue"):
         if col in df.columns:
             df[col] = df[col].astype(float)
+    # The patch overlay (Q&A/Outliers 1 = C): one row per matchup+pixel, the
+    # newest version's. Applied even to a single-version frame so the two
+    # ``_superseded`` columns always exist in the exported table.
+    df = overlay_patch(df, carry=("fit_id", "bbp_bing"))
     df["bbp_bing_implausible"] = implausible_bbp(df.get("bbp_bing", [])).astype(int)
     return df
 
@@ -333,6 +604,11 @@ def gather_version_pair(store, v1_path, *, model_pair: str = "ExpBPow"):
     is not enough: it identifies the profile/granule pair, not which pixel was
     fitted, and comparing two fits of *different pixels* would silently
     attribute a spatial difference to the physics change.
+
+    The 2.0 side is the store's newest :func:`version_family`, overlaid: where
+    a 2.0.1 re-fit supersedes a 2.0 fit, the pair is 1.0 vs **2.0.1** and
+    ``version_v2`` says so (without the overlay such a matchup would appear
+    twice, once per version).
 
     Args:
         store: An open :class:`pab.db.store.Store` on the v2 database.
@@ -366,10 +642,12 @@ def gather_version_pair(store, v1_path, *, model_pair: str = "ExpBPow"):
     # of this function attached `v1/pab.db` read-write on every call and was
     # saved only by the file's `chmod a-w`. If the read-only attach fails, that
     # is an error worth seeing.
+    versions = resolve_versions(store)
+    clause, vparams = _version_clause("f2.pab_version", versions)
     store.conn.execute("ATTACH DATABASE ? AS v1", (f"file:{v1_path}?mode=ro",))
     attached = True
     try:
-        sql = """
+        sql = f"""
             SELECT m.matchup_id, f2.pixel_id,
                    p.wmo, p.cycle, p.latitude, p.longitude, p.time,
                    f1.pab_version AS version_v1, f2.pab_version AS version_v2,
@@ -383,6 +661,7 @@ def gather_version_pair(store, v1_path, *, model_pair: str = "ExpBPow"):
             JOIN profiles p ON p.profile_id = m.profile_id
             JOIN fits f2 ON f2.matchup_id = m.matchup_id
                         AND f2.algorithm = 'BING' AND f2.model_pair = ?
+                        {clause}
             JOIN v1.fits f1 ON f1.matchup_id = m.matchup_id
                            AND f1.pixel_id = f2.pixel_id
                            AND f1.algorithm = 'BING' AND f1.model_pair = ?
@@ -396,13 +675,16 @@ def gather_version_pair(store, v1_path, *, model_pair: str = "ExpBPow"):
             ORDER BY m.matchup_id
         """
         params = (
-            model_pair, model_pair,
+            model_pair, *vparams, model_pair,
             q["bbp700"], q["bbp700"],
             q["chl"], q["chl"],
             q["Aph"], q["Aph"],
             q["Bp"],
         )
-        return store.query_df(sql, params)
+        df = store.query_df(sql, params)
+        # The patch overlay on the 2.0 side; the 1.0 side is one row per
+        # pixel already (the frozen release holds one version).
+        return overlay_patch(df, version_col="version_v2")
     finally:
         if attached:
             try:
@@ -424,6 +706,11 @@ def gather_nasa_giop(store, *, model_pair: str = "ExpBPow"):
     ``pab_version``. Where the slope row is missing (the ``LEFT JOIN`` finds
     none) they are ``NaN`` rather than a fixed-slope guess.
 
+    The BING side is the store's newest :func:`version_family`, overlaid
+    (:func:`overlay_patch`), and each row carries the BING fit's
+    ``pab_version`` and ``pixel_id`` -- so a re-fitted matchup appears once,
+    with its 2.0.1 value, not once per version.
+
     Args:
         store: An open :class:`pab.db.store.Store`.
         model_pair: Which BING fit to pull (default ``"ExpBPow"``).
@@ -432,9 +719,11 @@ def gather_nasa_giop(store, *, model_pair: str = "ExpBPow"):
         A :class:`pandas.DataFrame` (empty when no matchup has both fits).
     """
     bbp_q = f"BING_{model_pair}_{DEFAULT_BBP_QUANTITY}"
-    sql = """
+    versions = resolve_versions(store)
+    clause, vparams = _version_clause("fbing.pab_version", versions)
+    sql = f"""
         SELECT m.matchup_id, p.wmo, p.cycle, p.latitude, p.longitude, p.time,
-               fbing.fit_id AS bing_fit_id,
+               fbing.fit_id AS bing_fit_id, fbing.pixel_id, fbing.pab_version,
                fb.value AS bbp_bing,
                fb.value_lo AS bbp_bing_lo, fb.value_hi AS bbp_bing_hi,
                fnasa.fit_id AS nasa_fit_id,
@@ -445,7 +734,9 @@ def gather_nasa_giop(store, *, model_pair: str = "ExpBPow"):
                fn_aph.value AS aph_442_nasa
         FROM matchups m
         JOIN profiles p ON p.profile_id = m.profile_id
-        JOIN fits fbing ON fbing.matchup_id = m.matchup_id AND fbing.model_pair = ?
+        JOIN fits fbing ON fbing.matchup_id = m.matchup_id
+                       AND fbing.algorithm = 'BING' AND fbing.model_pair = ?
+                       {clause}
         JOIN fit_results fb
                ON fb.fit_id = fbing.fit_id AND fb.quantity = ?
         JOIN fits fnasa ON fnasa.matchup_id = m.matchup_id AND fnasa.algorithm = 'NASA_GIOP'
@@ -459,7 +750,8 @@ def gather_nasa_giop(store, *, model_pair: str = "ExpBPow"):
                ON fn_aph.fit_id = fnasa.fit_id AND fn_aph.quantity = 'NASA_GIOP_aph_442'
         ORDER BY m.matchup_id
     """
-    df = store.query_df(sql, (model_pair, bbp_q))
+    df = store.query_df(sql, (model_pair, *vparams, bbp_q))
+    df = overlay_patch(df)
     # The 700 nm columns, derived with the per-pixel slope. The bounds scale by
     # the same factor (the slope's own uncertainty is not propagated: NASA
     # reports none), so a NaN slope leaves all three NaN together. A missing

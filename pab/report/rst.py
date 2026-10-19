@@ -106,23 +106,22 @@ def summary_page(store, *, pab_version: str | None = None, compare_db=None) -> s
     # by newer code over an older run. Resolve the fit version once and pass it
     # to every consumer, so the counts and the table can never describe
     # different sets.
-    _bing_version = compare.newest_bing_version(store)
-    df = compare.gather_matchups(store, pab_version=_bing_version)
+    _bing_version, _patches = compare.version_family(store)
+    df = compare.gather_matchups(store)
     n_matchups = store.count("matchups")
     n_floats = store.count("floats")
     # Only the BING retrievals — the parallel NASA_GIOP rows are baseline
     # ingests, not fits, and would silently double this count.
     #
-    # And only ONE pab_version: a store fitted twice holds a 1.0 and a 2.0 BING
-    # fit for the same matchup, so without this the headline "BING fits" would
-    # exceed the matchup count and mix two physics configurations. The version
-    # shown is the one resolved above and handed to `gather_matchups`, so this
-    # count and the metrics table always describe the same set of fits.
-    n_fits = store.query(
-        "SELECT COUNT(*) AS n FROM fits WHERE algorithm = 'BING' "
-        "AND (? IS NULL OR pab_version = ?)",
-        (_bing_version, _bing_version),
-    )[0]["n"]
+    # And only ONE version family, overlaid: a store fitted twice holds a 1.0
+    # and a 2.0 BING fit for the same matchup, so without the family filter
+    # the headline "BING fits" would exceed the matchup count and mix two
+    # physics configurations; and after the 2.0.1 re-fit a matchup holds a
+    # 2.0 and a 2.0.1 row, of which the overlay keeps one. The family is the
+    # same one `gather_matchups` resolved, so this count and the metrics table
+    # always describe the same set of fits.
+    fit_counts = compare.fit_version_counts(store)
+    n_fits = sum(fit_counts.values())
     # The b_bp headline is computed on the gated frame (Q&A/Outliers 1 = B);
     # the Chl headline is not gated (Q&A/Outliers 6 = A) and `gate_bbp` only
     # touches `bbp_bing`, so one gated frame serves both.
@@ -171,8 +170,7 @@ def summary_page(store, *, pab_version: str | None = None, compare_db=None) -> s
     cov = (
         f"- **Profiles ingested:** {n_profiles}\n"
         f"- **Matchups:** {n_matchups}\n- **Floats:** {n_floats}\n"
-        f"- **BING fits:** {n_fits}"
-        + (f" (``pab_version`` {_bing_version})\n" if _bing_version else "\n")
+        f"- **BING fits:** {_fit_count_clause(n_fits, _bing_version, _patches, fit_counts)}\n"
     )
     if dist.size:
         cov += f"- **Median separation:** {_fmt(float(np.median(dist)))} km\n"
@@ -225,6 +223,39 @@ def summary_page(store, *, pab_version: str | None = None, compare_db=None) -> s
         "- :doc:`Downloads <downloads>` — the summary tables (CSV/Parquet).\n"
     )
     return "\n".join(out)
+
+
+def _fit_count_clause(n_fits, base, patches, counts) -> str:
+    """``"15,971 (15,920 at 2.0, 51 re-fitted at 2.0.1)"`` when a patch version
+    is overlaid, ``"15,971 (``pab_version`` 2.0)"`` when none is -- every
+    number from :func:`~pab.metrics.compare.fit_version_counts`."""
+    if not base:
+        return f"{n_fits:,}"
+    if not patches:
+        return f"{n_fits:,} (``pab_version`` {base})"
+    parts = [f"{counts.get(base, 0):,} at {base}"]
+    parts += [f"{counts.get(p, 0):,} re-fitted at {p}" for p in patches]
+    return f"{n_fits:,} ({', '.join(parts)})"
+
+
+def _patched_pairs_sentence(df, version_col: str = "version_v2") -> str:
+    """``" 48 of the pairs use the 2.0.1 re-fit of a 2.0 retrieval failure
+    (see the retrieval-failure note below)."`` -- or ``""`` when every row is
+    at one version. Computed from the overlaid frame's own version column."""
+    if version_col not in df or not len(df):
+        return ""
+    versions = sorted({str(v) for v in df[version_col]}, key=compare._version_key)
+    patches = [v for v in versions if compare.is_patch_version(v)]
+    if not patches:
+        return ""
+    bits = []
+    for p in patches:
+        k = int((df[version_col].astype(str) == p).sum())
+        bits.append(f"{k:,} of the pairs use the {p} re-fit of a {compare.base_version(p)} fit")
+    return (
+        " " + "; ".join(bits) + " (the 2.0.1 rows supersede the 2.0 rows of "
+        "the same matchup and pixel -- see the retrieval-failure note below)."
+    )
 
 
 def _version_headline(store, compare_db) -> str:
@@ -601,7 +632,9 @@ def version_section(
         "from the frozen v1 release, the 2.0 results from this one. Rows are "
         "paired on matchup **and pixel**, so a difference below is a difference "
         "in the retrieval, not in which patch of ocean was looked at. See the "
-        ":doc:`Methods <methods>` page for the two-database provenance.\n"
+        ":doc:`Methods <methods>` page for the two-database provenance."
+        + _patched_pairs_sentence(df)
+        + "\n"
     )
     out.append(V2_CHANGES)
 
@@ -878,47 +911,167 @@ def _blue_qa_band():
     return BLUE_QA_BAND
 
 
-def _neg_blue_from_store(store) -> str:
+def _neg_blue_from_store(store, summary=None) -> str:
     """:func:`_neg_blue_sentence` on the store's matchup frame; ``""`` without
-    a store or when the frame cannot be built (the page must still build)."""
+    a store or when the frame cannot be built (the page must still build).
+
+    Once a patch is overlaid the frame's ``bbp_bing_implausible`` flags are
+    gone with the runaways, so the "K of the N failed retrievals do" clause is
+    computed on the **base-version** frame (``summary["base"]``) instead --
+    the spectra are the same (the re-fit replayed them), so the count is.
+    """
     if store is None:
         return ""
     try:
-        return _neg_blue_sentence(compare.gather_matchups(store))
+        version = summary["base"] if summary else None
+        return _neg_blue_sentence(compare.gather_matchups(store, pab_version=version))
     except Exception:  # noqa: BLE001 — the page must build without the frame
         return ""
 
 
-def _version_failure_note(df, store=None) -> str:
-    """Count and explain the 2.0 fits that returned a non-physical ``b_bp``.
+#: ``prior_set`` ceiling token → how the report names the parameter.
+_CEILING_LABELS = {
+    "bbp600": "``b_bp`` (600 nm)",
+    "adg": "``A_dg``",
+    "aph": "``A_ph``",
+}
 
-    Computed from the **raw** pair frame rather than hard-coded: the number is
-    checked at every build, so a regression that multiplies these shows up in
-    the report instead of hiding behind a robust median. The explanation is
-    the corrected reading of ``versions/v2/high_bbp_outliers.md`` (2026-10-18;
-    it replaced a retrieved-Chl rate table that read the failed fits' own Chl
-    as "clear water"): marginal-sea spectra with a depressed or negative blue
-    ``Rrs``, the LM warm-start delivered to the ``Bnw`` prior ceiling, a better
-    physical basin in every re-fitted case. ``store`` lets the note quote the
-    float Chl under the failed fits from this build. Returns ``""`` when there
-    are none.
+
+def _ceilings_text(prior_set: str | None) -> str:
+    """``"``b_bp``(600 nm) ≤ 0.1 m⁻¹, ``A_dg`` ≤ 10 m⁻¹, ``A_ph`` ≤ 10 m⁻¹"``
+    read back off a stored ``fits.prior_set`` stamp (never restated by hand),
+    or ``""`` for BING's uncapped priors / an unrecognised stamp."""
+    from pab.fit.models import CEILING_FIELDS, ceilings_from_prior_set
+
+    try:
+        ceilings = ceilings_from_prior_set(prior_set)
+    except ValueError:
+        return ""
+    parts = [
+        f"{_CEILING_LABELS.get(token, token)} ≤ {ceilings[field]:g} m⁻¹"
+        for field, token, _pname in CEILING_FIELDS
+        if ceilings.get(field) is not None
+    ]
+    return ", ".join(parts)
+
+
+def _default_ceilings_text() -> str:
+    """The ceilings the running code's ``FitConfig()`` applies (2.0.1 on)."""
+    from pab.fit.models import FitConfig, prior_set_label
+
+    return _ceilings_text(prior_set_label(FitConfig()))
+
+
+def _refit_sentences(summary) -> str:
+    """The 2.0.1 story for the failure note, every number from
+    :func:`~pab.metrics.compare.patch_refit_summary` (Q&A/Outliers 1 = C,
+    10 = A, 11 = A)."""
+    base = summary["base"]
+    patches = " and ".join(summary["patches"])
+    k = summary["n_patch_below_gate"]
+    n_patch = summary["n_patch"]
+    priors = "; ".join(
+        f'``prior_set = "{ps}"``'
+        + (f" — {_ceilings_text(ps)}" if _ceilings_text(ps) else "")
+        for ps in summary["prior_sets"]
+    ) or "a capped prior set"
+    text = (
+        f" They were **re-fitted under ``pab_version`` {patches}** with physical "
+        f"ceilings on the priors ({priors}; BING's 10⁻⁶ floors unchanged), on the "
+        f"very spectrum the {base} fit saw. {k} of the {n_patch} re-fitted fits "
+        f"now return a ``b_bp`` below the {compare.BBP_IMPLAUSIBLE:g} m⁻¹ gate, "
+        "and **those re-fitted values are what every statistic and figure on "
+        f"this site uses**: a {patches} fit supersedes the {base} fit of the same "
+        f"matchup and pixel, the {base} rows stay in the database, and the "
+        "downloadable table says which rows are patched (``pab_version``, "
+        "``fit_id_superseded``, ``bbp_bing_superseded``)."
+    )
+    still = summary["n_still_above_gate"]
+    if still:
+        parts = []
+        if summary["n_patch_above_gate"]:
+            parts.append(f"{summary['n_patch_above_gate']} re-fitted and still above it")
+        if summary["n_runaway_unpatched"]:
+            parts.append(f"{summary['n_runaway_unpatched']} not re-fitted")
+        text += (
+            f" {still} remain{'s' if still == 1 else ''} above the gate "
+            f"({' and '.join(parts)}) and stay{'s' if still == 1 else ''} excluded"
+        )
+    else:
+        text += " None remains above the gate"
+    text += (
+        f"; the gate itself stays in force on every ``b_bp`` statistic "
+        f"({_gate_clause(still, summary['n_base'])})."
+    )
+    low = summary["n_patch_chl_low"]
+    text += (
+        f" {low} of the {n_patch} re-fitted fits retrieve a chlorophyll below "
+        f"{compare.REFIT_CHL_FLOOR:g} mg m⁻³ — ``A_ph`` at its 10⁻⁶ prior floor, "
+        "the absorption attributed to ``A_dg`` instead: a retrieval limit that "
+        "is stated here rather than hidden, since the chlorophyll is not gated."
+    )
+    s0 = summary["patch_success0"]
+    if s0:
+        who = ", ".join(f"{w}/{c}" for w, c in s0)
+        text += (
+            f" {len(s0)} of the re-fitted fits ({who}) record{'s' if len(s0) == 1 else ''} "
+            "``success = 0`` — the Levenberg–Marquardt warm-start did not converge "
+            "and the walkers started from the clipped initial guess, as for "
+            f"{summary['n_base_success0']:,} of the {summary['n_base']:,} {base} fits "
+            f"— and {'is' if len(s0) == 1 else 'are'} kept as recorded."
+        )
+    return text
+
+
+def _version_failure_note(df, store=None) -> str:
+    """Count and explain the 2.0 fits that returned a non-physical ``b_bp``,
+    and -- once a patch version exists -- what the 2.0.1 re-fit did with them.
+
+    Computed, never hard-coded: with a ``store`` the counts come from the
+    **2.0 rows, which stay in the database** after the re-fit
+    (:func:`~pab.metrics.compare.patch_refit_summary`), so the note still
+    says how many ran away although the overlaid frame no longer holds them;
+    without a store (or without a patch) they come from the raw pair frame,
+    as before. The explanation is the corrected reading of
+    ``versions/v2/high_bbp_outliers.md`` (2026-10-18): marginal-sea spectra
+    with a depressed or negative blue ``Rrs``, the LM warm-start delivered to
+    the ``Bnw`` prior ceiling, a better physical basin in every re-fitted
+    case. Returns ``""`` when there are none.
     """
     import numpy as np
 
     if "bbp700_v2" not in df:
         return ""
+    summary = None
+    if store is not None:
+        try:
+            summary = compare.patch_refit_summary(store)
+        except Exception:  # noqa: BLE001 — the note must build without it
+            summary = None
     v2 = np.asarray(df["bbp700_v2"], dtype=float)
-    bad_mask = compare.implausible_bbp(v2)
-    bad2 = int(bad_mask.sum())
+    if summary is None:
+        bad_mask = compare.implausible_bbp(v2)
+        bad2 = int(bad_mask.sum())
+        n = int(np.isfinite(v2).sum())
+        vmax = float(np.nanmax(v2)) if n else float("nan")
+        ids = list(df["matchup_id"]) if "matchup_id" in df else []
+        runaway_ids = [m for m, b in zip(ids, bad_mask, strict=True) if b]
+        base = "2.0"
+    else:
+        bad2 = summary["n_base_runaway"]
+        n = summary["n_base"]
+        vmax = summary["max_base_bbp"]
+        ids = list(df["matchup_id"]) if "matchup_id" in df else []
+        runaway_ids = summary["runaway_matchup_ids"]
+        base = summary["base"]
     if not bad2:
         return ""
-    n = int(np.isfinite(v2).sum())
     bits = [
-        f"**Retrieval failures.** {bad2} of {n:,} 2.0 fits "
+        f"**Retrieval failures.** {bad2} of {n:,} {base} fits "
         f"({bad2 / n * 100:.2f} %) return ``b_bp(700 nm)`` above "
         f"{compare.BBP_IMPLAUSIBLE:g} m⁻¹, which is not a possible value for "
         "seawater (the open ocean spans roughly 1e-4 to 1e-1 m⁻¹); the largest "
-        f"is {np.nanmax(v2):.3g} m⁻¹."
+        f"is {vmax:.3g} m⁻¹."
     ]
     if "bbp700_v1" in df:
         v1 = np.asarray(df["bbp700_v1"], dtype=float)
@@ -926,29 +1079,39 @@ def _version_failure_note(df, store=None) -> str:
         bits.append(
             f" The same matchups fitted in 1.0 produce {bad1} such value"
             f"{'' if bad1 == 1 else 's'} (maximum {np.nanmax(v1):.3g} m⁻¹), so "
-            "these are specific to the 2.0 configuration."
+            f"these are specific to the {base} configuration."
         )
-    bits.append(
-        f" They are **excluded** from every ``b_bp`` statistic and figure on "
-        f"this site ({_gate_clause(bad2, n)}); the chlorophyll of the same fits "
-        "is not gated, the gallery still shows one of them, and the "
-        "downloadable table keeps the raw values with a "
-        "``bbp_bing_implausible`` flag.\n"
-    )
-    chl_bad, chl_all = (float("nan"), float("nan"))
-    if "matchup_id" in df:
-        ids = list(df["matchup_id"])
-        chl_bad, chl_all = _float_chl_medians(
-            store, ids, [m for m, b in zip(ids, bad_mask, strict=True) if b]
+    if summary is None:
+        bits.append(
+            f" They are **excluded** from every ``b_bp`` statistic and figure on "
+            f"this site ({_gate_clause(bad2, n)}); the chlorophyll of the same fits "
+            "is not gated, the gallery still shows one of them, and the "
+            "downloadable table keeps the raw values with a "
+            "``bbp_bing_implausible`` flag.\n"
         )
+    else:
+        bits.append(_refit_sentences(summary) + "\n")
+    chl_bad, chl_all = _float_chl_medians(store, ids, runaway_ids)
     water = (
         f" (the floats under them report a median Chl of {chl_bad:.2f} mg m⁻³, "
         f"against {chl_all:.2f} for the population)"
         if np.isfinite(chl_bad) and np.isfinite(chl_all)
         else ""
     )
-    neg_blue = _neg_blue_from_store(store)
+    neg_blue = _neg_blue_from_store(store, summary)
     neg_blue = f" In this release {neg_blue}" if neg_blue else ""
+    if summary is None:
+        refit = (
+            "case re-fitted so far. A re-fit of these fits under ``pab_version`` "
+            "2.0.1, with physical ceilings on the priors, is pending; until then "
+            "they are gated, not corrected."
+        )
+    else:
+        refit = (
+            f"case. The {' and '.join(summary['patches'])} re-fit above lands in "
+            "that basin: with the ceilings in place the spurious one is outside "
+            "the optimiser's reach."
+        )
     bits.append(
         "\n**What they are.** These are not a clear-water tail — their own "
         "retrieved chlorophyll of ~0.01 mg m⁻³ is part of the failed fit. They "
@@ -959,9 +1122,7 @@ def _version_failure_note(df, store=None) -> str:
         "10⁵ m⁻¹, where ``b_b ≫ a`` and the reflectance saturates, and the "
         "chains never leave it — although a physical basin with a *better* χ² "
         "and a ``b_bp`` within a factor of ~2 of the float exists in every "
-        "case re-fitted so far. A re-fit of these fits under ``pab_version`` "
-        "2.0.1, with physical ceilings on the priors, is pending; until then "
-        "they are gated, not corrected. The full investigation is "
+        f"{refit} The full investigation is "
         f"`high_bbp_outliers.md <{compare.BBP_OUTLIERS_URL}>`__.\n"
     )
     return "".join(bits)
@@ -1548,7 +1709,12 @@ def select_representative_fits(df):
        :data:`REPRESENTATIVE_PERCENTILES` (5th, 25th, 50th, 75th, 95th) of that
        ratio over the finite positive pairs — what good, typical and poor
        agreement look like;
-    2. the runaway with the largest ``bbp_bing`` above :data:`BBP_IMPLAUSIBLE`
+    2. the **re-fitted runaway**: once a patch version is overlaid
+       (``bbp_bing_superseded`` present and finite somewhere), the matchup
+       whose superseded base-version ``b_bp`` is largest, shown with its
+       patch-version figure and the caption ``"re-fitted runaway, 2.0 b_bp
+       9.3e4 → 2.0.1 4.5e-4 m⁻¹ (float 1.0e-3)"``; without a patch, the
+       runaway with the largest ``bbp_bing`` above :data:`BBP_IMPLAUSIBLE`
        (skipped when there is none) — what a failed retrieval looks like;
     3. within the clearest and the most productive ``chl_bing`` tercile, the
        matchup nearest that tercile's median log-ratio — the two regimes.
@@ -1575,8 +1741,29 @@ def select_representative_fits(df):
             picks.append(
                 (i, f"{_ordinal(p)} percentile of sat/float b_bp, ratio {10 ** lr[i]:.3g}")
             )
+    superseded = (
+        base["bbp_bing_superseded"].to_numpy(dtype=float)
+        if "bbp_bing_superseded" in base
+        else np.full(len(base), np.nan)
+    )
+    refit = np.isfinite(superseded)
     runaway = np.isfinite(sat) & (sat > BBP_IMPLAUSIBLE)
-    if runaway.any():
+    if refit.any():
+        i = int(np.argmax(np.where(refit, superseded, -np.inf)))
+        patch = str(base["pab_version"].iloc[i]) if "pab_version" in base else "patch"
+        ins = base["bbp_argo"].to_numpy(dtype=float)
+        float_txt = (
+            f"float {_sci(ins[i])}" if np.isfinite(ins[i]) and ins[i] > 0 else "no float value"
+        )
+        now = f"{_sci(sat[i])} m⁻¹" if np.isfinite(sat[i]) else "no value"
+        picks.append(
+            (
+                i,
+                f"re-fitted runaway, {compare.base_version(patch)} b_bp "
+                f"{_sci(superseded[i])} → {patch} {now} ({float_txt})",
+            )
+        )
+    elif runaway.any():
         i = int(np.argmax(np.where(runaway, sat, -np.inf)))
         picks.append((i, f"non-physical retrieval, b_bp = {_sci(sat[i])} m⁻¹"))
     if "chl_bing" in base:
@@ -1651,7 +1838,9 @@ def _fit_gallery_intro(selection) -> str:
         f"{_ordinal(REPRESENTATIVE_PERCENTILES[0])} to the "
         f"{_ordinal(REPRESENTATIVE_PERCENTILES[-1])} percentile"
     )
-    if any(r.startswith("non-physical") for r in reasons):
+    if any(r.startswith("re-fitted runaway") for r in reasons):
+        text += ", plus the runaway that was re-fitted under the patch version"
+    elif any(r.startswith("non-physical") for r in reasons):
         text += ", plus one failed retrieval"
     if any("tercile" in r for r in reasons):
         text += " and the clearest and most productive regimes"
@@ -1982,11 +2171,57 @@ def _methods_neg_blue(df) -> str:
     )
 
 
-def _methods_failed_retrievals(df) -> str:
+def _methods_refit(store) -> str:
+    """The Methods page's prior-ceiling sentence(s): with a store holding a
+    patch version, the computed re-fit numbers and the ceilings read back off
+    the stored ``prior_set``; otherwise the ceilings the running code applies
+    from 2.0.1 on, said as such."""
+    summary = None
+    if store is not None:
+        try:
+            summary = compare.patch_refit_summary(store)
+        except Exception:  # noqa: BLE001 — the page must build without it
+            summary = None
+    if summary is None:
+        ceilings = _default_ceilings_text()
+        if not ceilings:
+            return ""
+        return (
+            f" From ``pab_version`` 2.0.1 on the priors are capped at physical "
+            f"ceilings ({ceilings}; BING's 10⁻⁶ floors unchanged), which removes "
+            "the spurious basin from the optimiser's reach; the 2.0 fits were made "
+            "without them."
+        )
+    patches = " and ".join(summary["patches"])
+    priors = "; ".join(
+        _ceilings_text(ps) or f'``prior_set = "{ps}"``' for ps in summary["prior_sets"]
+    )
+    gallery = (
+        " the figure gallery shows the one with the largest 2.0 value, re-fitted;"
+        if summary["n_patch_of_runaway"]
+        else ""
+    )
+    return (
+        f" In this release the {summary['n_base_runaway']} such {summary['base']} "
+        f"fits were re-fitted under ``pab_version`` {patches} with the priors "
+        f"capped at physical ceilings ({priors}; BING's 10⁻⁶ floors unchanged) on "
+        f"the same spectrum; {summary['n_patch_below_gate']} of the "
+        f"{summary['n_patch']} re-fitted fits land below the gate and are the "
+        f"values this site shows (the {summary['base']} rows stay in the database "
+        f"and the downloadable table marks the patched rows), so the gate now "
+        f"excludes {summary['n_still_above_gate']};{gallery} "
+        f"{summary['n_patch_chl_low']} of the re-fitted fits retrieve a chlorophyll "
+        f"below {compare.REFIT_CHL_FLOOR:g} mg m⁻³ (``A_ph`` at its floor) and are "
+        "not gated."
+    )
+
+
+def _methods_failed_retrievals(df, store=None) -> str:
     """The Methods page's "Failed retrievals" paragraph: the gate, the count
     computed from the store's matchup frame ``df`` (deferred to the
-    Comparisons page when it is ``None``), what is and is not gated, and the
-    pointer to the investigation."""
+    Comparisons page when it is ``None``), what is and is not gated, the
+    2.0.1 ceilings (:func:`_methods_refit`), and the pointer to the
+    investigation."""
     count = ""
     if df is not None:
         _, clause = _gated(df, "bbp_bing")
@@ -2005,8 +2240,8 @@ def _methods_failed_retrievals(df) -> str:
         "chlorophyll of the same fits is not gated, the figure gallery shows "
         "one such fit on purpose, and the downloadable summary table keeps the "
         "raw values with a 0/1 ``bbp_bing_implausible`` column so a reader can "
-        "apply or lift the gate. What went wrong and why is in "
-        f"`high_bbp_outliers.md <{compare.BBP_OUTLIERS_URL}>`__.\n"
+        "apply or lift the gate." + _methods_refit(store) + " What went wrong "
+        f"and why is in `high_bbp_outliers.md <{compare.BBP_OUTLIERS_URL}>`__.\n"
     )
 
 
@@ -2066,7 +2301,7 @@ def methods_page(*, compare_db=None, store=None) -> str:
         "**OC4** band-ratio Chl is shown as a cross-check when available.\n"
     )
     matchups_df = _methods_matchups(store)  # one query for both paragraphs
-    out.append(_methods_failed_retrievals(matchups_df))
+    out.append(_methods_failed_retrievals(matchups_df, store))
     out.append(_methods_neg_blue(matchups_df))
 
     out.append(_heading("Retrieval configuration (2.0) & the two databases", "-"))
@@ -2078,7 +2313,13 @@ def methods_page(*, compare_db=None, store=None) -> str:
         "re-analysis in this one; ``1.1`` marks the NASA-GIOP ingests, which are "
         "the **same NASA product read by the same code** in both releases and so "
         "are deliberately *not* re-stamped ``2.0`` — a re-stamp would imply a "
-        "re-analysis that did not happen.\n"
+        "re-analysis that did not happen. ``2.0.1`` is a **patch** to 2.0 — the "
+        "same data, physics and matchup set, with the prior ceilings capped and "
+        "applied only to the fits that ran away — stored as new rows next to the "
+        "2.0 ones; on this site a 2.0.1 row **supersedes the 2.0 row of the same "
+        "matchup and pixel** in every statistic, figure and table, the 2.0 row "
+        "stays in the database, and the ``pab_version`` column of the "
+        "downloadable tables says which rows are patched.\n"
     )
     if compare_db:
         out.append(
@@ -2212,9 +2453,42 @@ def downloads_page(store, outdir, *, downloads_base_url: str | None = None) -> s
     out.append(
         "Per-matchup MCMC chains and BING fit figures are published as object-store "
         "artifacts (NSF/Nautilus S3), keyed by ``matchup_id`` in the release "
-        "manifest — available once that backend is activated.\n"
+        "manifest — available once that backend is activated."
+        + _artifact_versions_sentence(store)
+        + "\n"
     )
     return "\n".join(out)
+
+
+def _artifact_versions_sentence(store) -> str:
+    """``" The manifest lists the chains and figures of every BING version in
+    the database: 15,971 2.0 fits (15,971 chains, 15,971 figures) and 51 2.0.1
+    re-fits (51 chains, 51 figures); …"`` -- computed; ``""`` while the store
+    holds a single BING version."""
+    try:
+        rows = store.query(
+            "SELECT pab_version, COUNT(*) AS n, COUNT(chains_path) AS chains, "
+            "COUNT(figure_path) AS figures FROM fits WHERE algorithm = 'BING' "
+            "GROUP BY pab_version"
+        )
+    except Exception:  # noqa: BLE001 — the page must build regardless
+        return ""
+    rows = sorted(rows, key=lambda r: compare._version_key(r["pab_version"]))
+    if len(rows) < 2:
+        return ""
+    parts = []
+    for r in rows:
+        v = str(r["pab_version"])
+        noun = "re-fits" if compare.is_patch_version(v) else "fits"
+        parts.append(
+            f"{r['n']:,} {v} {noun} ({r['chains']:,} chains, {r['figures']:,} figures)"
+        )
+    return (
+        " The manifest lists the chains and figures of **every** BING version in "
+        "the database: " + " and ".join(parts) + "; a fit superseded by a patch "
+        "re-fit of the same matchup and pixel is still listed, with the "
+        "superseding ``fit_id`` in its ``superseded_by`` field."
+    )
 
 
 def provenance_block(*, pab_version: str | None = None) -> str:

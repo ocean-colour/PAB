@@ -1150,6 +1150,9 @@ def test_export_tables_writes_nasa_giop_table(tmp_path):
         } <= set(back.columns)
         assert back.loc["M1", "bbp_700_nasa"] == pytest.approx(3e-3 * _SHIFT_1)
         assert np.isnan(back.loc["M2", "bbp_700_nasa"])
+        # O7: the BING fit's own version and pixel travel with the row
+        assert {"pab_version", "pixel_id"} <= set(back.columns)
+        assert back["pab_version"].astype(str).tolist() == ["0", "0"]
         if "nasa_giop_parquet" in out:
             assert out["nasa_giop_parquet"].exists()
 
@@ -1349,3 +1352,163 @@ def test_export_tables_carry_n_neg_blue(tmp_path):
         if "summary_parquet" in out:
             pq = pd.read_parquet(out["summary_parquet"]).set_index("matchup_id")
             assert pq.loc["M2", "n_neg_blue"] == 3.0 and np.isnan(pq.loc["M1", "n_neg_blue"])
+
+
+# -- the patch-version overlay in the report (O7) ------------------------------
+def _patched_store(store, tmp_path=None):
+    """M1 a sound 2.0 fit; M2 a 2.0 runaway re-fitted under 2.0.1 on the same
+    pixel (the O6 shape), with chains/figures on disk when ``tmp_path`` is
+    given. Returns ``{"f20": …, "f201": …}``."""
+    from pab.tests.test_compare_versions import PATCH_PRIOR_SET, _add_bing_fit
+    from pab.tests.test_report_versions import _seed_one
+
+    _seed_one(store, "M1", wmo=7902221, cycle=1, bbp=2e-3, chl=0.15, version="2.0")
+    _seed_one(store, "M2", wmo=7902222, cycle=2, bbp=5e4, chl=0.01, version="2.0")
+    pixel_id = store.query(
+        "SELECT pixel_id FROM matchup_pixels WHERE matchup_id = 'M2'"
+    )[0]["pixel_id"]
+    paths = {}
+    if tmp_path is not None:
+        for key in ("f20", "f201"):
+            (tmp_path / f"{key}.npz").write_bytes(b"npz")
+            (tmp_path / f"{key}.png").write_bytes(b"png")
+            paths[key] = (str(tmp_path / f"{key}.npz"), str(tmp_path / f"{key}.png"))
+        store.execute(
+            "UPDATE fits SET chains_path = ?, figure_path = ? WHERE fit_id = 'M2_v2.0'",
+            paths["f20"],
+        )
+    f201 = _add_bing_fit(
+        store, "M2", pixel_id, version="2.0.1", bbp=4e-4, chl=0.005,
+        prior_set=PATCH_PRIOR_SET,
+        chains_path=paths.get("f201", (None, None))[0],
+        figure_path=paths.get("f201", (None, None))[1],
+    )
+    return {"f20": "M2_v2.0", "f201": f201}
+
+
+def test_gallery_slot_is_the_refitted_runaway_when_a_patch_exists():
+    """The "non-physical retrieval" slot becomes "re-fitted runaway": the
+    matchup with the largest superseded 2.0 b_bp, captioned 2.0 → 2.0.1
+    (float), chosen from the overlaid frame; the old slot stays without one."""
+    import pandas as pd
+
+    df = _synthetic_frame(runaway=False)
+    df["pab_version"] = "2.0"
+    df["bbp_bing_superseded"] = np.nan
+    # two re-fitted runaways: M0007 was the larger 2.0 value
+    df.loc[7, ["pab_version", "bbp_bing_superseded", "bbp_bing"]] = ["2.0.1", 9.3e4, 4.5e-4]
+    df.loc[7, "bbp_argo"] = 1.0e-3
+    df.loc[11, ["pab_version", "bbp_bing_superseded", "bbp_bing"]] = ["2.0.1", 5.0e4, 2.0e-3]
+    sel = rst.select_representative_fits(df)
+    reasons = list(sel["reason"])
+    refit = [r for r in reasons if r.startswith("re-fitted runaway")]
+    assert refit == ["re-fitted runaway, 2.0 b_bp 9.3e4 → 2.0.1 4.5e-4 m⁻¹ (float 1.0e-3)"]
+    assert sel.loc[sel["reason"] == refit[0], "matchup_id"].iloc[0] == "M0007"
+    assert not any(r.startswith("non-physical") for r in reasons)
+    intro = rst._fit_gallery_intro(sel)
+    assert "re-fitted under the patch version" in intro and "failed retrieval" not in intro
+    # no float value -> said, not NaN
+    df.loc[7, "bbp_argo"] = np.nan
+    sel = rst.select_representative_fits(df)
+    assert any(r.endswith("(no float value)") for r in sel["reason"])
+    # the old regime: a superseded column that is all NaN changes nothing
+    old = _synthetic_frame()
+    old["bbp_bing_superseded"] = np.nan
+    old["pab_version"] = "2.0"
+    sel = rst.select_representative_fits(old)
+    assert any(r.startswith("non-physical retrieval, b_bp = 2.0e3") for r in sel["reason"])
+    assert isinstance(sel, pd.DataFrame)
+
+
+def test_figures_page_shows_the_patch_figure_for_the_refitted_runaway(tmp_path, monkeypatch):
+    """End to end on a store: the re-fitted runaway's row carries the 2.0.1
+    fit_id, so the staged gallery figure is the 2.0.1 one."""
+    monkeypatch.setattr(rst, "MAX_INLINE_FIGURES", 1)
+    monkeypatch.setattr(rst, "MAX_INTERACTIVE_MATCHUPS", 1)
+    with Store.open(":memory:") as store:
+        ids = _patched_store(store, tmp_path)
+        out = tmp_path / "site"
+        df = rst._gather_with_figures(store, out)
+        row = df.set_index("matchup_id").loc["M2"]
+        assert row["fit_id"] == ids["f201"] and row["pab_version"] == "2.0.1"
+        assert row[rst.FIGURE_URL_COL] == "_static/figures/f201.png"
+        # on two rows M2 is already a percentile pick (the re-fit reason
+        # de-duplicates away, as the old slot did); what matters is that the
+        # selection reaches M2 through the 2.0.1 row and stages ITS figure
+        sel = rst.select_representative_fits(df)
+        assert "M2" in set(sel["matchup_id"])
+        assert sel.set_index("matchup_id").loc["M2", "fit_id"] == ids["f201"]
+        page = rst.figures_page(store, out, df)
+        assert "f201.png" in page and "f20.png" not in page
+
+
+def test_export_tables_rows_carry_pab_version_and_the_superseded_columns(tmp_path):
+    import pandas as pd
+
+    with Store.open(":memory:") as store:
+        ids = _patched_store(store)
+        out = publish.export_tables(store, tmp_path)
+        back = pd.read_csv(out["summary_csv"]).set_index("matchup_id")
+        assert len(back) == 2
+        assert back.loc["M1", "pab_version"] == "2.0" and back.loc["M2", "pab_version"] == "2.0.1"
+        assert back.loc["M2", "bbp_bing"] == pytest.approx(4e-4)
+        assert back.loc["M2", "bbp_bing_superseded"] == pytest.approx(5e4)
+        assert back.loc["M2", "fit_id_superseded"] == ids["f20"]
+        assert np.isnan(back.loc["M1", "bbp_bing_superseded"])
+        assert list(back["bbp_bing_implausible"]) == [0, 0]
+        if "summary_parquet" in out:
+            pq = pd.read_parquet(out["summary_parquet"]).set_index("matchup_id")
+            assert pq.loc["M2", "pab_version"] == "2.0.1"
+            assert pq.loc["M2", "fit_id_superseded"] == ids["f20"]
+
+
+def test_build_manifest_lists_both_versions_and_marks_the_superseded(tmp_path):
+    with Store.open(":memory:") as store:
+        ids = _patched_store(store, tmp_path)
+        manifest = publish.build_manifest(store, base_url="https://x/pab")
+        by_fit = {}
+        for r in manifest:
+            by_fit.setdefault(r["fit_id"], []).append(r)
+        assert set(by_fit) == {ids["f20"], ids["f201"]}
+        assert {r["kind"] for r in by_fit[ids["f20"]]} == {"chains", "figure"}
+        assert {r["kind"] for r in by_fit[ids["f201"]]} == {"chains", "figure"}
+        # each row carries the FIT's own version, and the 2.0 rows say who superseded them
+        assert all(r["pab_version"] == "2.0" for r in by_fit[ids["f20"]])
+        assert all(r["pab_version"] == "2.0.1" for r in by_fit[ids["f201"]])
+        assert all(r["superseded_by"] == ids["f201"] for r in by_fit[ids["f20"]])
+        assert all(r["superseded_by"] is None for r in by_fit[ids["f201"]])
+        assert publish.superseded_fits(store) == {ids["f20"]: ids["f201"]}
+        # the downloads page says the manifest lists both versions
+        page = rst.downloads_page(store, tmp_path / "site", downloads_base_url="https://s3/x")
+        assert (
+            "2 2.0 fits (1 chains, 1 figures) and 1 2.0.1 re-fits (1 chains, 1 figures)"
+            in page
+        )
+        assert "``superseded_by``" in page
+    # a single-version store says nothing about versions
+    with Store.open(":memory:") as store:
+        _two_matchups(store)
+        assert "every** BING version" not in rst.downloads_page(
+            store, tmp_path / "site2", downloads_base_url="https://s3/x"
+        )
+
+
+def test_methods_names_the_ceilings_and_the_overlay_rule():
+    with Store.open(":memory:") as store:
+        _patched_store(store)
+        out = rst.methods_page(store=store)
+        # the Retrieval section: the computed re-fit sentence with the ceilings
+        # read back off the stored prior_set
+        assert "In this release the 1 such 2.0 fits were re-fitted under ``pab_version`` 2.0.1" in out
+        assert "``b_bp`` (600 nm) ≤ 0.1 m⁻¹, ``A_dg`` ≤ 10 m⁻¹, ``A_ph`` ≤ 10 m⁻¹" in out
+        assert "1 of the 1 re-fitted fits land below the gate" in out
+        assert "so the gate now excludes 0;" in out
+        assert "1 of the re-fitted fits retrieve a chlorophyll below 0.01 mg m⁻³" in out
+        assert "In this release that is 0 failed retrievals (0.00 %" in out
+        # the pab_version paragraph: 2.0.1 and the overlay rule
+        assert "``2.0.1`` is a **patch** to 2.0" in out
+        assert "supersedes the 2.0 row of the same matchup and pixel" in out
+    # without a store the ceilings are the running code's, said as such
+    out = rst.methods_page()
+    assert "From ``pab_version`` 2.0.1 on the priors are capped at physical ceilings" in out
+    assert "``b_bp`` (600 nm) ≤ 0.1 m⁻¹" in out and "the 2.0 fits were made without them" in out

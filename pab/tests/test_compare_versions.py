@@ -241,3 +241,217 @@ def test_gather_version_pair_does_not_fall_back_to_a_writable_attach(tmp_path):
     with pytest.raises(sqlite3.Error):
         compare.gather_version_pair(store, str(v1))
     conn.close()
+
+
+# -- the patch-version overlay (O7, Q&A/Outliers 1 = C) -----------------------
+PATCH_PRIOR_SET = "bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"
+
+
+def _add_bing_fit(
+    store,
+    matchup_id,
+    pixel_id,
+    *,
+    version,
+    bbp,
+    chl=None,
+    success=1,
+    prior_set=None,
+    figure_path=None,
+    chains_path=None,
+    model_pair="ExpBPow",
+):
+    """One BING ``fits`` row (+ ``bbp700``/``chl`` results) at ``version`` on
+    ``pixel_id``; returns its ``fit_id`` (``…_v<version>``, like production)."""
+    fit_id = f"{matchup_id}_{pixel_id}_{model_pair}_v{version}"
+    store.upsert(
+        "fits",
+        {
+            "fit_id": fit_id,
+            "matchup_id": matchup_id,
+            "pixel_id": pixel_id,
+            "algorithm": "BING",
+            "model_pair": model_pair,
+            "chisq": 0.5,
+            "success": success,
+            "prior_set": prior_set,
+            "figure_path": figure_path,
+            "chains_path": chains_path,
+            "pab_version": version,
+        },
+    )
+    vals = {"bbp700": bbp}
+    if chl is not None:
+        vals["chl"] = chl
+    for q, v in vals.items():
+        store.upsert(
+            "fit_results",
+            {"fit_id": fit_id, "quantity": f"BING_{model_pair}_{q}", "value": v},
+        )
+    return fit_id
+
+
+def _seed_patched_runaway(store):
+    """The O6 shape on one matchup: a 2.0 runaway (5e4) and its 2.0.1 re-fit
+    (4e-4, Chl 0.005, ``success = 0``) on the **same** pixel. Returns
+    ``(matchup_id, pixel_id, fit_2_0, fit_2_0_1)``."""
+    from pab.tests.test_fit import _seed_matchup
+
+    matchup_id, pixel_id = _seed_matchup(store)
+    f20 = _add_bing_fit(store, matchup_id, pixel_id, version="2.0", bbp=5e4, chl=0.01)
+    f201 = _add_bing_fit(
+        store, matchup_id, pixel_id, version="2.0.1", bbp=4e-4, chl=0.005,
+        success=0, prior_set=PATCH_PRIOR_SET,
+    )
+    return matchup_id, pixel_id, f20, f201
+
+
+def test_version_helpers_and_family():
+    assert compare.is_patch_version("2.0.1") and not compare.is_patch_version("2.0")
+    assert compare.base_version("2.0.1") == "2.0" and compare.base_version("2.0") == "2.0"
+    with Store.open(":memory:") as store:
+        assert compare.version_family(store) == (None, [])
+        assert compare.resolve_versions(store) == []
+        _seed_two_versions(store)  # 1.0 and 2.0: two families, no patch
+        assert compare.version_family(store) == ("2.0", [])
+        assert compare.version_family(store, "1.0") == ("1.0", [])
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id, _, _ = _seed_patched_runaway(store)
+        assert compare.version_family(store) == ("2.0", ["2.0.1"])
+        # an explicit base is exactly the base (what --figure-version 2.0 means)
+        assert compare.version_family(store, "2.0") == ("2.0", [])
+        assert compare.version_family(store, "2.0.1") == ("2.0", ["2.0.1"])
+        assert compare.resolve_versions(store) == ["2.0", "2.0.1"]
+        assert compare.resolve_versions(store, "2.0") == ["2.0"]
+        assert compare.resolve_versions(store, ["2.0", "2.0.1"]) == ["2.0", "2.0.1"]
+        assert compare.newest_bing_version(store) == "2.0.1"
+
+
+def test_overlay_patch_keeps_the_newest_per_matchup_and_pixel():
+    import numpy as np
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "matchup_id": ["M1", "M1", "M1", "M2", "M3", "M3"],
+            "pixel_id": [1, 1, 2, 1, None, None],
+            "pab_version": ["2.0", "2.0.1", "2.0", "2.0", "2.0", "2.0.1"],
+            "fit_id": ["a", "b", "c", "d", "e", "f"],
+            "bbp_bing": [5e4, 4e-4, 2e-3, 3e-3, 7e4, 1e-3],
+        }
+    )
+    out = compare.overlay_patch(df, carry=("bbp_bing", "fit_id"))
+    # M1/pixel 1: the 2.0.1 row supersedes the 2.0 one; M1/pixel 2 is a
+    # different pixel and stays; M2 untouched; M3 (no pixel) overlays on the
+    # matchup alone since NULL matches NULL
+    assert list(out["fit_id"]) == ["b", "c", "d", "f"]
+    assert list(out["pab_version"]) == ["2.0.1", "2.0", "2.0", "2.0.1"]
+    sup = out["bbp_bing_superseded"].to_numpy(dtype=float)
+    assert sup[0] == 5e4 and sup[3] == 7e4 and np.isnan(sup[1]) and np.isnan(sup[2])
+    fs = list(out["fit_id_superseded"])
+    assert fs[0] == "a" and fs[3] == "e" and pd.isna(fs[1]) and pd.isna(fs[2])
+    # the input is untouched; a frame without the version column passes through
+    assert len(df) == 6 and "bbp_bing_superseded" not in df
+    plain = compare.overlay_patch(df.drop(columns="pab_version"), carry=("bbp_bing",))
+    assert len(plain) == 6 and plain["bbp_bing_superseded"].isna().all()
+    # model_pair, when present, is part of the key
+    df["model_pair"] = ["ExpBPow", "Cst", "ExpBPow", "ExpBPow", "ExpBPow", "ExpBPow"]
+    assert len(compare.overlay_patch(df)) == 5  # M1/1 2.0 ExpBPow is not superseded by a Cst row
+
+
+def test_gather_matchups_overlays_the_patch_on_the_same_pixel():
+    """A 2.0 and a 2.0.1 fit of one pixel -> one row, the 2.0.1 values, with
+    the superseded 2.0 fit and value carried for the exported table."""
+    import numpy as np
+
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id, f20, f201 = _seed_patched_runaway(store)
+        df = compare.gather_matchups(store)
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["pab_version"] == "2.0.1" and row["fit_id"] == f201
+        assert row["pixel_id"] == pixel_id
+        assert row["bbp_bing"] == pytest.approx(4e-4) and row["chl_bing"] == pytest.approx(0.005)
+        assert row["bbp_bing_superseded"] == pytest.approx(5e4)
+        assert row["fit_id_superseded"] == f20
+        assert row["bbp_bing_implausible"] == 0  # the gate has nothing left to exclude
+        # an explicit version is exactly that version, no overlay
+        base = compare.gather_matchups(store, pab_version="2.0")
+        assert len(base) == 1 and base.iloc[0]["fit_id"] == f20
+        assert base.iloc[0]["bbp_bing"] == 5e4 and base.iloc[0]["bbp_bing_implausible"] == 1
+        import pandas as pd
+
+        assert np.isnan(base.iloc[0]["bbp_bing_superseded"])
+        assert pd.isna(base.iloc[0]["fit_id_superseded"])
+        patch = compare.gather_matchups(store, pab_version="2.0.1")
+        assert len(patch) == 1 and patch.iloc[0]["fit_id"] == f201
+        assert compare.fit_version_counts(store) == {"2.0": 0, "2.0.1": 1}
+        assert compare.fit_version_counts(store, "2.0") == {"2.0": 1}
+
+
+def test_a_patch_on_a_different_pixel_does_not_supersede():
+    with Store.open(":memory:") as store:
+        from pab.tests.test_fit import _seed_matchup
+
+        matchup_id, pixel_id = _seed_matchup(store)
+        store.upsert(
+            "matchup_pixels",
+            {"matchup_id": matchup_id, "ix": 3, "iy": 3, "rank": 2, "flagged": 0},
+        )
+        other = store.query(
+            "SELECT pixel_id FROM matchup_pixels WHERE matchup_id = ? AND rank = 2",
+            (matchup_id,),
+        )[0]["pixel_id"]
+        f20 = _add_bing_fit(store, matchup_id, pixel_id, version="2.0", bbp=5e4)
+        f201 = _add_bing_fit(store, matchup_id, other, version="2.0.1", bbp=4e-4)
+        df = compare.gather_matchups(store)
+        assert sorted(df["fit_id"]) == sorted([f20, f201]), (
+            "a 2.0.1 fit of another pixel superseded the 2.0 fit"
+        )
+        assert df["bbp_bing_superseded"].isna().all()
+        assert compare.fit_version_counts(store) == {"2.0": 1, "2.0.1": 1}
+
+
+def test_gather_nasa_giop_has_no_duplicate_after_a_patch():
+    from pab.tests.test_report import _seed_nasa_giop
+
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id, f20, f201 = _seed_patched_runaway(store)
+        _seed_nasa_giop(store, matchup_id)
+        df = compare.gather_nasa_giop(store)
+        assert len(df) == 1, "the re-fitted matchup appeared once per version"
+        assert df.iloc[0]["bing_fit_id"] == f201 and df.iloc[0]["pab_version"] == "2.0.1"
+        assert df.iloc[0]["bbp_bing"] == pytest.approx(4e-4)
+        assert df.iloc[0]["pixel_id"] == pixel_id
+
+
+def test_gather_version_pair_pairs_the_patch_with_1_0(tmp_path):
+    """The 51 pairs become 1.0 vs 2.0.1, one row each, version_v2 saying so."""
+    from pab.tests.test_fit import _seed_matchup
+
+    v1 = tmp_path / "v1.db"
+    with Store.open(str(v1)) as s1:
+        m, px = _seed_matchup(s1)
+        _add_bing_fit(s1, m, px, version="1.0", bbp=2e-3)
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id, f20, f201 = _seed_patched_runaway(store)
+        assert (matchup_id, pixel_id) == (m, px)
+        df = compare.gather_version_pair(store, str(v1))
+        assert len(df) == 1, "the re-fitted matchup was paired once per version"
+        assert df.iloc[0]["version_v2"] == "2.0.1" and df.iloc[0]["version_v1"] == "1.0"
+        assert df.iloc[0]["bbp700_v2"] == pytest.approx(4e-4)
+        assert df.iloc[0]["bbp700_v1"] == pytest.approx(2e-3)
+
+
+def test_summary_page_counts_the_overlaid_family():
+    """"BING fits: 2 (1 at 2.0, 1 re-fitted at 2.0.1)" -- computed."""
+    from pab.report import rst
+    from pab.tests.test_report_versions import _seed_one
+
+    with Store.open(":memory:") as store:
+        _seed_patched_runaway(store)
+        _seed_one(store, "M2", wmo=7902227, cycle=2, bbp=2e-3, chl=0.1, version="2.0")
+        page = rst.summary_page(store)
+        assert "- **BING fits:** 2 (1 at 2.0, 1 re-fitted at 2.0.1)\n" in page
+        # the b_bp headline sees the re-fitted value, so nothing is excluded
+        assert "0 failed retrievals (0.00 %, ``b_bp`` > 1 m⁻¹) excluded" in page

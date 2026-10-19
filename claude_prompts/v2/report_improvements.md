@@ -693,7 +693,12 @@ changed prior set is recorded, no schema change needed.*
       were re-fitted under 2.0.1 with the physical ceilings (quote
       `prior_set`); K of them now sit below the gate and are what every
       statistic on this page uses; any still above it remain excluded by O3's
-      gate (count computed; the gate stays permanently). Methods: the
+      gate (count computed; the gate stays permanently); one more computed
+      sentence (Q&A/Outliers 11 = A): how many re-fitted runaways retrieve
+      Chl < 0.01 mg m⁻³ (`A_ph` at its 10⁻⁶ floor — a retrieval limit, stated
+      not hidden; Chl stays ungated per Q&A 6 = A), and that one 2.0.1 fit
+      (6990528/121) has `success = 0` and is kept as recorded (Q&A 10 = A).
+      Methods: the
       `pab_version` paragraph gains 2.0.1 and the overlay rule in one
       sentence; the *Retrieval* section names the ceilings.
       `select_representative_fits`: the "non-physical retrieval" slot becomes
@@ -3190,3 +3195,242 @@ refit_201_vs_float.png}`, `HOWTO.md`, this file. Restore command should it ever
 be needed: `cp $PAB_DATA_DIR/v2/pab_pre_v201_20261018.db $PAB_DATA_DIR/v2/pab.db`
 (and delete the 51 `_v2.0.1.npz` from `v2/fit_chains/` and the 51 PNGs from
 `v2/pipeline/figures/`). Next: O7.
+
+### 2026-10-18 (v2 Outliers O7 — the patch-version overlay: 2.0.1 shown in the report, keyed on matchup and pixel)
+
+Run with Fable. **Read-only throughout**: the live `$PAB_DATA_DIR/v2/pab.db`
+is `9503015b…cad92` before and after (opened by the CLI's `create=False`
+path for the scratch `--emit-site`, and by `file:…?mode=ro` for every check;
+no `-journal`/`-wal`); `v1/pab.db` still `09de0a6d…8273`; nothing written
+under `$PAB_DATA_DIR` or `v1/`, nothing uploaded, the committed
+`report_site/` **not** rebuilt (O9). Files changed: `pab/metrics/compare.py`,
+`pab/report/rst.py`, `pab/report/publish.py`, `pab/pipeline.py`,
+`pab/tests/{test_compare_versions,test_report,test_report_versions,
+test_figure_guards}.py`, `docs/design/PAB_design.md`, `docs/fitting.rst`,
+`HOWTO.md` (§5b), this file. Scratch:
+`/tmp/claude-1000/-mnt-tank-Oceanography-python-PAB/ee4e310b-49d2-41ef-88cf-8177a6e17f0c/scratchpad/`
+(`o7_site/` the first acceptance site, `o7_site2/` the one with the galleries
+filled, `o7_gallery/` the 19 gallery files fetched from Drive for it,
+`o7_pytest_full.log`).
+
+What the code does (Q&A/Outliers 1 = C, 10 = A, 11 = A):
+
+- **`compare.py` — the rule.** `is_patch_version("2.0.1")`,
+  `base_version("2.0.1") → "2.0"`; `version_family(store, version=None) →
+  (base, patches)`: the newest BING version's base plus every patch of that
+  base up to it — `("2.0", ["2.0.1"])` on the live DB, `("2.0", [])` on a
+  2.0-only store, `(None, [])` on an empty one; an **explicit** base
+  (`version="2.0"`) is exactly the base, which is what `--figure-version 2.0`
+  means. `resolve_versions(store, pab_version)`: `None` → the family (to be
+  overlaid), a string → exactly that version (no overlay), a list → those,
+  overlaid. `overlay_patch(df, version_col="pab_version", carry=())` keeps,
+  per `(matchup_id, pixel_id)` (+ `model_pair` when the frame has it), only
+  the rows at the newest version; a patch fit of a *different* pixel
+  supersedes nothing; a `NULL` pixel matches only `NULL`; `carry` keeps the
+  superseded row's value as `<col>_superseded` (NaN where nothing was
+  superseded — pandas 3's string dtype has no other sentinel). Applied in
+  `gather_matchups` (now selects `f.pixel_id`; carries `fit_id` and
+  `bbp_bing` → `fit_id_superseded`, `bbp_bing_superseded`, always present),
+  `gather_nasa_giop` (now also filters `algorithm = 'BING'`, selects the BING
+  fit's `pixel_id`/`pab_version`) and `gather_version_pair` (the 2.0 side
+  filtered to the family, overlaid on `version_v2`). `fit_version_counts`
+  gives the per-version counts after the overlay; `patch_refit_summary`
+  computes every number the failure note needs from the 2.0 rows that stay
+  in the database (runaways, max, the patch rows below/above the gate,
+  unpatched runaways, Chl < `REFIT_CHL_FLOOR` = 0.01, `success = 0` with
+  WMO/cycle, the 2.0 LM-failure count). `newest_bing_version` is kept (the
+  figure-guard tests and `pipeline` use `resolve_versions` now).
+- **`rst.py`.** `summary_page` resolves the family once and prints
+  "**BING fits:** 15,971 (15,920 at 2.0, 51 re-fitted at 2.0.1)" via
+  `_fit_count_clause` (the old "(``pab_version`` 2.0)" form when no patch).
+  `version_section`'s intro gains the computed "48 of the pairs use the
+  2.0.1 re-fit of a 2.0 fit (…)". `_version_failure_note` is the 2.0.1 story
+  when `patch_refit_summary` returns one: "51 of 15,971 2.0 fits (0.32 %)
+  … the largest is 9.32e+04 … They were **re-fitted under ``pab_version``
+  2.0.1** with physical ceilings on the priors (``prior_set = "…"`` — the
+  ceilings read back off the stamp via `models.ceilings_from_prior_set`, never
+  retyped; BING's 10⁻⁶ floors unchanged), on the very spectrum the 2.0 fit
+  saw. 51 of the 51 re-fitted fits now return a ``b_bp`` below the 1 m⁻¹ gate,
+  and **those re-fitted values are what every statistic and figure on this
+  site uses** … None remains above the gate; the gate itself stays in force
+  (0 failed retrievals (0.00 %, …) excluded). 11 of the 51 re-fitted fits
+  retrieve a chlorophyll below 0.01 mg m⁻³ — ``A_ph`` at its 10⁻⁶ prior
+  floor … stated here rather than hidden, since the chlorophyll is not gated.
+  1 of the re-fitted fits (6990528/121) records ``success = 0`` — … as for
+  144 of the 15,971 2.0 fits — and is kept as recorded." The "What they are"
+  paragraph's pending sentence became "The 2.0.1 re-fit above lands in that
+  basin"; the negative-blue clause is computed on the **2.0** frame so "40 of
+  the 51 failed retrievals do" survives the overlay. Without a patch (or
+  without a store) the O3 wording stands, "pending" included. Methods: the
+  `pab_version` paragraph gains the 2.0.1 sentence (patch; new rows; a 2.0.1
+  row supersedes the 2.0 row of the same matchup and pixel; 2.0 row stays;
+  the `pab_version` column says which) and *Failed retrievals* gains
+  `_methods_refit` — with a patched store the computed re-fit sentence naming
+  the ceilings from the stored `prior_set`, otherwise "From ``pab_version``
+  2.0.1 on the priors are capped at … the 2.0 fits were made without them"
+  (from `prior_set_label(FitConfig())`). `select_representative_fits`: slot 2
+  is the **re-fitted runaway** when `bbp_bing_superseded` is finite anywhere
+  — the largest superseded value, caption "re-fitted runaway, 2.0 b_bp 9.3e4
+  → 2.0.1 4.5e-4 m⁻¹ (float 1.0e-3)" (plain `b_bp`, as the gallery's other
+  captions; "(no float value)" when there is none) — else the old
+  "non-physical retrieval" slot; `_fit_gallery_intro` says which. Because the
+  overlaid row's `fit_id` is the 2.0.1 one, `_gather_with_figures` stages the
+  **2.0.1 figure**. `downloads_page` gains the computed "The manifest lists
+  the chains and figures of **every** BING version in the database: 15,971
+  2.0 fits (15,971 chains, 15,971 figures) and 51 2.0.1 re-fits (51 chains,
+  51 figures); … ``superseded_by``" (silent on a single-version store).
+- **`publish.py`.** `build_manifest` rows now carry the **fit's own**
+  `pab_version` (the argument is only a fallback for a row without one) and
+  a `superseded_by` field from the new `superseded_fits(store)` (the overlay
+  within each version family); every version's chains/figures are listed, as
+  before. `export_tables` needed no change: the frames carry `pab_version`,
+  `pixel_id`, `fit_id_superseded`, `bbp_bing_superseded` (summary) and
+  `pab_version`/`pixel_id` (NASA) — **the S3 tables' schema grows by these
+  columns in O9**.
+- **`pipeline.py`.** The `figure` stage's default is the family with the
+  overlay (a 2.0 fit superseded by a 2.0.1 re-fit is not rendered; the log
+  line says "(patch rows overlaid by matchup and pixel)"); `--figure-version`
+  renders exactly that version. Docstrings and `--help` updated.
+- **Docs.** `PAB_design.md` *Provenance & versioning*: a paragraph "A patch
+  version shares the database (adopted at 2.0.1)" — new rows, own stamp,
+  base rows never deleted, report-side overlay by matchup **and** pixel,
+  explicit version = no overlay, the `_superseded` columns. `docs/fitting.rst`
+  (*How a fit links back*) and HOWTO §5b: one sentence each; §5b's "do not
+  rebuild before O7" warning replaced by the 2.0.1 semantics.
+- **Tests** (+16; `ruff check pab` clean; **`pytest pab/tests -q`: 510 passed, 1 skipped**, was 494; 2 min 36 s; no chain NPZ leaked into `$PAB_DATA_DIR/fit_chains/`).
+  `test_compare_versions.py`: the helpers/`version_family`/`resolve_versions`
+  on empty, two-family and patched stores; `overlay_patch` on a frame (same
+  pixel superseded, other pixel kept, `NULL` pixel, `carry`, input untouched,
+  `model_pair` in the key); `gather_matchups` → one row with the 2.0.1
+  values and the superseded 2.0 fit/value, explicit "2.0"/"2.0.1" exact,
+  `fit_version_counts`; a patch on a different pixel does not supersede;
+  `gather_nasa_giop` and `gather_version_pair` without duplicates (1.0 vs
+  2.0.1); the summary sentence. `test_figure_guards.py`: the default renders
+  `M1_BING_2.0.1` + `M2_BING_2.0`, `--figure-version 2.0` renders the 2.0
+  pair. `test_report_versions.py`: the patched failure note (every quoted
+  count, the prior_set + ceilings, `success = 0` kept, Chl < 0.01, "pending"
+  gone, the negative-blue clause, both stats lines on the overlaid pair, the
+  whole site builds with no malformed literal); the unpatched regime still
+  says pending; a re-fit still above the gate + an unpatched runaway stay
+  excluded with the computed counts. `test_report.py`: the gallery slot in
+  both regimes (+ "no float value"), the end-to-end staged 2.0.1 figure,
+  `export_tables` rows carry `pab_version` + the superseded columns (CSV and
+  Parquet; the NASA table carries `pab_version`/`pixel_id`), the manifest's
+  per-row version and `superseded_by`, the Downloads sentence, Methods'
+  ceilings and overlay rule with and without a store.
+
+**Grep for other single-version / unfiltered `fits` joins** (`FROM fits`,
+`JOIN fits`, `newest_bing_version`, `pab_version` across `pab/`):
+
+- Changed: `compare.gather_matchups/gather_nasa_giop/gather_version_pair`,
+  `rst.summary_page`'s fit count (was a one-version `COUNT(*)`),
+  `pipeline.figure`'s default version, `publish.build_manifest`'s stamp.
+- Correct as they were: `rst._gather_with_figures` (maps `figure_path` by
+  `fit_id`, so the overlaid row picks the 2.0.1 figure), `rst._has_nasa_giop`
+  (algorithm only), `aggregates_page`/`_methods_matchups`/`export_tables`/
+  `interactive_figures` (all consume `gather_matchups`), `aggregate.py` (frame
+  only), `interactive.py` (frame only), `fit_fig` (one `fit_id`),
+  `fit.run.build_fits` (resume by `fit_id`, versioned), `replay`
+  (explicit `version="2.0"`), `rrs_qa_backfill` (explicit `--pab-version`),
+  `split_version` (by algorithm), `fit/nasa_giop.py` lines 245–251 and 343
+  (`SELECT DISTINCT m.matchup_id … JOIN fits … algorithm = 'BING'` — one
+  NASA ingest per matchup whatever the BING version; no duplication).
+- `docs/reporting.rst` still describes the pre-O3 "not hidden" behaviour —
+  O9's item 4, left alone as O3 did.
+
+**Acceptance on the real v2 DB** (E6 command into scratch, 12 s, exit 0;
+Sphinx 0 warnings; the DB sha unchanged):
+
+| statistic | 2026-10-07 site | gated (O3) | **overlaid (O7)** |
+|---|---|---|---|
+| BING fits (summary) | 15971 (2.0) | 15971 (2.0) | **15,971 (15,920 at 2.0, 51 re-fitted at 2.0.1)** |
+| `b_bp` headline | n = 15,274; 1.15; ρ 0.415; bias +0.010; RMS 0.645 | 15,224; 1.14; 0.411; −0.014; 0.492 | **15,274; 1.14; 0.414; −0.015; 0.493** |
+| gate clause (everywhere) | — | 51 (0.32 %) excluded | **0 failed retrievals (0.00 %) excluded** |
+| NASA(700)/BING(700) | 15,964; 0.937; ρ 0.889; RMS 0.52 | 15,913; 0.939; 0.890; 0.293 | **15,964; 0.938; 0.889; 0.294** |
+| 2.0/1.0 `b_bp` | 14,604; 0.75; ρ 0.924; RMS 0.536 | 14,556; 0.749; 0.926; 0.325 | **14,604; 0.749; 0.927; 0.325** (48 pairs at 2.0.1) |
+| Chl headline | 15,154; 0.943; ρ 0.733 | unchanged | **15,154; 0.945; ρ 0.741** |
+| 2.0/1.0 Chl | 14,604; 1.17; ρ 0.704; RMS 0.644 | unchanged | **14,604; 1.17; ρ 0.695; RMS 0.651** |
+| dot map | 1,858 saturated (12.2 %), 695 grey | 1,808 (11.9 %), 745 grey | **1,818 (11.9 % of 15,274), 695 grey** |
+| HEALPix | 453 cells / 15,143; 1 saturated | 453 / 15,093; 2 saturated | **453 / 15,143; 1 saturated** |
+| `b_bp` panel off-scale | 155 | 186 | **189** |
+
+Exactly O6's prediction: 15,971 rows, 51 at `2.0.1`, the gate excludes 0, the
+headline n back to 15,274, median/ρ essentially unchanged and the log-RMS a
+hair above O3's (0.492 → 0.493: the 51 add 30 within-2× and 20 outside). The
+Chl headline moved (0.943/0.733 → 0.945/0.741) because the 51 Chl values are
+now the 2.0.1 ones (Q&A 6 = A, 11 = A: ungated, 11 of them < 0.01). The gallery
+slot renders: `_static/figures/6903874_139_…_ExpBPow_v2.0.1_fit.png` (the
+2.0.1 spectrum fit with `b_bp`(700) 4.5e-4, the posterior band well below the
+ceiling; looked at), caption "6903874/139 — re-fitted runaway, 2.0 b_bp 9.3e4
+→ 2.0.1 4.5e-4 m⁻¹ (float 1.0e-3)". The `b_bp` density panel (n = 15274,
+ρ 0.41, RMS 0.49, 189 off-scale), dot map and HEALPix map were looked at and
+read as expected.
+
+**How the 2.0.1 figures resolve.** O6's `--stage figure` ran on the
+workstation, so the 51 `figure_path`s are **absolute workstation paths**
+(`/home/xavier/…/v2/pipeline/figures/<fit_id>_fit.png`), not PVC paths: no
+`--figure-root` prefix matches, `remap_figure_path` passes them through, and
+`_stage_static` finds the file directly. No new flag needed — but the paths
+are machine-specific (O9: fine for the workstation build; a pod build would
+need a `--figure-root /home/xavier/Oceanography/data/Color/PAB/v2/pipeline/
+figures=…` mapping).
+
+**Surprises / worth knowing.**
+
+- **Every representative gallery pick changed.** The first scratch build
+  dropped 7 of 8 fit figures, 4 of 4 scenes and 7 of 8 Q&A plots: the picks
+  are "the matchup nearest the 5th/25th/… percentile", "nearest the tercile
+  median" and "nearest the region median", and 50 added ratio pairs move each
+  target by a hair — enough to change the nearest matchup every time (5th:
+  1902383/79 → 5907047/38, ratio 0.188 → 0.185, and so on). The files in
+  `$PAB_DATA_DIR/gallery/` are E5's picks and no longer the site's. I fetched
+  the 19 new files **into scratch** (`rclone copy --files-from --no-traverse`
+  from `AIOcean:PAB/v2/figures/` (7 fits), `AIOcean:PAB/site/_static/scenes/`
+  (4 scenes) and `AIOcean:PAB/site/_static/argo_qa/` (8 Q&A plots; all eight
+  picks' plots are under `/data/full/…`, so all are on Drive), 940 KB) and
+  rebuilt: 20 files staged, **no dropped-figure warning**, Sphinx 0
+  warnings, the site source 2.5 MB. The lists are in
+  `scratchpad/o7_gallery/lists/{fits,scenes,qa}.txt`. **O9 must copy these
+  into `$PAB_DATA_DIR/gallery/{v2_figures,v1_scenes,argo_qa}/`** (or re-run
+  the same `rclone copy` there) before the E6 command, or the galleries will
+  be nearly empty. If pick stability across patches is wanted, that is a
+  design choice (pin the picks, or choose on the base-version frame) and not
+  made here.
+- **O3's second saturated HEALPix cell was not the central Baltic.** It is
+  hpix 40 (nside 8, centre 9.0°E 60.4°N — the Skagerrak/Kattegat approaches),
+  n = 46, median −0.59 dex on the gated 2.0 frame; the central-Baltic cell
+  (hpix 61, 20°E 58°N) is at +0.03 dex in both regimes. With the overlay, 11
+  re-fits land in cell 40 (n = 57) and its median is **−0.47 dex** — just
+  inside the ±0.5 clip, so the map is back to 1 saturated cell (hpix 84,
+  6.4°E 48.1°N, −1.48 dex, unchanged). The honest reading: that cell's
+  satellite `b_bp` is ~3× low either way; the gate/overlay only moves it
+  across the clip edge.
+- **pandas 3.** `fit_id_superseded` is a `str`-dtype column whose missing
+  value is NaN (a `None` cannot be stored), so tests use `isna()`;
+  `Series.where(cond, None)` does not fill with `None` either.
+- `_version_failure_note`'s denominators changed meaning with a store: "51
+  of 15,971 2.0 fits" counts the fits in the database (what the prompt asks
+  for), where O3's frame-based "48 of 14,604" counted the paired ones; the
+  "1.0 produce 0 such values" sentence is still frame-based.
+- `gather_matchups` can now return two rows for one matchup if a patch fit
+  is on a different pixel than the base fit (by design: the overlay is per
+  pixel); the live DB has none (O6 fitted the rank-1 pixel).
+- The workstation clock prints 2026-10-19 on the scratch site; dated by the
+  prompt's convention.
+- Nothing needed a decision: **no new Q&A items.**
+
+**For O9.** (1) Copy the 19 new gallery files into `$PAB_DATA_DIR/gallery/`
+first (above). (2) Expected on the rebuilt `report_site/`: the summary
+sentence, the clause "0 failed retrievals (0.00 %, ``b_bp`` > 1 m⁻¹)
+excluded" on every `b_bp` caption (it prints at N = 0 on purpose — the gate
+exists), the failure note with 51/15,971, 51/51, 11, 6990528/121, 144; the
+Methods re-fit sentence; the Downloads versions sentence; the gallery slot
+`…_v2.0.1_fit.png`. (3) `matchup_summary.{csv,parquet}` gain `pixel_id`,
+`fit_id_superseded`, `bbp_bing_superseded` (plus O4's `n_neg_blue`, O3's
+`bbp_bing_implausible`); `nasa_giop_summary.*` gain `pixel_id`, `pab_version`
+— update HOWTO §5b / run report §6 column lists accordingly. (4) The manifest
+rows now carry `superseded_by`. (5) `docs/reporting.rst` (gate + overlay) is
+still yours. (6) The DB to publish is still `9503015b…` — O7 wrote nothing.
+
+Hand-off (nothing committed — git is yours): the 13 files above. Next: O8
+(independent) and O9.

@@ -85,7 +85,9 @@ class PipelineConfig:
     outdir: str | Path | None = None
     make_figures: bool = True
     #: Which BING ``pab_version`` the ``figure`` stage renders. ``None`` → the
-    #: store's newest. Never renders NASA-GIOP rows: they have no chains.
+    #: store's newest version family with the patch overlay (a 2.0 fit
+    #: superseded by a 2.0.1 re-fit is skipped); a string → exactly that
+    #: version. Never renders NASA-GIOP rows: they have no chains.
     figure_version: str | None = None
     #: Replay seam for the ``fit`` stage (Q&A/Outliers 8 = C): a directory of
     #: chain NPZs; each matchup's spectrum is read from its **2.0** fit's NPZ
@@ -770,11 +772,15 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
 
     Two filters keep this stage from doing work it cannot or need not do:
 
-    * **Only BING fits of one ``pab_version``.** The ``fits`` table also holds
-      the NASA-GIOP ingests, which have no MCMC chains — rendering a fit figure
-      for one cannot succeed. On the v2 store that is 15,976 of 31,947 rows, so
-      without this filter half the stage is guaranteed failures, each costing a
-      worker slot and an exception traceback.
+    * **Only BING fits of one ``pab_version`` family.** The ``fits`` table also
+      holds the NASA-GIOP ingests, which have no MCMC chains — rendering a fit
+      figure for one cannot succeed. On the v2 store that is 15,976 of 31,947
+      rows, so without this filter half the stage is guaranteed failures, each
+      costing a worker slot and an exception traceback. By default the family
+      is the store's newest (:func:`pab.metrics.compare.version_family`) with
+      the patch overlay applied — a 2.0 fit superseded by a 2.0.1 re-fit of
+      the same matchup and pixel is not rendered — while an explicit
+      ``--figure-version`` renders exactly that version.
     * **Scenes only where ``matchups.scene_path`` is NULL.** The scene is the
       expensive half (it re-opens the ~1.8 GB granule) and most matchups
       already carry one from the previous release. Re-rendering a scene that
@@ -788,12 +794,26 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
     written, skipped, failed = [], [], []
     todo: list[tuple[str, str, bool]] = []
 
-    version = config.figure_version
-    if version is None:
-        from pab.metrics import compare
+    from pab.metrics import compare
 
-        version = compare.newest_bing_version(store)
-    _log.info("figure: rendering BING fits at pab_version %s", version)
+    versions = compare.resolve_versions(store, config.figure_version)
+    overlay = config.figure_version is None and len(versions) > 1
+    _log.info(
+        "figure: rendering BING fits at pab_version %s%s",
+        versions[0] if len(versions) == 1 else versions,
+        " (patch rows overlaid by matchup and pixel)" if overlay else "",
+    )
+    clause, vparams = compare._version_clause("pab_version", versions)
+    rows = store.query(
+        "SELECT fit_id, matchup_id, pixel_id, model_pair, pab_version, figure_path "
+        f"FROM fits WHERE algorithm = 'BING' {clause} ORDER BY fit_id",
+        vparams,
+    )
+    if overlay and rows:
+        import pandas as pd
+
+        kept = set(compare.overlay_patch(pd.DataFrame(rows))["fit_id"])
+        rows = [r for r in rows if r["fit_id"] in kept]
 
     # `scene_path IS NULL` is resolved once, here, rather than per render: the
     # parent is the only writer, so a worker cannot see another worker's scene.
@@ -803,12 +823,7 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
             "SELECT matchup_id FROM matchups WHERE scene_path IS NULL"
         )
     }
-    for r in store.query(
-        "SELECT fit_id, matchup_id, figure_path FROM fits "
-        "WHERE algorithm = 'BING' AND (? IS NULL OR pab_version = ?) "
-        "ORDER BY fit_id",
-        (version, version),
-    ):
+    for r in rows:
         if r["figure_path"] and not config.replace:
             skipped.append(r["fit_id"])
             # Cheap backfill: record an already-rendered scene (no re-render, no
@@ -1156,9 +1171,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--figure-version",
         default=None,
         metavar="VERSION",
-        help="With --stage figure: render BING fits at this pab_version "
-        "(default: the store's newest). NASA-GIOP rows are never rendered — "
-        "they have no MCMC chains.",
+        help="With --stage figure: render BING fits at exactly this pab_version "
+        "(default: the store's newest version family, with a patch version such "
+        "as 2.0.1 overlaid on its base by matchup and pixel). NASA-GIOP rows are "
+        "never rendered — they have no MCMC chains.",
     )
     p.add_argument(
         "--compare-db",

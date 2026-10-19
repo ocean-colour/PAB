@@ -653,3 +653,109 @@ def test_failure_note_quotes_the_negative_blue_rate_when_recorded(tmp_path):
             "(``n_neg_blue`` ≥ 1); 1 of the 1 failed retrieval does. On such a "
             "spectrum" in out
         )
+
+
+# -- the 2.0.1 story (O7, Q&A/Outliers 1 = C, 10 = A, 11 = A) ------------------
+def _patch_m2(store, *, bbp=4e-4, chl=0.005, success=0):
+    """Re-fit M2 (the runaway of ``_v2_store(bbps=(1e-3, 5e4))``) under 2.0.1
+    on the same pixel, the O6 shape: ceiling ``prior_set``, replay stamp."""
+    from pab.tests.test_compare_versions import PATCH_PRIOR_SET, _add_bing_fit
+
+    pixel_id = store.query(
+        "SELECT pixel_id FROM matchup_pixels WHERE matchup_id = 'M2'"
+    )[0]["pixel_id"]
+    store.execute("UPDATE fits SET pixel_id = ? WHERE fit_id = 'M2_v2.0'", (pixel_id,))
+    return _add_bing_fit(
+        store, "M2", pixel_id, version="2.0.1", bbp=bbp, chl=chl, success=success,
+        prior_set=PATCH_PRIOR_SET,
+    )
+
+
+def test_failure_note_tells_the_2_0_1_story_when_patched(tmp_path):
+    """With a 2.0.1 re-fit in the store the note counts the runaways from the
+    2.0 rows (which stay), quotes the prior_set and ceilings, says how many
+    re-fits sit below the gate (and that those values are what the page
+    uses), how many still above, the Chl < 0.01 count (Q&A 11 = A) and the
+    success = 0 fit kept as recorded (Q&A 10 = A) -- every number computed."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4))
+        _patch_m2(store)
+        for m, n in (("M1", 0), ("M2", 2)):
+            store.upsert(
+                "fit_results",
+                {"fit_id": f"{m}_v2.0", "quantity": "BING_ExpBPow_n_neg_blue", "value": n},
+            )
+        out = rst.version_section(store, v1, sortable=False)
+        assert "**Retrieval failures.** 1 of 2 2.0 fits (50.00 %)" in out
+        assert "the largest is 5e+04 m⁻¹" in out
+        assert "1.0 produce 0 such values" in out
+        assert "**re-fitted under ``pab_version`` 2.0.1**" in out
+        assert (
+            '``prior_set = "bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"`` — '
+            "``b_bp`` (600 nm) ≤ 0.1 m⁻¹, ``A_dg`` ≤ 10 m⁻¹, ``A_ph`` ≤ 10 m⁻¹"
+        ) in out
+        assert "1 of the 1 re-fitted fits now return a ``b_bp`` below the 1 m⁻¹ gate" in out
+        assert "those re-fitted values are what every statistic and figure on this site uses" in out
+        assert "``fit_id_superseded``, ``bbp_bing_superseded``" in out
+        assert "None remains above the gate" in out
+        assert "0 failed retrievals (0.00 %, ``b_bp`` > 1 m⁻¹) excluded" in out
+        assert "1 of the 1 re-fitted fits retrieve a chlorophyll below 0.01 mg m⁻³" in out
+        assert "``A_ph`` at its 10⁻⁶ prior floor" in out
+        assert (
+            "1 of the re-fitted fits (7902222/2) records ``success = 0``" in out
+            and "as for 0 of the 2 2.0 fits" in out
+            and "is kept as recorded" in out
+        )
+        # the O3 "pending" sentence is gone; the basin sentence points at the re-fit
+        assert "pending" not in out
+        assert "The 2.0.1 re-fit above lands in that basin" in out
+        # the negative-blue clause still names the failed retrieval, computed
+        # on the 2.0 rows (the overlaid frame no longer flags any)
+        assert "1 of 2 fitted spectra (50.00 %)" in out
+        assert "1 of the 1 failed retrieval does." in out
+        # the float Chl under the failed fit is still quoted
+        assert "median Chl of 0.10 mg m⁻³" in out
+        # the stats lines use the overlaid pair (1.0 vs 2.0.1 for M2): both
+        # pairs count, nothing excluded, and the intro says which
+        assert "- **b_bp(700 nm)** — n = 2;" in out
+        assert "1 of the pairs use the 2.0.1 re-fit of a 2.0 fit" in out
+        assert "- **chlorophyll** — n = 2;" in out
+        # the whole site still builds and has no malformed literal
+        written = rst.build_site(store, tmp_path / "site", sortable=False, compare_db=v1)
+        text = written["comparisons"].read_text()
+        assert "re-fitted under" in text
+        import re
+
+        for name in ("summary", "comparisons", "methods", "downloads"):
+            for line in written[name].read_text().splitlines():
+                # the predicate of test_pages_have_no_malformed_inline_literals
+                if re.search(r"``[\(\w]", line.replace("``(url", "")):
+                    assert not re.search(r"[^`]``[\(]", line), line
+
+
+def test_failure_note_still_says_pending_without_a_patch(tmp_path):
+    """The old regime: runaways and no 2.0.1 rows -> gated, re-fit pending."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4))
+        out = rst.version_section(store, v1, sortable=False)
+        assert "pending" in out and "re-fitted under" not in out
+        assert "1 failed retrieval (50.00 %, ``b_bp`` > 1 m⁻¹) excluded" in out
+
+
+def test_patch_still_above_the_gate_stays_excluded(tmp_path):
+    """A re-fit that is still non-physical remains gated, and the note says
+    so with the count; an unpatched runaway counts as still above too."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3, 6e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4, 7.0e4))  # M2 and M3 run away
+        _patch_m2(store, bbp=3.0, chl=0.2, success=1)  # re-fitted, still > 1
+        out = rst.version_section(store, v1, sortable=False)
+        assert "**Retrieval failures.** 2 of 3 2.0 fits" in out
+        assert "0 of the 1 re-fitted fits now return" in out
+        assert "2 remain above the gate (1 re-fitted and still above it and 1 not re-fitted) and stay excluded" in out
+        assert "2 failed retrievals (66.67 %, ``b_bp`` > 1 m⁻¹) excluded" in out
+        assert "0 of the 1 re-fitted fits retrieve a chlorophyll below" in out
+        assert "``success = 0``" not in out
+        assert "- **b_bp(700 nm)** — n = 1;" in out  # only M1 survives the gate

@@ -174,7 +174,11 @@ without it a 2.0 run over a store holding 1.0 fits would skip every matchup as
 of adding to them. Ids written under 1.0 keep their original, unsuffixed form.
 Note the suffix distinguishes *versions*, not *configurations*: two
 configurations run at the same ``pab_version`` (e.g. a ``robust_ztt``
-comparison arm) collide, and belong in separate databases.
+comparison arm) collide, and belong in separate databases. A **patch**
+version (``2.0.1``: the 2.0 runaways re-fitted with the prior ceilings) shares
+its base's database and matchup set — its fits are new ``…_v2.0.1`` rows next
+to the untouched 2.0 rows, and the report overlays a patch row on the base row
+of the same matchup **and pixel** (:func:`pab.metrics.compare.overlay_patch`).
 
 The ``fits`` row carries ``matchup_id`` +
 ``pixel_id`` FKs. :func:`pab.fit.run.fit_matchup` re-reads the pixel ``Rrs`` from
