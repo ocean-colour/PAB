@@ -946,7 +946,7 @@ need a new `fit_id` scheme or `--replace`, and would break the "same input as
 2.0" rule the replay was built for; **C** delete the row and leave the matchup
 at its 2.0 value (gated).
 
-**Your answer:**
+**Your answer:** Follow your recommendation.
 
 **11 — Eleven of the 51 retrieve Chl < 0.01 mg m⁻³ at 2.0.1** (floats
 0.1–1.9): `b_bp` is physical and χ² good, but the absorption lands on `A_dg`
@@ -962,7 +962,7 @@ gate for Chl (Chl set to NaN where the `A_ph` 95 % upper bound is within
 captions — a new rule that would also catch an unknown number of ordinary 2.0
 fits, so it needs its own acceptance run.
 
-**Your answer:**
+**Your answer:** Follow your recommendation.
 
 ### v2
 
