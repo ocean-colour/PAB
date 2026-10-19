@@ -440,3 +440,175 @@ GIOP is NASA's `bbp_442` shifted to 700 nm with its per-pixel slope.
   spectra_sample,chain_start,refit2,tables,figs}.py`.
 - Nothing was written to any database, nothing under `$PAB_DATA_DIR/v1/`, no
   code under `pab/` changed.
+
+## Appendix C — the 2.0.1 re-fit
+
+*Added 2026-10-18 (Prompts/Outliers O6, run with Fable). The 51 fits of
+Appendix A were re-fitted under `pab_version` **2.0.1** — the same data,
+physics and matchups as 2.0, with the priors capped at physical ceilings
+(`prior_set = "bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"`, i.e.
+`b_bp`(600) ≤ 0.1 m⁻¹, `A_dg` ≤ 10 m⁻¹, `A_ph` ≤ 10 m⁻¹; BING's own
+log-uniform floors of 10⁻⁶ unchanged) and the input spectrum **replayed from
+the 2.0 chain NPZ** (`rrs_source = "L2_AOP:replay:<2.0 fit_id>"`,
+Q&A/Outliers 8 = C), so 2.0 → 2.0.1 differs by the prior and nothing else.
+The 2.0 rows stay in the database untouched; the 2.0.1 rows are new records
+(`fit_id` … `_v2.0.1`) and the report overlays them per matchup and pixel
+(O7). Selection by SQL: [`high_bbp_outliers/refit_51.csv`](high_bbp_outliers/refit_51.csv).
+Run: `pab --stage fit --jobs 8 --matchups-csv … --replay-chains …` on the
+workstation (`ocean14`, CPU), 11 min 13 s for the 51 (median 198 s of CPU per
+fit), 51 written / 0 failed; log `$PAB_DATA_DIR/v2/logs/refit_51_20261018.log`.*
+
+**What the re-fit shows.**
+
+- **All 51 are below the gate.** `b_bp`(700) at 2.0.1 spans 2.9×10⁻⁶–
+  8.2×10⁻³ m⁻¹ (2.0: 4.1×10⁴–9.3×10⁴); none is above 1 m⁻¹, so O3's gate
+  excludes nothing once the overlay is in place.
+- **Every chain started below the wall.** `chain_start_report` over the 51
+  new NPZs: `started_below_wall = True` for 51/51. Step-0 walker medians sit
+  1.07–4.47 dex (median 1.57) under the `B_nw` ceiling, 0.56–1.84 dex
+  (median 1.12) under the `A_dg` ceiling and 1.91–5.70 dex (median 2.49)
+  under the `A_ph` ceiling. The smallest margin is `A_dg` for 1902683/223
+  (0.56 dex, just over the 0.5 dex margin the check uses).
+- **No posterior presses on a ceiling.** The 95 % upper bound of `b_bp`(600)
+  reaches at most 0.0102 m⁻¹ (10 % of the ceiling; 2903902/30), of `A_dg` at
+  most 3.7 m⁻¹ (37 %; 1902683/223, with 4903784/86 at 3.2 and 2903902/30 at
+  2.9) and of `A_ph` at most 0.14 m⁻¹ (1.4 %). Nothing is within 5 % of a
+  ceiling — the ceilings removed the spurious basin from the LM's reach but
+  never bound the posterior.
+- **χ² is lower for 51 of 51.** χ²_red(2.0)/χ²_red(2.0.1) ranges 2.3–108×
+  (median 8.2×; 1902683/192: 14.4 → 0.15). At 2.0.1 the median χ²_red is
+  0.61 and the maximum 2.38 (7901007/400); none is above 3. The physical
+  basin is the better fit in every case, as §4 found for four of them.
+- **Against the float** (50 of the 51 have a mixed-layer `bbp700`;
+  2902272/215 does not): median 2.0.1/float = 0.76; **30/50 within 2×,
+  40/50 within 3×**; log-RMS 0.60 dex and ρ(log) 0.60, against 0.49 dex and
+  68 % within 2× for the gated 2.0 population — the re-fitted 51 are a
+  noisier-than-average but ordinary part of the scatter, not a separate
+  cloud. Against BING 1.0 (48 have a Gordon fit of the same pixel): median
+  0.82, 40/48 within 2×. Against NASA GIOP at 700 nm: median 1.18, 36/51
+  within 2×.
+- **Type A (40 fits, negative blue bands; 39 with a float value):** median
+  ratio 0.76, 24/39 within 2×, 30/39 within 3×; 8 below ⅓, 1 above 3×
+  (1902683/318, where BING 1.0 agrees with 2.0.1 and not the float).
+- **Type B (11 fits, no negative band at 400–450 nm):** 9 Baltic plus
+  4903489/51 (tropical Atlantic) and 4903850/28 (Kuroshio) — Outliers 1's
+  "all Baltic" was two short, the type being defined here by the stored
+  `n_neg_blue = 0`. Median ratio 0.89, 6/11 within 2×, 10/11 within 3×, and
+  the tightest agreement of all: |log₁₀ ratio| median 0.05 dex, 5–95 %
+  bands of ±6 %. The four consecutive cycles of 4903784 (111–114) sit at
+  0.40–0.45× the float, with BING 1.0 and GIOP both agreeing with 2.0.1
+  rather than with the float. **O5's expectation that the type-B spectra
+  would land "physical but far below the float with `A_ph` at the floor" did
+  not carry over**: the one case O5 looked at, 4903489/51, is the single
+  non-Baltic, non-green-peaked type-B spectrum and is the exception (below),
+  while the green-peaked Baltic spectra constrain `b_bp` well.
+- **Nine fits sit more than 3× below the float, in two groups.** (i) Four
+  low-signal tropical/Mediterranean spectra with a sharp blue depression the
+  model cannot reproduce — 6990528/121, 1902601/95, 4903904/6, 4903489/51 —
+  land at 3×10⁻⁶–3×10⁻⁴ m⁻¹ (4–200× below the float) with `A_ph` at the
+  10⁻⁶ floor, Chl ≤ 0.001 mg m⁻³ and wide `b_bp` bands (the 4903489/51
+  posterior spans 2×10⁻⁵–1.5×10⁻⁴): χ²_red is fine (0.6–1.8) because the
+  spectrum simply does not constrain `b_bp` there; these are below the gate
+  but not measurements of the float's water. (ii) Five cycles of float
+  **4903784** (185, 173, 170, 179, 86) whose mixed-layer `bbp700` is
+  0.018–0.048 m⁻¹ — four of them exactly 0.0478 — while BING 2.0.1, BING 1.0
+  and GIOP agree with each other at 1–4×10⁻³. Here the float value, not the
+  retrieval, is the odd one out.
+- **`b_bp` is rescued; Chl often is not.** 11 of the 51 retrieve Chl <
+  0.01 mg m⁻³ at 2.0.1 (floats 0.1–1.9): the absorption lands on `A_dg`
+  (0.14–2.7 m⁻¹) with `A_ph` at or near its floor (the `A_ph`-mirror mode
+  §4 described; `A_ph`'s 5th percentile is within 0.5 dex of the floor for
+  18 of 51). Their `b_bp` is physical and the χ² good; the Chl of these 11 is
+  as doubtful as the 2.0 Chl was, and Q&A/Outliers 6 = A means it is not
+  gated.
+- **One LM failure.** 6990528/121 has `success = 0`: the Levenberg–Marquardt
+  warm-start raised and the walkers started from the clipped initial guess
+  (144 of the 15,971 2.0 fits are in the same state; the MCMC always runs).
+  It is the matchup whose float Chl seed is negative (−0.045 mg m⁻³, O5's
+  note) and one of the four floor cases above.
+- **Caveat, from O5.** On the workstation CPU the LM finds the physical
+  basin for most runaways even under the 2.0 priors, so "51 of 51 physical"
+  is the result of the ceiling *and* the CPU optimiser path together; the
+  ceiling is what guarantees it (the spurious basin no longer exists inside
+  the bounds), and O8's `"warn"` control under `FitConfig.v2_0()` is where
+  the two are separated with a number.
+
+![2.0 vs 2.0.1 against the float](high_bbp_outliers/refit_201_vs_float.png)
+
+*Left: the 51 at 2.0 (orange) against the float, seven decades above the
+population (grey, 15,920 gated 2.0 fits). Right: the same 51 at 2.0.1 with
+their 5–95 % bands, type A in blue, type B in orange; the dashed line is 1:1,
+the dotted lines ×2, the dash-dot line the 1 m⁻¹ gate and the dotted
+horizontal the `b_bp`(600) ceiling. The column of points at a float value of
+0.018–0.048 is float 4903784.*
+
+**The 51 fits at 2.0.1.** Sorted as Appendix A (by the 2.0 `b_bp`). Type A/B
+from the stored `n_neg_blue`; `A_dg`, `A_ph`, Chl are 2.0.1 posterior medians
+(m⁻¹, m⁻¹, mg m⁻³); the step-0 margin is the chain's starting walker median
+in dex below each ceiling; "LM" is `fits.success`.
+
+| WMO/cycle | type | region | b_bp(700) 2.0 | b_bp(700) 2.0.1 | 5–95 % | float | BING 1.0 | GIOP | χ²_red 2.0 → 2.0.1 | A_dg 2.0.1 | A_ph 2.0.1 | Chl 2.0.1 (float) | step-0 margin B_nw/A_dg/A_ph [dex] | LM |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 6903874/139 | A | tropical Atlantic / Caribbean | 9.32e+04 | **4.53e-04** | 3.6e-04–5.7e-04 | 1.01e-03 | 7.04e-04 | 1.19e-03 | 11.11 → 1.87 | 0.345 | 0.001 | 0.018 (0.25) | 2.3 / 1.5 / 3.0 | ok |
+| 6990528/121 | A | Mediterranean | 9.29e+04 | **1.15e-04** | 6.2e-05–1.8e-04 | 7.44e-04 | 4.84e-04 | 4.71e-04 | 15.34 → 0.61 | 0.141 | 1.9e-05 | 0.000346 (-0.05) | 2.8 / 1.8 / 5.6 | **failed** |
+| 1902601/95 | A | tropical Atlantic / Caribbean | 9.29e+04 | **2.75e-04** | 1.9e-04–3.6e-04 | 1.07e-03 | 6.07e-04 | 3.77e-04 | 12.94 → 1.83 | 0.197 | 6.4e-05 | 0.00115 (0.12) | 2.6 / 1.7 / 5.3 | ok |
+| 4903904/6 | A | tropical Atlantic / Caribbean | 9.05e+04 | **2.85e-06** | 9.6e-07–1.6e-05 | 6.07e-04 | 1.20e-04 | 1.31e-04 | 11.12 → 0.83 | 0.174 | 2.3e-05 | 0.000409 (0.13) | 4.5 / 1.8 / 5.6 | ok |
+| 4903489/51 | B | tropical Atlantic / Caribbean | 9.01e+04 | **8.07e-05** | 1.9e-05–1.5e-04 | 1.13e-03 | 3.45e-04 | 3.38e-04 | 11.20 → 0.56 | 0.18 | 4.3e-05 | 0.000763 (0.93) | 3.2 / 1.8 / 4.9 | ok |
+| 1902498/12 | A | tropical Atlantic / Caribbean | 9.01e+04 | **2.78e-04** | 2.0e-04–3.6e-04 | 7.58e-04 | 5.93e-04 | 1.01e-03 | 11.38 → 0.72 | 0.227 | 5.5e-05 | 0.00098 (0.23) | 2.5 / 1.7 / 5.7 | ok |
+| 4903462/128 | A | tropical Atlantic / Caribbean | 8.69e+04 | **1.15e-03** | 9.7e-04–1.3e-03 | 8.98e-04 | 1.24e-03 | 1.30e-03 | 9.41 → 1.09 | 0.373 | 0.02 | 0.351 (0.21) | 1.9 / 1.4 / 2.8 | ok |
+| 6903877/215 | A | tropical Atlantic / Caribbean | 8.35e+04 | **5.17e-04** | 4.5e-04–6.4e-04 | 1.21e-03 | — | 7.94e-04 | 12.12 → 0.76 | 0.264 | 0.015 | 0.264 (0.29) | 2.2 / 1.6 / 2.8 | ok |
+| 4902683/264 | A | NE Pacific coast | 8.30e+04 | **3.83e-04** | 1.3e-04–6.3e-04 | 8.79e-04 | 5.81e-04 | 8.70e-04 | 1.61 → 0.43 | 0.748 | 0.00016 | 0.00282 (0.54) | 2.3 / 1.1 / 5.4 | ok |
+| 2903886/75 | A | California Current | 8.23e+04 | **5.16e-04** | 4.0e-04–6.4e-04 | 1.27e-03 | 1.08e-03 | 1.16e-03 | 5.94 → 1.35 | 0.23 | 0.052 | 0.925 (0.72) | 2.2 / 1.6 / 2.3 | ok |
+| 1902660/51 | A | Arabian Sea / Gulf of Oman | 8.11e+04 | **9.41e-04** | 7.8e-04–1.1e-03 | 8.39e-04 | 2.02e-03 | 1.48e-03 | 5.06 → 1.01 | 0.321 | 0.063 | 1.13 (0.74) | 2.0 / 1.5 / 2.2 | ok |
+| 1902683/192 | B | Baltic Sea | 7.95e+04 | **6.16e-03** | 5.8e-03–6.5e-03 | 6.27e-03 | 6.42e-03 | 5.91e-03 | 14.45 → 0.15 | 0.754 | 0.0071 | 0.127 (0.90) | 1.2 / 1.1 / 3.6 | ok |
+| 2903902/49 | B | Baltic Sea | 7.41e+04 | **4.95e-03** | 4.5e-03–5.3e-03 | 4.80e-03 | 5.09e-03 | 4.16e-03 | 12.56 → 0.12 | 0.452 | 0.033 | 0.589 (1.41) | 1.3 / 1.3 / 2.4 | ok |
+| 1902683/158 | B | Baltic Sea | 7.30e+04 | **7.48e-03** | 6.9e-03–8.1e-03 | 7.75e-03 | 7.50e-03 | 7.83e-03 | 15.13 → 0.17 | 0.745 | 0.051 | 0.914 (3.45) | 1.1 / 1.1 / 2.3 | ok |
+| 4902679/162 | A | NE Pacific coast | 7.26e+04 | **2.29e-03** | 2.1e-03–2.5e-03 | 2.15e-03 | 2.86e-03 | 9.65e-04 | 7.99 → 2.22 | 1.02 | 0.057 | 1.02 (1.52) | 1.6 / 1.0 / 2.3 | ok |
+| 6903874/140 | A | tropical Atlantic / Caribbean | 7.23e+04 | **1.24e-03** | 1.0e-03–1.4e-03 | 1.15e-03 | 1.60e-03 | 1.49e-03 | 12.92 → 0.53 | 0.251 | 0.031 | 0.56 (0.55) | 1.9 / 1.6 / 2.5 | ok |
+| 4903784/112 | B | Baltic Sea | 7.22e+04 | **7.43e-03** | 7.1e-03–7.9e-03 | 1.83e-02 | 7.97e-03 | 5.97e-03 | 10.50 → 0.45 | 0.869 | 0.053 | 0.954 (1.19) | 1.1 / 1.1 / 2.2 | ok |
+| 4903784/113 | B | Baltic Sea | 7.22e+04 | **8.23e-03** | 7.8e-03–8.8e-03 | 1.84e-02 | 8.78e-03 | 7.06e-03 | 11.12 → 0.43 | 0.776 | 0.055 | 0.991 (1.16) | 1.1 / 1.1 / 2.2 | ok |
+| 4903784/111 | B | Baltic Sea | 7.21e+04 | **7.44e-03** | 7.0e-03–7.9e-03 | 1.83e-02 | 7.97e-03 | 5.97e-03 | 10.50 → 0.47 | 0.888 | 0.054 | 0.967 (1.25) | 1.1 / 1.1 / 2.3 | ok |
+| 4903784/114 | B | Baltic Sea | 7.19e+04 | **8.22e-03** | 7.8e-03–8.7e-03 | 1.84e-02 | 8.80e-03 | 7.06e-03 | 11.12 → 0.40 | 0.775 | 0.056 | 1.01 (1.16) | 1.1 / 1.1 / 2.2 | ok |
+| 2902272/215 | A | Arabian Sea / Gulf of Oman | 7.15e+04 | **1.33e-04** | 7.8e-06–2.6e-04 | — | 4.03e-04 | 8.95e-04 | 4.31 → 1.88 | 0.499 | 0.025 | 0.443 (—) | 2.8 / 1.3 / 2.6 | ok |
+| 2903902/30 | A | Baltic Sea | 7.11e+04 | **7.68e-03** | 6.1e-03–9.5e-03 | 6.23e-03 | 7.85e-03 | 5.03e-03 | 1.71 → 0.25 | 2.14 | 0.00029 | 0.00521 (1.78) | 1.1 / 0.7 / 4.6 | ok |
+| 2903902/50 | A | Baltic Sea | 6.99e+04 | **5.60e-03** | 5.2e-03–6.0e-03 | 4.76e-03 | 5.48e-03 | 3.04e-03 | 9.64 → 1.22 | 1.13 | 0.04 | 0.709 (1.35) | 1.2 / 0.9 / 2.4 | ok |
+| 6990668/89 | A | Labrador Sea | 6.99e+04 | **1.81e-03** | 1.7e-03–1.9e-03 | 2.69e-03 | 2.20e-03 | 1.01e-03 | 17.42 → 0.40 | 0.303 | 0.00026 | 0.00459 (0.47) | 1.7 / 1.5 / 3.7 | ok |
+| 4903850/28 | B | NW Pacific (Kuroshio-Oyashio) | 6.91e+04 | **5.39e-03** | 4.9e-03–5.9e-03 | 6.03e-03 | 5.41e-03 | 4.03e-03 | 9.79 → 0.23 | 0.618 | 0.089 | 1.6 (4.70) | 1.2 / 1.2 / 2.1 | ok |
+| 7901065/58 | A | Black Sea | 6.90e+04 | **3.57e-03** | 3.3e-03–3.8e-03 | 5.73e-03 | 4.13e-03 | 3.51e-03 | 15.38 → 1.16 | 0.565 | 0.044 | 0.795 (1.43) | 1.4 / 1.3 / 2.3 | ok |
+| 4903784/185 | A | Baltic Sea | 6.86e+04 | **3.65e-03** | 3.4e-03–4.0e-03 | 4.78e-02 | 4.04e-03 | 2.04e-03 | 8.45 → 0.84 | 1.17 | 0.044 | 0.78 (0.59) | 1.4 / 0.9 / 2.4 | ok |
+| 4902620/139 | A | Agulhas / Mozambique Ch. | 6.79e+04 | **3.06e-04** | 2.0e-04–4.3e-04 | 7.74e-04 | — | 8.62e-04 | 4.21 → 1.11 | 0.28 | 0.0042 | 0.0757 (0.26) | 2.5 / 1.6 / 3.5 | ok |
+| 4903784/173 | A | Baltic Sea | 6.71e+04 | **1.83e-03** | 1.6e-03–2.1e-03 | 4.78e-02 | 2.59e-03 | 1.56e-03 | 3.48 → 0.32 | 1.08 | 0.037 | 0.663 (1.75) | 1.7 / 1.0 / 2.5 | ok |
+| 1902683/208 | B | Baltic Sea | 6.68e+04 | **5.29e-03** | 5.0e-03–5.6e-03 | 5.58e-03 | 5.93e-03 | 3.80e-03 | 9.67 → 0.27 | 0.463 | 0.053 | 0.955 (1.65) | 1.2 / 1.3 / 2.3 | ok |
+| 4903784/129 | A | Baltic Sea | 6.42e+04 | **3.30e-03** | 3.0e-03–3.6e-03 | 4.27e-03 | 4.06e-03 | 2.20e-03 | 4.74 → 0.48 | 1.34 | 0.069 | 1.24 (1.07) | 1.4 / 0.9 / 2.1 | ok |
+| 2902878/195 | A | NW Pacific (Kuroshio-Oyashio) | 6.28e+04 | **3.28e-03** | 2.8e-03–3.7e-03 | 3.92e-03 | 4.55e-03 | 2.84e-03 | 3.56 → 0.21 | 0.782 | 0.092 | 1.65 (3.80) | 1.5 / 1.1 / 2.0 | ok |
+| 7901007/400 | A | Barents Sea | 6.26e+04 | **3.72e-03** | 3.4e-03–4.1e-03 | 2.92e-03 | 4.63e-03 | 1.39e-03 | 7.04 → 2.38 | 1.24 | 0.023 | 0.42 (2.35) | 1.4 / 0.9 / 2.7 | ok |
+| 1902683/217 | B | Baltic Sea | 6.12e+04 | **4.58e-03** | 4.1e-03–5.0e-03 | 4.81e-03 | 5.68e-03 | 3.17e-03 | 4.54 → 0.39 | 0.596 | 0.094 | 1.68 (1.64) | 1.3 / 1.2 / 2.0 | ok |
+| 1902751/19 | A | Arabian Sea / Gulf of Oman | 5.99e+04 | **7.72e-04** | 6.1e-04–9.2e-04 | 8.30e-04 | 9.76e-04 | 1.35e-03 | 5.76 → 1.46 | 0.363 | 0.037 | 0.666 (0.29) | 2.1 / 1.4 / 2.4 | ok |
+| 1902683/223 | A | Baltic Sea | 5.99e+04 | **3.81e-03** | 3.1e-03–4.6e-03 | 4.33e-03 | 3.81e-03 | 1.20e-03 | 1.50 → 0.66 | 2.71 | 0.0022 | 0.0385 (0.91) | 1.4 / 0.6 / 4.3 | ok |
+| 1902660/21 | A | Arabian Sea / Gulf of Oman | 5.94e+04 | **1.74e-03** | 1.5e-03–2.0e-03 | 1.42e-03 | 1.87e-03 | 1.67e-03 | 7.83 → 1.46 | 0.557 | 0.049 | 0.881 (0.92) | 1.7 / 1.2 / 2.3 | ok |
+| 1902683/216 | A | Baltic Sea | 5.90e+04 | **4.09e-03** | 3.7e-03–4.5e-03 | 5.42e-03 | 6.08e-03 | 2.63e-03 | 4.71 → 0.55 | 0.892 | 0.13 | 2.28 (1.86) | 1.4 / 1.1 / 1.9 | ok |
+| 1902660/56 | A | Arabian Sea / Gulf of Oman | 5.89e+04 | **3.29e-03** | 2.9e-03–3.7e-03 | 3.61e-03 | 4.75e-03 | 1.82e-03 | 4.02 → 1.04 | 1.03 | 0.11 | 1.98 (2.35) | 1.4 / 1.0 / 1.9 | ok |
+| 1902683/218 | A | Baltic Sea | 5.84e+04 | **3.78e-03** | 3.2e-03–4.5e-03 | 4.51e-03 | 4.62e-03 | 2.54e-03 | 2.54 → 0.31 | 0.97 | 0.042 | 0.758 (0.86) | 1.4 / 1.0 / 2.4 | ok |
+| 2903902/58 | A | Baltic Sea | 5.77e+04 | **3.65e-03** | 3.2e-03–4.1e-03 | 5.35e-03 | 3.84e-03 | 2.24e-03 | 4.51 → 0.65 | 1.48 | 0.012 | 0.215 (1.67) | 1.4 / 0.9 / 3.4 | ok |
+| 1902683/330 | A | Baltic Sea | 5.65e+04 | **3.25e-03** | 2.8e-03–3.7e-03 | 2.46e-03 | 3.95e-03 | 1.73e-03 | 2.43 → 0.45 | 1.63 | 0.014 | 0.254 (0.83) | 1.4 / 0.8 / 2.6 | ok |
+| 6990700/56 | A | Arabian Sea / Gulf of Oman | 5.27e+04 | **1.70e-03** | 1.5e-03–1.9e-03 | 1.66e-03 | 1.77e-03 | 1.44e-03 | 4.63 → 0.98 | 0.547 | 0.053 | 0.944 (0.29) | 1.7 / 1.3 / 2.3 | ok |
+| 4903784/170 | A | Baltic Sea | 5.23e+04 | **2.12e-03** | 1.8e-03–2.5e-03 | 4.78e-02 | 2.31e-03 | 8.55e-04 | 2.31 → 0.70 | 1.47 | 0.0018 | 0.0324 (1.63) | 1.6 / 0.9 / 4.1 | ok |
+| 6990700/59 | A | Arabian Sea / Gulf of Oman | 5.06e+04 | **1.22e-03** | 1.0e-03–1.4e-03 | 1.23e-03 | 1.52e-03 | 1.54e-03 | 4.51 → 1.02 | 0.487 | 0.046 | 0.831 (0.45) | 1.9 / 1.3 / 2.3 | ok |
+| 2903902/19 | A | Baltic Sea | 5.01e+04 | **2.38e-03** | 1.9e-03–2.9e-03 | 3.54e-03 | 2.46e-03 | 1.45e-03 | 1.50 → 0.18 | 1.51 | 0.00023 | 0.00417 (1.65) | 1.6 / 0.8 / 4.5 | ok |
+| 1902683/318 | A | Baltic Sea | 5.01e+04 | **5.81e-03** | 5.1e-03–6.6e-03 | 1.46e-03 | 6.46e-03 | 1.44e-03 | 2.58 → 1.07 | 1.82 | 0.034 | 0.612 (0.34) | 1.2 / 0.7 / 2.6 | ok |
+| 1902499/86 | A | tropical Atlantic / Caribbean | 5.01e+04 | **1.12e-03** | 9.1e-04–1.3e-03 | 1.60e-03 | — | 1.25e-03 | 5.04 → 1.65 | 0.658 | 0.056 | 1 (1.87) | 1.9 / 1.2 / 2.2 | ok |
+| 1902683/310 | A | Baltic Sea | 4.59e+04 | **4.36e-03** | 3.3e-03–5.3e-03 | 2.61e-03 | 4.69e-03 | 1.52e-03 | 1.44 → 0.48 | 1.23 | 0.0036 | 0.0644 (0.50) | 1.3 / 0.9 / 3.2 | ok |
+| 4903784/179 | A | Baltic Sea | 4.26e+04 | **1.22e-03** | 6.4e-04–1.9e-03 | 4.78e-02 | 1.58e-03 | 7.80e-04 | 0.60 → 0.18 | 1.44 | 0.00012 | 0.00218 (0.37) | 1.8 / 0.8 / 4.1 | ok |
+| 4903784/86 | A | Baltic Sea | 4.11e+04 | **2.37e-03** | 1.7e-03–3.1e-03 | 1.77e-02 | 3.16e-03 | 1.34e-03 | 0.71 → 0.17 | 2.23 | 0.00022 | 0.00402 (1.38) | 1.6 / 0.7 / 5.0 | ok |
+
+*Provenance: `$PAB_DATA_DIR/v2/pab.db` after the run is 220,819,456 B,
+sha256 `9503015bf3d5427ff119cb621e9ecf9b0a41cf2f39b7325529e390428bfcad92`
+(`fits` 31,947 → 31,998, `fit_results` 319,460 → 320,072; every pre-existing
+row checksum-identical; `integrity_check` ok); the pre-run copy is
+`v2/pab_pre_v201_20261018.db` (sha256 `a9959626…8201d`). Chains:
+`$PAB_DATA_DIR/v2/fit_chains/<fit_id>_v2.0.1.npz` and `AIOcean:PAB/v2/fit_chains/`;
+figures: `$PAB_DATA_DIR/v2/pipeline/figures/` and `AIOcean:PAB/v2/figures/`.
+Per-fit numbers (every column of the table plus the posterior-vs-ceiling and
+floor margins): [`high_bbp_outliers/refit_51_results.csv`](high_bbp_outliers/refit_51_results.csv),
+computed read-only from the database, the frozen `v1/pab.db` and the 51 NPZs
+with `pab.fit.run.chain_start_report`.*

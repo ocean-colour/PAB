@@ -929,6 +929,41 @@ the tables, and say so on the Downloads page.
 
 **Your answer:** Follow your recommendation.
 
+Raised by O6 (the 2.0.1 re-fit; Appendix C of `versions/v2/high_bbp_outliers.md`).
+
+**10 — One of the 51 2.0.1 fits has `success = 0` (6990528/121).** `success`
+records only whether the Levenberg–Marquardt warm-start converged; when it
+raises, the walkers start from the clipped initial guess and the MCMC runs as
+usual (144 of the 15,971 2.0 fits are in the same state). This fit landed at
+`b_bp`(700) = 1.15×10⁻⁴ m⁻¹ (float 7.4×10⁻⁴), χ²_red 0.61, `A_ph` at the
+floor, Chl 3×10⁻⁴ — one of the four "floor" cases of Appendix C — and it is the
+matchup whose float Chl seed is negative (−0.045 mg m⁻³). Options: **A** keep
+the row as it is — a valid 2.0.1 record whose `success` column says what
+happened, like the 144 at 2.0 (recommended; the step-0 check passed with
+2.8 dex of margin and nothing in the chain is at a wall); **B** re-fit this one
+matchup with a clipped (non-negative) Chl seed as a third record — it would
+need a new `fit_id` scheme or `--replace`, and would break the "same input as
+2.0" rule the replay was built for; **C** delete the row and leave the matchup
+at its 2.0 value (gated).
+
+**Your answer:**
+
+**11 — Eleven of the 51 retrieve Chl < 0.01 mg m⁻³ at 2.0.1** (floats
+0.1–1.9): `b_bp` is physical and χ² good, but the absorption lands on `A_dg`
+with `A_ph` at its 10⁻⁶ floor (the `A_ph`-mirror mode; §4 and O5's 2903902/30).
+Under Q&A/Outliers 6 = A nothing gates Chl, so O7's overlay will put these
+eleven Chl values into the Chl headline and panels where the 2.0 values
+(0.004–0.02) already were. Options: **A** leave them — same rule as today, and
+O7's failure note says in one computed sentence how many re-fitted runaways
+retrieve Chl below 0.01 mg m⁻³ (recommended; a floor-pinned `A_ph` is a
+retrieval limit the report should state, not hide); **B** add an `A_ph`-floor
+gate for Chl (Chl set to NaN where the `A_ph` 95 % upper bound is within
+0.5 dex of the floor), applied to every BING fit, with the count in the
+captions — a new rule that would also catch an unknown number of ordinary 2.0
+fits, so it needs its own acceptance run.
+
+**Your answer:**
+
 ### v2
 
 Numbers below were read from a copy of the v2 database
@@ -2995,3 +3030,163 @@ store's matchups` followed by `fit: spectra come from the provided
 spectrum_from_chains(…)`; `chain_start_report` over the new NPZs is
 `run.chain_start_report(npz["chains"], npz["param_names"], FitConfig())`.
 Next: O6.
+
+### 2026-10-18 (v2 Outliers O6 — the 51 re-fitted under 2.0.1 into the live v2 DB; Appendix C)
+
+Run with Fable. **The live `$PAB_DATA_DIR/v2/pab.db` was written** (the O-series
+preamble's discipline followed; details below); `v1/pab.db` untouched
+(`09de0a6d…8273` before and after, opened read-only once by the ATTACH in the
+analysis); nothing on the PVC touched; nothing uploaded to S3 (O9). **No code
+under `pab/` changed** — the pre-flight `pytest pab/tests -q` (494 passed, 1
+skipped, 2 min 32 s) and `ruff check pab` (clean) are the suite's state. Files
+changed: `versions/v2/high_bbp_outliers.md` (Appendix C), **new**
+`versions/v2/high_bbp_outliers/{refit_51.csv, refit_51_results.csv,
+refit_201_vs_float.png}`, `HOWTO.md` (§5b dated paragraph), this file (Q&A/Outliers
+10–11, this entry). Scratch:
+`/tmp/claude-1000/-mnt-tank-Oceanography-python-PAB/ee4e310b-49d2-41ef-88cf-8177a6e17f0c/scratchpad/`
+(`o6_safety/` — a scratch copy of the DB with the 2-fit safety run and its
+chains; `o6_analysis.py` — the verification/science script; `o6_real/` — its
+output on the live DB). Wall time 18:52–19:25 PDT, of which the fit stage was
+19:00:44–19:11:57 (**11 min 13 s**) and the figure stage ~25 s.
+
+**Steps and evidence.**
+
+1. *Pre-flight.* `pab_version` 2.0.1 and `pip show pab` 2.0.1; tests/ruff
+   green; `git status` clean on `report-improvements`. Dated copy
+   `v2/pab_pre_v201_20261018.db` made with `cp` and sha-verified equal to the
+   live file (**`a9959626…8201d`, 220,520,448 B**); no `-journal`/`-wal`.
+   Before: `fits` 31,947 (15,971 BING 2.0 + 15,976 NASA_GIOP 1.1),
+   `fit_results` 319,460, `matchups` 15,976, `matchup_pixels` 159,760,
+   `granules` 72,803, `profiles`/`mld_summary` 59,620, `floats` 912;
+   checksum over the 15,971 2.0 `fits` rows `0d749900…6a442`, over their
+   191,652 `fit_results` rows `3fae14c1…4272`; over *all* `fits` rows
+   `90c46378…d31dd` and *all* `fit_results` rows `6d8bb935…80063c`;
+   `integrity_check` ok.
+2. *Selection by SQL* (`fits ⋈ fit_results ⋈ matchups ⋈ profiles`, 2.0 BING
+   rows with `BING_ExpBPow_bbp700 > 1`) → `refit_51.csv` with `matchup_id,
+   fit_id_2_0, pixel_id, wmo, cycle, bbp700_2_0`, 51 rows (`--matchups-csv`
+   reads only the `matchup_id` column, `pab/pipeline.py:matchup_ids`). Checked
+   before running: all 51 2.0 fits are on their matchup's rank-1 pixel with
+   geometry (so the replay resolves the same NPZ), all 51 NPZs present in
+   `v2/fit_chains/` (15,971 files, nothing fetched), every matchup already has
+   a `scene_path`, 0 rows at 2.0.1, no `_v2.0.1.npz` anywhere.
+3. *Safety first.* A **scratch copy** of the DB with `PAB_DATA_DIR` pointed at
+   scratch: `--dry-run` (prints the plan only; file sha unchanged), then a real
+   2-matchup fit (`--jobs 2`, 90 s incl. the JAX compile) — the log showed
+   `fit: selection restricts to 2 of the store's matchups` and `fit: spectra
+   come from the provided spectrum_from_chains(…) — no granule will be
+   opened` before any fit; 2 rows written with the expected stamps, 12
+   `fit_results` each, the chains in the scratch `fit_chains/`, the live DB
+   and `$PAB_DATA_DIR/fit_chains/` (3 files) untouched. *The real run*, the
+   O6 command verbatim (`PAB_DATA_DIR=$PAB_DATA_DIR/v2`, `--jobs 8`,
+   `--matchups-csv`, `--replay-chains`, tee'd to
+   `v2/logs/refit_51_20261018.log`): `selection restricts to 51` logged at
+   19:00:44 before anything fitted; **51 written / 0 skipped / 0 failed**;
+   median 198 s of CPU per fit, 11.7 s wall per fit; no step-0 wall warning.
+   Then `--stage figure --figure-version 2.0.1 --jobs 4`: "51 fit figures to
+   render, 0 of them also needing a scene", 51 written / 0 failed, into
+   `v2/pipeline/figures/` (3.1 MB; log `v2/logs/refit_51_figures_20261018.log`).
+4. *Verification* (read-only script over the live DB + NPZs + v1): exactly 51
+   rows at `pab_version = '2.0.1'`, all in the selection and none outside it;
+   `fit_id` ends `_v2.0.1` (51); `prior_set =
+   "bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"` (51); `rrs_source =
+   "L2_AOP:replay:" + own 2.0 fit_id` (51); **`success = 1` for 50, `= 0` for
+   6990528/121** (see Q&A 10); `chains_path` under `v2/fit_chains/` and the
+   NPZ present (51); `figure_path` set and the PNG present (51); `n_neg_blue`
+   present and equal to the O4 backfill value of the 2.0 fit (51 — fit-time
+   and backfilled agree by construction, as O4 said); 12 quantities per fit
+   (51); `nsteps` 10,000 / `nburn` 1,000. After: `fits` 31,998 (+51),
+   `fit_results` 320,072 (+612 = 12 × 51), every other table unchanged; the
+   2.0 checksums **identical** (`0d749900…`, `3fae14c1…`); the checksums over
+   all non-2.0.1 `fits`/`fit_results` rows **equal the pre-run whole-table
+   checksums** (`90c46378…`, `6d8bb935…`), so the NASA rows are untouched too;
+   `integrity_check` ok. New live DB: **220,819,456 B, sha256
+   `9503015bf3d5427ff119cb621e9ecf9b0a41cf2f39b7325529e390428bfcad92`**.
+5. *Backups.* `rclone copy --files-from --no-traverse` of the 51 NPZs to
+   `AIOcean:PAB/v2/fit_chains/` (now 16,022 objects / 18.39 GiB) and the 51
+   figures to `AIOcean:PAB/v2/figures/` (17,412 objects); `rclone check
+   --one-way` on each: **51 matching files, 0 differences**. `rclone copyto`
+   of the DB to `AIOcean:PAB/pab_v2_2026-10-18.db` (ISO-dated like the
+   existing `pab_v2_2026-10-07.db`; `rclone check` cannot take a single file,
+   so verified by md5 `df64cef4…` = local). HOWTO §5b: dated paragraph.
+
+**Science (Appendix C has the 51-row table and the two-panel figure).**
+
+- **51 of 51 below the gate**: `b_bp`(700) 2.9×10⁻⁶–8.2×10⁻³ m⁻¹.
+- **51 of 51 started below the wall** (`chain_start_report`): step-0 margins
+  `B_nw` 1.07–4.47 dex (median 1.57), `A_dg` 0.56–1.84 (median 1.12; the
+  0.56 is 1902683/223, just over the 0.5 margin), `A_ph` 1.91–5.70.
+- **0 posteriors within 5 % of a ceiling.** Closest: `A_dg` 95 % bound
+  3.7 m⁻¹ = 37 % of 10 (1902683/223), `b_bp`(600) bound 0.0102 = 10 % of 0.1
+  (2903902/30), `A_ph` ≤ 1.4 %. The ceilings removed the basin; they never
+  bound the answer.
+- **χ² lower in 51 of 51**: ratio 2.3–108× (median 8.2×); χ²_red at 2.0.1
+  median 0.61, max 2.38.
+- **vs float** (50 with a value): median ratio 0.76, **30/50 within 2×, 40/50
+  within 3×**, log-RMS 0.60, ρ 0.60 (gated population: 68 % within 2×,
+  log-RMS 0.49). vs BING 1.0 (48): median 0.82, 40/48 within 2×. vs GIOP:
+  median 1.18, 36/51 within 2×.
+- **Type A (40; 39 with float)**: median 0.76, 24/39 within 2×, 8 below ⅓,
+  1 above 3×. **Type B (11)**: median 0.89, 6/11 within 2×, 10/11 within 3×,
+  |log ratio| median 0.05 dex — the *best*-constrained group, contrary to O5's
+  expectation; O5's 4903489/51 is the one non-Baltic, non-green-peaked type-B
+  spectrum and is the exception. Type B by the stored `n_neg_blue = 0` is 9
+  Baltic + 4903489/51 (tropical Atlantic) + 4903850/28 (Kuroshio) — Outliers
+  1's "11, all Baltic" was two short.
+- **9 fits > 3× below the float** split into 4 "floor" cases (6990528/121,
+  1902601/95, 4903904/6, 4903489/51: low-signal blue-depressed spectra, `A_ph`
+  at the 10⁻⁶ floor, Chl ≤ 0.001, wide `b_bp` bands — below the gate but not a
+  measurement) and 5 cycles of float **4903784** whose ML `bbp700` is
+  0.018–0.048 (four exactly 0.0478) while BING 2.0.1, 1.0 and GIOP agree at
+  1–4×10⁻³ — the float is the odd one out there.
+- **Chl**: 11 of 51 retrieve Chl < 0.01 mg m⁻³ (the `A_ph`-mirror mode;
+  `A_ph` p05 within 0.5 dex of the floor for 18 of 51). `b_bp` rescued, Chl
+  not — Q&A 11.
+
+**Surprises / worth knowing.**
+
+- The 51 emulator `DomainWarning`s in the fit log (one per fit, BING's
+  check at the initial guess) are visible on the workstation for the first
+  time (the pods ran `PYTHONWARNINGS=ignore`): `B_p` = 0.01 at the start is
+  "100 % outside [0.01026, 0.018]" (the emulator's trained `B_p` range starts
+  just above our default), `log10_u` 6–7 % of values slightly past −0.428,
+  and for 4 fits `cos_theta_v` "outside [1, 1]" — the emulator appears to be
+  trained at nadir only. Nothing done; this is O8's experiment and a question
+  for the bing/robust repos.
+- `6990528/121` is `success = 0` (LM raised; MCMC from the clipped initial
+  guess) — the negative-Chl-seed matchup O5 flagged. Q&A 10.
+- `rclone check` refuses a single-file destination ("is a file not a
+  directory"), hence the md5 for the DB copy. `rclone` has no `sha256sum`
+  subcommand; `rclone md5sum` works on Drive.
+- The pipeline's "pab pipeline done (…)" timestamp is the run's *start*
+  time, not its end — use the tee'd log's first/last INFO lines for timing.
+- The workstation clock prints 2026-10-19 UTC in the logs; dated by the
+  prompt's convention.
+- The `--dry-run` of the fit stage prints only the stage list and paths — it
+  does not read the CSV or print the selection size, so it is not the guard;
+  the log line is. The scratch 2-fit run was the real check.
+
+**What O7 must know.** The live DB now has **two** BING rows for each of the
+51 matchups/pixels (2.0 and 2.0.1); `newest_bing_version()` returns `2.0.1`,
+so `gather_matchups` would shrink to 51 and `gather_nasa_giop`/
+`gather_version_pair` would double-count until the overlay lands — do not
+rebuild the site from this DB before O7 (said in HOWTO §5b too). O7's
+expected numbers: 15,971 matchups with a BING row after the overlay (15,920 at
+2.0 + 51 at 2.0.1); the `b_bp` gate then excludes **0** (all 51 are below
+1 m⁻¹), so the failure note's "K now sit below the gate" is 51 and "still
+above" is 0; the `b_bp` headline n becomes 15,274 again (15,224 + 50) and the
+51 add 30 within-2× / 20 outside — expect the median ratio and ρ essentially
+unchanged and the log-RMS a touch above O3's 0.492. The gallery's "re-fitted
+runaway" slot is 6903874/139: 2.0 `b_bp` 9.3e4 → 2.0.1 4.5e-4 m⁻¹ (float
+1.0e-3), figure `v2/pipeline/figures/6903874_139_…_ExpBPow_v2.0.1_fit.png`.
+Chl of 11 re-fitted runaways is < 0.01 (Q&A 11) — if O7's note counts them,
+the number is 11. `fits.success = 0` for one 2.0.1 row (Q&A 10). O9: the
+public `s3://pab/v2/pab.db` is still the 2026-10-07 file; the one to publish
+is now `9503015b…` (or whatever O7 leaves it at — O7 is read-only).
+
+Hand-off (nothing committed — git is yours): `versions/v2/high_bbp_outliers.md`,
+`versions/v2/high_bbp_outliers/{refit_51.csv, refit_51_results.csv,
+refit_201_vs_float.png}`, `HOWTO.md`, this file. Restore command should it ever
+be needed: `cp $PAB_DATA_DIR/v2/pab_pre_v201_20261018.db $PAB_DATA_DIR/v2/pab.db`
+(and delete the 51 `_v2.0.1.npz` from `v2/fit_chains/` and the 51 PNGs from
+`v2/pipeline/figures/`). Next: O7.

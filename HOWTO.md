@@ -280,6 +280,32 @@ replaced (217,325,568 B, sha256 `1e69f6ee…8a3f8`, the one on `s3://pab/v2/`)
 is kept as `$PAB_DATA_DIR/v2/pab_pre_negblue_20261018.db`. Log:
 `$PAB_DATA_DIR/v2/logs/rrs_qa_backfill_20261018.log`.
 
+**The 2.0.1 re-fit of the 51 runaways (2026-10-18, O6 of
+`claude_prompts/v2/report_improvements.md`).** `PAB_DATA_DIR=$PAB_DATA_DIR/v2
+pab --stage fit --jobs 8 --matchups-csv versions/v2/high_bbp_outliers/refit_51.csv
+--replay-chains $PAB_DATA_DIR/v2/fit_chains` added **51 `fits` rows with
+`pab_version = '2.0.1'`** (`fit_id` … `_v2.0.1`; `prior_set =
+"bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"`; `rrs_source =
+"L2_AOP:replay:<2.0 fit_id>"`) and 12 `fit_results` rows each (`fits` 31,947 →
+31,998, `fit_results` 319,460 → 320,072); the 2.0 rows of the same matchups
+stay as they were (every pre-existing `fits`/`fit_results` row
+checksum-identical; `integrity_check` ok). The live `$PAB_DATA_DIR/v2/pab.db`
+is now **220,819,456 B, sha256
+`9503015bf3d5427ff119cb621e9ecf9b0a41cf2f39b7325529e390428bfcad92`**; the
+copy it replaced (220,520,448 B, sha256 `a9959626…8201d`) is kept as
+`$PAB_DATA_DIR/v2/pab_pre_v201_20261018.db`. The 51 new chains are
+`$PAB_DATA_DIR/v2/fit_chains/<fit_id>_v2.0.1.npz` (the folder now holds 16,022
+files) and the 51 fit figures `$PAB_DATA_DIR/v2/pipeline/figures/<fit_id>_fit.png`
+(`--stage figure --figure-version 2.0.1`); both were `rclone copy`'d to
+`AIOcean:PAB/v2/fit_chains/` and `AIOcean:PAB/v2/figures/` (`rclone check
+--one-way`: 51 matching, 0 differences each) and the database to
+`AIOcean:PAB/pab_v2_2026-10-18.db` (md5 verified). The PVC was not touched and
+nothing was uploaded to S3 (O9). Logs: `v2/logs/refit_51_20261018.log`,
+`v2/logs/refit_51_figures_20261018.log`; the science is Appendix C of
+`versions/v2/high_bbp_outliers.md`. Until O7 lands, the report's gatherers
+resolve `newest_bing_version()` to `2.0.1` — do not rebuild the site from this
+database before O7.
+
 **Transfer note:** copy it **compressed**. `kubectl cp` of the 207 MB file in one
 stream has no resume and died at 36.9 MB on a flaky link, leaving a malformed
 file at the canonical path. `gzip -c` in-pod gives 40 MB (5.1x), transfers in
