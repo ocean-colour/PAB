@@ -87,6 +87,11 @@ class PipelineConfig:
     #: Which BING ``pab_version`` the ``figure`` stage renders. ``None`` → the
     #: store's newest. Never renders NASA-GIOP rows: they have no chains.
     figure_version: str | None = None
+    #: Replay seam for the ``fit`` stage (Q&A/Outliers 8 = C): a directory of
+    #: chain NPZs; each matchup's spectrum is read from its **2.0** fit's NPZ
+    #: there (``pab.fit.replay.spectrum_from_chains``) and **no granule is
+    #: opened**. ``None`` → the production granule read.
+    replay_chains: str | Path | None = None
     replace: bool = False
     download: bool = False
     cache_dir: str | Path | None = None
@@ -723,9 +728,23 @@ def geometry(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
 
 
 def fit(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
-    """Stage 5: fit each matchup with BING (idempotent by ``fit_id``)."""
+    """Stage 5: fit each matchup with BING (idempotent by ``fit_id``).
+
+    With ``config.replay_chains`` the spectra are replayed from the 2.0 chain
+    NPZs in that directory instead of being read from the granules
+    (``--replay-chains DIR``; HOWTO §3).
+    """
     from pab.fit.run import build_fits
 
+    spectra = None
+    if config.replay_chains is not None:
+        from pab.fit.replay import spectrum_from_chains
+
+        spectra = spectrum_from_chains(Path(config.replay_chains))
+        _log.info(
+            "fit: replaying 2.0 spectra from chain NPZs under %s (no granule reads)",
+            config.replay_chains,
+        )
     return build_fits(
         store,
         opener=opener,
@@ -733,6 +752,7 @@ def fit(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
         replace=config.replace,
         jobs=config.jobs,
         selection=config.matchup_ids(),
+        spectra=spectra,
     )
 
 
@@ -1075,6 +1095,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="CSV with a matchup_id column selecting the fit stage's slice "
         "(the bulk form of --matchup).",
     )
+    p.add_argument(
+        "--replay-chains",
+        default=None,
+        metavar="DIR",
+        help="With --stage fit: read each matchup's spectrum from its 2.0 fit's "
+        "chain NPZ under DIR (resolved by basename) instead of the granule; no "
+        "granule is opened and fits.rrs_source is stamped "
+        "'L2_AOP:replay:<2.0 fit_id>'. The 2.0.1 re-fit path (HOWTO §3).",
+    )
     p.add_argument("--replace", action="store_true", help="Re-do completed work.")
     p.add_argument("--no-figures", action="store_true", help="Skip the figure stage.")
     p.add_argument(
@@ -1188,6 +1217,7 @@ def main(argv=None) -> int:
         matchups=args.matchups,
         matchups_csv=args.matchups_csv,
         figure_version=args.figure_version,
+        replay_chains=args.replay_chains,
         outdir=args.outdir,
         replace=args.replace,
         make_figures=not args.no_figures,

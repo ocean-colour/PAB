@@ -7,7 +7,7 @@ import pytest
 
 from pab.argo.summary import persist_summary
 from pab.db import Store
-from pab.fit import FitConfig, artifacts, run
+from pab.fit import FitConfig, artifacts, models, run
 
 
 # -- pure helpers (no bing) -------------------------------------------------
@@ -35,14 +35,14 @@ def test_make_fit_id_does_not_produce_the_1_0_format():
     produced = run.make_fit_id("7902226_5_G1", 3, 4, "ExpBPow")
     assert produced != legacy
     assert produced.startswith(legacy + "_v")
-    assert produced.endswith("_v2.0")
+    assert produced.endswith("_v2.0.1")  # the current version; 2.0 ids end "_v2.0"
+    assert produced != legacy + "_v2.0"  # a 2.0.1 row never overwrites a 2.0 one
 
 
-def test_fit_ids_of_the_two_generations_do_not_collide():
+def test_fit_ids_of_the_three_generations_do_not_collide():
     args = ("7902226_5_G1", 3, 4, "ExpBPow")
-    assert run.make_fit_id(*args, version="1.0") != run.make_fit_id(
-        *args, version="2.0"
-    )
+    ids = {run.make_fit_id(*args, version=v) for v in ("1.0", "2.0", "2.0.1")}
+    assert len(ids) == 3
 
 
 def test_prepare_spectrum_window_and_variance():
@@ -379,8 +379,9 @@ def test_fit_spectrum_recovers_bbp():
     }
 
 
-# --- 2.0 configuration (Prompt 3 Task 1) ------------------------------------
-def test_fitconfig_defaults_are_the_2_0_configuration():
+# --- 2.0 / 2.0.1 configuration (Prompt 3 Task 1; Outliers O5) ---------------
+def test_fitconfig_defaults_are_the_2_0_1_configuration():
+    """The 2.0 physics plus the physical prior ceilings (Q&A/Outliers 2 = A)."""
     c = FitConfig()
     assert c.rt_backend == "robust_hybrid"
     assert c.include_Raman is True
@@ -391,6 +392,27 @@ def test_fitconfig_defaults_are_the_2_0_configuration():
     assert c.Bp_value == 0.01
     assert c.wave_max == 700.0
     assert c.wave_min == 400.0
+    # the 2.0.1 ceilings, m^-1: b_bp(600) <= 0.1, A_dg and A_ph <= 10
+    assert c.bbp600_max == 0.1
+    assert c.adg_max == 10.0
+    assert c.aph_max == 10.0
+
+
+def test_fitconfig_v2_0_is_the_frozen_unceilinged_2_0_configuration():
+    """What produced the 15,971 2.0 fits: the same physics, BING's 1e5 ceilings."""
+    c = FitConfig.v2_0()
+    d = FitConfig()
+    assert c.bbp600_max is None and c.adg_max is None and c.aph_max is None
+    # every other field is the 2.0.1 default -- 2.0.1 differs by the priors only
+    for name in (
+        "model_pair", "satellite", "nsteps", "nburn", "wave_min", "wave_max",
+        "variable_Gordon", "include_Raman", "rt_backend", "include_Chl_fl",
+        "include_CDOM_fl", "phi_C", "fit_Bp", "Bp_value", "analysis_burn", "perc",
+    ):
+        assert getattr(c, name) == getattr(d, name), name
+    # overrides still work (the O8 slice test shortens the chain)
+    assert FitConfig.v2_0(nsteps=50).nsteps == 50
+    assert FitConfig.v2_0(nsteps=50).bbp600_max is None
 
 
 def test_fitconfig_v1_is_the_frozen_1_0_configuration():
@@ -408,13 +430,20 @@ def test_fitconfig_v1_is_the_frozen_1_0_configuration():
     assert c.wave_max == FitConfig().wave_max == 700.0
 
 
+def test_fitconfig_v1_has_no_prior_ceilings():
+    """The 1.0 priors must not change retroactively: v1() is unceilinged."""
+    c = FitConfig.v1()
+    assert c.bbp600_max is None and c.adg_max is None and c.aph_max is None
+    assert models.prior_set_label(c) == "bing_standard"
+
+
 def test_fitconfig_v1_accepts_overrides_without_losing_the_rt_settings():
     c = FitConfig.v1(nsteps=42, nburn=7)
     assert (c.nsteps, c.nburn) == (42, 7)
     assert c.rt_backend == "gordon" and c.fit_Bp is False
 
 
-def test_pab_version_is_2_0():
+def test_pab_version_is_2_0_1():
     """The version stamped on rows, and the one provenance reports, must agree.
 
     ``package_versions()`` reads the *installed distribution* metadata, not
@@ -424,10 +453,372 @@ def test_pab_version_is_2_0():
     from pab.config import pab_version as v
     from pab.config import package_versions
 
-    assert v == "2.0"
-    assert package_versions()["pab"] == "2.0", (
+    assert v == "2.0.1"
+    assert package_versions()["pab"] == "2.0.1", (
         "installed dist version is stale — re-run `pip install -e . --no-deps`"
     )
+    # a 2.0.1 fit id coexists with -- never overwrites -- the 2.0 one
+    new = run.make_fit_id("m", 1, 2, "ExpBPow")
+    old = run.make_fit_id("m", 1, 2, "ExpBPow", version="2.0")
+    assert new.endswith("_v2.0.1") and old.endswith("_v2.0") and new != old
+
+
+# --- the 2.0.1 prior ceilings (Outliers O5 step 1) ---------------------------
+def test_prior_set_label_is_built_from_the_ceilings():
+    assert models.prior_set_label(FitConfig()) == (
+        "bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"
+    )
+    assert models.prior_set_label(FitConfig.v2_0()) == "bing_standard"
+    assert models.prior_set_label(FitConfig.v1()) == "bing_standard"
+    # only the ceilings that are set, in the fixed order
+    assert models.prior_set_label(FitConfig(adg_max=None)) == (
+        "bing_standard+ceiling:bbp600<=0.1,aph<=10"
+    )
+    assert models.prior_set_label(FitConfig(bbp600_max=0.05, adg_max=None, aph_max=None)) == (
+        "bing_standard+ceiling:bbp600<=0.05"
+    )
+    # a config object without the fields (a mock, or one predating 2.0.1) is uncapped
+    assert models.prior_set_label(object()) == "bing_standard"
+
+
+def test_ceilings_from_prior_set_inverts_the_label():
+    for cfg in (
+        FitConfig(),
+        FitConfig.v2_0(),
+        FitConfig(adg_max=None),
+        FitConfig(bbp600_max=0.05, adg_max=None, aph_max=None),
+    ):
+        fields = models.ceilings_from_prior_set(models.prior_set_label(cfg))
+        assert fields == {
+            "bbp600_max": cfg.bbp600_max,
+            "adg_max": cfg.adg_max,
+            "aph_max": cfg.aph_max,
+        }
+    # the stored 1.0/2.0 stamp, NULL and "" all mean "no ceilings"
+    none = {"bbp600_max": None, "adg_max": None, "aph_max": None}
+    assert models.ceilings_from_prior_set("bing_standard") == none
+    assert models.ceilings_from_prior_set(None) == none
+    assert models.ceilings_from_prior_set("") == none
+    with pytest.raises(ValueError, match="unrecognised"):
+        models.ceilings_from_prior_set("somebody_elses_priors")
+    with pytest.raises(ValueError, match="unrecognised ceiling"):
+        models.ceilings_from_prior_set("bing_standard+ceiling:sdg<=1")
+
+
+def test_prior_ceilings_reject_a_non_positive_ceiling():
+    with pytest.raises(ValueError, match="positive finite"):
+        models.prior_ceilings(FitConfig(bbp600_max=0.0))
+    with pytest.raises(ValueError, match="positive finite"):
+        models.prior_set_label(FitConfig(adg_max=float("nan")))
+
+
+def test_prior_bounds_carry_the_log10_ceilings():
+    """The LM bounds -- and, through the same prior objects, BING's log_prob --
+    see pmax = log10(ceiling) on Adg (index 0), Aph (index 2) and Bnw (index 3,
+    the Pow amplitude at the 600 nm pivot); Sdg and beta are untouched."""
+    pytest.importorskip("bing")
+    wave = np.arange(405.0, 705.0, 10.0)
+    _, _, mdl = run.build_models(FitConfig(), wave, geom=_geom())
+    assert list(mdl[0].pnames) == ["Adg", "Sdg", "Aph"]
+    assert list(mdl[1].pnames) == ["Bnw", "beta"]
+    assert mdl[1].pivot == 600.0  # Bnw is b_bp(600), hence bbp600_max
+    low, high = run._prior_bounds(mdl)
+    assert high.tolist() == pytest.approx([1.0, 0.02, 1.0, -1.0, 2.0])
+    assert low.tolist() == pytest.approx([-6.0, 0.01, -6.0, -6.0, 0.0])
+    # flavors unchanged: still log-uniform on the amplitudes, uniform on Sdg/beta
+    flavors = [p.flavor for p in mdl[0].priors.priors + mdl[1].priors.priors]
+    assert flavors == ["log_uniform", "uniform", "log_uniform", "log_uniform", "uniform"]
+
+
+def test_prior_bounds_none_leaves_bings_ceiling_of_5():
+    pytest.importorskip("bing")
+    wave = np.arange(405.0, 705.0, 10.0)
+    _, _, mdl = run.build_models(FitConfig.v2_0(), wave, geom=_geom())
+    _, high = run._prior_bounds(mdl)
+    assert high.tolist() == pytest.approx([5.0, 0.02, 5.0, 5.0, 2.0])
+    # one None at a time: only that parameter keeps BING's 5
+    _, _, mdl = run.build_models(FitConfig(aph_max=None), wave, geom=_geom())
+    _, high = run._prior_bounds(mdl)
+    assert high.tolist() == pytest.approx([1.0, 0.02, 5.0, -1.0, 2.0])
+    # and the 1.0 path (Gordon, no geometry) is unceilinged as it always was
+    _, _, mdl = run.build_models(FitConfig.v1(), wave)
+    _, high = run._prior_bounds(mdl)
+    assert high.tolist() == pytest.approx([5.0, 0.02, 5.0, 5.0, 2.0])
+
+
+def test_prior_ceilings_do_not_touch_bing():
+    """A PAB-side override: after a ceilinged build, BING's factory and a
+    fresh set_standard_priors still give the 1e5 ceiling."""
+    pytest.importorskip("bing")
+    from bing.parameters import standard
+
+    wave = np.arange(405.0, 705.0, 10.0)
+    run.build_models(FitConfig(), wave, geom=_geom())
+    p = standard.expb_pow()
+    assert [d["pmax"] for d in p.apriors] == [5, 0.02, 5]
+    assert [d["pmax"] for d in p.bpriors] == [5, 2.0]
+    # expb_pow's apriors are three references to one dict; the override must
+    # copy, not mutate, or capping Adg would have moved Sdg's pmax too
+    assert p.apriors[0] is p.apriors[2]
+
+
+def test_apply_prior_ceilings_refuses_a_ceiling_below_the_floor():
+    pytest.importorskip("bing")
+    wave = np.arange(405.0, 705.0, 10.0)
+    with pytest.raises(ValueError, match="at or below the prior floor"):
+        run.build_models(FitConfig(bbp600_max=1e-7), wave, geom=_geom())
+
+
+def test_persist_fit_stamps_prior_set_from_the_config():
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        for fit_id, cfg in (("NEW", FitConfig()), ("OLD", FitConfig.v2_0())):
+            artifacts.persist_fit(
+                store,
+                fit_id=fit_id,
+                matchup_id=matchup_id,
+                pixel_id=pixel_id,
+                result=_fake_result(),
+                config=cfg,
+                chains_path=f"/tmp/{fit_id}.npz",
+            )
+        rows = {r["fit_id"]: r for r in store.query("SELECT * FROM fits")}
+        assert rows["NEW"]["prior_set"] == (
+            "bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"
+        )
+        assert rows["NEW"]["pab_version"] == "2.0.1"
+        assert rows["OLD"]["prior_set"] == "bing_standard"
+
+
+# --- the step-0 check (Outliers O5 step 3) ------------------------------------
+_NAMES6 = ["Adg", "Sdg", "Aph", "Bnw", "beta", "Bp"]
+
+
+def _chains_starting_at(adg, aph, bnw, *, nwalkers=8):
+    """(3, nwalkers, 6) chains whose step-0 walker medians are the given log10s."""
+    chains = np.zeros((3, nwalkers, 6))
+    chains[0, :, 0] = adg + np.linspace(-0.01, 0.01, nwalkers)
+    chains[0, :, 2] = aph
+    chains[0, :, 3] = bnw
+    chains[1:, :, 3] = 4.9  # later steps are irrelevant: step 0 is the check
+    return chains
+
+
+def test_chain_start_report_measures_dex_below_each_ceiling():
+    rep = run.chain_start_report(_chains_starting_at(-1.5, -1.0, -2.6), _NAMES6, FitConfig())
+    assert rep["started_below_wall"] is True
+    assert rep["margin_dex"] == run.WALL_MARGIN_DEX == 0.5
+    assert set(rep["params"]) == {"Adg", "Aph", "Bnw"}
+    bnw = rep["params"]["Bnw"]
+    assert bnw["ceiling"] == 0.1 and bnw["ceiling_log10"] == pytest.approx(-1.0)
+    assert bnw["step0_median"] == pytest.approx(-2.6)
+    assert bnw["dex_below_ceiling"] == pytest.approx(1.6) and bnw["below_wall"] is True
+    assert rep["params"]["Adg"]["dex_below_ceiling"] == pytest.approx(2.5, abs=0.02)
+
+
+def test_chain_start_report_flags_a_start_at_the_wall():
+    # Bnw median 0.2 dex under the ceiling: what the 51 runaways looked like
+    # (4.7-4.99 against 5), translated to the 2.0.1 ceiling of log10(0.1) = -1
+    rep = run.chain_start_report(_chains_starting_at(-1.5, -1.0, -1.2), _NAMES6, FitConfig())
+    assert rep["started_below_wall"] is False
+    assert rep["params"]["Bnw"]["below_wall"] is False
+    assert rep["params"]["Adg"]["below_wall"] is True
+    # exactly the margin counts as below
+    rep = run.chain_start_report(_chains_starting_at(-1.5, -1.0, -1.5), _NAMES6, FitConfig())
+    assert rep["started_below_wall"] is True
+    # an Aph start at the wall is caught the same way
+    rep = run.chain_start_report(_chains_starting_at(-1.5, 0.9, -2.6), _NAMES6, FitConfig())
+    assert rep["started_below_wall"] is False and rep["params"]["Aph"]["below_wall"] is False
+
+
+def test_chain_start_report_checks_only_capped_parameters():
+    chains = _chains_starting_at(4.9, 4.9, 4.99)  # pinned to BING's 1e5 wall...
+    # ...but under the 2.0 configuration there is no ceiling to be below
+    rep = run.chain_start_report(chains, _NAMES6, FitConfig.v2_0())
+    assert rep == {"started_below_wall": True, "margin_dex": 0.5, "params": {}}
+    # one ceiling: only that parameter is reported
+    rep = run.chain_start_report(chains, _NAMES6, FitConfig(adg_max=None, aph_max=None))
+    assert list(rep["params"]) == ["Bnw"] and rep["started_below_wall"] is False
+    # accepts the NPZ's param_names (a numpy str array) and a 5-column 1.0 chain
+    rep = run.chain_start_report(chains[:, :, :5], np.array(_NAMES6[:5]), FitConfig())
+    assert set(rep["params"]) == {"Adg", "Aph", "Bnw"}
+
+
+def test_fit_spectrum_result_carries_an_empty_chain_start_by_default():
+    assert _fake_result().chain_start == {}
+
+
+# --- the replay seam (Outliers O5 step 4; Q&A/Outliers 8 = C) -----------------
+def test_spectrum_from_chains_reproduces_the_npz_spectrum(tmp_path, monkeypatch):
+    """The provider names the 2.0 fit of the same pixel, loads its NPZ by
+    basename under ``root`` and hands back the stored spectrum + the stamp."""
+    from pab.fit import replay
+
+    monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
+    res = _fake_result()
+    res.varRrs = np.array([4e-8, 9e-8, 1e-8])
+    old_id = run.make_fit_id("7902226_5_G1", 2, 2, "ExpBPow", version="2.0")
+    path = artifacts.save_chains(old_id, res)
+    assert path.parent == tmp_path / artifacts.CHAINS_SUBDIR
+
+    provider = replay.spectrum_from_chains(path.parent)
+    inp = {"matchup_id": "7902226_5_G1", "ix": 2, "iy": 2, "model_pair": "ExpBPow",
+           "fit_id": run.make_fit_id("7902226_5_G1", 2, 2, "ExpBPow")}
+    assert inp["fit_id"].endswith("_v2.0.1")  # the fit being made is 2.0.1...
+    wave, rrs, unc, source = provider(inp)
+    # ...but the spectrum is the 2.0 fit's
+    assert np.array_equal(wave, res.wave) and np.array_equal(rrs, res.Rrs)
+    assert unc.tolist() == pytest.approx([2e-4, 3e-4, 1e-4])
+    assert source == f"L2_AOP:replay:{old_id}"
+    assert replay.replayed_fit_id(source) == old_id
+    assert replay.replayed_fit_id("L2_AOP") is None
+    # prepare_spectrum gives the fit back the stored varRrs (to rounding)
+    _, _, var = run.prepare_spectrum(wave, rrs, unc, config=FitConfig())
+    assert var == pytest.approx(res.varRrs, rel=1e-12)
+    # a pixel with no 2.0 chain is a FileNotFoundError, not a silent granule read
+    with pytest.raises(FileNotFoundError, match="no chain NPZ"):
+        provider({**inp, "ix": 3})
+    assert "version='2.0'" in provider.__name__
+
+
+def _no_open(_src):
+    raise AssertionError("no granule may be opened on the replay path")
+
+
+def test_build_fits_with_spectra_never_calls_the_opener(monkeypatch, tmp_path):
+    """``spectra=`` replaces the granule read entirely and stamps rrs_source."""
+    monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(run, "_fit_only", _qa_recording_stub)
+    seen = []
+
+    def provider(inp):
+        seen.append(inp["fit_id"])
+        wave = np.array([440.0, 550.0, 700.0])
+        return wave, np.array([-1e-3, 0.005, 0.001]), np.full(3, 1e-4), "L2_AOP:replay:X_v2.0"
+
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store)
+        out = run.build_fits(store, config=FitConfig(), opener=_no_open, spectra=provider)
+        fit_id = run.make_fit_id(matchup_id, 2, 2, "ExpBPow")
+        assert out["written"] == [fit_id] and out["failed"] == []
+        assert seen == [fit_id]
+        row = store.query("SELECT rrs_source, prior_set FROM fits")[0]
+        assert row["rrs_source"] == "L2_AOP:replay:X_v2.0"
+        assert row["prior_set"].startswith("bing_standard+ceiling:")
+        # the provided spectrum is what was fitted (the QA count saw its -1e-3 at 440)
+        q = store.query(
+            "SELECT value FROM fit_results WHERE quantity = 'BING_ExpBPow_n_neg_blue'"
+        )
+        assert q == [{"value": 1.0}]
+        npz = artifacts.load_chains(fit_id)
+        assert npz["wave"].tolist() == [440.0, 550.0, 700.0]
+
+
+def test_build_fits_with_a_three_tuple_provider_keeps_the_l2_stamp(monkeypatch, tmp_path):
+    monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(run, "_fit_only", _stub_fit_only)
+
+    def provider(inp):
+        return np.array([440.0, 550.0]), np.array([0.01, 0.005]), None
+
+    with Store.open(":memory:") as store:
+        _seed_matchup(store)
+        out = run.build_fits(store, config=FitConfig(), opener=_no_open, spectra=provider)
+        assert len(out["written"]) == 1
+        assert store.query("SELECT rrs_source FROM fits")[0]["rrs_source"] == "L2_AOP"
+
+
+def test_build_fits_records_a_failing_provider_without_aborting(monkeypatch, tmp_path):
+    """A missing 2.0 NPZ fails that matchup like any other error; no granule."""
+    monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(run, "_fit_only", _stub_fit_only)
+
+    def provider(inp):
+        raise FileNotFoundError("no chain NPZ to replay")
+
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store)
+        out = run.build_fits(store, config=FitConfig(), opener=_no_open, spectra=provider)
+        assert out["failed"] == [run.make_fit_id(matchup_id, 2, 2, "ExpBPow")]
+        assert out["written"] == [] and store.count("fits") == 0
+
+
+def _replay_stub_provider(inp):
+    """Module-level (picklable is not required -- the provider runs in the
+    parent -- but the stub fit must be) 4-tuple provider for the parallel test."""
+    return (
+        np.array([440.0, 550.0, 700.0]),
+        np.array([0.01, 0.005, 0.001]),
+        np.full(3, 1e-4),
+        "L2_AOP:replay:" + inp["fit_id"].replace("_v2.0.1", "_v2.0"),
+    )
+
+
+def test_build_fits_parallel_with_spectra_never_opens_a_granule(monkeypatch, tmp_path):
+    pytest.importorskip("bing")
+    monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(run, "_fit_only", _stub_fit_only)
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store)
+        out = run.build_fits(
+            store, config=FitConfig(), opener=_no_open, spectra=_replay_stub_provider, jobs=2
+        )
+        fit_id = run.make_fit_id(matchup_id, 2, 2, "ExpBPow")
+        assert out["written"] == [fit_id] and out["failed"] == []
+        row = store.query("SELECT rrs_source FROM fits")[0]
+        assert row["rrs_source"] == "L2_AOP:replay:" + fit_id.replace("_v2.0.1", "_v2.0")
+
+
+def test_fit_matchup_with_spectrum_skips_the_granule(monkeypatch, tmp_path):
+    monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(run, "_fit_only", _stub_fit_only)
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store)
+        result = run.fit_matchup(
+            store, matchup_id, config=FitConfig(), opener=_no_open, persist=False,
+            spectrum=lambda inp: (np.array([440.0]), np.array([0.01]), None),
+        )
+        assert isinstance(result, run.FitSpectrumResult)
+        fit_id = run.fit_matchup(
+            store, matchup_id, config=FitConfig(), opener=_no_open,
+            spectrum=lambda inp: (np.array([440.0]), np.array([0.01]), None, "L2_AOP:replay:Q"),
+        )
+        assert fit_id == run.make_fit_id(matchup_id, 2, 2, "ExpBPow")
+        assert store.query("SELECT rrs_source FROM fits")[0]["rrs_source"] == "L2_AOP:replay:Q"
+
+
+def test_provided_spectrum_rejects_an_odd_tuple():
+    with pytest.raises(ValueError, match="spectrum provider"):
+        run._provided_spectrum(lambda inp: (1, 2), {})
+
+
+def test_gather_fit_input_carries_the_model_pair():
+    """The replay provider names the 2.0 fit from inp['model_pair']."""
+    with Store.open(":memory:") as store:
+        matchup_id, _ = _seed_matchup(store)
+        inp = run._gather_fit_input(store, matchup_id, FitConfig())
+        assert inp["model_pair"] == "ExpBPow"
+
+
+def test_config_from_row_roundtrips_a_ceiling_prior_set():
+    """A 2.0.1 row rebuilds with its ceilings; a 2.0 row (bing_standard) without."""
+    from pab.plotting.fit_fig import _config_from_row
+
+    with Store.open(":memory:") as store:
+        matchup_id, pixel_id = _seed_matchup(store)
+        for fit_id, cfg in (("NEW", FitConfig()), ("OLD", FitConfig.v2_0())):
+            artifacts.persist_fit(
+                store, fit_id=fit_id, matchup_id=matchup_id, pixel_id=pixel_id,
+                result=_fake_result(), config=cfg, chains_path=f"/tmp/{fit_id}.npz",
+            )
+        rows = {r["fit_id"]: r for r in store.query("SELECT * FROM fits")}
+        new = _config_from_row(rows["NEW"])
+        assert (new.bbp600_max, new.adg_max, new.aph_max) == (0.1, 10.0, 10.0)
+        assert models.prior_set_label(new) == rows["NEW"]["prior_set"]
+        assert new.rt_backend == "robust_hybrid" and new.fit_Bp is True
+        old = _config_from_row(rows["OLD"])
+        assert (old.bbp600_max, old.adg_max, old.aph_max) == (None, None, None)
+        assert models.prior_set_label(old) == rows["OLD"]["prior_set"] == "bing_standard"
 
 
 def test_build_models_forwards_the_rt_fields():
@@ -683,6 +1074,10 @@ def test_robust_fit_has_six_columns_and_recovers_bbp():
     names = [q["quantity"] for q in result.quantities]
     assert names[-1] == "n_neg_blue" and len(names) == 12
     assert result.quantities[-1]["value"] == 0.0
+    # 2.0.1: the step-0 check rides along; a physical toy starts far below the walls
+    assert set(result.chain_start["params"]) == {"Adg", "Aph", "Bnw"}
+    assert result.chain_start["started_below_wall"] is True
+    assert result.chain_start["params"]["Bnw"]["dex_below_ceiling"] > 0.5
 
 
 def test_robust_fit_without_geometry_raises():
@@ -827,7 +1222,7 @@ def test_persist_fit_writes_the_v5_rt_columns():
         assert fit["fit_bp"] == 1
         assert fit["phi_c"] == pytest.approx(0.02)
         assert fit["wave_max"] == pytest.approx(700.0)
-        assert fit["pab_version"] == "2.0"
+        assert fit["pab_version"] == "2.0.1"
         # the git SHAs ride along in the provenance JSON
         pkg = json.loads(fit["pkg_versions"])
         assert pkg["git_sha"]["PAB"]

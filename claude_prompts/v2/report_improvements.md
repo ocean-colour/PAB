@@ -2816,3 +2816,182 @@ Note for O9: the public `s3://pab/v2/pab.db` is now the *pre*-backfill file
 (`1e69f6ee…`), i.e. `pab_pre_negblue_20261018.db` — Q&A/Outliers 9 = A
 covers publishing the new one. Files changed this part: `HOWTO.md`, this
 file. Next: O5.
+
+### 2026-10-18 (v2 Outliers O5 — the 2.0.1 configuration: prior ceilings, `prior_set`, step-0 check, replay seam)
+
+Run with Fable. Code and tests only: **no database written, nothing
+transferred, nothing under `$PAB_DATA_DIR/v2/` or `v1/` touched** — the v2 DB
+is `a9959626…` before and after (the post-O4 file), v1 `09de0a6d…8273`, both
+opened read-only (`file:…?mode=ro`, or the CLI's `create=False` path for one
+scratch `--emit-site`). The one authorised env write: `pip install -e .
+--no-deps` in `ocean14` (`pip show pab` → 2.0.1). Scratch:
+`/tmp/claude-1000/pab-o5/` (the sanity script + its log/JSON, the scratch
+site, the pytest log). Files changed: `pab/config.py`, `setup.py`,
+`pab/fit/{models,run,artifacts,__init__}.py`, **`pab/fit/replay.py` (new)**,
+`pab/pipeline.py`, `pab/plotting/fit_fig.py`, `HOWTO.md` (§3 usage line and
+two rows), `pab/tests/{test_fit,test_pipeline,test_fit_progress}.py`, this
+file.
+
+What the code does (Q&A/Outliers 2 = A as 2.0.1, 8 = C):
+
+- **Step 1, ceilings.** `FitConfig.bbp600_max = 0.1`, `adg_max = 10.0`,
+  `aph_max = 10.0` (m⁻¹; `None` = BING's 10⁵). Confirmed in
+  `bing/models/bbnw.py` before naming it: `bbNWPow.pivot = 600.`,
+  `bb_nw = 10**Bnw * (600/wave)**beta`, `pnames = ['Bnw', 'beta']` — so
+  `Bnw` is `b_bp(600)`, hence `bbp600_max`. `models.CEILING_FIELDS` maps field
+  → `prior_set` token → BING pname once; `prior_ceilings(config)`,
+  `prior_set_label(config)`, `ceilings_from_prior_set(label)` and
+  `apply_prior_ceilings(p, models, config)` all read it, so text and bounds
+  cannot drift. `build_models` calls the factory as before, then
+  `p = p._replace(apriors=…, bpriors=…)` with **per-dict copies** whose `pmax`
+  is `log10(ceiling)` for `Adg`/`Aph`/`Bnw` (located by `pnames`, not by
+  index); `set_standard_priors` takes them verbatim, so `_prior_bounds` (the
+  LM) and BING's `log_prob` see the same ceiling, and the `Sdg`/`beta`
+  uniform priors and every `pmin` are untouched. The copy matters:
+  `expb_pow` builds `apriors = [dict(...)] * 3` — three references to **one**
+  dict — so an in-place edit of `Adg`'s `pmax` would have moved `Aph`'s and
+  `Sdg`'s too (tested: BING's factory still reports `pmax = 5` after a
+  ceilinged build, and `p.apriors[0] is p.apriors[2]`). A ceiling at/below
+  the 10⁻⁶ floor, non-positive, or for a parameter the pair lacks raises.
+  `persist_fit` stamps `prior_set = prior_set_label(config)`:
+  `"bing_standard"` when all three are `None`, else
+  `"bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"` (only the set ones,
+  fixed order). `FitConfig.v2_0()` = the frozen, unceilinged 2.0 (every
+  other field identical to the default — tested field by field); `v1()` now
+  sets the three to `None` too.
+- **Step 2, version.** `pab.config.pab_version = "2.0.1"` with a docstring
+  saying what 2.0.1 is (same data/physics/matchups, priors capped, a patch
+  applied to the runaways on the replayed spectrum, 2.0 rows untouched, O7
+  overlays); `setup.py` 2.0.1. `make_fit_id` → `…_v2.0.1`; the three
+  generations' ids are tested distinct.
+- **Step 3, step-0 check.** `run.chain_start_report(chains, param_names,
+  config)` → `{"started_below_wall", "margin_dex": 0.5, "params": {Bnw/Adg/
+  Aph: {ceiling, ceiling_log10, step0_median, dex_below_ceiling,
+  below_wall}}}` on the step-0 walker medians (fit space); vacuously `True`
+  with empty `params` under `v2_0()`/`v1()`; takes an NPZ's `chains` +
+  `param_names` directly. `fit_spectrum` logs a **warning** (never fails)
+  when it is false and `FitSpectrumResult.chain_start` carries the dict
+  (default `{}`).
+- **Step 4, replay seam.** `build_fits(…, spectra=None)` and
+  `fit_matchup(…, spectrum=None)` take a provider `inp -> (wave, Rrs,
+  Rrs_unc)` or `(…, rrs_source)`; with one, **no granule is opened** — serial
+  loop, parallel parent, or `fit_matchup` (tested with an opener that raises;
+  `jobs=2` too). A provider that raises fails that matchup and the batch goes
+  on. `_gather_fit_input` now carries `model_pair`.
+  `pab.fit.replay.spectrum_from_chains(root, version="2.0")` names the 2.0
+  fit of the same matchup/pixel via `make_fit_id(…, version="2.0")`, loads
+  `<fit_id>.npz` under `root` **by basename** (lazy: only `wave`/`Rrs`/
+  `varRrs`), returns `sqrt(varRrs)` as `Rrs_unc` and the stamp
+  `"L2_AOP:replay:<2.0 fit_id>"` (`replay.replayed_fit_id` inverts it);
+  `prepare_spectrum` then reproduces the stored `varRrs` to rounding and the
+  400–700 window is a pass-through. CLI `--replay-chains DIR`
+  (`PipelineConfig.replay_chains`; the `fit` stage logs "replaying 2.0
+  spectra from chain NPZs under …"); HOWTO §3 row, plus a sentence on the
+  `--matchups-csv` row saying it is the only guard against a 15,971-fit
+  re-run.
+- **Step 5.** `fit_fig._config_from_row` reads `prior_set` back through
+  `ceilings_from_prior_set` (a `"bing_standard"`/NULL row → no ceilings; a
+  2.0.1 row → its ceilings), so `prior_set_label(_config_from_row(row)) ==
+  row["prior_set"]` for both (tested). Reconstruction itself needs no
+  priors, but the rebuilt config no longer misdescribes the fit.
+- **Tests** (+25 in `test_fit.py`, +2 in `test_pipeline.py`; renamed
+  `…_are_the_2_0_configuration` → `…_2_0_1_…`, `test_pab_version_is_2_0` →
+  `…_2_0_1`; the v5-columns test now expects `pab_version == "2.0.1"`): the
+  three configs' ceilings, `prior_set` strings and their inverse (incl.
+  malformed labels), `_prior_bounds` = `[1, 0.02, 1, −1, 2]` with the
+  ceilings / `[5, …, 5, 5, 2]` without / one `None` at a time, BING's factory
+  untouched, floor refusal, `persist_fit` stamps, `chain_start_report`
+  (dex, the 0.5 margin inclusive, an `Aph` wall, capped-only, NPZ-style
+  names), the robust known-answer test asserts `started_below_wall`, the
+  replay provider against a real `save_chains` NPZ, `build_fits` with
+  `spectra=` never calling the opener (serial, 3-tuple, failing provider,
+  parallel), `fit_matchup(spectrum=)`, the CLI flag and the stage's
+  provider. `ruff check pab` clean; **`pytest pab/tests -q`: 494 passed, 1
+  skipped** (was 469).
+
+**Read-only sanity check on the real NPZs** (`/tmp/claude-1000/pab-o5/
+sanity_refit.py`, `PAB_DATA_DIR=/tmp/claude-1000/pab-o5/scratch_data`, which
+was never even created — `fit_spectrum` called directly, nothing saved):
+four runaways (6903874/139 the report's top case, 2903902/30 the `Aph`-mirror
+case, 4903489/51 an all-positive Baltic one, 4903462/128 a 10-band negative
+one) and two ordinary fits (seed 42), replayed with `spectrum_from_chains`,
+LM under the 2.0 priors and under 2.0.1, then a 1,000-step MCMC under 2.0.1
+(~10 s each after compile):
+
+| case | 2.0 `b_bp`(700) / χ² | float | LM, 2.0 priors | LM, 2.0.1 | MCMC 2.0.1 `b_bp`(700) [5–95] / χ² | step 0 |
+|---|---|---|---|---|---|---|
+| 6903874/139 | 9.3e4 / 11.1 | 1.0e-3 | 4.3e-4 / 1.81 | 4.3e-4 / 1.81 | 4.6e-4 [3.5e-4, 5.7e-4] / 1.85 | Bnw 2.3 dex, Adg 1.5, Aph 2.8 |
+| 2903902/30 | 7.1e4 / 1.71 | 6.2e-3 | **9.9e4 / 1.67 (wall)** | 6.5e-3 / 0.21 | 7.9e-3 [6.6e-3, 9.6e-3] / 0.24 | Bnw 1.1, Adg 0.7, Aph 4.9 |
+| 4903489/51 | 9.0e4 / 11.2 | 1.1e-3 | 9.2e-5 / 0.52 | 9.2e-5 / 0.52 | 8.1e-5 [5.8e-6, 1.5e-4] / 0.56 | Bnw 3.1, Adg 1.8, Aph 6.6 |
+| 4903462/128 | 8.7e4 / 9.4 | 9.0e-4 | 1.2e-3 / 1.04 | 1.2e-3 / 1.00 | 1.2e-3 [1.0e-3, 1.3e-3] / 1.07 | Bnw 1.9, Adg 1.4, Aph 2.8 |
+| 1902660/6 (ordinary) | 2.1e-3 / 0.81 | 1.2e-3 | 2.2e-3 / 0.79 | 2.2e-3 / 0.79 | 2.1e-3 [2.0e-3, 2.2e-3] / 0.81 | Bnw 1.7, Adg 2.1, Aph 3.6 |
+| 5907088/115 (ordinary) | 2.6e-3 / 2.62 | 8.0e-4 | 2.5e-3 / 2.71 | 2.5e-3 / 2.71 | 2.6e-3 [2.5e-3, 2.6e-3] / 2.63 | Bnw 1.6, Adg 2.6, Aph 3.5 |
+
+All six started below the wall (`started_below_wall = True`, no warning);
+χ²(2.0.1) is 6×, 7×, 20× and 9× lower than χ²(2.0) on the four runaways and
+unchanged on the two ordinary fits, whose `b_bp` moved by < 2 % — the
+ceiling is inert where the fit was already physical.
+
+Worth knowing — **especially for O6**:
+
+- **On the workstation CPU the LM finds the physical basin for 3 of the 4
+  runaways even under the 2.0 priors** (only 2903902/30 goes to the 10⁵ wall
+  and is rescued by the ceiling). Outliers 1 saw the same path sensitivity
+  (6903874/139 found physical on the workstation, at the wall in the GPU
+  pod). So O6's replay will land most of the 51 physical for two reasons at
+  once — the ceiling *and* the CPU LM path — and the ceiling is what
+  *guarantees* it. O6 should not read "51 of 51 physical" as 51 rescues by
+  the prior; the per-fit `chain_start_report` (all should be `True`) is the
+  honest check, and O8's `"warn"` control under `v2_0()` is where the
+  CPU-vs-GPU question actually gets a number (§4 saw 3 of 4 at the wall from
+  the production initial guess; here 1 of 4).
+- **The all-positive Baltic runaway (4903489/51) has a poor "physical"
+  basin:** `b_bp`(700) 8–9e-5, **12× below the float's 1.1e-3**, with `Aph`
+  pinned at the 10⁻⁶ prior *floor* (Chl 0.001) and a wide 5–95 band
+  (6e-6–1.5e-4). χ² is fine (0.5), so the spectrum is simply not constraining
+  there. Expect the 11 type-B Baltic cases to look like this at 2.0.1 — below
+  the gate but far from the float — and O6's Appendix C should separate them
+  from the type-A rescues rather than count them as successes.
+- 2903902/30 at 2.0.1 retrieves Chl 0.007 mg m⁻³ (float 1.78) with `Adg`
+  2.1 m⁻¹: the `b_bp` is rescued (7.9e-3 vs float 6.2e-3) but the absorption
+  split lands on CDOM, not phytoplankton. Not a ceiling issue (both are far
+  below theirs); noted for the Appendix C reading.
+- **A runaway with a negative float Chl seed:** 6990528/121 has
+  `mld_summary.chla = −0.045`; `finite_or_none` passes it through, so the 2.0
+  fit seeded `set_aph` with a negative Chl and the replay will do the same
+  (bit-identical input is the point). Worth a glance in O6's table.
+- The report is unaffected by the bump: the gatherers and `summary_page`
+  resolve the fit version from the store (`newest_bing_version` → `2.0`
+  today) and use `pab.config.pab_version` only for the "Built from
+  ``pab_version`` ``2.0.1``" provenance line — verified with a read-only
+  `--emit-site` into scratch (exit 0, 0 warnings; "BING fits: 15971
+  (``pab_version`` 2.0)"; the O3 clause and O4 sentence unchanged). Nothing
+  introspects `FitConfig()` for the Methods text, so the 2.0 description does
+  not acquire the ceilings. After O6 both `newest_bing_version` (site →
+  51 matchups) and the figure stage's default version (→ 2.0.1 only) flip —
+  O7 owns the first; O6 passes `--figure-version 2.0.1` explicitly as
+  written. `publish.build_manifest`'s `pab_version` is a label, not a filter.
+- **Two tests leaked a real 1 MB chain NPZ into the live
+  `$PAB_DATA_DIR/fit_chains/`** on every run (`7902226_5_G1_2_2_ExpBPow_v<
+  version>.npz`): `test_fit_progress.py::test_startup_cost_…` (a real 10,000
+  -step `build_fits`) and `test_pipeline.py::test_end_to_end_offline` —
+  neither redirected `artifacts.DATA_DIR`. Both now `monkeypatch` it to
+  `tmp_path`. I removed the `_v2.0.1.npz` my runs created; the `_v2.0.npz`
+  from 13:00 today (the O4-session pytest) and the two unversioned
+  2026-09-15 files are **not mine and are left in place** — yours to delete
+  (`$PAB_DATA_DIR/fit_chains/`, not `v2/fit_chains/`, which is untouched at
+  15,971 files).
+- The workstation clock prints 2026-10-19 on the scratch site; the log is
+  dated by the prompt's convention.
+- Nothing needed a decision: **no new Q&A items.**
+
+Hand-off (nothing committed — git is yours): the 13 files above. O6
+pre-flight expectations: `pab_version` 2.0.1 and `pip show pab` 2.0.1 (done
+here); the 2.0.1 rows will carry `prior_set =
+"bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"`, `rrs_source =
+"L2_AOP:replay:<2.0 fit_id>"`, 12 `fit_results` rows each; the log line to
+look for before anything fits is `fit: selection restricts to 51 of the
+store's matchups` followed by `fit: spectra come from the provided
+spectrum_from_chains(…)`; `chain_start_report` over the new NPZs is
+`run.chain_start_report(npz["chains"], npz["param_names"], FitConfig())`.
+Next: O6.

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from pab.config import DATA_DIR, pab_version, package_versions
+from pab.fit.models import prior_set_label
 
 if TYPE_CHECKING:
     from pab.fit.run import FitSpectrumResult
@@ -94,7 +95,10 @@ def persist_fit(
             "anw_model": result.anw_model,
             "bbnw_model": result.bbnw_model,
             "rrs_source": rrs_source,
-            "prior_set": "bing_standard",
+            # "bing_standard" for BING's own priors (1.0, 2.0); the ceiling
+            # string for 2.0.1 -- one helper builds it from the same ceilings
+            # build_models applied, so text and bounds cannot drift.
+            "prior_set": prior_set_label(config),
             "nsteps": config.nsteps,
             "nburn": config.nburn,
             "nwalkers": result.nwalkers,

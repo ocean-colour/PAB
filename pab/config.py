@@ -19,7 +19,18 @@ from typing import Any
 #: (all BGC-Argo × PACE), provenance-distinct from the ``0.0.dev0`` dev runs.
 #: ``1.1`` = the NASA-GIOP comparison baseline added (new science content, not
 #: a provenance backfill — see ``claude_prompts/pace_giop_gsm.md`` Q4).
-pab_version = "2.0"
+#: ``2.0`` = the inelastic ``robust_hybrid`` release (all BGC-Argo × PACE,
+#: 15,971 BING fits). ``2.0.1`` = a **patch** to 2.0: the same data, physics
+#: and matchup set, with the BING prior ceilings capped at physical values
+#: (``FitConfig.bbp600_max/adg_max/aph_max`` = 0.1/10/10 m⁻¹, stamped as
+#: ``fits.prior_set``). It is applied to the 51 2.0 fits that ran away to the
+#: 10⁵ m⁻¹ ``Bnw`` wall (``versions/v2/high_bbp_outliers.md``), re-fitted on
+#: the spectrum the 2.0 fit saw (``rrs_source = 'L2_AOP:replay:<2.0 fit_id>'``).
+#: The 2.0 rows stay in the database untouched; a 2.0.1 ``fit_id`` ends in
+#: ``_v2.0.1`` so it can never overwrite a 2.0 one, and the report overlays a
+#: patch row on its 2.0 row by matchup **and pixel** (O7 defines the overlay).
+#: Q&A/Outliers 2 = A, named 2.0.1.
+pab_version = "2.0.1"
 
 #: Packages whose versions are captured per fit for reproducibility.
 _PROVENANCE_PACKAGES = (

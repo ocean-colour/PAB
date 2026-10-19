@@ -379,17 +379,23 @@ def test_cli_creates_db_parent_dir(tmp_path):
 
 
 # -- end-to-end (needs bing + emcee) ----------------------------------------
-def test_end_to_end_offline():
+def test_end_to_end_offline(tmp_path, monkeypatch):
     pytest.importorskip("bing")
     pytest.importorskip("emcee")
     import os
-    import tempfile
 
+    from pab.fit import artifacts
+
+    # The fit stage persists a real chain NPZ under artifacts.DATA_DIR -- which
+    # is the *live* $PAB_DATA_DIR unless redirected. This test used to leak a
+    # 1 MB `7902226_5_G1_2_2_ExpBPow_v<version>.npz` into
+    # $PAB_DATA_DIR/fit_chains/ on every run (found 2026-10-18, O5).
+    monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
     profiles = _profiles()
     cfg = pipeline.PipelineConfig(
         profiles=profiles,
         fit=FitConfig(nsteps=400, nburn=100, analysis_burn=100),
-        outdir=tempfile.mkdtemp(),
+        outdir=tmp_path / "out",
         make_figures=False,  # the figure stage's reconstruct needs the Loisel data
     )
     with Store.open(":memory:") as store:
@@ -958,3 +964,38 @@ def test_selection_keys_reports_explicit_selection_only(tmp_path):
     assert pipeline.PipelineConfig(profiles=_profiles()).selection_keys() == {
         (7902226, 5), (7902136, 8)
     }
+
+
+# --- the 2.0.1 replay seam on the fit stage (Outliers O5 step 4) -------------
+def test_replay_chains_flag_reaches_the_config(tmp_path):
+    args = pipeline.build_parser().parse_args(["--stage", "fit", "--replay-chains", str(tmp_path)])
+    assert args.replay_chains == str(tmp_path)
+    assert pipeline.build_parser().parse_args([]).replay_chains is None
+    assert pipeline.PipelineConfig().replay_chains is None
+
+
+def test_fit_stage_passes_a_replay_provider_and_no_opener_use(monkeypatch, tmp_path):
+    """With ``replay_chains`` the stage hands ``build_fits`` a
+    ``spectrum_from_chains`` provider rooted there; without it ``spectra=None``."""
+    from pab.fit import run as fit_run
+
+    captured = {}
+
+    def fake_build_fits(store, **kwargs):
+        captured.update(kwargs)
+        return {"written": [], "skipped": [], "failed": []}
+
+    monkeypatch.setattr(fit_run, "build_fits", fake_build_fits)
+    with Store.open(":memory:") as store:
+        cfg = pipeline.PipelineConfig(replay_chains=tmp_path, matchups=["m1"])
+        pipeline.fit(store, cfg, opener=None)
+        provider = captured["spectra"]
+        assert provider is not None and provider.root == tmp_path
+        assert provider.version == "2.0"
+        assert captured["selection"] == {"m1"}
+        # a provider call resolves <2.0 fit_id>.npz under the root, by basename
+        with pytest.raises(FileNotFoundError, match=str(tmp_path)):
+            provider({"matchup_id": "m1", "ix": 1, "iy": 2, "model_pair": "ExpBPow"})
+        captured.clear()
+        pipeline.fit(store, pipeline.PipelineConfig(matchups=["m1"]), opener=None)
+        assert captured["spectra"] is None

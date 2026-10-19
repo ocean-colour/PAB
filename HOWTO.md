@@ -81,8 +81,8 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,geometry,fit,figure,report}]
     [--outdir OUTDIR] [--profiles-csv PROFILES_CSV] [--replace]
     [--no-figures] [--download] [--cache-dir CACHE_DIR] [--jobs JOBS]
     [--ingest-jobs N] [--discover-jobs N] [--dry-run] [--emit-site DIR]
-    [--matchup ID] [--matchups-csv FILE] [--figure-version VERSION]
-    [--compare-db PATH] [--downloads-base-url URL]
+    [--matchup ID] [--matchups-csv FILE] [--replay-chains DIR]
+    [--figure-version VERSION] [--compare-db PATH] [--downloads-base-url URL]
 ```
 
 | Flag | Meaning |
@@ -92,7 +92,8 @@ pab [-h] [--db DB] [--stage {ingest,discover,match,geometry,fit,figure,report}]
 | `--outdir OUTDIR` | Base output directory. Default: `DATA_DIR/pipeline`. |
 | `--profiles-csv PROFILES_CSV` | Profile-selection CSV. Default: `data/dev_profiles.csv`. `ingest` fetches these profiles; **`discover` also restricts to them when the flag is given explicitly**, which is what makes a targeted re-search of a subset possible. Omit it and `discover` sweeps every profile in the store (so the dev default can never silently narrow a production run). **As of 2.0 `match` honours it too** — `match` re-attempts every unmatched profile on each run, and an unmatched profile is usually unmatched permanently, so a targeted backfill would otherwise re-derive tens of thousands of known-negative results (the v2 backfill: 45,010 profiles attempted where only 7,592 could gain a matchup). **As of Prompt 6 `fit` takes its own selection** — but by **matchup**, not profile, so it is `--matchup ID` (repeatable) / `--matchups-csv FILE`, not this flag. `figure` still always works from the store. |
 | `--matchup ID` | Explicit `matchup_id` for the **`fit`** stage (repeatable). Mirrors `pab.fit.nasa_giop`'s flag of the same name. Omit it and `fit` sweeps every matchup in the store — `None` means "no selection", an empty one means "nothing". |
-| `--matchups-csv FILE` | The bulk form of `--matchup`: a CSV with a `matchup_id` column. Used for Prompt 6's 100-matchup leading slice. |
+| `--matchups-csv FILE` | The bulk form of `--matchup`: a CSV with a `matchup_id` column. Used for Prompt 6's 100-matchup leading slice, and for the 2.0.1 re-fit of the 51 runaways (`versions/v2/high_bbp_outliers/refit_51.csv`) — there it is the **only** thing between the command and a 15,971-fit re-run under the new version, since a 2.0 `fit_id` does not block a 2.0.1 one. |
+| `--replay-chains DIR` | With `--stage fit` (2.0.1, Q&A/Outliers 8 = C): read each matchup's spectrum from its **2.0** fit's chain NPZ under `DIR` (`<2.0 fit_id>.npz`, resolved by basename — the stored `chains_path` values are PVC paths) instead of re-reading the pixel from the granule. **No granule is opened**; the NPZ holds `wave`/`Rrs`/`varRrs` exactly as `prepare_spectrum` produced them, so the re-fit differs from the 2.0 fit by the prior ceilings and nothing else. `fits.rrs_source` is stamped `L2_AOP:replay:<2.0 fit_id>`; a matchup with no NPZ fails like any other and the rest proceed. New chains still land at `$PAB_DATA_DIR/fit_chains/` (set `PAB_DATA_DIR=$PAB_DATA_DIR/v2` so they join the 2.0 ones in `v2/fit_chains/`). |
 | `--replace` | Re-do completed work instead of skipping it. |
 | `--no-figures` | Skip the `figure` stage. |
 | `--jobs JOBS` | Parallel processes for the `match`, `fit` and `figure` stages (profile-/matchup-level; default `1` = serial). In `fit`, granules are opened and pixels extracted in the parent and only the MCMC runs in workers; in `match`, the granule open + pixel extraction themselves run in workers. In `figure`, workers render (each opening its own read-only connection to the same DB file) and the parent records the paths. Either way **all DB writes stay in the parent** (no SQLite contention). An injected `opener` must be picklable (module-level) to be used in parallel; otherwise `match` falls back to serial. |
