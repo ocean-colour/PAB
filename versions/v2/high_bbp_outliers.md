@@ -353,7 +353,12 @@ separate problems with ordinary spectra.
    outside the training range); BING uses the default `"warn"`, which is
    silent under `jit`. Running with `"ztt"` would at least make the
    out-of-domain Rrs the analytic one. Worth a slice test; it may change
-   the wall, not the basin.
+   the wall, not the basin. *Done 2026-10-19 (O8):
+   [`ztt_slice.md`](ztt_slice.md) — the policy as shipped is the pure ZTT
+   backbone for every off-nadir PACE pixel (the emulator is trained at
+   nadir only), it moves neither the wall nor the basin, rescues 32 of 51
+   LM runaways while creating 3 new ones, and shifts ordinary `b_bp` by
+   +0.05–0.1 dex; the ceiling (item 2) remains the fix.*
 5. **Look at the 1.0-vs-2.0 comparison for the Baltic.** 10 of the 51 are
    one float (4903784) and four of them are consecutive cycles on one
    granule; the same float and granule produce good fits in the sample. A

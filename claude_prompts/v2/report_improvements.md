@@ -969,6 +969,49 @@ fits, so it needs its own acceptance run.
 
 **Your answer:** Follow your recommendation.
 
+Raised by O8 (`versions/v2/ztt_slice.md`). The short version: robust's
+`on_out_of_domain="ztt"` is the pure ZTT backbone for every PACE pixel,
+because the packaged emulator was trained at nadir view / zero azimuth and
+its domain check flags any off-nadir geometry; it does not remove the
+runaway basin or the wall (both belong to the backbone's `u → 1` limit),
+rescues 32 of 51 LM runaways while creating 3 new ones, and shifts ordinary
+`b_bp`(700) by +0.05–0.10 dex. Separately, `B_p` sits outside the emulator's
+trained range [0.0103, 0.018] for 86 % of production posterior medians (the
+`fit_Bp` prior is [0.004, 0.05], the seed 0.01).
+
+**12 — What PAB does with the forward-model policy now.** Options: **A**
+keep `"warn"` (production as is; no `FitConfig` field), carry §7 of
+`ztt_slice.md` into the bing/robust repos as the question, and have O9's
+Methods page say in one sentence that the hybrid emulator is applied
+off-nadir and outside its `B_p` training range for most fits (recommended —
+the policy as shipped would silently discard the emulator for the whole
+mission, and the 2.0.1 ceiling already fixes the basin); **B** expose
+`on_out_of_domain` through `FitConfig`/`rt_dict` now with default `"warn"`,
+so a future version can switch it (harmless, but it needs a BING change and
+the shipped `"ztt"` is not a usable setting until robust excludes unlearned
+features from the domain check); **C** adopt pure ZTT (`rt_backend =
+"robust_ztt"`) for a future version — a model change with a +0.05–0.1 dex
+`b_bp` cost and no χ² gain on this slice, so it would need its own
+validation, not a flag.
+
+**Your answer:**
+
+**13 — The `B_p` prior versus the emulator's trained range.** 86 % of the
+2.0 posterior-median `B_p` values (and the 0.01 seed) lie outside
+[0.0103, 0.018], so the hybrid's learned correction extrapolates in `B_p`
+for most fits whatever the policy. Options: **A** leave the prior at BING's
+[0.004, 0.05] and state the extrapolation in the Methods page (recommended
+for v2 — changing `B_p`'s prior would be a 2.0.2/v3 re-fit of everything,
+not a patch; raise the retraining question in the robust repo instead,
+§7 item 2); **B** cap the `B_p` prior to the trained range as a PAB-side
+override like the 2.0.1 ceilings (`BP_PRIOR` is a module constant in
+`bing.rt.defs`, so this one *would* touch BING or need a new seam) for the
+next full version; **C** only move the seed to 0.014 (the trained
+mid-range) so the initial-guess `DomainWarning` stops firing on `B_p` —
+cosmetic, and it changes the LM path on the runaways.
+
+**Your answer:**
+
 ### v2
 
 Numbers below were read from a copy of the v2 database
@@ -3434,3 +3477,150 @@ still yours. (6) The DB to publish is still `9503015b…` — O7 wrote nothing.
 
 Hand-off (nothing committed — git is yours): the 13 files above. Next: O8
 (independent) and O9.
+
+### 2026-10-19 (v2 Outliers O8 — the `"ztt"` out-of-domain slice test: pure ZTT for every off-nadir pixel; the basin is the backbone's)
+
+Run with Fable. **Read-only throughout**: the live `$PAB_DATA_DIR/v2/pab.db`
+is `9503015b…cad92` before and after (opened `file:…?mode=ro`), `v1/pab.db`
+`09de0a6d…8273`; `v2/fit_chains/` still 16,022 files; the fits ran with
+`PAB_DATA_DIR` pointed at scratch (the script refuses to start otherwise and
+asserts `pab.fit.artifacts.DATA_DIR` agrees), and nothing was saved through
+`artifacts` anyway — the scratch `pab_data/` stayed empty. No BING or robust
+code changed; the policies are runtime monkeypatches inside the script's
+processes. **No `pab/` code changed**, so no ruff/pytest run was needed. Files
+added: `versions/v2/ztt_slice/run_ztt_slice.py` (the script: `run` and
+`analyze`), `versions/v2/ztt_slice/{ztt_lm_basins,ztt_profiles,
+ztt_ordinary_delta,ztt_mcmc_vs_float}.png` (0.4 MB), `versions/v2/ztt_slice.md`
+(the write-up, ending with "Question for the bing repo"); changed:
+`versions/v2/high_bbp_outliers.md` (§6 item 4 links the write-up), this file
+(Q&A/Outliers 12–13, this entry). Scratch:
+`/tmp/claude-1000/-mnt-tank-Oceanography-python-PAB/ee4e310b-49d2-41ef-88cf-8177a6e17f0c/scratchpad/o8/`
+(`run/` — `specs.json`, `proof_of_patch.json`, `results_<arm>.json`, 48
+chains (60 MB), `summary.{md,json}`, `timing.json`; `run.log`; `probe_patch.py`
+and `smoke/` from the dry runs).
+
+**Run times.** 2026-10-19 05:24:18–05:35:40 PDT: **11 min 22 s** for all
+three arms at `--jobs 8` (3.8 / 3.6 / 3.7 min; 121 tasks per arm: 101 LM, 4
+profiles, 16 production-length MCMC; 0 failures). Per task after the compile:
+LM 0.25 s, profile 12–27 s, MCMC 102 s median (10,000 + 1,000 steps × 16
+walkers). The prompt's ~1.5 h was sized on O6's 198 s of CPU per fit; the
+pool was never saturated here. The 300-fit sample list survived in
+`/tmp/claude-1000/pab-outliers/chains_sample.txt`, so the 50 ordinary fits
+were drawn from it (seed 42, sorted basenames) — no re-draw needed.
+
+**The surprise that reshaped the test** (found while writing the proof step,
+before the run): the packaged emulator's domain for `cos_theta_v` and
+`cos_dphi` is `[1, 1]` — L23 is nadir view, zero azimuth — and every one of
+the 15,971 fitted pixels is off-nadir (θ_v 13.0–60.0°, Δφ anywhere in ±180°,
+`geom_source` L1B_V3 for all). Robust's `out_of_domain_mask` is "any feature
+at any wavelength beyond 1 % of the span", with a span of 0 divided by the
+10⁻⁸ `_STD_FLOOR`, so it is True for every sample of every PAB fit and
+**`on_out_of_domain="ztt"` as shipped is `mode="ztt"` for the whole
+mission.** Proven on synthetic IOPs (in-domain IOPs at θ_v 30° → policy ==
+pure ZTT; at nadir → == hybrid) and on 6903874/139's stored posterior through
+BING's jitted path (`allclose` to the un-jitted `mode="ztt"`; 9.4 % max
+difference from `"warn"`). O6's log said "for 4 fits `cos_theta_v`": the O6
+log actually carries the view-geometry breach in **all 51** warnings (the
+"4" was wrong). I therefore added a third arm, `ztt_iop` — the same policy
+with the mask judged on the five learned features only (a monkeypatched
+`Emulator.out_of_domain_mask`) — so the question the prompt meant still gets
+an answer; the two prescribed arms ran as written.
+
+**Step-2 answers (2.0 priors, `FitConfig.v2_0()`).**
+
+- *LM at the 10⁵ ceiling from the production p0:* `"warn"` **37 of 51**
+  (§4 saw 3 of 4; O5's 1 of 4 was a lucky draw), `"ztt"` **8 of 51**,
+  `ztt_iop` 8 of 51 (plus 2 LM failures). Cross-tab warn → ztt: 32 rescued,
+  **3 newly runaway** (6903874/139, 4903462/128, 4903489/51 — confirmed by
+  full MCMC), 5 runaway in both, 11 physical in both. No LM in any arm ended
+  between `Bnw` −2 and +5. χ² of the stored runaway solution: median 5.94
+  under warn, 5.63 under pure ZTT — the basin is the backbone's.
+- *χ² profile vs fixed `Bnw`, four report cases, under `"ztt"`:* **the wall
+  stays** (a maximum at `Bnw` 0 to +1.5 in all four, within 0.5 dex of the
+  production one; heights 2.0×10³ / 136 / 183 / 5.7 vs 2.7×10⁴ / 59 / 266 /
+  5.7 — sampled by 3 LM starts per point, so rough), **the plateau to the
+  ceiling stays** at the same χ² within 10 % (10.4 / 10.6 / 6.9 / 1.85 vs
+  11.1 / 10.5 / 7.0 / 1.67), the physical minimum stays (1.90 / 0.46 / 2.38
+  vs 1.93 / 0.66 / 2.41) except 2903902/30, whose physical basin deepens from
+  1.87 to **0.24** under the backbone (the `A_ph`-mirror case where the
+  runaway used to be the global minimum). Neither moved nor vanished.
+- *50 ordinary fits, LM, arm − warn:* `"ztt"` Δlog₁₀ `b_bp`(700) **+0.055
+  dex median [16–84 %: +0.011, +0.119], 14/50 beyond 0.1 dex**, none beyond
+  0.3; Δχ²_red −0.054 median, none worse or better by > 1. MCMC (8): +0.098
+  median, max 0.136; Δχ² −0.02. `ztt_iop`: −0.001 [−0.078, +0.103], 10/49
+  beyond 0.1 dex. χ² of the stored 2.0 median under the backbone 1.52 vs
+  0.43 under the hybrid. So **not ≈ 0** — the bigger finding, and it is a
+  domain finding twice over: the view geometry (every sample) and `B_p`.
+- *Out-of-domain fraction at the ordinary posterior medians:* robust's
+  verdict **8/8** in every arm; IOP features only **8/8** (warn), 7/8
+  (ztt), 6/8 (ztt_iop), `B_p` every time. At the 50 ordinary LM solutions:
+  50/50 robust, 39/50 IOP-only (`B_p` 35: 17 below 0.01026, 18 above 0.018;
+  `cos θ_s` 6; `eta_bb` 1).
+- *`B_p` population numbers (DB, read-only):* posterior-median `B_p` inside
+  the trained [0.01026, 0.018] for **2,191 of 15,971 (13.7 %)**, below 2,753,
+  above 11,027; the whole 5–95 % band inside for 1 fit, entirely outside for
+  3,498 (21.9 %). Within the slice's stored posteriors the in-range fraction
+  has median 0.20 (ordinary) and 0.00 (runaways).
+- *DomainWarnings:* 101/101 LM initial-guess checks and 3/3 checks in each of
+  the 48 MCMC fits, in every arm; all carry `cos_theta_v`/`cos_dphi` "100 %
+  outside [1, 1]"; at p0 also `B_p` 100 % outside (0.01 < 0.01026) for
+  101/101 and `log10_u` 6.6 % past −0.428 for 41 of 51 runaways; `cos θ_s`
+  for 9 of the 10 with θ_s > 60°.
+- *Full MCMC, 8 runaways:* warn 4/8 start at the wall (the pod's ceiling
+  reproduced; the other 4 land in the physical basin, as O5 saw on the CPU);
+  ztt 3/8 at the wall, 5/8 below the gate (2903902/30 → 8.2e-3,
+  χ² 1.71 → 0.24; 4903784/112 → 8.4e-3; 4903784/185 → 4.1e-3; 7901007/400 →
+  4.8e-3; lost: 6903874/139, 4903462/128, 4903489/51). Ordinary 8: within 1 %
+  of the stored 2.0 values under warn.
+
+**The reading.** The runaway basin and the wall are properties of the ZTT
+saturation limit (`u → 1`), which the emulator only decorates; `"ztt"` as a
+policy neither removes them nor is inert — it is a different forward model
+(the backbone) with a +0.05–0.1 dex systematic on `b_bp` and no χ² gain, that
+happens to re-route the start-sensitive LM (32 rescued, 3 lost). The 2.0.1
+ceiling remains the fix. The real domain problems are (1) the nadir-only
+training, which the domain check turns into a 100 % breach while the network
+itself ignores those two features (constant training features standardise to
+0), and (2) `B_p`: the `fit_Bp` prior [0.004, 0.05] and the seed 0.01 are
+mostly outside the trained [0.0103, 0.018], so the hybrid extrapolates in
+`B_p` for ~86 % of production fits whatever the policy. The write-up's §7
+("Question for the bing repo") says: default stays `"warn"`; exposing
+`on_out_of_domain` is easy (an `rt_dict` key, a fourth `lru_cache` key in
+`_robust_forward_jit`, a `FitConfig` field forwarded through the factory) but
+pointless until robust judges the domain on learned features only; retrain
+over the `B_p` prior range and more than one view geometry, or narrow
+`BP_PRIOR`; a per-sample mask makes the forward model discontinuous (the
+`ztt_iop` arm stalled the LM on 3 of 101 and put one posterior median —
+2903451/78, `B_p` 0.0101 on the range edge — on the wrong side of the switch,
+χ² 2.33 vs 0.32), so any in-fitter fallback should blend, not switch; and the
+initial-guess breaches O6 saw (view geometry every fit; `B_p` seed 0.01 just
+under 0.01026 every fit; `log10_u` past −0.428 for blue-depressed spectra) are
+restated with counts.
+
+**Other surprises / worth knowing.**
+
+- `ztt_iop` ≡ `ztt` on 50 of the 51 runaway LMs and on the profiles of three
+  of the four cases: in the runaway basin `log10_u`/`eta_bb` are out of
+  domain, and in the physical basin the LM `B_p` goes to its 0.004 floor for
+  most runaways (median 0.0046–0.0056), so the correction is off either way.
+- The CPU LM under `"warn"` finds the physical basin for 14 of the 51 from
+  the production p0; the pod (GPU, float32) found it for 0 of 51. Path
+  sensitivity, as Outliers 1 and O5 said; O8's 37/51 is the honest
+  workstation number for "the LM goes to the wall".
+- The `dataviz` palette validator needs `node`, which `ocean14`/the
+  workstation lacks; the three arm colours are the reference palette's
+  slots 1–3 (blue, orange, aqua) in fixed order, population grey.
+- The workstation clock prints 2026-10-19; the entry is dated by it.
+- **Decisions for JXP: Q&A/Outliers 12** (keep `"warn"`, carry §7 to bing/
+  robust, one Methods sentence in O9 — recommended) and **13** (the `B_p`
+  prior vs the trained range — state it for v2, raise retraining in robust).
+
+**Notes for O9.** Nothing from O8 enters the site or the tables. If Q&A 12 =
+A, O9's Methods *Retrieval* paragraph gains one sentence: the `robust_hybrid`
+emulator was trained at nadir view and over `B_p` ∈ [0.0103, 0.018]; PAB
+applies it at θ_v 13–60° and with a free `B_p` over [0.004, 0.05], so the
+learned correction extrapolates for most fits (`versions/v2/ztt_slice.md`).
+`PAB_implementation.md` §14's O8 pointer: `versions/v2/ztt_slice.md`. The
+**Status** block O9 adds to `high_bbp_outliers.md` can list O8 as done
+2026-10-19 (no DB, no code). Hand-off (nothing committed — git is yours):
+the 7 files above. Next: O9.
