@@ -205,7 +205,7 @@ def read_datatree(source) -> xr.Dataset:
         ``sensor_band_parameters`` on some granules). ``.variable`` keeps the
         on-disk data lazy.
         """
-        return da.rename(dict(zip(da.dims, target_dims))).variable
+        return da.rename(dict(zip(da.dims, target_dims, strict=False))).variable
 
     data_vars = {
         "Rrs": _canon(geo["Rrs"], ("x", "y", "wl")),

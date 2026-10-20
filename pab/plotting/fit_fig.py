@@ -25,10 +25,17 @@ def _config_from_row(config_row):
 
     Reads the schema-v5 RT columns. A legacy 1.0 row has them NULL, which maps
     to the Gordon/elastic configuration it was actually fitted with — hence
-    :meth:`~pab.fit.models.FitConfig.v1` as the base rather than the 2.0
-    defaults, which would claim physics that row never saw.
+    :meth:`~pab.fit.models.FitConfig.v1` as the base rather than the 2.0.1
+    defaults, which would claim physics (and prior ceilings) that row never
+    saw. The prior ceilings come back out of ``prior_set``
+    (:func:`~pab.fit.models.ceilings_from_prior_set`): ``'bing_standard'`` —
+    every 1.0 and 2.0 row — means none, a 2.0.1 ceiling string restores the
+    ceilings it names, so ``prior_set_label(_config_from_row(row)) ==
+    row["prior_set"]``. Reconstruction itself needs no priors (it evaluates
+    the stored posterior), but the rebuilt config must not misdescribe the
+    fit.
     """
-    from pab.fit.models import FitConfig
+    from pab.fit.models import FitConfig, ceilings_from_prior_set
 
     def _flag(name, default=False):
         v = config_row[name] if name in config_row.keys() else None
@@ -36,6 +43,7 @@ def _config_from_row(config_row):
 
     backend = config_row["rt_backend"] if "rt_backend" in config_row.keys() else None
     phi_c = config_row["phi_c"] if "phi_c" in config_row.keys() else None
+    prior_set = config_row["prior_set"] if "prior_set" in config_row.keys() else None
     return FitConfig.v1(
         model_pair=config_row["model_pair"],
         wave_min=float(config_row["wave_min"]),
@@ -47,6 +55,7 @@ def _config_from_row(config_row):
         include_CDOM_fl=_flag("include_cdom_fl"),
         fit_Bp=_flag("fit_bp"),
         phi_C=0.02 if phi_c is None else float(phi_c),
+        **ceilings_from_prior_set(prior_set),
     )
 
 

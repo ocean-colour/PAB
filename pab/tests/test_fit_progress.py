@@ -24,15 +24,21 @@ import pytest
 from pab.fit.models import FitConfig
 
 
-def test_startup_cost_is_reported_separately_from_per_fit_cost(caplog):
+def test_startup_cost_is_reported_separately_from_per_fit_cost(
+    caplog, tmp_path, monkeypatch
+):
     """Worker spawn + JAX compile is a per-POOL cost; folding it into s/fit
     inflates the figure and can trip a pause trigger on an artefact."""
     pytest.importorskip("bing")
     from pab.db.store import Store
-    from pab.fit import run
+    from pab.fit import artifacts, run
     from pab.tests.test_fit import _seed_matchup
     from pab.tests.test_pace import make_granule
 
+    # A real 10,000-step fit is persisted here; without this redirect its 1 MB
+    # chain NPZ landed in the *live* $PAB_DATA_DIR/fit_chains/ on every run
+    # (`7902226_5_G1_2_2_ExpBPow_v<version>.npz`; found 2026-10-18, O5).
+    monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
     with Store.open(":memory:") as store:
         _seed_matchup(store)
         with caplog.at_level(logging.INFO, logger="pab.fit"):

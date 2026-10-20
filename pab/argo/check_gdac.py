@@ -1,4 +1,8 @@
-import urllib.request, gzip, io, pandas as pd
+import gzip
+import io
+import urllib.request
+
+import pandas as pd
 
 url = 'https://data-argo.ifremer.fr/argo_bio-profile_index.txt.gz'
 print('Downloading BGC index from GDAC...')
@@ -8,7 +12,7 @@ with urllib.request.urlopen(url) as r:
 with gzip.open(io.BytesIO(data)) as f:
     lines = f.read().decode('utf-8').splitlines()
 
-header = next(i for i,l in enumerate(lines) if not l.startswith('#'))
+header = next(i for i, line in enumerate(lines) if not line.startswith('#'))
 df = pd.read_csv(io.StringIO('\n'.join(lines[header:])))
 df['wmo'] = df['file'].apply(lambda x: int(x.split('/')[1]))
 

@@ -151,27 +151,57 @@ configuration.
 
 They are **not** a node, granule or sampler artifact: 47 distinct granules,
 every convergence flag set, identical `nsteps`/`nwalkers`, and viewing
-geometry, separation and spectrum count indistinguishable from the rest. What
-separates them is the **regime**:
+geometry, separation and spectrum count indistinguishable from the rest.
 
-| retrieved Chl | n | non-physical | rate |
-|---|---|---|---|
-| < 0.01 | 776 | 22 | 2.84 % |
-| 0.01–0.02 | 218 | 21 | **9.63 %** |
-| 0.02–0.05 | 690 | 5 | 0.72 % |
-| 0.05–0.1 | 2,387 | 0 | **0.00 %** |
-| 0.1–0.3 | 7,393 | 0 | **0.00 %** |
-| > 0.3 | 4,507 | 3 | 0.07 % |
+*Corrected 2026-10-18.* As written on 2026-10-07 this section went on to call
+them "the extreme tail of the same clear-water behaviour as §2.2", on the
+strength of a table of failure rate by **retrieved** Chl (2.8–9.6 % below
+Chl 0.02 mg m⁻³, zero between 0.05 and 0.3). That reading rested on the
+retrieved Chl of ~0.01 mg m⁻³ — which is part of the failed fit — and the
+investigation in [`versions/v2/high_bbp_outliers.md`](../../versions/v2/high_bbp_outliers.md)
+(Outliers 1; Q&A/Outliers 4 = A) overturned it, so the table was retired from
+this report and from the Comparisons page (O3). What the 51 actually are:
 
-Zero in 9,780 fits between Chl 0.05 and 0.3. They are the extreme tail of the
-same clear-water behaviour as §2.2 — where the elastic signal is weakest the
-retrieval becomes ill-conditioned, and in a few cases it fails outright.
+- **Productive marginal seas, not clear water.** 25 in the Baltic, 9 in the
+  tropical Atlantic/Caribbean, 7 in the Arabian Sea/Gulf of Oman, singles in
+  the Black, Ligurian, Barents and Labrador Seas, the Kuroshio, the NE Pacific
+  coast, the California Current and the Agulhas. The floats under them have a
+  median Chl of **0.93 mg m⁻³** (population 0.15) and a median `b_bp`(700) of
+  **3.6×10⁻³ m⁻¹** (population 6.9×10⁻⁴). Three floats account for 25 of them.
+- **Depressed or negative blue `Rrs`.** 40 of the 51 have `Rrs` < 0 at
+  400–450 nm (a failed atmospheric correction, typically at a cloud edge; none
+  carries a standard-mask `l2_flags` bit); the other 11, all Baltic, are
+  positive everywhere but have Rrs(440)/Rrs(555) of 0.24–0.55 against a
+  population median of 4.1 — CDOM-rich, green-peaked water. All 51 peak at
+  490–580 nm.
+- **The optimiser, not the sampler or the data.** Every one of the 51 chains
+  *started* with `Bnw` (log₁₀ `b_bp`(600)) above 4.5: the LM warm-start
+  delivered the 1 % walker ball to `expb_pow`'s `Bnw` prior ceiling of
+  10⁵ m⁻¹, where `b_b ≫ a`, the reflectance saturates and only `a/b_b` is
+  constrained (`Bnw`–`A_dg` correlation +0.9), and a χ² wall of 10²–10⁵ at
+  `b_bp` ≈ 1–10 m⁻¹ kept it there. A physical basin with a **better** χ²
+  (1.5–23× lower) and a `b_bp`(700) within ~2× of the float and of the 1.0
+  Gordon fit exists in every re-fitted case. Masking the negative bands does
+  not remove the spurious basin; the depressed-blue *shape* creates it.
 
-**No single-variable filter isolates them.** χ² > 1.5 catches 47/51 but flags
-700 sound fits; Chl < 0.05 catches 48/51 and flags 1,636. They are a tail of a
-continuum, not a separable population, which is why they are **reported rather
-than removed** — they remain in every statistic (the medians and Spearman ρ are
-rank-based and barely move) and are flagged on the Comparisons page.
+**What the report does with them (O3, 2026-10-18).** They are optimiser
+failures, not measurements, so they are **excluded** from every `b_bp`
+statistic and figure behind the `compare.BBP_IMPLAUSIBLE = 1 m⁻¹` gate
+(`compare.gate_bbp`; the 52nd-largest 2.0 value is 0.03 m⁻¹, so the gate
+sits in a six-decade gap), with the computed count in every caption and a
+Methods paragraph; the Chl of the same fits is not gated (Q&A/Outliers 6 = A),
+the gallery keeps its runaway example, and the downloadable table keeps the
+raw values with a `bbp_bing_implausible` flag. The acceptance run on this
+database: the `b_bp` headline went from n = 15,274, median ratio 1.15,
+ρ = 0.415, RMS 0.645 to **n = 15,224, 1.14, 0.411, RMS 0.492** (50 of the 51
+have a float value); NASA/BING RMS 0.52 → 0.29; 2.0/1.0 RMS 0.536 → 0.325.
+A re-fit of the 51 under `pab_version` 2.0.1 with physical prior ceilings is
+the next step (O5–O7); a per-fit count of negative 400–450 nm bands is stored
+as a QA quantity (O4) rather than used to refuse fits — that screen catches
+40 of 51 at ≈ 0.7 % false positives, but no spectral screen separates the 11
+Baltic cases from good Baltic fits. Still true from the 2026-10-07 reading:
+no *post-hoc* single-variable filter isolates them (χ² > 1.5 catches 47/51
+but flags 700 sound fits; Chl < 0.05 catches 48/51 and flags 1,636).
 
 ---
 
@@ -296,9 +326,9 @@ downloaded from the public URL and re-hashed:
 
 | artifact | location | size | sha256 |
 |---|---|---|---|
-| v2 database | `https://s3-west.nrp-nautilus.io/pab/v2/pab.db` | 217,325,568 | `1e69f6ee…87d8a3f8` |
-| matchup summary (CSV) | `…/pab/v2/matchup_summary.csv` | 6,102,869 | `6622a78c…070f0f74` |
-| matchup summary (Parquet) | `…/pab/v2/matchup_summary.parquet` | 2,645,441 | `4754e237…fe9c0627c` |
+| v2 database (as published 2026-10-07) | `https://s3-west.nrp-nautilus.io/pab/v2/pab.db` | 217,325,568 | `1e69f6ee…87d8a3f8` |
+| matchup summary (CSV, 2026-10-07) | `…/pab/v2/matchup_summary.csv` | 6,102,869 | `6622a78c…070f0f74` |
+| matchup summary (Parquet, 2026-10-07) | `…/pab/v2/matchup_summary.parquet` | 2,645,441 | `4754e237…fe9c0627c` |
 | v1 database (frozen) | `…/pab/v1/pab.db` | 169,938,944 | `09de0a6d…f978273` |
 | v2 database (backup) | `AIOcean:PAB/pab_v2_2026-10-07.db` | 217,325,568 | — |
 | v2 chains | `AIOcean:PAB/v2/fit_chains/` | 18.3 GB, 15,971 files | — |
@@ -310,6 +340,29 @@ The published objects were each re-downloaded from the public URL and
 sha256-verified, not trusted from a listing. Nautilus PVCs are **not** backed
 up, which is why the chains and figures are copied to the shared drive.
 
+**Amended 2026-10-20** (O9 of `claude_prompts/v2/report_improvements.md`;
+Q&A/Outliers 9 = A). After the negative-blue QA backfill (O4) and the 2.0.1
+re-fit of the 51 runaways (O6), the public objects were replaced; the rows
+above are the 2026-10-07 record and stay as written. The 2026-10-07 database is
+still public under a dated key.
+
+| artifact (2026-10-20) | location | size | sha256 |
+|---|---|---|---|
+| v2 database (live: +`n_neg_blue`, +51 2.0.1 fits) | `…/pab/v2/pab.db` | 220,819,456 | `9503015b…bfcad92` |
+| v2 database as published 2026-10-07 (kept) | `…/pab/v2/pab_2026-10-07.db` | 217,325,568 | `1e69f6ee…87d8a3f8` |
+| matchup summary (CSV; +`pixel_id`, `pab_version`, `n_neg_blue`, `fit_id_superseded`, `bbp_bing_superseded`, `bbp_bing_implausible`) | `…/pab/v2/matchup_summary.csv` | 6,337,830 | `4b387e5d…9730013` |
+| matchup summary (Parquet) | `…/pab/v2/matchup_summary.parquet` | 2,745,255 | `cda3bc42…7225a03` |
+| BING vs NASA-GIOP summary (CSV; +`pixel_id`, `pab_version`; first published 2026-10-18 as `21b4b6ce…`) | `…/pab/v2/nasa_giop_summary.csv` | 8,516,595 | `b4044d22…7bd26e11` |
+| BING vs NASA-GIOP summary (Parquet; was `66f6cb27…`) | `…/pab/v2/nasa_giop_summary.parquet` | 2,986,102 | `7caa35fc…99b885f1` |
+| v2 database (backup, = live) | `AIOcean:PAB/pab_v2_2026-10-18.db` | 220,819,456 | `9503015b…bfcad92` |
+| v2 chains (now also on the workstation, `$PAB_DATA_DIR/v2/fit_chains/`) | `AIOcean:PAB/v2/fit_chains/` | 18.4 GB, 16,022 files | — |
+| v2 figures | `AIOcean:PAB/v2/figures/` | 17,412 files | — |
+
+Full sha256 values are in `HOWTO.md` §5b. Before any object was replaced, the
+objects then on S3 were downloaded to `$PAB_DATA_DIR/v2/s3_prev_2026-10-20/` and
+matched the sha256 values recorded above; every upload was verified by a fresh
+download.
+
 ---
 
 ## 7. Follow-ups
@@ -317,11 +370,26 @@ up, which is why the chains and figures are copied to the shared drive.
 1. **The clear-water regime.** Rank correlation for `b_bp` falls even in
    productive water (0.522 → 0.442) while bias and scatter improve — not
    explained by the ill-conditioned tail, and not explained at all.
-2. **The 51 non-physical retrievals.** No post-hoc filter isolates them. Worth
-   understanding whether the emulator is out of domain at very low backscatter,
-   or whether the inelastic terms are genuinely unconstrained there.
+2. **The 51 non-physical retrievals.** *Resolved 2026-10-18* — understood and
+   gated. They are not a low-backscatter/emulator-domain effect but the LM
+   warm-start running to the `Bnw` prior ceiling on depressed-blue marginal-sea
+   spectra; see §2.5 and
+   [`versions/v2/high_bbp_outliers.md`](../../versions/v2/high_bbp_outliers.md).
+   O3 excludes them from every `b_bp` statistic (the gate stays in force,
+   permanently). *Closed 2026-10-20:* the 51 were re-fitted under
+   `pab_version = 2.0.1` with physical prior ceilings on the very spectrum the
+   2.0 fit saw (O5–O6): all 51 started below the wall, all 51 land below the
+   gate (median `b_bp` ratio to the float 0.76, 30/50 within 2×), χ² lower in
+   every case; the report overlays the 2.0.1 rows on the 2.0 rows by matchup
+   and pixel (O7), so the `b_bp` headline is back to n = 15,274 (median 1.14,
+   ρ 0.414, log-RMS 0.493 against 0.645 with the runaways in); every fit now
+   carries the negative-blue QA count `n_neg_blue` (O4: 156 of 15,971 spectra,
+   40 of the 51); the amended database and tables are on S3 (§6). The
+   emulator-domain slice test (O8) is item 8.
 3. **`B_p` prior bounds.** 15.4 % of posteriors sit within 5 % of a bound. A
    slice re-fitted with a wider prior would show whether the modes move out.
+   *See also item 9*: the posterior medians sit **outside the emulator's
+   trained range** for 86 %, so a wider prior would extrapolate further.
 4. **CDOM fluorescence** is implemented and was off in this run; enabling it is
    a one-flag experiment.
 5. **Bulk-artifact publish.** Chains and figures are backed up but not
@@ -330,3 +398,26 @@ up, which is why the chains and figures are copied to the shared drive.
    of committing thumbnails.
 6. **Zenodo / DOI.** `ZenodoBackend` remains an explicit `NotImplementedError`.
 7. **Gap C** (see `run_full_inelastic.md`).
+8. **Open for robust/BING — the emulator's out-of-domain policy (Q&A/Outliers
+   12 = A, 2026-10-19/20).** BING runs `robust_rt.forward` with the default
+   `on_out_of_domain="warn"`; the packaged hybrid emulator was trained at
+   nadir view / zero relative azimuth, and every one of the 15,971 fitted
+   pixels is off-nadir (θ_v 13–60°), so robust's domain check flags every
+   sample of every fit and the shipped `"ztt"` policy is pure ZTT for the
+   whole mission. The slice test (`versions/v2/ztt_slice.md`) found it neither
+   removes the runaway basin nor is inert (+0.05–0.10 dex on ordinary `b_bp`,
+   no χ² gain), so PAB keeps `"warn"`, keeps the 2.0.1 ceilings, and states the
+   extrapolation on the Methods page. The question for the bing/robust repos
+   (`ztt_slice.md` §7): judge the domain on learned features only, document
+   the nadir-only training, and blend rather than switch any in-fitter
+   fallback.
+9. **Open for robust/BING — `B_p` versus the emulator's trained range
+   (Q&A/Outliers 13 = A).** The emulator was trained over `B_p` ∈
+   [0.0103, 0.018]; BING's `fit_Bp` prior is [0.004, 0.05] with the seed at
+   0.01, and the posterior-median `B_p` lies outside the trained range for
+   13,772 of 15,971 v2 fits (86 %; 2,715 below, 11,057 above), so the learned
+   correction extrapolates in `B_p` for most fits whatever the policy. Left as
+   is for v2 (a narrower prior would be a full re-fit, not a patch) and stated
+   on the Methods page with the fraction computed from the database; the ask
+   for robust is to retrain over the `B_p` prior range and more than one view
+   geometry, or for bing to narrow `BP_PRIOR`.

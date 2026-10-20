@@ -202,7 +202,9 @@ def test_a_v1_sharing_no_matchup_is_logged(caplog, tmp_path):
 
 # -- the retrieval-failure note ----------------------------------------------
 def test_failure_note_counts_non_physical_bbp(tmp_path):
-    """0.33 % of real 2.0 fits return b_bp > 1 m^-1; the report must say so."""
+    """0.33 % of real 2.0 fits return b_bp > 1 m^-1; the report must say so --
+    and, since O3 (Q&A/Outliers 1 = B), that they are *excluded* from the
+    b_bp statistics, with the corrected reading in place of the Chl-rate table."""
     v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3))
     with Store.open(":memory:") as store:
         _v2_store(store, bbps=(1e-3, 5.0e4))  # the second fit is non-physical
@@ -211,7 +213,51 @@ def test_failure_note_counts_non_physical_bbp(tmp_path):
         assert "1 of 2" in out
         # and that 1.0 produced none of them, which is what makes it 2.0's
         assert "1.0 produce 0 such values" in out
-        assert "left in" in out  # not silently filtered
+        # gated, not left in: the note says so with the computed clause, and
+        # the b_bp stats line is built from the gated frame (n = 1) while the
+        # Chl line is not gated (n = 2; Q&A/Outliers 6 = A)
+        assert "**excluded**" in out and "left in" not in out
+        gate = "1 failed retrieval (50.00 %, ``b_bp`` > 1 m⁻¹) excluded"
+        assert gate in out
+        assert "- **b_bp(700 nm)** — n = 1; median 2.0/1.0 ratio = 0.5" in out
+        assert "- **chlorophyll** — n = 2;" in out
+        assert "n = 2; median 2.0/1.0 ratio = 1.2" in out
+        assert "chlorophyll of the same fits is not gated" in out
+        # the "clear-water tail" misreading and its retrieved-Chl rate table
+        # are gone, replaced by the corrected reading and the pointer
+        assert "Rate by retrieved chlorophyll" not in out
+        assert "clear-water tail" not in out.replace("not a clear-water tail", "")
+        assert not hasattr(rst, "_runaway_regime_note")
+        assert not hasattr(rst, "_RUNAWAY_CHL_EDGES")
+        assert "not a clear-water tail" in out
+        assert "negative* blue ``Rrs``" in out
+        assert "``Bnw`` prior ceiling of 10⁵ m⁻¹" in out
+        assert "physical basin with a *better* χ²" in out
+        assert "2.0.1" in out and "pending" in out
+        assert (
+            "https://github.com/ocean-colour/PAB/blob/main/versions/v2/"
+            "high_bbp_outliers.md" in out
+        )
+        # the float Chl under the failed fit, computed from this store
+        # (every seeded profile has chla = 0.1)
+        assert "median Chl of 0.10 mg m⁻³, against 0.10 for the population" in out
+
+
+def test_failure_note_without_a_store_still_explains(tmp_path):
+    """The note's float-Chl numbers need the store; without one the paragraph
+    stands on its own rather than quoting NaN."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "matchup_id": ["A", "B"],
+            "bbp700_v1": [2e-3, 4e-3],
+            "bbp700_v2": [1e-3, 5e4],
+        }
+    )
+    out = rst._version_failure_note(df)
+    assert "**excluded**" in out and "nan" not in out.lower()
+    assert "median Chl of" not in out and "high_bbp_outliers.md" in out
 
 
 def test_no_failure_note_when_every_fit_is_physical(tmp_path):
@@ -492,7 +538,11 @@ def test_scene_gallery_does_stage_when_it_renders(tmp_path):
 
 
 def test_fit_figures_not_staged_at_scale(tmp_path, monkeypatch):
-    """`_gather_with_figures` staged every fit figure unconditionally."""
+    """`_gather_with_figures` staged every fit figure unconditionally.
+
+    At scale only the representative selection (E5) is staged and linked; every
+    other row's URL is None and no other file is copied.
+    """
     out = tmp_path / "site"
     out.mkdir()
     monkeypatch.setattr(rst, "MAX_INLINE_FIGURES", 2)
@@ -500,10 +550,15 @@ def test_fit_figures_not_staged_at_scale(tmp_path, monkeypatch):
     with Store.open(":memory:") as store:
         _seed_with_figures(store, 6, tmp_path)
         df = rst._gather_with_figures(store, out)
-    assert df[rst.FIGURE_URL_COL].isna().all(), "figure URLs point at unstaged files"
+    chosen = set(rst.select_representative_fits(df)["matchup_id"])
+    assert 0 < len(chosen) < len(df)
+    staged_rows = df[df[rst.FIGURE_URL_COL].notna()]
+    assert set(staged_rows["matchup_id"]) == chosen, "URLs point at unstaged files"
     figs = out / "_static" / "figures"
     staged = list(figs.glob("*.png")) if figs.is_dir() else []
-    assert not staged, f"{len(staged)} fit figures copied with nothing linking to them"
+    assert len(staged) == len(chosen), (
+        f"{len(staged)} fit figures copied for {len(chosen)} that link to them"
+    )
 
 
 def test_fit_figures_staged_below_threshold(tmp_path):
@@ -574,3 +629,133 @@ def test_pages_have_no_malformed_inline_literals(tmp_path):
                 if re.search(r"[^`]``[\(]", line):
                     bad.append(f"{name}.rst:{i}: {line[:90]}")
     assert not bad, "malformed inline literals:\n" + "\n".join(bad)
+
+
+def test_failure_note_quotes_the_negative_blue_rate_when_recorded(tmp_path):
+    """O4: once the 2.0 fits carry ``n_neg_blue`` the failure note says how
+    many spectra have a negative blue band and how many of the failures do --
+    computed from the store, omitted while the column is all NaN."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4))
+        out = rst.version_section(store, v1, sortable=False)
+        assert "fitted spectra (" not in out  # nothing recorded yet
+        for m, n in (("M1", 0), ("M2", 2)):
+            store.upsert(
+                "fit_results",
+                {"fit_id": f"{m}_v2.0", "quantity": "BING_ExpBPow_n_neg_blue", "value": n},
+            )
+        out = rst.version_section(store, v1, sortable=False)
+        assert (
+            "400–450 nm (the floats under them report a median Chl of 0.10 mg m⁻³, "
+            "against 0.10 for the population). In this release 1 of 2 fitted "
+            "spectra (50.00 %) have at least one negative band at 400–450 nm "
+            "(``n_neg_blue`` ≥ 1); 1 of the 1 failed retrieval does. On such a "
+            "spectrum" in out
+        )
+
+
+# -- the 2.0.1 story (O7, Q&A/Outliers 1 = C, 10 = A, 11 = A) ------------------
+def _patch_m2(store, *, bbp=4e-4, chl=0.005, success=0):
+    """Re-fit M2 (the runaway of ``_v2_store(bbps=(1e-3, 5e4))``) under 2.0.1
+    on the same pixel, the O6 shape: ceiling ``prior_set``, replay stamp."""
+    from pab.tests.test_compare_versions import PATCH_PRIOR_SET, _add_bing_fit
+
+    pixel_id = store.query(
+        "SELECT pixel_id FROM matchup_pixels WHERE matchup_id = 'M2'"
+    )[0]["pixel_id"]
+    store.execute("UPDATE fits SET pixel_id = ? WHERE fit_id = 'M2_v2.0'", (pixel_id,))
+    return _add_bing_fit(
+        store, "M2", pixel_id, version="2.0.1", bbp=bbp, chl=chl, success=success,
+        prior_set=PATCH_PRIOR_SET,
+    )
+
+
+def test_failure_note_tells_the_2_0_1_story_when_patched(tmp_path):
+    """With a 2.0.1 re-fit in the store the note counts the runaways from the
+    2.0 rows (which stay), quotes the prior_set and ceilings, says how many
+    re-fits sit below the gate (and that those values are what the page
+    uses), how many still above, the Chl < 0.01 count (Q&A 11 = A) and the
+    success = 0 fit kept as recorded (Q&A 10 = A) -- every number computed."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4))
+        _patch_m2(store)
+        for m, n in (("M1", 0), ("M2", 2)):
+            store.upsert(
+                "fit_results",
+                {"fit_id": f"{m}_v2.0", "quantity": "BING_ExpBPow_n_neg_blue", "value": n},
+            )
+        out = rst.version_section(store, v1, sortable=False)
+        assert "**Retrieval failures.** 1 of 2 2.0 fits (50.00 %)" in out
+        assert "the largest is 5e+04 m⁻¹" in out
+        assert "1.0 produce 0 such values" in out
+        assert "**re-fitted under ``pab_version`` 2.0.1**" in out
+        assert (
+            '``prior_set = "bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"`` — '
+            "``b_bp`` (600 nm) ≤ 0.1 m⁻¹, ``A_dg`` ≤ 10 m⁻¹, ``A_ph`` ≤ 10 m⁻¹"
+        ) in out
+        assert "1 of the 1 re-fitted fits now return a ``b_bp`` below the 1 m⁻¹ gate" in out
+        assert "those re-fitted values are what every statistic and figure on this site uses" in out
+        assert "``fit_id_superseded``, ``bbp_bing_superseded``" in out
+        assert "None remains above the gate" in out
+        assert "0 failed retrievals (0.00 %, ``b_bp`` > 1 m⁻¹) excluded" in out
+        assert "1 of the 1 re-fitted fits retrieve a chlorophyll below 0.01 mg m⁻³" in out
+        assert "``A_ph`` at its 10⁻⁶ prior floor" in out
+        assert (
+            "1 of the re-fitted fits (7902222/2) records ``success = 0``" in out
+            and "as for 0 of the 2 2.0 fits" in out
+            and "is kept as recorded" in out
+        )
+        # the O3 "pending" sentence is gone; the basin sentence points at the re-fit
+        assert "pending" not in out
+        assert "The 2.0.1 re-fit above lands in that basin" in out
+        # the negative-blue clause still names the failed retrieval, computed
+        # on the 2.0 rows (the overlaid frame no longer flags any)
+        assert "1 of 2 fitted spectra (50.00 %)" in out
+        assert "1 of the 1 failed retrieval does." in out
+        # the float Chl under the failed fit is still quoted
+        assert "median Chl of 0.10 mg m⁻³" in out
+        # the stats lines use the overlaid pair (1.0 vs 2.0.1 for M2): both
+        # pairs count, nothing excluded, and the intro says which
+        assert "- **b_bp(700 nm)** — n = 2;" in out
+        assert "1 of the pairs use the 2.0.1 re-fit of a 2.0 fit" in out
+        assert "- **chlorophyll** — n = 2;" in out
+        # the whole site still builds and has no malformed literal
+        written = rst.build_site(store, tmp_path / "site", sortable=False, compare_db=v1)
+        text = written["comparisons"].read_text()
+        assert "re-fitted under" in text
+        import re
+
+        for name in ("summary", "comparisons", "methods", "downloads"):
+            for line in written[name].read_text().splitlines():
+                # the predicate of test_pages_have_no_malformed_inline_literals
+                if re.search(r"``[\(\w]", line.replace("``(url", "")):
+                    assert not re.search(r"[^`]``[\(]", line), line
+
+
+def test_failure_note_still_says_pending_without_a_patch(tmp_path):
+    """The old regime: runaways and no 2.0.1 rows -> gated, re-fit pending."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4))
+        out = rst.version_section(store, v1, sortable=False)
+        assert "pending" in out and "re-fitted under" not in out
+        assert "1 failed retrieval (50.00 %, ``b_bp`` > 1 m⁻¹) excluded" in out
+
+
+def test_patch_still_above_the_gate_stays_excluded(tmp_path):
+    """A re-fit that is still non-physical remains gated, and the note says
+    so with the count; an unpatched runaway counts as still above too."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3, 6e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4, 7.0e4))  # M2 and M3 run away
+        _patch_m2(store, bbp=3.0, chl=0.2, success=1)  # re-fitted, still > 1
+        out = rst.version_section(store, v1, sortable=False)
+        assert "**Retrieval failures.** 2 of 3 2.0 fits" in out
+        assert "0 of the 1 re-fitted fits now return" in out
+        assert "2 remain above the gate (1 re-fitted and still above it and 1 not re-fitted) and stay excluded" in out
+        assert "2 failed retrievals (66.67 %, ``b_bp`` > 1 m⁻¹) excluded" in out
+        assert "0 of the 1 re-fitted fits retrieve a chlorophyll below" in out
+        assert "``success = 0``" not in out
+        assert "- **b_bp(700 nm)** — n = 1;" in out  # only M1 survives the gate

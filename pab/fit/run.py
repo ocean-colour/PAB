@@ -24,7 +24,12 @@ import numpy as np
 
 from pab.config import pab_version as _pab_version
 from pab.fit import artifacts as _artifacts
-from pab.fit.models import FitConfig, build_models, model_param_names
+from pab.fit.models import (
+    FitConfig,
+    build_models,
+    model_param_names,
+    prior_ceilings,
+)
 from pab.matchup.engine import _close_quietly
 
 _log = logging.getLogger("pab.fit")
@@ -377,6 +382,9 @@ class FitSpectrumResult:
     accept_frac: float
     success: bool  # whether the LM warm-start converged (MCMC always runs)
     Chl: float = field(default=float("nan"))
+    #: :func:`chain_start_report` — where step 0 of the chain sat relative to
+    #: the prior ceilings (2.0.1). Empty for a result built without one.
+    chain_start: dict[str, Any] = field(default_factory=dict)
 
 
 def extract_quantities(models, chains, rt_dict, *, config: FitConfig):
@@ -450,6 +458,106 @@ def extract_quantities(models, chains, rt_dict, *, config: FitConfig):
     if models[0].name in _BRICAUD_ANW and "Aph" in names:
         _add("chl", chl_from_aph(flat[:, names.index("Aph")]), "mg m^-3")
     return out
+
+
+#: The blue window (nm, inclusive) the negative-``Rrs`` QA count looks at.
+#: ``versions/v2/high_bbp_outliers.md`` §5: a negative band here catches 40 of
+#: the 51 runaway 2.0 fits and flags ≈0.7 % of the rest, while "negative
+#: anywhere" flags 7 % (ordinary clear-water spectra dip below zero in the red).
+BLUE_QA_BAND = (400.0, 450.0)
+
+#: Name of the negative-blue QA quantity (bare; ``persist_fit`` prefixes it
+#: with ``BING_<model_pair>_`` like every other quantity).
+NEG_BLUE_QUANTITY = "n_neg_blue"
+
+
+def rrs_qa_quantities(wave, Rrs) -> list[dict[str, Any]]:
+    """Input-spectrum QA scalars, in the same dict shape as
+    :func:`extract_quantities` so they ride along in ``fit_results``.
+
+    One quantity today: ``n_neg_blue`` — the number of finite bands with
+    ``Rrs < 0`` inside :data:`BLUE_QA_BAND` (edges inclusive). It is a count,
+    so ``value_lo == value_hi == value`` and the unit is ``"bands"``. Call it
+    on the **windowed** spectrum (:func:`prepare_spectrum`'s output, which is
+    exactly what the chain NPZs store) so a fit-time value and one backfilled
+    from the NPZ agree by construction. This is a flag, never a refusal: a
+    negative blue band is recorded, and the spectrum is fitted as before
+    (Q&A/Outliers 3 = A).
+    """
+    wave = np.asarray(wave, dtype=float)
+    Rrs = np.asarray(Rrs, dtype=float)
+    lo, hi = BLUE_QA_BAND
+    blue = np.isfinite(wave) & (wave >= lo) & (wave <= hi)
+    n_neg = int(np.sum(blue & np.isfinite(Rrs) & (Rrs < 0)))
+    return [
+        {
+            "quantity": NEG_BLUE_QUANTITY,
+            "value": float(n_neg),
+            "value_lo": float(n_neg),
+            "value_hi": float(n_neg),
+            "unit": "bands",
+        }
+    ]
+
+
+#: How far (dex) below a prior ceiling the step-0 walker median must sit for
+#: :func:`chain_start_report` to call the chain "started below the wall". The
+#: 51 runaways all started with median ``Bnw`` 4.7–4.99 against a ceiling of 5
+#: (``versions/v2/high_bbp_outliers.md`` §4) — i.e. within 0.3 dex; a chain
+#: that starts 0.5 dex or more under the ceiling is not pinned to it.
+WALL_MARGIN_DEX = 0.5
+
+
+def chain_start_report(chains, param_names, config: FitConfig) -> dict[str, Any]:
+    """The step-0 check (2.0.1): where each **capped** parameter's walker ball
+    started, in dex below its prior ceiling.
+
+    The runaway mechanism was the LM warm-start delivering the walker ball to
+    the ``Bnw`` ceiling, where the 1 % ball never left it. This looks at step 0
+    of the chain — the warm-start — and says, per capped parameter, how far
+    under ``log10(ceiling)`` its walker median sits.
+
+    Args:
+        chains: ``(nsteps, nwalkers, nparam)`` in **fit space** (log10 for the
+            capped parameters) — :attr:`FitSpectrumResult.chains` or the
+            ``chains`` array of a chain NPZ, so O6 can tabulate it from disk.
+        param_names: The chain's column names (``param_names`` in the NPZ).
+        config: The :class:`FitConfig`; its ceilings define the walls. A
+            parameter whose ceiling is ``None`` is not checked.
+
+    Returns:
+        A dict shaped ::
+
+            {"started_below_wall": bool, "margin_dex": WALL_MARGIN_DEX,
+             "params": {name: {"ceiling": m⁻¹, "ceiling_log10": …,
+                               "step0_median": …, "dex_below_ceiling": …,
+                               "below_wall": bool}}}
+
+        ``started_below_wall`` is the AND over the checked parameters, and
+        ``True`` (vacuously, with empty ``params``) when nothing is capped.
+    """
+    chains = np.asarray(chains, dtype=float)
+    names = [str(n) for n in param_names]
+    params: dict[str, dict[str, Any]] = {}
+    for pname, ceiling in prior_ceilings(config).items():
+        if ceiling is None or pname not in names:
+            continue
+        k = names.index(pname)
+        ceiling_log10 = float(np.log10(ceiling))
+        step0 = float(np.median(chains[0, :, k]))
+        dex_below = ceiling_log10 - step0
+        params[pname] = {
+            "ceiling": float(ceiling),
+            "ceiling_log10": ceiling_log10,
+            "step0_median": step0,
+            "dex_below_ceiling": float(dex_below),
+            "below_wall": bool(dex_below >= WALL_MARGIN_DEX),
+        }
+    return {
+        "started_below_wall": all(v["below_wall"] for v in params.values()),
+        "margin_dex": WALL_MARGIN_DEX,
+        "params": params,
+    }
 
 
 def fit_spectrum(
@@ -544,12 +652,30 @@ def fit_spectrum(
     accept_frac = float(np.mean(sampler.acceptance_fraction))
 
     quantities = extract_quantities(models, chains, rt_dict, config=config)
+    # input-spectrum QA (the negative-blue count), on the windowed spectrum
+    quantities.extend(rrs_qa_quantities(wave_w, Rrs_w))
     chisq, aic, bic = _fit_diagnostics(
         models, chains, rt_dict, Rrs_w, varRrs_w, config, geom=geom
     )
     names = model_param_names(models)
     if fit_bp:
         names = [*names, "Bp"]
+
+    # Step-0 check (2.0.1): did the warm-start deliver the walker ball to a
+    # prior ceiling? A warning, never a failure -- the chain is kept either way.
+    chain_start = chain_start_report(chains, names, config)
+    if not chain_start["started_below_wall"]:
+        at_wall = ", ".join(
+            f"{n} {v['dex_below_ceiling']:.2f} dex under log10({v['ceiling']:g})"
+            for n, v in chain_start["params"].items()
+            if not v["below_wall"]
+        )
+        _log.warning(
+            "fit: chain started at the prior wall (step-0 walker median < %.1f dex "
+            "below the ceiling): %s",
+            WALL_MARGIN_DEX,
+            at_wall,
+        )
 
     return FitSpectrumResult(
         chains=chains,
@@ -567,6 +693,7 @@ def fit_spectrum(
         accept_frac=accept_frac,
         success=success,
         Chl=float(chl_val) if chl_val is not None else float("nan"),
+        chain_start=chain_start,
     )
 
 
@@ -647,6 +774,7 @@ def _gather_fit_input(store, matchup_id: str, config: FitConfig, rank: int = 1):
         "fit_id": make_fit_id(matchup_id, px["ix"], px["iy"], config.model_pair),
         "matchup_id": matchup_id,
         "pixel_id": px["pixel_id"],
+        "model_pair": config.model_pair,
         "source": source,
         "ix": int(px["ix"]),
         "iy": int(px["iy"]),
@@ -678,8 +806,17 @@ def _fit_only(wave, Rrs, Rrs_unc, chl, config: FitConfig, geom=None):
     return fit_spectrum(wave, Rrs, Rrs_unc, Chl=chl, geom=geom, config=config)
 
 
+#: ``fits.rrs_source`` of a spectrum read from the granule (the production path).
+RRS_SOURCE_L2 = "L2_AOP"
+
+
 def _persist_result(store, inp: dict, result: FitSpectrumResult, config, created):
-    """Write the chains NPZ + ``fits``/``fit_results`` for one completed fit."""
+    """Write the chains NPZ + ``fits``/``fit_results`` for one completed fit.
+
+    ``rrs_source`` is :data:`RRS_SOURCE_L2` unless the spectrum provider put
+    another stamp in ``inp["rrs_source"]`` (the replay seam:
+    ``"L2_AOP:replay:<2.0 fit_id>"``).
+    """
     path = _artifacts.save_chains(inp["fit_id"], result)
     _artifacts.persist_fit(
         store,
@@ -688,11 +825,33 @@ def _persist_result(store, inp: dict, result: FitSpectrumResult, config, created
         pixel_id=inp["pixel_id"],
         result=result,
         config=config,
-        rrs_source="L2_AOP",
+        rrs_source=inp.get("rrs_source") or RRS_SOURCE_L2,
         chains_path=str(path),
         created=created,
     )
     return inp["fit_id"]
+
+
+def _provided_spectrum(provider, inp: dict):
+    """Call a ``spectra``/``spectrum`` provider and unpack its answer.
+
+    A provider is ``inp -> (wave, Rrs, Rrs_unc)`` or
+    ``inp -> (wave, Rrs, Rrs_unc, rrs_source)``; a fourth element is the
+    ``fits.rrs_source`` stamp and is written into ``inp["rrs_source"]`` for
+    :func:`_persist_result`. **No granule is opened** on this path.
+    """
+    out = tuple(provider(inp))
+    if len(out) == 4:
+        wave, rrs, unc, source = out
+        inp["rrs_source"] = str(source)
+    elif len(out) == 3:
+        wave, rrs, unc = out
+    else:
+        raise ValueError(
+            "a spectrum provider must return (wave, Rrs, Rrs_unc) or "
+            f"(wave, Rrs, Rrs_unc, rrs_source); got {len(out)} items"
+        )
+    return wave, rrs, unc
 
 
 def _worker_init():  # pragma: no cover - runs in worker processes
@@ -717,6 +876,7 @@ def fit_matchup(
     rank: int = 1,
     persist: bool = True,
     created: str | None = None,
+    spectrum=None,
 ):
     """Fit one matchup's pixel (default the nearest) and persist the fit.
 
@@ -734,6 +894,13 @@ def fit_matchup(
         rank: Which pixel to fit (1 = nearest valid).
         persist: If False, fit only and return the result without writing.
         created: Timestamp to stamp on the written rows.
+        spectrum: Optional **spectrum provider** ``inp -> (wave, Rrs, Rrs_unc)``
+            (or with a fourth ``rrs_source`` element) replacing the granule
+            read; when given, **no granule is opened**. ``inp`` is the dict
+            :func:`_gather_fit_input` built (``matchup_id``, ``ix``, ``iy``,
+            ``model_pair``, …). :func:`pab.fit.replay.spectrum_from_chains`
+            builds the one that replays a 2.0 fit's own spectrum
+            (Q&A/Outliers 8 = C).
 
     Returns:
         The ``fit_id`` (when ``persist``) else the :class:`FitSpectrumResult`.
@@ -758,8 +925,11 @@ def fit_matchup(
             f"{matchup_id!r}: " + NO_GEOMETRY.format(backend=config.rt_backend)
         )
 
-    ds = _open_bounded(inp["source"], opener=opener)
-    wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
+    if spectrum is not None:
+        wave, rrs, unc = _provided_spectrum(spectrum, inp)
+    else:
+        ds = _open_bounded(inp["source"], opener=opener)
+        wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
     result = _fit_only(wave, rrs, unc, inp["chl"], config, geom=geom)
     if not persist:
         return result
@@ -775,12 +945,20 @@ def build_fits(
     created: str | None = None,
     jobs: int = 1,
     selection: set[str] | None = None,
+    spectra=None,
 ) -> dict[str, list[str]]:
     """Fit the nearest pixel of every matchup and persist (idempotent, resumable).
 
     Skips a fit already present (by ``fit_id``) unless ``replace=True``. A single
     matchup that fails (granule unavailable, fit diverges) is recorded under
     ``"failed"`` and does **not** abort the batch, so a re-run resumes the rest.
+
+    ``spectra`` is the **replay seam** (Q&A/Outliers 8 = C): a provider
+    ``inp -> (wave, Rrs, Rrs_unc[, rrs_source])`` that replaces the granule
+    read for every matchup. When given, **no granule is opened** — not in the
+    serial loop and not in the parallel parent — and a provider that raises
+    (e.g. a missing chain NPZ) fails that one matchup like any other error.
+    :func:`pab.fit.replay.spectrum_from_chains` is the production provider.
 
     A matchup whose pixel has **no viewing geometry** is recorded under
     ``"failed"`` too, and is rejected *before* its granule is opened — the
@@ -840,9 +1018,16 @@ def build_fits(
             continue
         inputs.append(inp)
 
+    if spectra is not None and inputs:
+        _log.info(
+            "fit: spectra come from the provided %s — no granule will be opened",
+            getattr(spectra, "__name__", type(spectra).__name__),
+        )
+
     if jobs and jobs > 1 and inputs:
         _build_fits_parallel(
-            store, inputs, config, opener, created, int(jobs), written, failed
+            store, inputs, config, opener, created, int(jobs), written, failed,
+            spectra=spectra,
         )
         return {"written": written, "skipped": skipped, "failed": failed}
 
@@ -850,11 +1035,16 @@ def build_fits(
 
     for inp in inputs:
         try:
-            ds = _open_bounded(inp["source"], opener=opener)
-            try:
-                wave, rrs, unc = _extract.extract_spectrum(ds, inp["ix"], inp["iy"])
-            finally:
-                _close_quietly(ds)
+            if spectra is not None:
+                wave, rrs, unc = _provided_spectrum(spectra, inp)
+            else:
+                ds = _open_bounded(inp["source"], opener=opener)
+                try:
+                    wave, rrs, unc = _extract.extract_spectrum(
+                        ds, inp["ix"], inp["iy"]
+                    )
+                finally:
+                    _close_quietly(ds)
             result = _fit_only(
                 wave, rrs, unc, inp["chl"], config, geom=_geometry_or_none(inp)
             )
@@ -866,20 +1056,22 @@ def build_fits(
     return {"written": written, "skipped": skipped, "failed": failed}
 
 
-def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, failed):
+def _build_fits_parallel(
+    store, inputs, config, opener, created, jobs, written, failed, *, spectra=None
+):
     """Parallel fit backend (see :func:`build_fits`). Mutates ``written``/``failed``.
 
     Extraction + persistence stay in the parent; only :func:`_fit_only` is farmed
     out. In-flight futures are bounded (~2×``jobs``) so completed chains are drained
-    and persisted promptly rather than piling up in memory.
+    and persisted promptly rather than piling up in memory. With ``spectra`` the
+    parent calls the provider per matchup instead of opening the group's granule.
     """
     import multiprocessing as mp
     from collections import defaultdict
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
-    from pab.parallel import PROGRESS_EVERY, mem_breakdown
-
     from pab.pace import extract as _extract
+    from pab.parallel import PROGRESS_EVERY, mem_breakdown
 
     # 'spawn' avoids fork-in-a-multithreaded-parent deadlocks (Py3.13 warns on
     # fork here); workers re-import cleanly and `_fit_only` pickles by qualname.
@@ -943,33 +1135,44 @@ def _build_fits_parallel(store, inputs, config, opener, created, jobs, written, 
         max_workers=jobs, mp_context=ctx, initializer=_worker_init
     ) as ex:
         for source, group in by_source.items():
-            try:
-                ds = _open_bounded(source, opener=opener)
-            except Exception:  # noqa: BLE001 — a bad granule fails its whole group
-                _log.exception(
-                    "open_granule failed for %s (%d fits)", source, len(group)
-                )
-                failed.extend(inp["fit_id"] for inp in group)
-                continue
-            # One open per source shared across its group, then released: an
-            # unclosed dataset keeps an fsspec handle plus its read-ahead cache,
-            # which is what OOM-killed a 32-worker match pod inside 8 min.
-            try:
-                spectra = {}
+            group_spectra: dict = {}
+            if spectra is not None:
+                # replay seam: the provider supplies each spectrum; no open
                 for inp in group:
                     try:
-                        spectra[inp["fit_id"]] = _extract.extract_spectrum(
-                            ds, inp["ix"], inp["iy"]
-                        )
+                        group_spectra[inp["fit_id"]] = _provided_spectrum(spectra, inp)
                     except Exception:  # noqa: BLE001
-                        _log.exception("extract_spectrum failed for %s", inp["fit_id"])
+                        _log.exception("spectrum provider failed for %s", inp["fit_id"])
                         failed.append(inp["fit_id"])
-            finally:
-                _close_quietly(ds)
-            for inp in group:
-                if inp["fit_id"] not in spectra:
+            else:
+                try:
+                    ds = _open_bounded(source, opener=opener)
+                except Exception:  # noqa: BLE001 — a bad granule fails its whole group
+                    _log.exception(
+                        "open_granule failed for %s (%d fits)", source, len(group)
+                    )
+                    failed.extend(inp["fit_id"] for inp in group)
                     continue
-                wave, rrs, unc = spectra[inp["fit_id"]]
+                # One open per source shared across its group, then released: an
+                # unclosed dataset keeps an fsspec handle plus its read-ahead
+                # cache, which is what OOM-killed a 32-worker match pod in 8 min.
+                try:
+                    for inp in group:
+                        try:
+                            group_spectra[inp["fit_id"]] = _extract.extract_spectrum(
+                                ds, inp["ix"], inp["iy"]
+                            )
+                        except Exception:  # noqa: BLE001
+                            _log.exception(
+                                "extract_spectrum failed for %s", inp["fit_id"]
+                            )
+                            failed.append(inp["fit_id"])
+                finally:
+                    _close_quietly(ds)
+            for inp in group:
+                if inp["fit_id"] not in group_spectra:
+                    continue
+                wave, rrs, unc = group_spectra[inp["fit_id"]]
                 fut = ex.submit(
                     _fit_only,
                     wave,

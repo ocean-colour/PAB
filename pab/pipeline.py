@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import logging
+import os
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -84,8 +85,15 @@ class PipelineConfig:
     outdir: str | Path | None = None
     make_figures: bool = True
     #: Which BING ``pab_version`` the ``figure`` stage renders. ``None`` → the
-    #: store's newest. Never renders NASA-GIOP rows: they have no chains.
+    #: store's newest version family with the patch overlay (a 2.0 fit
+    #: superseded by a 2.0.1 re-fit is skipped); a string → exactly that
+    #: version. Never renders NASA-GIOP rows: they have no chains.
     figure_version: str | None = None
+    #: Replay seam for the ``fit`` stage (Q&A/Outliers 8 = C): a directory of
+    #: chain NPZs; each matchup's spectrum is read from its **2.0** fit's NPZ
+    #: there (``pab.fit.replay.spectrum_from_chains``) and **no granule is
+    #: opened**. ``None`` → the production granule read.
+    replay_chains: str | Path | None = None
     replace: bool = False
     download: bool = False
     cache_dir: str | Path | None = None
@@ -722,9 +730,23 @@ def geometry(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
 
 
 def fit(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
-    """Stage 5: fit each matchup with BING (idempotent by ``fit_id``)."""
+    """Stage 5: fit each matchup with BING (idempotent by ``fit_id``).
+
+    With ``config.replay_chains`` the spectra are replayed from the 2.0 chain
+    NPZs in that directory instead of being read from the granules
+    (``--replay-chains DIR``; HOWTO §3).
+    """
     from pab.fit.run import build_fits
 
+    spectra = None
+    if config.replay_chains is not None:
+        from pab.fit.replay import spectrum_from_chains
+
+        spectra = spectrum_from_chains(Path(config.replay_chains))
+        _log.info(
+            "fit: replaying 2.0 spectra from chain NPZs under %s (no granule reads)",
+            config.replay_chains,
+        )
     return build_fits(
         store,
         opener=opener,
@@ -732,6 +754,7 @@ def fit(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
         replace=config.replace,
         jobs=config.jobs,
         selection=config.matchup_ids(),
+        spectra=spectra,
     )
 
 
@@ -749,11 +772,15 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
 
     Two filters keep this stage from doing work it cannot or need not do:
 
-    * **Only BING fits of one ``pab_version``.** The ``fits`` table also holds
-      the NASA-GIOP ingests, which have no MCMC chains — rendering a fit figure
-      for one cannot succeed. On the v2 store that is 15,976 of 31,947 rows, so
-      without this filter half the stage is guaranteed failures, each costing a
-      worker slot and an exception traceback.
+    * **Only BING fits of one ``pab_version`` family.** The ``fits`` table also
+      holds the NASA-GIOP ingests, which have no MCMC chains — rendering a fit
+      figure for one cannot succeed. On the v2 store that is 15,976 of 31,947
+      rows, so without this filter half the stage is guaranteed failures, each
+      costing a worker slot and an exception traceback. By default the family
+      is the store's newest (:func:`pab.metrics.compare.version_family`) with
+      the patch overlay applied — a 2.0 fit superseded by a 2.0.1 re-fit of
+      the same matchup and pixel is not rendered — while an explicit
+      ``--figure-version`` renders exactly that version.
     * **Scenes only where ``matchups.scene_path`` is NULL.** The scene is the
       expensive half (it re-opens the ~1.8 GB granule) and most matchups
       already carry one from the previous release. Re-rendering a scene that
@@ -767,12 +794,26 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
     written, skipped, failed = [], [], []
     todo: list[tuple[str, str, bool]] = []
 
-    version = config.figure_version
-    if version is None:
-        from pab.metrics import compare
+    from pab.metrics import compare
 
-        version = compare.newest_bing_version(store)
-    _log.info("figure: rendering BING fits at pab_version %s", version)
+    versions = compare.resolve_versions(store, config.figure_version)
+    overlay = config.figure_version is None and len(versions) > 1
+    _log.info(
+        "figure: rendering BING fits at pab_version %s%s",
+        versions[0] if len(versions) == 1 else versions,
+        " (patch rows overlaid by matchup and pixel)" if overlay else "",
+    )
+    clause, vparams = compare._version_clause("pab_version", versions)
+    rows = store.query(
+        "SELECT fit_id, matchup_id, pixel_id, model_pair, pab_version, figure_path "
+        f"FROM fits WHERE algorithm = 'BING' {clause} ORDER BY fit_id",
+        vparams,
+    )
+    if overlay and rows:
+        import pandas as pd
+
+        kept = set(compare.overlay_patch(pd.DataFrame(rows))["fit_id"])
+        rows = [r for r in rows if r["fit_id"] in kept]
 
     # `scene_path IS NULL` is resolved once, here, rather than per render: the
     # parent is the only writer, so a worker cannot see another worker's scene.
@@ -782,12 +823,7 @@ def figure(store, config: PipelineConfig, *, opener=None) -> dict[str, Any]:
             "SELECT matchup_id FROM matchups WHERE scene_path IS NULL"
         )
     }
-    for r in store.query(
-        "SELECT fit_id, matchup_id, figure_path FROM fits "
-        "WHERE algorithm = 'BING' AND (? IS NULL OR pab_version = ?) "
-        "ORDER BY fit_id",
-        (version, version),
-    ):
+    for r in rows:
         if r["figure_path"] and not config.replace:
             skipped.append(r["fit_id"])
             # Cheap backfill: record an already-rendered scene (no re-render, no
@@ -1074,6 +1110,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="CSV with a matchup_id column selecting the fit stage's slice "
         "(the bulk form of --matchup).",
     )
+    p.add_argument(
+        "--replay-chains",
+        default=None,
+        metavar="DIR",
+        help="With --stage fit: read each matchup's spectrum from its 2.0 fit's "
+        "chain NPZ under DIR (resolved by basename) instead of the granule; no "
+        "granule is opened and fits.rrs_source is stamped "
+        "'L2_AOP:replay:<2.0 fit_id>'. The 2.0.1 re-fit path (HOWTO §3).",
+    )
     p.add_argument("--replace", action="store_true", help="Re-do completed work.")
     p.add_argument("--no-figures", action="store_true", help="Skip the figure stage.")
     p.add_argument(
@@ -1126,9 +1171,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--figure-version",
         default=None,
         metavar="VERSION",
-        help="With --stage figure: render BING fits at this pab_version "
-        "(default: the store's newest). NASA-GIOP rows are never rendered — "
-        "they have no MCMC chains.",
+        help="With --stage figure: render BING fits at exactly this pab_version "
+        "(default: the store's newest version family, with a patch version such "
+        "as 2.0.1 overlaid on its base by matchup and pixel). NASA-GIOP rows are "
+        "never rendered — they have no MCMC chains.",
     )
     p.add_argument(
         "--compare-db",
@@ -1147,7 +1193,28 @@ def build_parser() -> argparse.ArgumentParser:
         "the s3://pab public URL) instead of staging multi-MB CSV/Parquet into the "
         "committed site. Keeps report_site/ bounded at scale (HOWTO §7b).",
     )
+    p.add_argument(
+        "--figure-root",
+        action="append",
+        default=None,
+        type=figure_root_pair,
+        metavar="OLD=NEW",
+        help="With --emit-site: translate figure paths recorded in the database "
+        "(fits.figure_path, matchups.scene_path, mld_summary.qa_path) that start "
+        "with OLD to NEW before staging the galleries. Repeatable, one per stored "
+        "prefix; the longest matching OLD wins. Files still missing after the "
+        "remap are dropped from their gallery with a counted warning.",
+    )
     return p
+
+
+def figure_root_pair(text: str) -> tuple[str, str]:
+    """Parse one ``--figure-root OLD=NEW`` argument (``~`` and ``$VAR`` in NEW
+    are expanded, so the flag works the same from a shell or a job spec)."""
+    old, sep, new = text.partition("=")
+    if not sep or not old or not new:
+        raise argparse.ArgumentTypeError(f"expected OLD=NEW, got {text!r}")
+    return old, os.path.expanduser(os.path.expandvars(new))
 
 
 def main(argv=None) -> int:
@@ -1166,6 +1233,7 @@ def main(argv=None) -> int:
         matchups=args.matchups,
         matchups_csv=args.matchups_csv,
         figure_version=args.figure_version,
+        replay_chains=args.replay_chains,
         outdir=args.outdir,
         replace=args.replace,
         make_figures=not args.no_figures,
@@ -1204,6 +1272,7 @@ def main(argv=None) -> int:
                 opener=opener,
                 downloads_base_url=args.downloads_base_url,
                 compare_db=args.compare_db,
+                figure_roots=dict(args.figure_root or []),
             )
         print(f"emitted reporting site → {args.emit_site}")
         for name, path in sorted(written.items()):

@@ -41,24 +41,56 @@ def file_checksum(path) -> str | None:
 
 
 def export_tables(store, outdir, *, model_pair: str = "ExpBPow") -> dict[str, Path]:
-    """Write the summary tables (matchup comparison + wide fit results) to disk.
+    """Write the summary tables to disk: the matchup comparison
+    (``matchup_summary``) and, when the store holds a NASA-GIOP ingest, the
+    BING-vs-NASA table (``nasa_giop_summary``, one row per matchup with both
+    retrievals, carrying NASA's stored 442 nm ``b_bp`` *and* the derived
+    700 nm value + bounds -- the only place the 700 nm numbers are
+    distributed, since they are never persisted).
 
-    Returns ``{name: path}`` for the CSV and Parquet exports. The raw SQLite file
-    is never written here.
+    Returns ``{name: path}`` for the CSV and Parquet exports (``summary_*`` and
+    ``nasa_giop_*``). The raw SQLite file is never written here.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    df = compare.gather_matchups(store, model_pair=model_pair)
     out: dict[str, Path] = {}
-    csv = outdir / "matchup_summary.csv"
-    df.to_csv(csv, index=False)
-    out["summary_csv"] = csv
-    try:
-        pq = outdir / "matchup_summary.parquet"
-        df.to_parquet(pq, index=False)
-        out["summary_parquet"] = pq
-    except Exception:  # noqa: BLE001 — parquet engine optional; CSV is the floor
-        pass
+    tables = [("summary", "matchup_summary", compare.gather_matchups(store, model_pair=model_pair))]
+    nasa = compare.gather_nasa_giop(store, model_pair=model_pair)
+    if len(nasa):
+        tables.append(("nasa_giop", "nasa_giop_summary", nasa))
+    for key, stem, df in tables:
+        csv = outdir / f"{stem}.csv"
+        df.to_csv(csv, index=False)
+        out[f"{key}_csv"] = csv
+        try:
+            pq = outdir / f"{stem}.parquet"
+            df.to_parquet(pq, index=False)
+            out[f"{key}_parquet"] = pq
+        except Exception:  # noqa: BLE001 — parquet engine optional; CSV is the floor
+            pass
+    return out
+
+
+def superseded_fits(store) -> dict[str, str]:
+    """``{superseded fit_id: superseding fit_id}`` across the store's BING
+    fits -- the patch overlay (:func:`pab.metrics.compare.overlay_patch`)
+    applied within each version family (a 2.0 fit superseded by the 2.0.1
+    re-fit of the same matchup and pixel; 1.0 and 2.0 are different families
+    and never supersede each other). Empty when no patch version exists.
+    """
+    df = store.query_df(
+        "SELECT fit_id, matchup_id, pixel_id, model_pair, pab_version FROM fits "
+        "WHERE algorithm = 'BING' AND pab_version IS NOT NULL"
+    )
+    if not len(df):
+        return {}
+    out: dict[str, str] = {}
+    families = df["pab_version"].astype(str).map(compare.base_version)
+    for _base, fam in df.groupby(families):
+        kept = compare.overlay_patch(fam, carry=("fit_id",))
+        for sup, new in zip(kept["fit_id_superseded"], kept["fit_id"], strict=True):
+            if isinstance(sup, str) and sup:
+                out[sup] = new
     return out
 
 
@@ -66,9 +98,18 @@ def build_manifest(store, *, base_url: str = "", pab_version: str | None = None)
     """Build the download manifest: one row per per-matchup artifact.
 
     Reads ``fits.chains_path`` / ``figure_path`` and emits ``(matchup_id, fit_id,
-    kind, local_path, url, checksum, pab_version)`` rows for the chains and
-    figures (skipping rows with no path). The ``url`` is ``base_url`` + the file
-    name; ``checksum`` is the file's SHA-256 (when the file exists locally).
+    kind, local_path, url, checksum, pab_version, superseded_by)`` rows for the
+    chains and figures of **every** fit, whatever its version (skipping rows
+    with no path). ``pab_version`` is the **fit's own** stamp, so the manifest
+    lists the 2.0 and the 2.0.1 artifacts of a re-fitted matchup side by side
+    and says which is which; ``superseded_by`` names the patch fit that
+    supersedes a base fit in the report (:func:`superseded_fits`), ``None``
+    otherwise. The ``url`` is ``base_url`` + the file name; ``checksum`` is the
+    file's SHA-256 (when the file exists locally).
+
+    Args:
+        pab_version: Fallback stamp for a fit row with no ``pab_version`` of
+            its own (defaults to the running code's).
 
     Returns:
         A list of manifest dicts.
@@ -76,8 +117,10 @@ def build_manifest(store, *, base_url: str = "", pab_version: str | None = None)
     pab_version = pab_version or _pab_version
     rows: list[dict[str, Any]] = []
     fits = store.query(
-        "SELECT fit_id, matchup_id, chains_path, figure_path FROM fits ORDER BY fit_id"
+        "SELECT fit_id, matchup_id, chains_path, figure_path, pab_version "
+        "FROM fits ORDER BY fit_id"
     )
+    superseded = superseded_fits(store)
     base = base_url.rstrip("/")
     for f in fits:
         for kind, col in (("chains", "chains_path"), ("figure", "figure_path")):
@@ -93,7 +136,8 @@ def build_manifest(store, *, base_url: str = "", pab_version: str | None = None)
                     "local_path": local,
                     "url": f"{base}/{name}" if base else name,
                     "checksum": file_checksum(local),
-                    "pab_version": pab_version,
+                    "pab_version": f["pab_version"] or pab_version,
+                    "superseded_by": superseded.get(f["fit_id"]),
                 }
             )
     return rows

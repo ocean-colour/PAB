@@ -288,7 +288,6 @@ def main(argv=None) -> int:
     import argparse
     import time
 
-    from pab import config
     from pab.db import Store
 
     p = argparse.ArgumentParser(
