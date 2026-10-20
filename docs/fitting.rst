@@ -137,6 +137,89 @@ the single dispatch point — χ²/AIC/BIC and the fit figure both use it, so a
 robust fit is scored and drawn with ``calc_Rrs_from_models_robust`` rather than
 the elastic relation.
 
+Prior ceilings (2.0.1)
+----------------------
+
+BING's standard ``ExpBPow`` priors are log-uniform over [10⁻⁶, 10⁵] m⁻¹ for
+``Adg``, ``Aph`` and ``Bnw`` (``Bnw`` is ``b_bp`` at the 600 nm pivot). On
+spectra with a depressed or negative blue ``Rrs`` the Levenberg–Marquardt
+warm-start can deliver the walkers to the ``Bnw`` ceiling, where
+``b_b ≫ a`` and the reflectance saturates; the chains never leave it, and the
+fit reports ``b_bp`` ≈ 10⁵ m⁻¹ (51 of the 15,971 2.0 fits —
+``versions/v2/high_bbp_outliers.md``). From ``pab_version = "2.0.1"`` the
+:class:`~pab.fit.models.FitConfig` defaults therefore carry **physical
+ceilings**, ``bbp600_max = 0.1``, ``adg_max = 10.0``, ``aph_max = 10.0`` (m⁻¹;
+``None`` = BING's 10⁵), applied in :func:`~pab.fit.models.build_models` as a
+PAB-side override: the factory's own prior dicts are copied and only the
+``pmax`` of those three parameters is set to ``log10(ceiling)`` — the floors,
+the ``Sdg``/``beta`` priors and BING itself are untouched, and both the LM
+bounds and BING's ``log_prob`` see the same ceiling. ``fits.prior_set`` records
+it (:func:`~pab.fit.models.prior_set_label`:
+``"bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"``, or ``"bing_standard"``
+when all three are ``None``), and :func:`~pab.fit.models.ceilings_from_prior_set`
+inverts the label so a figure rebuilt from a row cannot misdescribe its priors.
+:meth:`~pab.fit.models.FitConfig.v2_0` is the frozen, unceilinged 2.0
+configuration and :meth:`~pab.fit.models.FitConfig.v1` also sets the three to
+``None`` — the published priors never change retroactively.
+
+Two checks accompany the ceilings. :func:`pab.fit.run.chain_start_report`
+reports the step-0 walker median of each capped parameter in dex below its
+ceiling and ``started_below_wall`` (≥ 0.5 dex under the ceiling);
+:func:`~pab.fit.run.fit_spectrum` logs a warning when it is false (never
+fails) and :class:`~pab.fit.run.FitSpectrumResult` carries the dict. And the
+**replay seam** — :func:`~pab.fit.run.build_fits` / :func:`~pab.fit.run.fit_matchup`
+accept a ``spectra``/``spectrum`` provider and
+:func:`pab.fit.replay.spectrum_from_chains` returns the ``wave``/``Rrs``/
+``sqrt(varRrs)`` stored in the 2.0 fit's chain NPZ (CLI ``--replay-chains DIR``)
+— lets a patch re-fit see **bit-identical** input, so 2.0 → 2.0.1 differs by
+the prior and nothing else; such a fit is stamped
+``rrs_source = "L2_AOP:replay:<2.0 fit_id>"``. On the 51 runaways the 2.0.1
+re-fit started below the wall in every case, lowered χ² in every case
+(median 8×), landed below the 1 m⁻¹ gate in every case and never within 5 %
+of a ceiling; its rows sit next to the 2.0 ones and the report overlays them
+(below).
+
+Negative-blue QA count
+----------------------
+
+Every fit also records one QA quantity, ``n_neg_blue``
+(:func:`pab.fit.run.rrs_qa_quantities`): the number of finite bands with
+``Rrs < 0`` between 400 and 450 nm inclusive (:data:`pab.fit.run.BLUE_QA_BAND`),
+computed on the **windowed** spectrum — exactly what the chain NPZ stores — so a
+fit-time value and one backfilled from the NPZ agree by construction. It is
+stored like any other quantity (``BING_ExpBPow_n_neg_blue``, ``value_lo =
+value_hi = value``, unit ``bands``), it is a flag and never a refusal, and
+``python -m pab.fit.rrs_qa_backfill --db … --chains-root DIR`` backfills it for
+fits that predate it (resolving ``chains_path`` by basename; a real run
+requires a sha-verified ``--backup-copy``, prints a fingerprint before and
+after, and refuses to proceed if anything but the QA rows changed). In the v2
+database 156 of 15,971 2.0 spectra (0.98 %) have at least one negative blue
+band; 40 of the 51 runaways do.
+
+Forward-model domain
+--------------------
+
+``robust_hybrid`` runs retrieve-or-bust's hybrid — the analytic ZTT backbone
+plus a learned emulator correction — with the out-of-domain policy at robust's
+default ``on_out_of_domain="warn"`` (BING never passes the argument; the
+warning is silent under ``jit``). The packaged emulator was trained at **nadir
+view and zero relative azimuth**, and every PACE pixel PAB fits is off-nadir
+(θ_v 13–60°), so robust's domain check flags every sample of every fit; the
+``"ztt"`` policy as shipped is therefore pure ZTT for the whole mission. It was
+tested on the 51 runaways and 50 ordinary fits (``versions/v2/ztt_slice.md``)
+and **not adopted**: it does not remove the runaway basin or the χ² wall (both
+belong to the backbone's ``u → 1`` limit), it rescues 32 LM runaways while
+creating 3, and it shifts ordinary ``b_bp``(700) by +0.05–0.10 dex with no χ²
+gain (Q&A/Outliers 12 = A — no ``FitConfig`` field; the question is carried to
+the bing/robust repos). Separately, the emulator's trained ``B_p`` range is
+[0.0103, 0.018] while BING's free-``B_p`` prior is [0.004, 0.05] with the seed
+at 0.01, so the fitted ``B_p`` lies **outside the trained range for ~86 % of v2
+fits** and the hybrid extrapolates in ``B_p`` whatever the policy — stated on
+the report's Methods page with the fraction computed from the database
+(:func:`pab.metrics.compare.forward_model_domain_summary`, the range read from
+``robust`` by :func:`~pab.metrics.compare.emulator_bp_domain`), not changed in
+v2 (Q&A/Outliers 13 = A: a narrower prior would be a full re-fit, not a patch).
+
 Provenance & artifacts
 ----------------------
 

@@ -526,9 +526,13 @@ def chain_start_report(chains, param_names, config: FitConfig) -> dict[str, Any]
             parameter whose ceiling is ``None`` is not checked.
 
     Returns:
-        ``{"started_below_wall": bool, "margin_dex": WALL_MARGIN_DEX,
-        "params": {name: {"ceiling": m⁻¹, "ceiling_log10": …,
-        "step0_median": …, "dex_below_ceiling": …, "below_wall": bool}}}``.
+        A dict shaped ::
+
+            {"started_below_wall": bool, "margin_dex": WALL_MARGIN_DEX,
+             "params": {name: {"ceiling": m⁻¹, "ceiling_log10": …,
+                               "step0_median": …, "dex_below_ceiling": …,
+                               "below_wall": bool}}}
+
         ``started_below_wall`` is the AND over the checked parameters, and
         ``True`` (vacuously, with empty ``params``) when nothing is capped.
     """

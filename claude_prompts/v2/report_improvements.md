@@ -767,7 +767,15 @@ changed prior set is recorded, no schema change needed.*
       can. Log your work.
 
 9. **O9 — Rebuild the site, publish the amended tables, docs, close out
-   (Q&A/Outliers 9 = A).** After O3–O7 (O8 optional).
+   (Q&A/Outliers 9 = A, 12 = A, 13 = A).** After O3–O8.
+   0. Gallery inputs first (O7 log, "For O9"): O7's overlay changed every
+      representative pick; copy the 19 new files it listed
+      (`rclone copy --files-from … --no-traverse`, from `AIOcean:PAB/v2/figures/`
+      and `AIOcean:PAB/site/_static/{scenes,argo_qa}/`) into
+      `$PAB_DATA_DIR/gallery/{v2_figures,v1_scenes,argo_qa}/` (copy, never
+      sync; keep E5's files). The O7 lists were in the previous session's
+      scratchpad — if gone, regenerate them from `select_representative_fits`
+      on the live DB (read-only).
    1. Regenerate with the E6 command (HOWTO §7a: the five `--figure-root`
       flags, `--compare-db`, `--downloads-base-url`), zero dropped-figure
       warnings, `python -m sphinx -b html report_site /tmp/…` with 0 warnings.
@@ -801,7 +809,17 @@ changed prior set is recorded, no schema change needed.*
       `PAB_v2_run_report.md` §6 (a dated row for the amended objects — do not
       rewrite the 2026-10-07 shas) and §7 item 2 resolved;
       `versions/v2/high_bbp_outliers.md` gets a **Status** block at the top
-      listing what O3–O8 did, with dates.
+      listing what O3–O8 did, with dates. Methods (the report, `rst.py`) and
+      `docs/fitting.rst`: **Q&A/Outliers 12 = A** — one sentence: the forward
+      model runs robust's hybrid with `on_out_of_domain="warn"`; the emulator
+      is trained at nadir/zero azimuth and every PACE pixel is off-nadir, and
+      the `"ztt"` policy was tested and not adopted (pointer to
+      `versions/v2/ztt_slice.md`); **Q&A/Outliers 13 = A** — state that the
+      fitted `B_p` lies outside the emulator's trained range
+      ([0.01026, 0.018]) for ~86 % of v2 fits (computed from the DB, not
+      hard-coded), i.e. the hybrid extrapolates in `B_p`, with the same
+      pointer. Add both to `PAB_implementation.md` §14 and the run report §7
+      as open items for robust/BING (the "Question for the bing repo").
    5. `pytest pab/tests -q`, `ruff check pab`. Hand-off: files to commit
       (code, tests, docs, `report_site/`, `versions/v2/…`, `setup.py`), the
       DB/chain backups made, and the RTD reminder (`…/en/develop/` tracks
@@ -994,7 +1012,7 @@ features from the domain check); **C** adopt pure ZTT (`rt_backend =
 `b_bp` cost and no χ² gain on this slice, so it would need its own
 validation, not a flag.
 
-**Your answer:**
+**Your answer:** Use A
 
 **13 — The `B_p` prior versus the emulator's trained range.** 86 % of the
 2.0 posterior-median `B_p` values (and the 0.01 seed) lie outside
@@ -1010,7 +1028,30 @@ next full version; **C** only move the seed to 0.014 (the trained
 mid-range) so the initial-guess `DomainWarning` stops firing on `B_p` —
 cosmetic, and it changes the LM path on the runaways.
 
-**Your answer:**
+**Your answer:** A
+
+Raised by O9 (the rebuild). Not blocking — the site is built and published
+either way.
+
+**14 — Should the representative gallery picks be stable across patch
+versions?** The picks are "the matchup nearest the 5th/25th/… percentile of
+the sat/float ratio", "nearest the tercile median" and "nearest the region
+median"; the 51 overlaid values moved every target by a hair, so **every one
+of the 19 non-runaway picks changed** between the 2026-10-18 site and this
+one (e.g. the 5th-percentile fit 1902383/79 → 5907047/38, ratio 0.188 →
+0.185), and each rebuild after a patch will need its gallery files fetched
+from Drive again (O9 step 0). Options: **A** leave it — the picks are a
+deterministic function of the frame the site shows, the captions say why each
+was chosen, and `build_site` now removes the previous build's thumbnails so a
+rebuild is self-contained (recommended: the gallery illustrates *this*
+release's distribution, and 19 small files per patch is cheap); **B** choose
+the picks on the **base-version** frame (2.0) so a patch never moves them —
+but then the 2.0.1 re-fit of a picked matchup would be shown under a 2.0
+caption, or the runaway slot would need its own rule; **C** pin the picks in
+a committed list (`report_site/gallery_picks.json`), re-generated on demand —
+stable, but a second source of truth the frame can drift from.
+
+**Your answer:** Follow your recommendation (A).
 
 ### v2
 
@@ -3624,3 +3665,212 @@ learned correction extrapolates for most fits (`versions/v2/ztt_slice.md`).
 **Status** block O9 adds to `high_bbp_outliers.md` can list O8 as done
 2026-10-19 (no DB, no code). Hand-off (nothing committed — git is yours):
 the 7 files above. Next: O9.
+
+### 2026-10-20 (v2 Outliers O9 — site rebuilt from the overlaid frame; the amended DB and tables published to S3; docs closed out)
+
+Run with Fable. **Read-only on both databases throughout**: the live
+`$PAB_DATA_DIR/v2/pab.db` is `9503015b…cad92` (220,819,456 B) before and after
+every build, export and upload (opened by the CLI's `create=False` path and
+`file:…?mode=ro`; no `-journal`/`-wal`); `v1/pab.db` `09de0a6d…8273`; nothing
+written under `v1/` or `v2/` except the two new folders named below; no pod;
+Drive traffic `rclone copy --files-from --no-traverse` only (19 files). **S3
+was written on purpose** (step 3; Q&A/Outliers 9 = A) — six objects, every
+one verified by re-download. `$PAB_DATA_DIR/fit_chains/` still holds the same
+3 files (no NPZ leaked from the test runs). Files changed:
+`pab/metrics/compare.py`, `pab/report/rst.py`, `pab/fit/run.py` (a docstring
+only), `pab/tests/{test_compare_versions,test_report}.py`, `report_site/`
+(regenerated: 16 modified, 19 new, **19 deleted**), `HOWTO.md` (§4, §5b),
+`docs/design/PAB_implementation.md` (new §14), `docs/design/PAB_v2_run_report.md`
+(§6, §7), `docs/fitting.rst`, `docs/reporting.rst`,
+`versions/v2/high_bbp_outliers.md` (Status block), this file (Q&A/Outliers 14,
+this entry). Scratch:
+`/tmp/claude-1000/-mnt-tank-Oceanography-python-PAB/ee4e310b-49d2-41ef-88cf-8177a6e17f0c/scratchpad/o9/`
+(`emit_site*.log`, `sphinx_{before,after,docs}/` + logs, `export/` the four
+tables, `publish_s3.py` + `publish_s3.log`, `redownload/`, `pytest_full*.log`).
+
+**Step 0 — gallery inputs.** O7's lists survived in
+`scratchpad/o7_gallery/lists/{fits,scenes,qa}.txt` (7 + 4 + 8 names). `rclone
+copy --files-from … --no-traverse` from `AIOcean:PAB/v2/figures/`,
+`AIOcean:PAB/site/_static/scenes/` and `AIOcean:PAB/site/_static/argo_qa/` into
+`$PAB_DATA_DIR/gallery/{v2_figures,v1_scenes,argo_qa}/`: 8 → 15, 4 → 8, 8 → 15
+files (E5's kept), all 19 `cmp`-identical to O7's scratch copies.
+
+**Steps 1–2 — rebuild and verification.** Baseline Sphinx build of the
+pre-rebuild tree: 0 warnings. The E6 command (HOWTO §7a verbatim) ran in 13.7 s,
+exit 0, **0 dropped-figure warnings, 0 warnings of any kind** (the one WARNING
+line in the log is jax's "no CUDA jaxlib", not ours); `python -m sphinx -b html
+report_site <scratch>`: **0 warnings**; both DB sha256 unchanged. Looked at
+(Read) — every `.rst` and the PNGs:
+- `summary.rst`: "Built from ``pab_version`` ``2.0.1`` on 2026-10-20"; "**BING
+  fits:** 15,971 (15,920 at 2.0, 51 re-fitted at 2.0.1)"; `b_bp` headline
+  n = 15,274, median 1.14, ρ 0.414, bias −0.0146, RMS 0.493, "0 failed
+  retrievals (0.00 %, ``b_bp`` > 1 m⁻¹) excluded"; NASA n = 15,964, 0.938,
+  ρ 0.889; 2.0/1.0 `b_bp` 0.749 (n = 14,604). Exactly O7's acceptance table.
+- `comparisons.rst`: the failure note with 51 of 15,971 (0.32 %), largest
+  9.32e+04, the `prior_set` string and its ceilings, 51 of 51 below the gate,
+  the overlay rule and the three table columns, 11 of 51 with Chl < 0.01,
+  6990528/121 `success = 0` "as for 144 of the 15,971 2.0 fits"; "What they
+  are" with the computed float-Chl medians (0.93 vs 0.15) and the negative-blue
+  sentence "156 of 15,971 fitted spectra (0.98 %) …; 40 of the 51 failed
+  retrievals do", "The 2.0.1 re-fit above lands in that basin", the pointer;
+  captions 189 / 137 / 121 / 164 / 86 off-scale, dot map 1,818 (11.9 % of
+  15,274) saturated + 695 grey, HEALPix 453 cells / 15,143 / 59 / 1 saturated.
+- `methods.rst`: *Failed retrievals* (gate, "In this release that is 0 …", the
+  re-fit sentence with the ceilings read off the stored `prior_set`),
+  *Negative-blue QA count* (definition + 156/15,971), the new **Forward-model
+  domain** paragraph (below), the `pab_version` paragraph with 2.0.1 and the
+  overlay rule.
+- `figures.rst`: 8 / 4 / 8 items; slot 6 is "6903874/139 — re-fitted runaway,
+  2.0 b_bp 9.3e4 → 2.0.1 4.5e-4 m⁻¹ (float 1.0e-3)" linking
+  `…_ExpBPow_v2.0.1_fit.png`; the intro says "the runaway that was re-fitted
+  under the patch version". `downloads.rst`: the four S3 links and the computed
+  versions sentence (15,971 2.0 + 51 2.0.1, `superseded_by`).
+  `aggregates.rst`: the gate clause.
+- PNGs: `bbp_scatter` (n = 15,274, ρ 0.41, RMS 0.49, 189 off-scale; no points
+  above 10⁻¹ anywhere — the runaways are gone, the prior-floor pile at
+  3×10⁻⁶–10⁻⁴ remains), `chl_scatter` (n = 15,154, ρ 0.74, RMS 0.58, 164),
+  `nasa_giop_bbp_scatter` (15,964, ρ 0.89, RMS 0.29, 137), `v2_vs_v1_bbp700`
+  (14,604, ρ 0.93, RMS 0.33, 121), `v2_vs_v1_chl` (14,604, ρ 0.70, RMS 0.65,
+  86), `matchup_map` (title as the caption; 695 grey), `healpix_map` (1
+  saturated cell — the Mediterranean; the Skagerrak cell back inside the clip,
+  as O7 predicted), `v2_bp_hist` (n = 14,604, 402 (3 %) at a prior edge, median
+  0.0236 — re-rendered because the 51 `B_p` values changed), the 2.0.1 fit
+  figure of 6903874/139 (observed Rrs negative below 440 nm, BING median
+  through the green peak, `b_bp` band 4–7×10⁻⁴ falling to 4.5×10⁻⁴ at 700 nm —
+  nowhere near a ceiling), the 5th-percentile fit 5907047/38, the tropics scene
+  3902533/25 and the Q&A plot 6903874/139 (MLD 14 dbar, Chl 1.25 at the
+  surface, `BBP700` spikes de-spiked). All render.
+- Tree: committable `report_site/` (everything but the git-ignored, stale
+  `_build/`) **2,505,591 B** (was 2,587,048 — smaller, see the surprise below);
+  `git status --short report_site`: 16 M (the 7 pages + `conf.py` now
+  `release = "2.0.1"` + 9 comparison PNGs — `v2_bp_hist.png` and
+  `v2_v1_ratio_vs_level.png` included this time), 19 `??` (the new gallery
+  files), 19 `D` (the old ones). No `__pycache__`, nothing under `_build/`.
+
+**Step 3 — publish (Q&A/Outliers 9 = A).** `publish.export_tables` against the
+read-only DB into scratch: `matchup_summary` 15,971 rows × 22 columns (new
+`pixel_id`, `pab_version` {2.0: 15,920, 2.0.1: 51}, `n_neg_blue` (156 ≥ 1, 0
+NaN), `fit_id_superseded`/`bbp_bing_superseded` (51 non-null),
+`bbp_bing_implausible` (0 — the overlaid frame has no runaway left)),
+`nasa_giop_summary` 15,971 × 22 (new `pixel_id`, `pab_version`). **Before
+anything was replaced**, the five objects then on S3 were downloaded to
+`$PAB_DATA_DIR/v2/s3_prev_2026-10-20/` and their sha256 matched the recorded
+values exactly (`6622a78c…`, `4754e237…`, `21b4b6ce…`, `66f6cb27…`, and
+`pab.db` = `1e69f6ee…` = `pab_pre_negblue_20261018.db`), so the procedure went
+ahead (script `scratchpad/o9/publish_s3.py`: it re-checks every sha itself and
+exits before the first upload on any mismatch; `NautilusS3Backend(bucket="pab",
+prefix="v2")`, the `[default]` profile of `~/.aws/credentials` as in E6; each
+upload followed by a fresh download and byte comparison):
+
+| object | old size | old sha256 | new size | new sha256 | re-download |
+|---|---:|---|---:|---|---|
+| `v2/matchup_summary.csv` | 6,102,869 | `6622a78cf3061a17bfafa908443c60c428512168ab235eb474e3ad26070f0f74` | 6,337,830 | `4b387e5dc9c9a8c96eb7a6d30547156b02e5f8ee9124138bc51a7f7aa9730013` | verified |
+| `v2/matchup_summary.parquet` | 2,645,441 | `4754e2372f4d35918c7f060ea4287f44a89329a01045d24f2f2e6b5fe9c0627c` | 2,745,255 | `cda3bc42aad7adfee59080aad71c129144dbc15888a33ad38b9c014437225a03` | verified |
+| `v2/nasa_giop_summary.csv` | 8,350,324 | `21b4b6ceeeb776eb23d6e3dbb7560a9d6b56b6669a6840781580518459c0f60a` | 8,516,595 | `b4044d227776c7e14a2318ed195aaaec108e8c7e3a130e896bdd266e7bd26e11` | verified |
+| `v2/nasa_giop_summary.parquet` | 2,891,643 | `66f6cb2705493cac5ffc2e4af894bd45ac93621813a3da50c69e5abd912d91e2` | 2,986,102 | `7caa35fcdb872a4b2016e7341be6b47e4b881cff6350ec4c631578ab99b885f1` | verified |
+| `v2/pab_2026-10-07.db` | — (new key) | — | 217,325,568 | `1e69f6eef09b85add89b04ac45d423d9d981fbd81b097d0856dab59687d8a3f8` | verified |
+| `v2/pab.db` | 217,325,568 | `1e69f6eef09b85add89b04ac45d423d9d981fbd81b097d0856dab59687d8a3f8` | 220,819,456 | `9503015bf3d5427ff119cb621e9ecf9b0a41cf2f39b7325529e390428bfcad92` | verified |
+
+Order as the prompt asked: the four tables, then the 2026-10-07 file under the
+dated key, then `v2/pab.db`. All six return HTTP 200 with `last-modified
+Tue, 20 Oct 2026 15:11:52–15:12:16 GMT`. Nothing else in the bucket touched
+(`v1/`, `full/` untouched).
+
+**Step 4 — docs and the Q&A 12/13 sentences.** `rst._methods_forward_model`
+(new, in the *Retrieval (BING)* section after the QA-count paragraph): the
+hybrid runs with `on_out_of_domain="warn"`; trained at nadir / zero azimuth;
+"the pixels fitted here are viewed at θ_v 13–60° (15,971 of 15,971
+off-nadir)" — **computed** from `matchup_pixels`; `"ztt"` tested and **not
+adopted**; the trained `B_p` range "[0.01026, 0.018]" — **read from robust at
+build time** (`compare.emulator_bp_domain`: `robust.rt.emulator.FEATURES.index
+("B_p")` into `load_default().domain`; falls back to the recorded
+`EMULATOR_BP_TRAINED` without robust) against BING's prior from
+`bing.rt.defs`; "the fitted ``B_p`` (posterior median) lies outside that range
+for **13,772 of 15,971 fits (86 %; 2,715 below, 11,057 above)**" — computed by
+the new `compare.forward_model_domain_summary(store)` over the **overlaid**
+family (O8's 2,191 inside was the 2.0-only count; the overlay gives 2,199);
+pointer `compare.ZTT_SLICE_URL`. Without a store the fraction is deferred,
+never quoted. `docs/fitting.rst` gained three sections — *Prior ceilings
+(2.0.1)*, *Negative-blue QA count*, *Forward-model domain* (Q&A 12/13 in
+prose); `docs/reporting.rst` gained *Failed retrievals and patch versions*
+(gate + overlay), the stale "not hidden" sentence (O3's note) and the stale
+"`NautilusS3Backend` … `NotImplementedError` stubs" sentence (E6's note) are
+fixed, the manifest/`superseded_by`, the gallery slot and the publishing
+paragraph updated; `HOWTO.md` §4 (`fit` row: ceilings default from 2.0.1,
+`n_neg_blue`, `--replay-chains`; a 2.0.1 paragraph under the `FitConfig`
+table; §3's `--replay-chains` row was already O5's), §5b (the "Published to
+S3 (2026-10-20)" paragraph, the S3 row with every new size/sha and the old
+ones, the backup row with the dated copies and `s3_prev_2026-10-20/`);
+`PAB_v2_run_report.md` §6 (the 2026-10-07 rows kept as written, an "Amended
+2026-10-20" table with the six objects) and §7 (item 2 closed with the
+numbers; items 8–9 = the two open items for robust/BING; item 3 cross-refs
+9); `PAB_implementation.md` §14.1–14.7 (gate, QA count + backfill, 2.0.1
+ceilings/`prior_set`/step-0/replay, what the re-fit showed, the overlay, O8 +
+the two open items, this rebuild/publish); `high_bbp_outliers.md` **Status
+(2026-10-20)** table O3–O9 with dates. A Sphinx build of `docs/` into scratch:
+0 warnings after fixing one pre-existing docutils warning in
+`run.chain_start_report`'s docstring (O5's multi-line inline literal → a
+literal block; code unchanged).
+
+**Step 5.** `ruff check pab`: clean. `pytest pab/tests -q`: **513 passed, 1
+skipped** (was 510; +3: `forward_model_domain_summary` on a patched store,
+the Methods paragraph with/without a store, the stale-gallery cleanup). A
+first full run showed one failure, `test_fit_progress.py::
+test_progress_logging_exists…` — a race of my own making: I edited
+`run.py`'s docstring while that run was in flight and `inspect.getsource` read
+the shifted file against the already-imported module; the rerun on the stable
+tree is the number above. `report_site/` was rebuilt a second time after the
+`rst.py` change, so it matches the code.
+
+**Surprises / worth knowing.**
+- **The first rebuild left 19 orphaned, tracked thumbnails in `_static/`.**
+  O7's overlay changed every representative pick; the E5-era files stayed on
+  disk (nothing deletes them), nothing in `figures.rst` linked them, the tree
+  grew to 3.5 MB, and the log line "galleries staged 39 files, 1.95 MB"
+  counted the directory, not the staging. Fix in `rst.py`: `build_site` calls
+  `_clear_gallery_dirs(outdir)` (the three `GALLERY_SUBDIRS`) before
+  `_gather_with_figures` stages anything, logging "removed N stale gallery
+  file(s)"; the second rebuild logged 39 removed / 20 staged (0.95 MB) and the
+  tree is 2.5 MB — **smaller than E6's**, because the 51 2.0.1 `B_p` values
+  re-rendered `v2_bp_hist.png` and the density panels a little differently.
+  The 19 `D` in `git status` are this. (A first attempt put the clear inside
+  `figures_page`, which runs *after* `_gather_with_figures` and would have
+  deleted this build's own fit figures — caught by reading `build_site`'s
+  order before rebuilding, and the test is written around `build_site` for
+  that reason.)
+- The tropics-band representative scene (3902533/25) renders as a thin
+  false-colour strip at the right edge of a grey frame spanning longitude
+  −250…150: the granule straddles the dateline and the scene renderer (1.0,
+  on the PVC) did not wrap it. Cosmetic, pre-existing, not O9's; noted for a
+  future figure prompt.
+- `report_site/conf.py` now changes on rebuild (`release = "2.0.1"`, from
+  `pab.config.pab_version`); E6 saw it unchanged because the version had not
+  moved.
+- `v2_bp_hist.png`'s "402 (3 %) at a prior edge" is unchanged from E6 (the
+  51 moved within the histogram, not to an edge).
+- `rclone` is on the box but the S3 upload went through boto3
+  (`NautilusS3Backend`) as the prompt and E6 specify; the `nautilus_s3` rclone
+  remote exists but was not used.
+- The workstation clock prints 2026-10-20 — this entry's date matches.
+- One decision for JXP, not blocking: **Q&A/Outliers 14** (pick stability
+  across patches; recommended A = leave as is).
+
+**Hand-off (nothing committed — git is yours).** Files to commit: code
+`pab/metrics/compare.py`, `pab/report/rst.py`, `pab/fit/run.py`; tests
+`pab/tests/{test_compare_versions,test_report}.py`; docs `HOWTO.md`,
+`docs/design/{PAB_implementation,PAB_v2_run_report}.md`,
+`docs/{fitting,reporting}.rst`; `versions/v2/high_bbp_outliers.md`;
+`report_site/` (16 M + 19 new + **19 deletions** — `git add -A report_site`
+picks up the deletions; nothing under `_build/`); this file. `setup.py` and the
+O3–O8 code are already committed (`1dd8435`). Backups made this prompt: the
+pre-O9 S3 objects in `$PAB_DATA_DIR/v2/s3_prev_2026-10-20/` (217 MB + 20 MB);
+no new DB or chain copies were needed (O4/O6 made `pab_pre_negblue_20261018.db`,
+`pab_pre_v201_20261018.db`, `AIOcean:PAB/pab_v2_2026-10-18.db`). The stale,
+git-ignored `report_site/_build/` (12 MB, 2026-10-05) is still there — delete
+it if `du -sh report_site` bothers you. **RTD reminder:** the published report
+is `https://pab-report.readthedocs.io/en/develop/`, which tracks **`develop`**
+— a push to `report-improvements` alone does not update it until the branch is
+merged into `develop` (or the RTD project is pointed at it); the developer docs
+project builds from the same branch rule. The site's Downloads links already
+point at the replaced S3 objects, so the public tables and database are ahead
+of the public site until that merge.

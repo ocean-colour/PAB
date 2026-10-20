@@ -5,6 +5,7 @@ import pytest
 
 from pab.argo.summary import persist_summary
 from pab.db import Store
+from pab.metrics import compare
 from pab.plotting import population
 from pab.report import aggregate, publish, rst
 
@@ -1512,3 +1513,69 @@ def test_methods_names_the_ceilings_and_the_overlay_rule():
     out = rst.methods_page()
     assert "From ``pab_version`` 2.0.1 on the priors are capped at physical ceilings" in out
     assert "``b_bp`` (600 nm) ≤ 0.1 m⁻¹" in out and "the 2.0 fits were made without them" in out
+
+
+def test_methods_states_the_forward_model_domain():
+    """Q&A/Outliers 12 = A and 13 = A: the Methods page says the hybrid runs
+    with ``"warn"`` off-nadir, that ``"ztt"`` was tested and not adopted, and
+    how many fits have B_p outside the trained range -- computed from the
+    store, with the trained range read from robust; without a store the
+    fraction is deferred, never quoted."""
+    with Store.open(":memory:") as store:
+        ids = _patched_store(store)
+        for fit_id, bp in ((ids["f20"], 0.5), (ids["f201"], 0.015), ("M1_v2.0", 0.03)):
+            store.upsert(
+                "fit_results",
+                {"fit_id": fit_id, "quantity": "BING_ExpBPow_Bp", "value": bp},
+            )
+        store.execute("UPDATE matchup_pixels SET theta_v = 30.0")
+        out = rst.methods_page(store=store)
+        lo, hi = compare.emulator_bp_domain()
+        assert "**Forward-model domain.**" in out
+        assert 'default ``on_out_of_domain="warn"``' in out
+        assert "trained at **nadir view and zero relative azimuth**" in out
+        assert "viewed at θ_v 30–30° (2 of 2 off-nadir)" in out
+        assert '``"ztt"`` policy' in out and "**not adopted**" in out
+        assert f"trained ``B_p`` range is [{lo:.4g}, {hi:.3g}]" in out
+        # the superseded 2.0 B_p (0.5) is not counted; 0.03 is above, 0.015 inside
+        assert "lies outside that range for 1 of 2 fits (50 %; 0 below, 1 above)" in out
+        assert compare.ZTT_SLICE_URL in out
+        # placement: inside the Retrieval section, after the QA-count paragraph
+        retrieval = out.index("Retrieval (BING)")
+        assert retrieval < out.index("**Negative-blue QA count.**") < out.index(
+            "**Forward-model domain.**"
+        ) < out.index("Retrieval configuration (2.0)")
+    out = rst.methods_page()
+    assert "**Forward-model domain.**" in out
+    assert "every PACE pixel is viewed off-nadir" in out
+    assert "the fraction is computed and stated here when the site is built" in out
+    assert "lies outside that range for 1 of" not in out
+
+
+def test_build_site_removes_stale_gallery_files(tmp_path):
+    """A thumbnail left by an earlier build (whose representative picks
+    differed) is removed before this build stages its own, so the committed
+    site never carries an orphan nothing links to; this build's files stay and
+    nothing outside the three gallery folders is touched."""
+    pytest.importorskip("bokeh")
+    site = tmp_path / "site"
+    for sub in rst.GALLERY_SUBDIRS:
+        (site / "_static" / sub).mkdir(parents=True)
+        (site / "_static" / sub / "stale_from_e5.png").write_bytes(b"old")
+    (site / "_static" / "comparisons").mkdir()
+    (site / "_static" / "comparisons" / "keep.png").write_bytes(b"not a gallery file")
+    assert rst._clear_gallery_dirs(tmp_path / "nowhere") == 0
+    fig = tmp_path / "M1_fit.png"
+    fig.write_bytes(b"fake-png")
+    with Store.open(":memory:") as store:
+        _seed(
+            store, "M1", 7902226, 5, lat=27.0, lon=-46.0, time="2025-02-18T20:00:00",
+            bbp_argo=1e-3, bbp_bing=2e-3, figure_path=str(fig),
+        )
+        rst.build_site(store, site)
+    files = sorted(p.name for p in (site / "_static" / "figures").iterdir())
+    assert files == ["M1_fit.png"], files
+    for sub in ("scenes", "argo_qa"):
+        assert not (site / "_static" / sub / "stale_from_e5.png").exists()
+    assert (site / "_static" / "comparisons" / "keep.png").exists()
+    assert "_static/figures/M1_fit.png" in (site / "figures.rst").read_text()

@@ -7,6 +7,22 @@ copied from the Drive backup `AIOcean:PAB/v2/fit_chains/`. Figures in
 [`high_bbp_outliers/`](high_bbp_outliers/). Nothing in `pab/` was changed; the
 re-fits below are exploratory, not production results.*
 
+## Status (2026-10-20)
+
+Everything §6 recommended has been done; the body of this report is the
+2026-10-18 investigation as written, and Appendix C records the re-fit.
+Prompts O3–O9 and their logs are in `claude_prompts/v2/report_improvements.md`.
+
+| step | date | what it did |
+|---|---|---|
+| O3 — gate | 2026-10-18 | `compare.gate_bbp` (`BBP_IMPLAUSIBLE = 1 m⁻¹`) excludes the 51 from every `b_bp` statistic and figure, with the computed "N failed retrievals (x %) excluded" clause on each caption; Chl of the same fits not gated (Q&A 6 = A); run report §2.5 corrected (not a clear-water tail). No DB write. |
+| O4 — negative-blue QA count | 2026-10-18 | `n_neg_blue` (bands with `Rrs < 0` at 400–450 nm) is a `fit_results` quantity on every fit (`BING_ExpBPow_n_neg_blue`), computed at fit time and backfilled for the 15,971 2.0 fits from the chain NPZs (`pab.fit.rrs_qa_backfill`; the chains are now on the workstation too). 156 of 15,971 (0.98 %) ≥ 1; **40 of the 51**. A flag, never a refusal (Q&A 3 = A). |
+| O5 — the 2.0.1 configuration | 2026-10-18 | `FitConfig` ceilings `bbp600_max = 0.1`, `adg_max = 10`, `aph_max = 10` m⁻¹ as a PAB-side override of the `ExpBPow` priors (BING untouched), stamped `prior_set = "bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"`; `pab_version = 2.0.1`; a step-0 check (`chain_start_report`); the replay seam (`--replay-chains`, `rrs_source = "L2_AOP:replay:<2.0 fit_id>"`) so a re-fit sees the identical spectrum (Q&A 2 = A, 8 = C). |
+| O6 — the re-fit | 2026-10-18 | The 51 re-fitted under 2.0.1 on the replayed spectra into the live v2 DB (new rows; the 2.0 rows untouched, checksum-verified). **51/51 started below the wall, 51/51 below the gate, χ² lower in 51/51 (median 8×), 0 posteriors within 5 % of a ceiling**; vs float median ratio 0.76, 30/50 within 2×; 11 retrieve Chl < 0.01 (the `A_ph`-floor mode), one has `success = 0` (Q&A 10–11 = A). Appendix C. |
+| O7 — the overlay | 2026-10-18 | The report overlays a 2.0.1 row on the 2.0 row of the same matchup **and pixel** (`compare.version_family` / `overlay_patch`), so the site shows 15,971 fits (15,920 at 2.0, 51 at 2.0.1), the gate now excludes 0, and the `b_bp` headline is n = 15,274 / median 1.14 / ρ 0.414 / log-RMS 0.493 (was 0.645 with the runaways in); the gallery shows 6903874/139 re-fitted (2.0 9.3e4 → 2.0.1 4.5e-4, float 1.0e-3). |
+| O8 — emulator policy test | 2026-10-19 | `on_out_of_domain="ztt"` tested on the 51 + 50 ordinary fits (`ztt_slice.md`): pure ZTT for every off-nadir pixel as shipped; the basin and the wall are the backbone's, not the emulator's; 32 LM runaways rescued, 3 created, +0.05–0.10 dex on ordinary `b_bp`. **Not adopted** (Q&A 12 = A); `B_p` outside the trained range for 86 % of fits stated, prior unchanged (Q&A 13 = A). No DB, no code. |
+| O9 — publish | 2026-10-20 | `report_site/` rebuilt from the overlaid, gated frame; `s3://pab/v2/pab.db` replaced by the live database (`9503015b…`, the 2026-10-07 file kept as `v2/pab_2026-10-07.db`), the four summary tables replaced (new columns `pab_version`, `pixel_id`, `n_neg_blue`, `bbp_bing_implausible`, `fit_id_superseded`, `bbp_bing_superseded`); docs updated (`HOWTO.md` §5b, run report §6–§7, `PAB_implementation.md` §14). |
+
 ## Summary
 
 - **51 of 15,971 BING 2.0 fits have `b_bp`(700) above 1 m⁻¹, and all 51 are

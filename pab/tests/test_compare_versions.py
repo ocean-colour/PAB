@@ -455,3 +455,37 @@ def test_summary_page_counts_the_overlaid_family():
         assert "- **BING fits:** 2 (1 at 2.0, 1 re-fitted at 2.0.1)\n" in page
         # the b_bp headline sees the re-fitted value, so nothing is excluded
         assert "0 failed retrievals (0.00 %, ``b_bp`` > 1 m⁻¹) excluded" in page
+
+
+def test_forward_model_domain_summary_counts_the_overlaid_family():
+    """B_p against the emulator's trained range, over the overlaid family:
+    the superseded 2.0 row's B_p is not counted, the view-zenith range comes
+    from the fitted pixels, and a store without B_p (1.0-only) gives None."""
+    with Store.open(":memory:") as store:
+        assert compare.forward_model_domain_summary(store) is None
+        matchup_id, pixel_id, f20, f201 = _seed_patched_runaway(store)
+        from pab.tests.test_report_versions import _seed_one
+
+        _seed_one(store, "M2", wmo=7902227, cycle=2, bbp=2e-3, chl=0.1, version="2.0")
+        # (_seed_one writes a B_p for M2; the upsert below replaces it)
+        for fit_id, bp in ((f20, 0.5), (f201, 0.015), ("M2_v2.0", 0.03)):
+            store.upsert(
+                "fit_results",
+                {"fit_id": fit_id, "quantity": "BING_ExpBPow_Bp", "value": bp},
+            )
+        store.execute("UPDATE matchup_pixels SET theta_v = 70.0 WHERE matchup_id = 'M2'")
+        s = compare.forward_model_domain_summary(store, domain=(0.01, 0.02))
+        assert (s["lo"], s["hi"]) == (0.01, 0.02)
+        # the 2.0 runaway's B_p = 0.5 is superseded by the 2.0.1 row's 0.015
+        assert s["n"] == 2 and s["n_inside"] == 1 and s["n_above"] == 1
+        assert s["n_below"] == 0 and s["n_outside"] == 1
+        assert s["frac_outside"] == pytest.approx(0.5)
+        # geometry: the fixture pixel carries theta_v, M2's was set above
+        assert s["n_theta_v"] == 2 and s["n_off_nadir"] == 2
+        assert s["theta_v_max"] == pytest.approx(70.0)
+        assert 0 < s["theta_v_min"] < 70.0
+        # the default domain is the emulator's (read from robust, or the recorded fallback)
+        lo, hi = compare.emulator_bp_domain()
+        assert 0 < lo < hi and lo == pytest.approx(compare.EMULATOR_BP_TRAINED[0], rel=1e-3)
+        assert hi == pytest.approx(compare.EMULATOR_BP_TRAINED[1], rel=1e-3)
+        assert compare.forward_model_domain_summary(store)["lo"] == lo

@@ -499,6 +499,94 @@ def patch_refit_summary(store, *, model_pair: str = "ExpBPow"):
     }
 
 
+#: The free-``B_p`` quantity of a 2.0-style fit (bare name; the
+#: ``BING_<model_pair>_`` prefix is added per call).
+BP_QUANTITY = "Bp"
+#: The ``B_p`` range the packaged ``robust_hybrid`` emulator was trained over
+#: (``robust.rt.emulator.load_default().domain``, feature ``B_p``, as read on
+#: 2026-10-19). :func:`emulator_bp_domain` reads the live value and falls back
+#: to this when ``robust`` is not importable. BING's free-``B_p`` prior is
+#: [0.004, 0.05] and the seed 0.01, so the learned correction extrapolates in
+#: ``B_p`` for most fits (``versions/v2/ztt_slice.md``; Q&A/Outliers 13 = A:
+#: stated on the Methods page, not changed in this release).
+EMULATOR_BP_TRAINED = (0.01026, 0.018)
+#: Where the out-of-domain slice test is written up; the Methods page points here.
+ZTT_SLICE_URL = "https://github.com/ocean-colour/PAB/blob/main/versions/v2/ztt_slice.md"
+
+
+def emulator_bp_domain() -> tuple[float, float]:
+    """``(lo, hi)`` of the default emulator's trained ``B_p`` range, read from
+    ``robust`` (never retyped) -- :data:`EMULATOR_BP_TRAINED` when ``robust``
+    is absent or its emulator carries no usable domain."""
+    try:
+        from robust.rt import emulator as _em
+
+        i = list(_em.FEATURES).index("B_p")
+        domain = np.asarray(_em.load_default().domain, dtype=float)
+        lo, hi = float(domain[0, i]), float(domain[1, i])
+        if np.isfinite(lo) and np.isfinite(hi) and lo < hi:
+            return (lo, hi)
+    except Exception:  # noqa: BLE001 — the page must build without robust
+        pass
+    return EMULATOR_BP_TRAINED
+
+
+def forward_model_domain_summary(store, *, model_pair: str = "ExpBPow", domain=None):
+    """How far the fits sit from the hybrid emulator's trained domain -- the
+    numbers behind the Methods page's forward-model paragraph (Q&A/Outliers
+    12–13 = A), computed from the store, none quoted.
+
+    Over the overlaid :func:`version_family` (the fits the site shows):
+    ``n`` fits with a ``B_p`` posterior median, ``n_inside`` / ``n_below`` /
+    ``n_above`` / ``n_outside`` against ``domain`` (default
+    :func:`emulator_bp_domain`), ``frac_outside``, the ``lo``/``hi`` used, and
+    the view-zenith range of the fitted pixels (``theta_v_min`` /
+    ``theta_v_max``, degrees; NaN when no geometry is stored) with
+    ``n_off_nadir`` (``theta_v > 0``) of ``n_theta_v``. ``None`` when the
+    store holds no BING fit with a ``B_p`` value (a 1.0-only store)."""
+    lo, hi = domain if domain is not None else emulator_bp_domain()
+    versions = resolve_versions(store)
+    clause, params = _version_clause("f.pab_version", versions)
+    bp_q = f"BING_{model_pair}_{BP_QUANTITY}"
+    df = store.query_df(
+        f"""
+        SELECT f.fit_id, f.matchup_id, f.pixel_id, f.pab_version,
+               r.value AS bp, mp.theta_v
+        FROM fits f
+        LEFT JOIN fit_results r ON r.fit_id = f.fit_id AND r.quantity = ?
+        LEFT JOIN matchup_pixels mp ON mp.pixel_id = f.pixel_id
+        WHERE f.algorithm = 'BING' AND f.model_pair = ? {clause}
+        """,
+        (bp_q, model_pair, *params),
+    )
+    if not len(df):
+        return None
+    kept = overlay_patch(df)
+    bp = kept["bp"].to_numpy(dtype=float)
+    ok = np.isfinite(bp)
+    if not ok.any():
+        return None
+    bp = bp[ok]
+    below = int((bp < lo).sum())
+    above = int((bp > hi).sum())
+    theta = kept["theta_v"].to_numpy(dtype=float)
+    theta = theta[np.isfinite(theta)]
+    return {
+        "lo": float(lo),
+        "hi": float(hi),
+        "n": int(len(bp)),
+        "n_inside": int(len(bp) - below - above),
+        "n_below": below,
+        "n_above": above,
+        "n_outside": below + above,
+        "frac_outside": float((below + above) / len(bp)),
+        "theta_v_min": float(theta.min()) if len(theta) else float("nan"),
+        "theta_v_max": float(theta.max()) if len(theta) else float("nan"),
+        "n_theta_v": int(len(theta)),
+        "n_off_nadir": int((theta > 0).sum()),
+    }
+
+
 def gather_matchups(store, *, model_pair: str = "ExpBPow", pab_version=None):
     """Assemble the per-matchup comparison table from the DB.
 

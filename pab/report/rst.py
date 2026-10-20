@@ -1450,7 +1450,7 @@ def figures_page(store, outdir, df, *, figure_roots=None) -> str:
     )
     staged = [
         p
-        for sub in ("figures", "scenes", "argo_qa")
+        for sub in GALLERY_SUBDIRS
         for p in sorted((Path(outdir) / "_static" / sub).glob("*"))
         if p.is_file()
     ]
@@ -1463,6 +1463,40 @@ def figures_page(store, outdir, df, *, figure_roots=None) -> str:
             GALLERY_MAX_SIDE,
         )
     return "\n".join(out)
+
+
+#: The ``_static/`` folders the galleries own outright: every file in them is
+#: staged from the database on each build (:func:`_gather_with_figures` and
+#: :func:`figures_page`), so :func:`build_site` empties them first.
+GALLERY_SUBDIRS = ("figures", "scenes", "argo_qa")
+
+
+def _clear_gallery_dirs(outdir) -> int:
+    """Remove every file under the gallery folders (:data:`GALLERY_SUBDIRS`)
+    before a build stages its own; returns how many were removed (logged).
+
+    The representative picks are "nearest the percentile / median", so any
+    change in the frame (the 2.0.1 overlay moved every pick) changes the
+    files the page links. Without this, a thumbnail from an earlier build
+    would stay in the committed site as an orphan nothing links to -- 19 of
+    them after the first rebuild following the overlay -- and the "staged
+    N files" log line would count them as staged.
+    """
+    removed = 0
+    for sub in GALLERY_SUBDIRS:
+        folder = Path(outdir) / "_static" / sub
+        if not folder.is_dir():
+            continue
+        for p in folder.iterdir():
+            if p.is_file():
+                p.unlink()
+                removed += 1
+    if removed:
+        _log.info(
+            "report: removed %d stale gallery file(s) from an earlier build under _static/",
+            removed,
+        )
+    return removed
 
 
 def remap_figure_path(src: str, figure_roots=None) -> str:
@@ -2171,6 +2205,70 @@ def _methods_neg_blue(df) -> str:
     )
 
 
+def _methods_forward_model(store) -> str:
+    """The Methods page's forward-model-domain paragraph (Q&A/Outliers 12 = A
+    and 13 = A): the out-of-domain policy PAB runs, the emulator's trained
+    geometry against the fitted pixels', the ``"ztt"`` policy tested and not
+    adopted, and the fraction of fits whose ``B_p`` lies outside the trained
+    range -- computed from ``store`` when one is given, with the trained range
+    read from ``robust`` (:func:`compare.emulator_bp_domain`), never quoted."""
+    import numpy as np
+
+    summary = None
+    if store is not None:
+        try:
+            summary = compare.forward_model_domain_summary(store)
+        except Exception:  # noqa: BLE001 — the page must build without it
+            summary = None
+    lo, hi = (summary["lo"], summary["hi"]) if summary else compare.emulator_bp_domain()
+    if summary and np.isfinite(summary["theta_v_min"]):
+        geometry = (
+            f" the pixels fitted here are viewed at θ_v "
+            f"{summary['theta_v_min']:.0f}–{summary['theta_v_max']:.0f}° "
+            f"({summary['n_off_nadir']:,} of {summary['n_theta_v']:,} off-nadir)"
+        )
+    else:
+        geometry = " every PACE pixel is viewed off-nadir"
+    if summary:
+        bp = (
+            f" In this release the fitted ``B_p`` (posterior median) lies outside that "
+            f"range for {summary['n_outside']:,} of {summary['n']:,} fits "
+            f"({summary['frac_outside'] * 100:.0f} %; {summary['n_below']:,} below, "
+            f"{summary['n_above']:,} above), so the learned correction "
+            "extrapolates in ``B_p`` for most fits."
+        )
+    else:
+        bp = (
+            " The fitted ``B_p`` lies outside that range for most fits, so the "
+            "learned correction extrapolates in ``B_p``; the fraction is computed "
+            "and stated here when the site is built from a database."
+        )
+    return (
+        "**Forward-model domain.** The ``robust_hybrid`` backend is "
+        "retrieve-or-bust's analytic ZTT model plus a learned emulator "
+        "correction, run with its out-of-domain policy at the default "
+        "``on_out_of_domain=\"warn\"`` (the correction is applied everywhere and "
+        "a warning is raised, never an error). The packaged emulator was trained "
+        "at **nadir view and zero relative azimuth**, while" + geometry + ", so "
+        "the correction is applied outside its trained geometry for every fit. "
+        "The alternative ``\"ztt\"`` policy — drop the correction outside the "
+        "trained domain — was tested on the failed retrievals and a sample of "
+        "ordinary fits and **not adopted**: it does not remove the runaway "
+        "basin, which belongs to the analytic model, and it shifts ordinary "
+        "``b_bp``. The emulator's trained ``B_p`` range is "
+        f"[{lo:.4g}, {hi:.3g}], against BING's free-``B_p`` prior over "
+        + (
+            f"[{_bp_prior_range()[0]:g}, {_bp_prior_range()[1]:g}]"
+            if _bp_prior_range()
+            else "a wider range"
+        )
+        + " (unchanged in this release)."
+        + bp
+        + f" The test and the questions it raises for the forward model are in "
+        f"`ztt_slice.md <{compare.ZTT_SLICE_URL}>`__.\n"
+    )
+
+
 def _methods_refit(store) -> str:
     """The Methods page's prior-ceiling sentence(s): with a store holding a
     patch version, the computed re-fit numbers and the ceilings read back off
@@ -2303,6 +2401,7 @@ def methods_page(*, compare_db=None, store=None) -> str:
     matchups_df = _methods_matchups(store)  # one query for both paragraphs
     out.append(_methods_failed_retrievals(matchups_df, store))
     out.append(_methods_neg_blue(matchups_df))
+    out.append(_methods_forward_model(store))
 
     out.append(_heading("Retrieval configuration (2.0) & the two databases", "-"))
     out.append(V2_CHANGES)
@@ -2730,6 +2829,10 @@ def build_site(
     outdir.mkdir(parents=True, exist_ok=True)
     # Always present so the conf's html_static_path entry exists (no Sphinx warning).
     (outdir / "_static").mkdir(parents=True, exist_ok=True)
+    # The galleries are regenerated from the database on every build; a
+    # thumbnail an earlier build staged (different representative picks)
+    # must not survive as an orphan in the committed site.
+    _clear_gallery_dirs(outdir)
 
     df = _gather_with_figures(store, outdir, opener=opener, figure_roots=figure_roots)
     # The matchup results are split across topical pages so none is overloaded:
