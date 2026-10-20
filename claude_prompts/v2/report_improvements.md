@@ -825,7 +825,17 @@ changed prior set is recorded, no schema change needed.*
       DB/chain backups made, and the RTD reminder (`…/en/develop/` tracks
       `develop`). Do not commit. Use Fable if you can. Log your work.
 
+### PR
+
+1. I have submitted this PR: https://github.com/ocean-colour/PAB/pull/14 
+for this branch.  One or more of the tests is failing.  
+Please investigate and fix it if it is trivial.
+Otherwise discuss with me in Q&A/PR.
+Use Opus 5.5.  Log your work.
+
 ## Q&A
+
+### PR
 
 ### Outliers
 
@@ -3874,3 +3884,42 @@ merged into `develop` (or the RTD project is pointed at it); the developer docs
 project builds from the same branch rule. The site's Downloads links already
 point at the replaced S3 objects, so the public tables and database are ahead
 of the public site until that merge.
+
+### 2026-10-20 (v2 PR 1 — CI pytest failures on PR #14: missing optional-dependency guards)
+
+Run with Opus 5.5. PR #14 (`report-improvements` → `develop`): the `pytest`
+check failed on both runs (39463770318, 39464036651); `docs build` and Bugbot
+passed. The job log (`gh api …/actions/jobs/118770611562/logs`) showed
+**8 failed, 443 passed, 63 skipped**, all from one cause: the CI job installs
+only the core stack (`numpy scipy pandas pyarrow xarray gsw matplotlib
+pytest` + `pip install -e . --no-deps`) and relies on
+`pytest.importorskip(...)` to skip tests that need the special-source/optional
+packages — and 8 tests added in this branch had no guard:
+
+- `test_fit.py`: `test_build_fits_with_spectra_never_calls_the_opener`,
+  `test_build_fits_with_a_three_tuple_provider_keeps_the_l2_stamp`,
+  `test_fit_matchup_with_spectrum_skips_the_granule` — need `bing` (the fit
+  path imports it for the geometry even with `_fit_only` stubbed; the two
+  `build_fits` tests saw it as an empty `written` list because the fit is
+  caught and logged as failed). Added `pytest.importorskip("bing")`.
+- `test_metrics.py`: `test_maps_clip_at_fixed_symmetric_vmax_and_count_the_saturated`,
+  `test_healpix_map_drops_thin_cells` (need `remote_sensing` via
+  `healpix_medians`, and `healpy`), `test_healpix_cell_outlines_at_the_dateline`
+  (`healpy`). Added the `importorskip`s (the last one now binds `healpy` from it).
+- `test_report.py`: `test_comparisons_page_static_figures_at_scale` (asserts
+  the `healpix_map.png` figure, which is not produced without
+  `healpy`/`remote_sensing`) and `test_comparisons_captions_quote_the_offscale_count`
+  (counts one gate clause per `b_bp` caption, one of which is the HEALPix
+  map's — 2 vs 3 on CI). Added the `importorskip`s.
+
+Test-only change; no `pab/` code touched. Verified two ways: the full suite in
+`ocean14` — **513 passed, 1 skipped**; and a CI-like run in `ocean14` with
+`bing`, `remote_sensing`, `healpy`, `bokeh`, `argopy`, `earthaccess`, `ocpy`,
+`cartopy`, `emcee`, `robust` blocked via `sys.modules[m] = None` — **447
+passed, 67 skipped, 0 failed** (CI should report 447 + 67 = 514, matching
+its 443 + 8 + 63). Blocking `sphinx` as well is not a faithful CI model:
+scipy probes `sphinx.ext.autodoc` and 13 unrelated tests then error, so it
+was left importable (on CI sphinx is simply absent from the pytest job, which
+scipy handles; a `None` entry in `sys.modules` is not the same as absent). `ruff check pab` clean. Nothing committed or pushed — the user
+commits `pab/tests/{test_fit,test_metrics,test_report}.py` and this file and
+pushes to update the PR. No Q&A/PR items needed.

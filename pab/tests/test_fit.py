@@ -687,6 +687,7 @@ def _no_open(_src):
 
 def test_build_fits_with_spectra_never_calls_the_opener(monkeypatch, tmp_path):
     """``spectra=`` replaces the granule read entirely and stamps rrs_source."""
+    pytest.importorskip("bing")
     monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
     monkeypatch.setattr(run, "_fit_only", _qa_recording_stub)
     seen = []
@@ -715,6 +716,7 @@ def test_build_fits_with_spectra_never_calls_the_opener(monkeypatch, tmp_path):
 
 
 def test_build_fits_with_a_three_tuple_provider_keeps_the_l2_stamp(monkeypatch, tmp_path):
+    pytest.importorskip("bing")
     monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
     monkeypatch.setattr(run, "_fit_only", _stub_fit_only)
 
@@ -770,6 +772,7 @@ def test_build_fits_parallel_with_spectra_never_opens_a_granule(monkeypatch, tmp
 
 
 def test_fit_matchup_with_spectrum_skips_the_granule(monkeypatch, tmp_path):
+    pytest.importorskip("bing")
     monkeypatch.setattr(artifacts, "DATA_DIR", tmp_path)
     monkeypatch.setattr(run, "_fit_only", _stub_fit_only)
     with Store.open(":memory:") as store:

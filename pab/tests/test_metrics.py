@@ -652,6 +652,8 @@ def test_matchup_map_plain_axes_file_and_budget(tmp_path):
 
 
 def test_maps_clip_at_fixed_symmetric_vmax_and_count_the_saturated():
+    pytest.importorskip("healpy")
+    pytest.importorskip("remote_sensing")
     import matplotlib.pyplot as plt
 
     # Q&A/v2 Edits 5 = B: a fixed ±0.5 dex, not a percentile of the data
@@ -714,6 +716,8 @@ def test_maps_clip_at_fixed_symmetric_vmax_and_count_the_saturated():
 
 
 def test_healpix_map_drops_thin_cells(tmp_path):
+    pytest.importorskip("healpy")
+    pytest.importorskip("remote_sensing")
     import matplotlib.pyplot as plt
     import pandas as pd
     from matplotlib.collections import PolyCollection
@@ -754,7 +758,7 @@ def test_healpix_map_drops_thin_cells(tmp_path):
 
 
 def test_healpix_cell_outlines_at_the_dateline():
-    import healpy
+    healpy = pytest.importorskip("healpy")
 
     from pab.report.aggregate import nside_for_cell_size
 

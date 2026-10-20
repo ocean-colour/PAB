@@ -417,6 +417,8 @@ def test_downloads_page_links_s3_and_stages_nothing(tmp_path):
 
 
 def test_comparisons_page_static_figures_at_scale(tmp_path):
+    pytest.importorskip("healpy")
+    pytest.importorskip("remote_sensing")
     # Above max_interactive the page renders static PNGs, not a giant Bokeh embed.
     from pab.metrics import compare
 
@@ -445,6 +447,8 @@ def test_comparisons_page_static_figures_at_scale(tmp_path):
 
 
 def test_comparisons_captions_quote_the_offscale_count(tmp_path):
+    pytest.importorskip("healpy")
+    pytest.importorskip("remote_sensing")
     import pandas as pd
 
     rng = np.random.default_rng(1)
