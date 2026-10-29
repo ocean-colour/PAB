@@ -17,7 +17,9 @@ from pathlib import Path
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-PAB_DB_DEFAULT = Path("/Users/alliejames/Documents/summer 2026/data/PAB/pab.db")
+from pab.config import DATA_DIR
+
+PAB_DB_DEFAULT = Path(DATA_DIR) / "pab.db"
 
 
 def _parse_args(argv=None):
@@ -42,10 +44,11 @@ def plot_bbp700_vs_temp(store, *, outfile=None, dpi: int = 200):
     df = store.query_df("""
         SELECT p.wmo, p.cycle, p.time,
                ms.bbp700, ms.bbp700_std, ms.temp, ms.chla,
-               CASE WHEN m.matchup_id IS NOT NULL THEN 1 ELSE 0 END AS has_matchup
+               CASE WHEN EXISTS (
+                   SELECT 1 FROM matchups m WHERE m.profile_id = p.profile_id
+               ) THEN 1 ELSE 0 END AS has_matchup
         FROM profiles p
         JOIN mld_summary ms ON ms.profile_id = p.profile_id
-        LEFT JOIN matchups m ON m.profile_id = p.profile_id
         ORDER BY p.wmo, p.time
     """)
 
@@ -68,7 +71,9 @@ def plot_bbp700_vs_temp(store, *, outfile=None, dpi: int = 200):
         for grp, is_matched in [(matched, True), (unmatched, False)]:
             if grp.empty:
                 continue
-            lbl = wmo_names[wmo_id] + (" (matched)" if is_matched else " (no match)")
+            lbl = wmo_names.get(wmo_id, f"WMO {wmo_id}") + (
+            " (matched)" if is_matched else " (no match)"
+        )
             ax.errorbar(
                 grp["temp"], grp["bbp700"], yerr=grp["bbp700_std"],
                 fmt="o", color=col,
@@ -78,7 +83,10 @@ def plot_bbp700_vs_temp(store, *, outfile=None, dpi: int = 200):
                 label=lbl, zorder=4,
             )
 
+        import pandas as pd
         for _, row in sub.iterrows():
+            if pd.isna(row["cycle"]):
+                continue
             ax.annotate(
                 f"c{int(row['cycle'])}",
                 xy=(row["temp"], row["bbp700"]),

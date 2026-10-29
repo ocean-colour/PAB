@@ -1,0 +1,105 @@
+# Prompt 7 Task 1 — the FULL 2.0 fit over the v2 store.
+#
+# ~15,872 matchups to attempt: 15,976 total, minus the 99 already fitted by the
+# Prompt 6 slice (idempotently skipped by fit_id), minus the 5 with no viewing
+# geometry, which R3 refuses before opening a granule (Prompt 5 Q16 -> skip them).
+# Expect those 5 under `failed` with "no viewing geometry" -- that is correct
+# behaviour, not a regression.
+#
+# COST, measured by the Prompt 6 slice -- 164 s/fit steady state at 32 workers:
+#   50 workers -> ~14.7 h      32 workers -> ~22.9 h      chains ~19 GB
+# *** Do NOT quote total-wall / fits. *** That gives 385 s/fit and breaches
+# Q12's 240 s pause trigger. The gap is a ONE-TIME ~11 min JAX compile per pool,
+# which the slice amortised over only ~3 fits per worker. Here each worker does
+# ~320 fits and it vanishes. `build_fits` now logs the startup cost separately
+# ("fit: first result after N s") precisely so this cannot be misread again.
+#
+# *** DB-LOCAL, not optional. *** SQLite on CephFS wedged four pods in the 1.0
+# run: the gather does tens of thousands of small locked reads, thrashing the
+# Ceph MDS until the process hangs uninterruptibly (state D). 12+ min (hang) on
+# CephFS vs 0.6 s on a local copy. So: copy to emptyDir, run there, checkpoint
+# back every 2 min by local sqlite3.backup() + plain file copy. Never
+# sqlite3.backup() onto CephFS.
+#
+# MAX_TASKS_PER_CHILD: `fit`'s pool still has none (Prompt 6 Q1c). Do NOT copy
+# geometry's value of 5 -- recycling a worker re-pays that ~11 min JAX compile.
+# The slice could not settle it (~3 fits/worker, where geometry needed ~950 to
+# OOM) although memory climbed 0.3 -> 20.0 GB in 21 min without plateauing.
+# `build_fits` now logs mem_breakdown() on every progress line: watch it on THIS
+# run and size the recycle interval from its own trace, or confirm none is
+# needed. 100 Gi is the headroom that decision is being made inside.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars delete job pab-v2-fit --ignore-not-found
+#   kubectl apply -f nautilus/v2_fit_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v2-fit
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v2-fit
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 6            # preemption-tolerant; a resume skips finished fits
+  activeDeadlineSeconds: 151200   # 42 h against a ~15-23 h expectation
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.5   # PAB 69efcd4 -- carries build_fits progress + per-fit timing
+        imagePullPolicy: IfNotPresent
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data/v2}   # chains -> /data/v2/fit_chains
+        - {name: RUN, value: /data/v2}
+        - {name: PYTHONWARNINGS, value: "ignore"}  # robust emits a DomainWarning per forward call
+        - {name: MALLOC_ARENA_MAX, value: "2"}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            ulimit -n 65536 2>/dev/null || true
+            LOG=$RUN/fit_full.log
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $LOG; }
+            LOCAL=/scratch/pab.db
+            BKUP="import sqlite3,os,shutil; s=sqlite3.connect('/scratch/pab.db'); d=sqlite3.connect('/scratch/pab.bak'); s.backup(d); d.close(); s.close(); shutil.copy('/scratch/pab.bak','/data/v2/pab.db.tmp'); os.replace('/data/v2/pab.db.tmp','/data/v2/pab.db')"
+            counts() { python -c "import sqlite3; c=sqlite3.connect('$LOCAL'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('matchups','fits')}, '2.0 fits:', c.execute(\"SELECT COUNT(*) FROM fits WHERE rt_backend LIKE 'robust%'\").fetchone()[0], 'NASA:', c.execute(\"SELECT COUNT(*) FROM fits WHERE algorithm='NASA_GIOP'\").fetchone()[0])" 2>&1 | tee -a $LOG; }
+            log "FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+            log "PROVENANCE"
+            python -c "import json; from pab.config import package_versions, pab_version; pv=package_versions(); print('pab_version', pab_version); print('git_sha', json.dumps(pv['git_sha']))" 2>&1 | tee -a $LOG
+            log "DB-local: copy $RUN/pab.db -> $LOCAL"
+            cp $RUN/pab.db $LOCAL
+            log "BEFORE"; counts
+            ( while true; do sleep 120; python -c "$BKUP" 2>>$LOG && echo "=== DB backup $(date -Is) ===" >>$LOG || true; done ) &
+            BGPID=$!
+            log "FULL FIT start (--jobs 50, 2.0 config)"
+            if ! pab --db $LOCAL --outdir $RUN/pipeline --stage fit --jobs 50 2>&1 | tee -a $LOG; then
+              log "FULL FIT FAILED — final DB sync + stopping (re-apply to resume)"
+              python -c "$BKUP" 2>>$LOG || true
+              kill $BGPID 2>/dev/null || true
+              counts; exit 1
+            fi
+            log "FULL FIT end — final DB sync to CephFS"
+            python -c "$BKUP" 2>>$LOG || true
+            kill $BGPID 2>/dev/null || true
+            log "AFTER"; counts
+            log "CLOSE-OUT GATES"
+            python -c "import sqlite3; c=sqlite3.connect('$LOCAL'); q=lambda s: c.execute(s).fetchone(); print('2.0 fits:', q(\"SELECT COUNT(*) FROM fits WHERE rt_backend LIKE 'robust%'\")[0]); print('all v2.0:', q(\"SELECT COUNT(*) FROM fits WHERE rt_backend LIKE 'robust%' AND pab_version='2.0'\")[0]); print('NASA rows (must be 14609):', q(\"SELECT COUNT(*) FROM fits WHERE algorithm='NASA_GIOP'\")[0]); print('duplicate fit_ids:', q('SELECT COUNT(*) FROM (SELECT fit_id FROM fits GROUP BY fit_id HAVING COUNT(*)>1)')[0]); print('v5 cols filled:', q(\"SELECT COUNT(*) FROM fits WHERE rt_backend LIKE 'robust%' AND (rt_backend IS NULL OR include_raman IS NULL OR fit_bp IS NULL)\")[0], '(must be 0)')" 2>&1 | tee -a $LOG
+            log "CHAINS"
+            ls /data/v2/fit_chains 2>/dev/null | wc -l | tee -a $LOG
+            du -sh /data/v2/fit_chains 2>/dev/null | tee -a $LOG
+            du -sh $RUN 2>/dev/null | tee -a $LOG
+            log "V2_FIT_DONE"
+        resources:
+          requests: {cpu: "50", memory: "100Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "50", memory: "100Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: scratch, mountPath: /scratch}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: scratch, emptyDir: {sizeLimit: 5Gi}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}

@@ -173,7 +173,7 @@ particular ocean basin or water type?
 
 ### What it shows
 
-![Global map of clean PACE–Argo bbp700 matchups](pace_argo_bbp700_clean_map.png)
+![Global map of clean PACE–Argo bbp700 matchups](../../docs/figures/pace_argo_bbp700_clean_map.png)
 
 *Mollweide projection. Each point is one matchup. Color = (PACE − Argo) / PACE,
 clipped to ±1. Red = PACE exceeds Argo; blue = Argo exceeds PACE; white = agreement.

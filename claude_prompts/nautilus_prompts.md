@@ -70,6 +70,10 @@ once** and read locally? Task 1 measures this before we commit to either.
 5. Execute the 5th task in Tasks below
 6. Execute the 6th task in Tasks below
 7. Execute the 7th task in Tasks below
+8. Execute the 8th task in Tasks below
+9. Execute the 9th task in Tasks below
+
+10. Execute the 1st task in "Pull Request" below
 
 ## Tasks
 
@@ -120,7 +124,12 @@ Modify the file in `nautilus/inspect_pod.yaml` to fix the syntax error and I wil
 
 9. **Verify & close out.** Spot-check matchups, confirm `pab_version = 1.0` on every
    record, update `docs/design/PAB_implementation.md` + `HOWTO.md` (§7b → activated),
-   and write the full-run report. Log your work.
+   and write the full-run report. Log your work.  Confirm there is a backup on Google Drive.
+
+## Pull Request
+
+1. **Initial.** I have submitted the pull request and `cursor` has reviewed it.  Please review their comments 
+   and make the necessary changes.  Log your work. Use Fable if you can.
 
 ## Q&A
 
@@ -368,3 +377,391 @@ confirms it parses. User will relaunch. No package code changed (manifest only).
 Process learning for all embedded-script K8s manifests: use `|` (literal), never `>`
 (folded), for shell/python blocks — and prefer a one-line `python -c` over a
 here-doc to avoid indentation/terminator-column pitfalls.
+
+### 2026-07-22 (Task 5 — in-container validation passes end-to-end; six image/packaging bugs fixed)
+
+Drove a 5-profile validation Job (`nautilus/validate_job.yaml`, float 1901614)
+to a **clean pass on the final image** (`…/profx/pab:1.0`, digest
+`49c83e9…`): `ingest 5 / discover 12 / match 1 (10 px) / fit 1 / figure 1 /
+report 7-page site`; DB counts `profiles 5 · granules 12 · matchups 1 ·
+matchup_pixels 10 · fits 1 · fit_results 10`. This confirms the whole cloud
+path in-pod: container + `pab-data` PVC + secrets (netrc/S3) + **lazy S3 reads**
+(no `--download`) + **parallel `fit` (`--jobs 4`)** + reporting.
+
+Getting there uncovered **six bugs**, each caught *before* the next rebuild by
+exercising the real code path against the image (so one rebuild per fix, not
+blind iteration):
+
+1. **argopy/erddapy skew** → `cannot import name '_quote_string_constraints'`,
+   0 profiles. Fix: pin `argopy==1.4.0 erddapy==3.2.1` + build guard.
+2. **earthaccess never logged in** → `match` open: `'NoneType' has no attribute
+   'open'` (`earthaccess.__store__` is None). Masked on the workstation by a
+   prior interactive login. Fix: guarded `earthaccess.login(strategy="netrc")`
+   in `pab/pace/cloud.py::open_s3`.
+3. **`bing/data` dropped by the wheel** — `bing` uses `find_packages()` with no
+   `package_data`, so `pip install ./bing` omits `data/` (the
+   `gordon_coefficients*.csv` every fit needs + adg `.mat`).
+4. **`ocpy/data` dropped** — same gap; its Bricaud table loads at *import* of
+   `bing.models.anw`. Fix (3+4): Dockerfile copies each pkg's `data/` into the
+   installed location (path found via the module, no py-version hardcoding).
+5. **`ocpy.hydrolight` missing `__init__.py`** → `find_packages()` dropped the
+   whole subpackage from the wheel; `bing.models.bbnw` imports
+   `ocpy.hydrolight.loisel23` on every fit. Works on the workstation only
+   because editable installs expose the source (namespace-package). Fix: add
+   `ocpy/hydrolight/__init__.py`.
+6. **Loisel `Hydrolight400.nc` absent** — `bbNWModel.init_bbw` (base class → hit
+   by *every* bbnw model incl. `ExpBPow`/`Pow`) calls `loisel23.load_ds(4,0)` to
+   seed `bb_w` from `$OS_COLOR/Loisel2023/Hydrolight400.nc`. Fix: bundle the one
+   18 MB file (not the 19 GB dataset) + `ENV OS_COLOR=/opt/os_color`.
+
+Diagnosis notes: the fit failure was **not** a parallelism bug — `jobs=1`
+(serial) failed identically in-pod while the same fit *succeeded* on the
+workstation, pointing at environment/packaging, not the ProcessPool. Confirmed
+by reproducing locally with the `try/except` removed and by a debug Job on the
+current image. Also **added traceback logging** to the fit stage's four
+swallowed `except` blocks (`pab/fit/run.py`) — silent per-fit failures across
+54k profiles would be untenable; this is exactly how bugs 5/6 were isolated.
+
+Build guard now imports `bing.models.anw`+`bbnw`, asserts the bing data
+resolves, and runs `loisel23.load_ds(4,0)` (`LOISEL OK (81,)`), so a green build
+means the full fit dependency chain is satisfied in-image. Code changed: PAB
+`pab/pace/cloud.py`, `pab/fit/run.py`, `Dockerfile`; ocpy
+`ocpy/hydrolight/__init__.py` (new). **Task 5 done.** Next: parallelize `match`
+in-code (still serial), then a small **pilot** (few hundred–1k profiles) to
+measure matchup rate / per-fit time / memory / chains storage before the full
+54,506-profile run.
+
+### 2026-07-26 (parallel `match` reviewed + two scaling bugs fixed; 1k-run artifacts)
+
+Picked up the "next" items from the Task-5 close-out (parallelize `match`, then
+a few-hundred–1k pilot). Parallel `match` was already written
+(`pab/matchup/engine.py`, 2026-07-26) — reviewing it for a 1000-profile run
+surfaced three problems, all now fixed; **full write-up + the run plan live in
+`run_full_pipeline.md` (Task 10 report + log)**. Nautilus-relevant points:
+
+- **The registry image is stale.** `pab:1.0` was built 2026-07-22; parallel
+  `match` and today's fixes are newer, so the 1k run needs a rebuild. The Task-3
+  staged build (rsync a 90 MB context so bing's 94 GB stays out) is now a script:
+  **`nautilus/build_image.sh [--push]`**, with a smoke test that also imports the
+  new `GranuleIndex`. Needs the user's `docker login` (deploy token).
+- **New Job manifest `nautilus/run1k_job.yaml`** — 1 pod × **50 cores** / 100Gi
+  (the M5 answer: one pod, one SQLite writer), `--jobs 50`, **lazy NASA-S3 reads**
+  (Task-1 decision, no staging), stages run one at a time with per-stage
+  wall-clock + DB counts, `backoffLimit: 4` and **no `rm -rf`** so an evicted pod
+  *resumes* rather than restarting from zero (validate_job.yaml wipes — that is
+  fine for a 5-profile smoke, fatal for a 3 h run). Manifest verified with
+  `yaml.safe_load` + `bash -n`, and it follows the Task-6 lesson: literal `|`
+  block, one-line `python -c`, no here-docs.
+- **Profile set:** `nautilus/run1k_profiles.csv` (1000 profiles / 659 floats,
+  ≤3 per float, 90 per quarter) + its generator `make_1k_subsample.py`; mount as
+  the `pab-run1k-csv` ConfigMap (47 KB, well under the 1 MiB limit).
+- **The Task-1 follow-up is now moot in the worst direction and fixed:** `match`
+  wasn't merely opening a granule per profile instead of per unique granule — it
+  was opening every granule in the ±24 h window *globally* (291/profile at full
+  scale → 15.9 M opens ≈ 388 h on 50 cores). With the footprint pre-filter it is
+  ~0.3–0.6 M opens ≈ 8–14 h, which is what makes the full run schedulable here.
+
+### 2026-08-09 (full `match` wedged on an FD leak — diagnosed, fixed, resumed)
+
+`pab-full-match` (the 50,292-profile `match` stage, `--jobs 16`, code from
+`/data/src` via `PYTHONPATH`, image `pab:1.0.2`) ran ~2.4 days then sat dead for
+~4 h. It was **alive but wedged**, not crashed, so `backoffLimit` never fired and
+the log/DB just stopped at **6,259 matchups / 62,590 pixels** (20,200/50,231
+profiles processed).
+
+- **Root cause — file-descriptor leak.** The wedged process held **1,010 FDs,
+  1,009 of them pipes**, against `ulimit -n = 1024`. The parallel path kills +
+  recreates its worker pool on every stall (**192 times** over the run, a steady
+  ~3.5/h). The old teardown — `_kill_pool(ex)` (SIGKILL, no reap) then
+  `ex.shutdown(wait=False)` — returns before the manager thread closes the pool's
+  call/result-queue + wakeup pipes, and that thread stayed alive holding them, so
+  each kill leaked ~5 pipes. 192 × ~5 ≈ 1,000 pipes → the next `os.pipe()` in
+  `_spawn_process` raised `OSError: [Errno 24]` → hard wedge.
+- **The 192 stalls are not a bug.** Steady ~3.5/h (not hourly bursts), from
+  **1,283 granule-read timeouts across 1,228 *unique* granules** — transient S3
+  jitter (~2 % of reads exceed 120 s), not credential expiry or bad objects. The
+  leak, not the stalls, is what turned a survivable rate into a fatal wedge.
+- **Fix (`pab/matchup/engine.py`).** `_kill_pool` now reaps the killed workers
+  (`proc.join`). New `_reclaim_pool` does kill → reap → `shutdown(wait=True)` so
+  the pipes close before the next pool is built, **bounded by a 30 s watchdog
+  thread** so this recovery path can never itself hang (SIGKILLing a worker
+  mid-queue-write can corrupt the queue lock and block `shutdown(wait=True)`
+  forever — observed in production; the watchdog abandons the pool and lets GC
+  reclaim it). Also added `_log.exception` on the swallowed fit-stage `except`s.
+- **Ops.** `ulimit -n 65536` (+ FD-limit logging) added to
+  `nautilus/full_match_job.yaml` as headroom/tripwire. Fix synced to
+  `/data/src/pab/matchup/engine.py` on the PVC (diff vs the live copy = only these
+  edits), bytecode cache cleared, wedged Job deleted, Job re-applied.
+- **Verified after resume:** pre-skips the 6,259 done matchups, climbs again
+  (→ 6,265), and **FDs stay bounded 23–51 across 4 stalls** (no growth with stall
+  count — GC reclaims the abandoned pools). ETA ~4–5 days for the remaining ~44 k.
+- **Still owed (git is the user's):** commit the `engine.py` fix + this manifest
+  change to the repo, and fold the fix into `pab:1.0.x` so future runs don't
+  depend on the `/data/src` PVC checkout. Optional hardening: close the executor
+  pipes *directly* instead of via `shutdown(wait=True)` (deterministic FD release
+  without relying on GC) — not required, since the monitor shows FDs bounded.
+
+### 2026-08-10 (canonical image `pab:1.0.3` + `fit` Job manifest — prep for the fit run)
+
+Match at ~24 h post-resume was healthy (6,620 matchups, 7,850/44,033 processed,
+FDs 353 — a small residual GC-misses leak, trivially within the 65,536 budget),
+so I prepped the next stage while it runs.
+
+- **Rebuilt the image as `pab:1.0.3`** via `nautilus/build_image.sh --push`
+  (TAG defaults to 1.0.3) from the local working trees + the one Loisel
+  `Hydrolight400.nc`. It folds the repo's current code into a canonical image:
+  the `match` FD-leak fix (`_reclaim_pool` in `pab/matchup/engine.py`), the
+  `fit`-stage traceback logging, and the six Task-5 packaging fixes. Build guards
+  passed (`FIT DEPS OK`, `LOISEL OK (81,)`), smoke test OK, pushed `:1.0.3` +
+  `:latest` (image id `2c53824189ab`). **This retires the `/data/src` PVC-checkout
+  hack** for new jobs — the running match (`1.0.2` + `PYTHONPATH=/data/src`) is
+  unaffected; 1.0.3 is for `fit` and everything after.
+- **Wrote `nautilus/full_fit_job.yaml`** (none existed). Runs *after* match:
+  `--stage fit --jobs 50` on `pab:1.0.3` (no `/data/src` override), chains →
+  `/data/fit_chains` (~13 MB × ~13.6k ≈ **180 GB**, fits the 500 GB PVC / 498 GB
+  free), resumable (`backoffLimit: 4`, no `rm -rf` — `build_fits` skips existing
+  `fit_id`s), `ulimit -n 65536` insurance, one pod = one SQLite writer. CPU-bound
+  MCMC so it packs more workers than match; header documents a `--jobs 32 / 64Gi`
+  fallback if a 50-core pod won't schedule. Verified with `yaml.safe_load` +
+  `bash -n` (Task-6 rule: literal `|` block, one-line `python -c`, no here-docs).
+- **Why `fit` is safe from the match failure class:** its opens use
+  `_open_bounded` (the same SIGALRM read timeout), it runs a *single* stable
+  `ProcessPoolExecutor` (no per-stall pool churn → no FD leak), and fit workers
+  are pure emcee compute (no I/O to wedge on).
+- **Next:** launch `fit` when match completes (~4–5 days), then `figure` →
+  `report` → publish + back up (Task 8: upload the site + `rclone` to `AIOcean:`).
+
+### 2026-08-14 (match plateaued → `fit` launched; worked around a CephFS node hang)
+
+- **Called the match harvest done at 14,610 matchups** (~29 % of 50,292 —
+  squarely the expected ~28 % rate) and stopped it. It had plateaued: after a
+  preemption (`8mgrs`→`fc4jj`, 1/4 backoff retries), each resume re-processes the
+  ~35,701 not-yet-matched profiles and adds <1 %/pass (the remainder are
+  genuinely unmatchable — no coincident cloud-free granule — retried every run).
+  Matchups are durable in `/data/full/pab.db`; a later straggler pass can be fit
+  incrementally (`fit` is idempotent), so stopping now costs nothing.
+- **Launched `fit`** via `nautilus/full_fit_job.yaml` on `pab:1.0.3`
+  (`--stage fit --jobs 50`, chains → `/data/fit_chains`). Baseline 14,610
+  matchups → 0 fits.
+- **CephFS incident (Nautilus infra, not PAB).** First pod (`svdsp` on
+  `nautilus-it-gpu08`) hung hard: the main process sat uninterruptibly in state
+  `D` on `ceph_mdsc_wait_request` (CephFS **metadata**-server stall) — 0 fits in
+  17 min, workers never spawned. Log was clean and match had used the same PVC
+  for days, so it was a bad Ceph client on that node. Force-deleted
+  (`--grace-period=0 --force`); the Job respawned `9zbd8` on
+  `proc-01.ts.fresnostate.edu`.
+- **The replacement progresses, but Ceph is degraded right now:** the main proc
+  periodically blocks in `D` on `folio_wait_bit_common` (CephFS **data**-path
+  page waits — the many small chain writes + DB I/O), so fits advance in bursts
+  with multi-minute stalls. Effective **~5–10 fits/min → ETA ~1.5–2 days** for
+  14,610 fits (≈ the original ~52 h estimate). Fully resumable, so a force-restart
+  on any hard-hang loses nothing.
+- **Playbook:** if a pod hard-hangs (state `D` on ceph, no progress for a long
+  stretch) → force-delete, Job reschedules to a healthier node. Longer-term
+  optimization if Ceph stays slow: write chains to **local ephemeral disk** then
+  bulk-upload, decoupling the fit from MDS/data-path latency.
+- **Next:** when `fit` completes → `figure` → `report` → publish + backup.
+
+### 2026-08-16 (fit paused — cluster-wide CephFS stalls; waiting on Nautilus)
+
+`fit` got to **5,187 / 14,610** then repeatedly wedged on CephFS. Paused it
+(job deleted, resources freed) pending Nautilus Ceph recovery. The 5,187 fits
+are durable; `fit` resumes from there with `kubectl apply -f
+nautilus/full_fit_job.yaml` (idempotent — skips existing `fit_id`s).
+
+- **Two failure modes, same root (CephFS):**
+  1. *Metadata hang* — main process stuck uninterruptibly (state `D`) on
+     `ceph_mdsc_wait_request`, seen on **3 different nodes** (`nautilus-it-gpu08`,
+     `node-2-9.sdsc`, and at startup elsewhere). Hangs in the **gather phase**
+     (the ~50k-query loop over 14,610 matchups) before workers even spawn.
+  2. *Result-queue deadlock* — on `proc-01.fresnostate` it ran to 5,187 then
+     deadlocked: main + all ~27 workers parked in `futex_wait_queue`, 1 mCPU, 22
+     GB/80 (no OOM), no errors. Fit workers return the ~13–19 MB chain array
+     *through* the mp result queue; when the parent's `_persist_result` stalls on
+     a slow CephFS chain write, the queue's pipe buffer fills, a worker blocks
+     holding the queue lock, and the pool deadlocks. Fit has no stall watchdog
+     (unlike match), so it can't self-recover.
+- **Why it's CephFS, not PAB:** lightweight one-shot `sqlite` reads keep working
+  throughout; only the fit's *sustained* heavy I/O wedges. Match used the same
+  PVC for days — but its writes were slow/spread out, not a tight metadata-heavy
+  loop. Restarting to new nodes doesn't help (same volume, same degraded MDS).
+- **Decision (user):** check the Nautilus Matrix/status for a Ceph incident and
+  **wait** for recovery, then resume. Reducing `--jobs` (50→32) did not help — the
+  hang is in the gather phase, not worker concurrency.
+- **If Ceph stays flaky → the durable fix:** decouple fit from CephFS — copy the
+  DB to local ephemeral disk, run against it, **stream chains to S3** (`s3://pab`,
+  which also feeds the eventual publish) instead of `/data/fit_chains`, bulk-sync
+  the DB back at the end. Also worth adding a **no-progress watchdog** to the fit
+  pool (mirror match's `_reclaim_pool`) so a result-queue deadlock self-recovers.
+  Deferred unless waiting fails.
+
+### 2026-08-18 (fit unblocked — DB-local wrapper; CephFS-SQLite was the culprit)
+
+Waiting on Ceph did **not** help: raw CephFS recovered (file-write probe back to
+thousands/s) but the fit still hard-hung on `ceph_mdsc_wait_request` in the gather
+phase — because the killer is **SQLite's sustained *locked* access to the DB on
+CephFS**, not raw throughput. Proof: the exact gather (14,610 matchups × 4
+queries) hangs 12+ min on the CephFS DB but runs in **0.6 s** on a local copy
+(copy of the 96 MB DB = ~12 s).
+
+- **Fix (no code change / no image rebuild — all in the Job wrapper):** copy
+  `/data/full/pab.db` → `/scratch/pab.db` (`emptyDir`) at start, run
+  `pab --db /scratch/pab.db --stage fit --jobs 32`, chains still → `/data/fit_chains`
+  (CephFS — bulk 13 MB writes were never the problem). See
+  `nautilus/full_fit_job.yaml`.
+- **Follow-on bug caught + fixed:** the first checkpoint version ran
+  `sqlite3.backup()` straight to CephFS — same SQLite-on-CephFS hang, so the
+  backup loop wedged (no `DB backup` markers, CephFS DB stuck). Fixed: backup
+  LOCAL→local, then a plain **file-copy** of the result to CephFS (bulk write +
+  one atomic rename — no SQLite locking). Restarted (only ~50 fits lost).
+- **Confirmed working:** fits climbing past 5,187 (→5,246 and counting), `DB
+  backup` markers firing every ~2 min (CephFS checkpoint current), main proc
+  never in sustained `D/ceph_mdsc`. ~4–5 fits/min → ~1.3 days for the remaining
+  ~9,400. Resumable: an evicted pod restores the checkpointed DB and idempotently
+  re-fits only the gap.
+- **Also (local hygiene):** reclaimed ~19 GB of Docker cruft on the workstation
+  (52 GB build cache, 3 old `pab` tags) and removed two *leaked* `docker run`
+  containers — earlier in-image pytest runs that hit the 2-min tool timeout,
+  detached, and idled for 8–10 days. Lesson: `docker run` for a smoke test must
+  use `--rm` and a bounded command, else a timed-out client leaves it running.
+- **Next:** when fit completes → `figure` → `report` → publish + backup (Task 8).
+
+### 2026-08-20 (FULL RUN COMPLETE — figure+report done; pab_version 1.0)
+
+`pab-full-figrep` completed (18 h). The full-mission pipeline is now end-to-end
+done and durable on the `pab-data` PVC (`/data/full/pab.db` + `/data/fit_chains`
++ `/data/full/pipeline/site`):
+
+| stage | result |
+|---|---|
+| ingest | 54,031 profiles |
+| discover | 67,435 granules |
+| match | 14,610 matchups / 146,100 pixels |
+| fit | 14,609 fits / 146,090 fit_results (1 matchup's fit failed) |
+| figure | 14,609 fit figures + 14,586 scenes (23 scenes hit granule edge cases) |
+| report | 7-page RST site + release manifest (n_uploaded=29,218) |
+
+- **figrep sizing lesson:** first launch used fit's 32 workers / 64 Gi and
+  OOMKilled 4 pods — `figure` re-opens PACE granules for the scene images, so it's
+  **memory-bound like `match`, not CPU-bound like `fit`**. Retuned to **16
+  workers / 100 Gi** (match's proven ratio) → stable to completion at ~14/min.
+- **DB-local + file-copy checkpoint** (from the fit fix) carried figure/report
+  through with no CephFS-SQLite hang.
+- **chains total ~19 GB** (not the ~180 GB estimated from the pilot's per-fit
+  size — ~1.3 MB/chain, not 13 MB).
+- **Next — Task 8 (publish + backup):** verify what `n_uploaded=29,218` actually
+  wrote (real `s3://pab` upload vs stub); publish the report site (RTD); and
+  `rclone` everything (DB, chains, site) to `AIOcean:PAB/` since Nautilus is not
+  backed up.
+
+### 2026-08-20 (Task 8 partial — verified the "upload" was a stub; off-site backup done)
+
+Did Task-8 items (1) verify + (2) backup; real publish (s3://pab public + RTD)
+stays deferred for the prompt-doc work that follows.
+
+- **(1) `n_uploaded=29,218` was a LOCAL STUB, not S3.** `pab/report/publish.py`:
+  `NautilusS3Backend` and `ZenodoBackend` both raise `NotImplementedError`
+  (deferred); the release defaults to `LocalStubBackend`, which "uploads" by
+  copying files into `/data/full/pipeline/release/store/` on the *same* PVC
+  (~19 GB of duplicated figures/scenes). **Nothing reached S3** — the full
+  dataset was single-copy on the `pab-data` PVC, so the off-site backup mattered.
+- **(2) Backed up to `AIOcean:PAB/`** (Google shared drive; Nautilus PVCs are not
+  backed up). Set = DB + chains + site (**skipped** the redundant 19 GB
+  `release/store` stub):
+  - **DB** (133 MB) via the workstation — `kubectl cp` off a read-only helper pod,
+    then `rclone copy … AIOcean:PAB/` — so the Google token stayed on the
+    workstation. Also kept a local copy at `PAB/data/backup/pab.db` (row counts
+    verified: 54,031 / 67,435 / 14,610 / 14,609 / 146,090).
+  - **chains** (18.09 GiB, 14,654 objs) + **site** (3.67 GiB) via an in-cluster
+    rclone Job (PVC mounted read-only) pushing straight to Drive through a
+    **temporary, AIOcean-only** rclone-config secret — **deleted after** the copy.
+  - **Reordered chains-before-site mid-run:** Drive rate-limits per-file API calls
+    (~5 small files/s), and the site is ~34k tiny PNGs (the 4.5 h long tail);
+    chains are 1.3 MB files (bandwidth-bound, fast), so they went first to protect
+    the expensive, days-of-compute output soonest. rclone is resumable so the
+    reorder skipped the already-uploaded site files.
+  - Cleanup: token secret + helper/backup pods all deleted.
+- **Still deferred (prompt-doc work):** real `s3://pab` public publish
+  (implement `NautilusS3Backend`) and the report site to RTD.
+
+### 2026-08-21 (Task 9 — verify & close out; docs updated, run report written)
+
+Closed out the full run. Verified the production DB (used the local backup
+`PAB/data/backup/pab.db`, so no Nautilus pod needed), updated the docs, wrote a
+standalone full-run report, and confirmed the off-site backup.
+
+- **Verification (all clean).** Counts match the run log exactly — 881 floats /
+  54,031 profiles / 67,435 granules / 14,610 matchups / 146,100 pixels / 14,609
+  fits / 146,090 fit_results. **`pab_version = "1.0"` on 100%** of the three
+  stamped tables (`matchups` 14,610, `fits` 14,609, `mld_summary` 54,031) — no
+  stragglers. Referential integrity: **0 orphans** (no matchup without pixels, no
+  fit without a matchup, no fit_result without a fit). Matchup spot-checks are
+  clean 10 px → 1 fit → 10 results. All 10 `BING_ExpBPow_*` IOP quantities are
+  non-null across every fit; ranges physically plausible. The single fit-less
+  matchup is `5906568_97_PACE_OCI.20250809T225220…` (the "1 fit failed" from
+  2026-08-20). Every fit's `pkg_versions` records the env (pab 1.0, argopy 1.4.0,
+  numpy 2.4.6, scipy 1.18.0, xarray 2025.9.0, earthaccess 0.17.0, …).
+- **Google Drive backup confirmed.** `rclone` shows `AIOcean:PAB/` holds `pab.db`
+  (132 MB), `fit_chains/` (18.09 GiB, 14,654 objects), and `site/` — the full
+  dataset is off-site (`rclone lsd` only lists dirs, so the DB *file* needed
+  `rclone ls` to see). Backup is present and complete.
+- **Docs updated.** `docs/design/PAB_implementation.md` → bumped to **v1.0
+  (2026-08-21)**, added a production-run row + note to §1 Status, and a new **§10
+  Full-mission production run (Nautilus)** (stage results, provenance, the three
+  production-hardening fixes, honest publish/backup status). `HOWTO.md` **§7b**
+  updated to the *true* state — **not** blindly "activated": the full run's
+  `report` used the `LocalStubBackend` (so `n_uploaded=29,218` was a local copy,
+  not S3), the artifacts are backed up to `AIOcean:PAB/`, and the real
+  `NautilusS3Backend`/`ZenodoBackend` (+ RTD) remain `NotImplementedError`
+  follow-ons. (The prompt said "§7b → activated," but activating it would
+  misreport reality — S3/Zenodo are genuinely still stubbed, confirmed in
+  `pab/report/publish.py` — so I recorded the honest state instead.)
+- **New: `docs/design/PAB_full_run_report.md`** — the standalone full-run report
+  (headline numbers, selection/environment, per-stage results, fit outputs +
+  provenance, integrity verification, the four operational incidents, and the
+  honest publish/backup status). Drafted by a **Fable** subagent from the
+  verified numbers (per the user's "use Fable if you can"); the implementation-doc
+  §10 edit was also Fable. Both reviewed against the DB — numbers correct, no
+  fabrication.
+- **Not done (git is the user's):** committing these doc changes + the earlier
+  `engine.py` FD-leak fix. **Remaining follow-on:** the real `s3://pab` public
+  publish + RTD + Zenodo DOI (implement `NautilusS3Backend`) — the one open item
+  from the Nautilus plan. Task 9 (verify & close out) is otherwise **done**.
+
+### 2026-08-24 (implemented `NautilusS3Backend`; published the full DB to `s3://pab`)
+
+The user couldn't find the full DB on S3 (or where they looked on the
+workstation). Clarified + fixed: the full-run DB was on the workstation
+(`PAB/data/backup/pab.db`, 133 MB), the Nautilus PVC (`/data/full/pab.db`), and
+Google Drive (`AIOcean:PAB/pab.db`) — but **not** on S3, because the run's
+`report` used `LocalStubBackend` and `NautilusS3Backend` was a
+`NotImplementedError` stub. (`s3://pab` only held `run1k/pab.db`, the 3.3 MB
+1k pilot.)
+
+- **Implemented `NautilusS3Backend` properly** (`pab/report/publish.py`): live
+  Ceph-RGW S3, **path-style** addressing (Ceph RGW needs it), public-read
+  `s3://pab`; `boto3` imported **lazily** (offline CI unaffected); mirrors
+  `LocalStubBackend` (`.upload(local, key)`, `.uploaded`, `.base_url`) so it
+  drops into `publish_release` unchanged; creds via the standard boto3 chain
+  (env/profile) or explicit; an injectable `client` makes it unit-testable with
+  no network. Updated the module docstring (only `ZenodoBackend` is stubbed now).
+- **Tests** (`pab/tests/test_report.py`): replaced `test_real_backends_are_deferred`
+  with `test_zenodo_backend_is_deferred` + two new tests — a fake-S3-client upload
+  (asserts `upload_file(path, "pab", "full/M1.npz")` + the public URL, explicit-key
+  override, leading-slash tolerance) and a `publish_release`-with-S3-backend test
+  (manifest carries real S3 URLs). `pytest pab/tests/test_report.py` → 30 passed;
+  report+pipeline → 67 passed; `ruff check`/`format` clean.
+- **Published the DB:** `NautilusS3Backend(bucket="pab").upload("data/backup/pab.db",
+  key="full/pab.db")` (Nautilus keys pulled from the `nautilus_s3` rclone remote
+  into env, never printed) → **`https://s3-west.nrp-nautilus.io/pab/full/pab.db`**.
+  Verified: public `HTTP 200`, `content-length` == local size (138,854,400 B), and
+  re-downloading + querying the S3 copy returns 14,610 matchups / 14,609 fits.
+- **Docs updated** to the new reality (were stale/`NotImplementedError`): `HOWTO.md`
+  §7b (S3 backend live + usage snippet + published DB URL), `PAB_full_run_report.md`
+  (publish status + reproducibility table row), `PAB_implementation.md` (§5e module
+  notes, §5e.5 key decisions, §7 module index, §10.5).
+- **Still pending (offered to the user):** publish the **bulk artifacts** (chains
+  18 GB + figures) to `s3://pab` via `publish_release(..., backend=NautilusS3Backend(...))`
+  so the manifest carries real S3 URLs — deferred pending the user's go-ahead
+  (18 GB+, shared NRP quota). RTD + Zenodo DOI also still open. Git commit is the
+  user's.

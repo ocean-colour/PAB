@@ -1,7 +1,9 @@
 import sqlite3
 from pathlib import Path
 
-db_path = Path("data/pab.db")
+from pab.config import DATA_DIR
+
+db_path = Path(DATA_DIR) / "pab.db"
 if not db_path.exists():
     print(f"No database found at {db_path}")
     raise SystemExit
@@ -30,8 +32,8 @@ print()
 
 # Show granules
 print("=== granules ===")
-for r in conn.execute("SELECT id, time, short_name FROM granules"):
-    print(f"  {r['id']}  {r['time']}  {r['short_name']}")
+for r in conn.execute("SELECT granule_id, time_start, short_name FROM granules LIMIT 20"):
+    print(f"  {r['granule_id']}  {r['time_start']}  {r['short_name']}")
 
 print()
 

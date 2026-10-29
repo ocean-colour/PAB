@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from pab.config import DATA_DIR, pab_version, package_versions
+from pab.fit.models import prior_set_label
 
 if TYPE_CHECKING:
     from pab.fit.run import FitSpectrumResult
@@ -71,8 +72,13 @@ def persist_fit(
     """Upsert the ``fits`` row and its namespaced ``fit_results`` (idempotent).
 
     Quantities are namespaced ``BING_<model_pair>_<quantity>``. Provenance
-    (``pab_version``, ``created``, ``pkg_versions``) is stamped on the ``fits``
-    row.
+    (``pab_version``, ``created``, ``pkg_versions`` — which carries the git SHA
+    of every source repo) is stamped on the ``fits`` row, along with the
+    **schema-v5 radiative-transfer configuration** (``rt_backend``,
+    ``include_raman``, ``include_chl_fl``, ``include_cdom_fl``, ``phi_c``,
+    ``fit_bp``). Those six are what distinguish a 2.0 fit from a 1.0 one: the
+    ``model_pair`` is identical between them, so without them the two
+    generations are indistinguishable in the store.
 
     Returns:
         The ``fit_id``.
@@ -89,7 +95,10 @@ def persist_fit(
             "anw_model": result.anw_model,
             "bbnw_model": result.bbnw_model,
             "rrs_source": rrs_source,
-            "prior_set": "bing_standard",
+            # "bing_standard" for BING's own priors (1.0, 2.0); the ceiling
+            # string for 2.0.1 -- one helper builds it from the same ceilings
+            # build_models applied, so text and bounds cannot drift.
+            "prior_set": prior_set_label(config),
             "nsteps": config.nsteps,
             "nburn": config.nburn,
             "nwalkers": result.nwalkers,
@@ -105,6 +114,13 @@ def persist_fit(
             "pkg_versions": json.dumps(package_versions()),
             "pab_version": pab_version,
             "created": created,
+            # --- schema v5: the RT configuration this fit actually ran ---
+            "rt_backend": config.rt_backend,
+            "include_raman": int(bool(config.include_Raman)),
+            "include_chl_fl": int(bool(config.include_Chl_fl)),
+            "include_cdom_fl": int(bool(config.include_CDOM_fl)),
+            "phi_c": float(config.phi_C),
+            "fit_bp": int(bool(config.fit_Bp)),
         },
     )
     prefix = f"BING_{config.model_pair}_"

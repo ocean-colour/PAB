@@ -1,0 +1,75 @@
+# Prompt 9 Task 1(b) — off-site backup of the v2 bulk artifacts to Google Drive.
+#
+# WHY IN-CLUSTER: the 2.0 chains (~18 GB, 15,971 files) and figures (~1 GB,
+# 17,361 files) exist ONLY on the Nautilus PVC — the workstation
+# `v2/fit_chains/` is empty — and Nautilus PVCs are not backed up. This is the
+# step that gives 35 h of compute a second copy. The v2 `pab.db` and `site/`
+# are backed up directly from the workstation and are NOT repeated here.
+#
+# *** `rclone copy`, NEVER `rclone sync`. *** `sync` makes the destination
+# match the source, which means it DELETES anything at the destination that is
+# not in the source. The destination here is a shared Google Drive holding the
+# 1.0 backups.
+#
+# CREDENTIAL: the `aiocean-rclone` secret is an AIOcean-ONLY rclone config
+# (the workstation's other three remotes are deliberately excluded) and is
+# TEMPORARY — delete it as soon as this job reports Completed:
+#
+#   kubectl -n sea-meets-the-stars delete secret aiocean-rclone
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars delete job pab-v2-backup --ignore-not-found
+#   kubectl apply -f nautilus/v2_backup_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v2-backup
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v2-backup
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 3             # resumable: `copy` skips files already at the destination
+  activeDeadlineSeconds: 86400    # 24 h against a ~19 GB upload
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: rclone
+        image: rclone/rclone:latest
+        command: ["/bin/sh", "-lc"]
+        args:
+          - |
+            set -e
+            LOG=/data/v2/backup.log
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $LOG; }
+            log "SOURCE SIZES"
+            du -sh /data/v2/fit_chains /data/v2/pipeline/figures 2>&1 | tee -a $LOG
+            ls /data/v2/fit_chains | wc -l | tee -a $LOG
+            ls /data/v2/pipeline/figures | wc -l | tee -a $LOG
+            log "DESTINATION BEFORE (must not be clobbered: copy, never sync)"
+            rclone --config /cfg/rclone.conf lsd AIOcean:PAB 2>&1 | tee -a $LOG
+            log "CHAINS -> AIOcean:PAB/v2/fit_chains"
+            rclone --config /cfg/rclone.conf copy /data/v2/fit_chains AIOcean:PAB/v2/fit_chains \
+              --transfers 8 --checkers 16 --retries 5 --low-level-retries 20 \
+              --stats 5m --stats-one-line 2>&1 | tee -a $LOG
+            log "FIGURES -> AIOcean:PAB/v2/figures"
+            rclone --config /cfg/rclone.conf copy /data/v2/pipeline/figures AIOcean:PAB/v2/figures \
+              --transfers 8 --checkers 16 --retries 5 --low-level-retries 20 \
+              --stats 5m --stats-one-line 2>&1 | tee -a $LOG
+            log "VERIFY — source vs destination counts"
+            echo "chains  local=$(ls /data/v2/fit_chains | wc -l) remote=$(rclone --config /cfg/rclone.conf ls AIOcean:PAB/v2/fit_chains | wc -l)" | tee -a $LOG
+            echo "figures local=$(ls /data/v2/pipeline/figures | wc -l) remote=$(rclone --config /cfg/rclone.conf ls AIOcean:PAB/v2/figures | wc -l)" | tee -a $LOG
+            log "CHECK — re-read a sample and compare hashes"
+            rclone --config /cfg/rclone.conf check /data/v2/fit_chains AIOcean:PAB/v2/fit_chains \
+              --one-way --size-only 2>&1 | tail -5 | tee -a $LOG
+            log "V2_BACKUP_DONE"
+        env:
+        - {name: RCLONE_DRIVE_CHUNK_SIZE, value: "64M"}
+        resources:
+          requests: {cpu: "2", memory: "4Gi", ephemeral-storage: "4Gi"}
+          limits: {cpu: "4", memory: "8Gi", ephemeral-storage: "8Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: cfg, mountPath: /cfg, readOnly: true}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: cfg, secret: {secretName: aiocean-rclone}}
