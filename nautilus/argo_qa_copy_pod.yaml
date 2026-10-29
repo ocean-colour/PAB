@@ -1,0 +1,33 @@
+# Long-lived pod for copying files OFF the pab-data CephFS PVC (E1b of
+# claude_prompts/v2/report_improvements.md: the 2.0-backfill Argo Q&A plots
+# under /data/v2/pipeline/argo_qa/, which exist only on the PVC).
+#
+# Unlike inspect_pod.yaml (which runs a script and exits), this one sleeps so
+# `kubectl exec ... tar` can stream from it. The PVC is mounted READ-ONLY.
+# It deletes itself after 4 h (activeDeadlineSeconds) if not cleaned up.
+#
+# Usage:
+#   kubectl apply -f nautilus/argo_qa_copy_pod.yaml
+#   kubectl -n sea-meets-the-stars get pod pab-argoqa-copy      # wait for Running
+#   kubectl -n sea-meets-the-stars exec pab-argoqa-copy -- \
+#       tar czf - -C /data/v2/pipeline argo_qa > v2_argo_qa.tgz
+#   kubectl -n sea-meets-the-stars delete pod pab-argoqa-copy   # cleanup
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pab-argoqa-copy
+  namespace: sea-meets-the-stars
+spec:
+  restartPolicy: Never
+  activeDeadlineSeconds: 14400
+  containers:
+  - name: copy
+    image: python:3.12-slim
+    command: ["sleep", "14400"]
+    resources:
+      requests: {cpu: "500m", memory: "1Gi", ephemeral-storage: "2Gi"}
+      limits: {cpu: "1", memory: "1Gi", ephemeral-storage: "2Gi"}
+    volumeMounts:
+    - {name: data, mountPath: /data, readOnly: true}
+  volumes:
+  - {name: data, persistentVolumeClaim: {claimName: pab-data, readOnly: true}}

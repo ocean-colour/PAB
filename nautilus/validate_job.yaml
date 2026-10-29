@@ -1,0 +1,54 @@
+# Small end-to-end validation of the PAB image on Nautilus (5 profiles).
+# Confirms lazy reads (no --download) + SQLite on the CephFS PVC. NO ttl (so the
+# Job/logs persist) and the run output is tee'd to /data/val/run.log on the PVC
+# so it survives pod cleanup/preemption.
+#
+# Usage (needs the ConfigMap first):
+#   kubectl -n sea-meets-the-stars create configmap pab-validate-csv \
+#     --from-file=profiles.csv=nautilus/val_profiles.csv --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl -n sea-meets-the-stars delete job pab-validate --ignore-not-found
+#   kubectl apply -f nautilus/validate_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-validate
+#   # if the pod was cleaned, read the durable log via the inspect pod:
+#   #   (add `cat /data/val/run.log` or just re-run inspect_pod.yaml)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-validate
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.3
+        imagePullPolicy: Always
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            rm -rf /data/val && mkdir -p /data/val
+            echo "=== RUN start $(date -Is) ==="
+            pab --db /data/val/pab.db --outdir /data/val/pipeline \
+                --profiles-csv /cfg/profiles.csv --jobs 4 2>&1 | tee /data/val/run.log
+            echo "=== COUNTS ==="
+            python -c "import sqlite3; c=sqlite3.connect('/data/val/pab.db'); print({t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('profiles','granules','matchups','matchup_pixels','fits','fit_results')})"
+            echo VALIDATE_DONE
+        resources:
+          requests: {cpu: "4", memory: "8Gi", ephemeral-storage: "5Gi"}
+          limits: {cpu: "4", memory: "8Gi", ephemeral-storage: "10Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+        - {name: csv, mountPath: /cfg/profiles.csv, subPath: profiles.csv}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}
+      - {name: csv, configMap: {name: pab-validate-csv}}

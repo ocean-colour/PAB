@@ -1,0 +1,322 @@
+# Prompt 5 Task 5 — per-pixel viewing geometry from PACE L1B, whole v2 DB.
+#
+# Fills theta_s / theta_v / dphi / geom_source on every matchup_pixels row.
+# Runs BETWEEN match and fit: the 2.0 inelastic RT backend needs the angles at
+# fit time, and the read is per GRANULE, so grouping turns ~160k potential
+# 1.8 GB L1B opens into ~13.5k.
+#
+# --jobs 8, NOT 16. This stage issues one UNCACHED CMR query per granule on
+# top of the L1B read, so --jobs 16 would mean 16 concurrent CMR searches
+# against the same NASA infrastructure the working agreements already cap at
+# --discover-jobs 8. This is an etiquette cap, not a performance choice.
+#
+# SIZING IS UNMEASURED AT LAUNCH — deliberately. The two single-granule
+# numbers in hand disagree 5x (47 s in-pod, ~9 s on the workstation) and both
+# are startup-dominated, so neither is a rate; the spread is the difference
+# between a 4 h job and a 22 h one. Rather than build a synthetic 200-granule
+# slice, this job IS the measurement: it logs "geometry progress: N/M
+# granules" every 50 (pab.parallel.PROGRESS_EVERY), and the stage is
+# idempotent on `theta_s IS NULL` with zero network work for filled pixels, so
+# killing it after a few hundred granules costs nothing and resuming is just
+# re-running it. Take the rate from ~200-400 granules in, NOT the first 50:
+# the discover pool warmed for ~100 searches and an early sample over-projected
+# by 2.2x (Prompt 5 Task 3).
+#
+# Gates (run automatically at the end, and safe to re-run):
+#   - every matchup_pixels row has theta_s
+#   - geom_source = 'L1B_V3' throughout
+#   - theta_v spans 0..~60 deg; dphi inside (-180, 180]
+#   - failures listed with causes (L1B missing from CMR, grid-check failure)
+#
+# The sweep for this stage is simply running it again.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars delete job pab-v2-geometry --ignore-not-found
+#   kubectl apply -f nautilus/v2_geometry_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v2-geometry
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v2-geometry
+  namespace: sea-meets-the-stars
+spec:
+  # backoffLimit 30, NOT 4, because this stage OOMs and resumes by design until
+  # the max_tasks_per_child fix lands (Q15). `build_geometry` builds its pool
+  # WITHOUT max_tasks_per_child, which `match` sets precisely to bound
+  # per-worker fsspec/HDF5 growth. Measured 2026-09-27 on the Fresno node:
+  #
+  #   granule  200   workers ~2.5 GB each   cgroup 16 GB
+  #   granule  750   workers ~6.8 GB each   cgroup 43 GB
+  #   => ~7.8 MB per granule per worker; 64 Gi is reached near granule ~1,090
+  #
+  # Unbounded, the whole run would need ~113 GB. Rather than request that, we
+  # let it OOM: progress is written per granule by the parent, and every
+  # restart re-queries `theta_s IS NULL` and resumes, so each pod clears
+  # ~1,100 granules. 12,251 granules therefore needs ~11 restarts; 30 is margin.
+  backoffLimit: 30         # resumable: filled pixels are skipped before any open
+  # Bounded lifetime, for the exit hang in Q10(c): the match job finished its
+  # work then blocked forever in concurrent.futures' atexit join on an
+  # abandoned pool, holding 16 CPU / 100 Gi for 8.5 h. geometry uses the same
+  # pattern. It is idempotent on `theta_s IS NULL`, so a deadline kill costs
+  # only the tail and re-running resumes.
+  activeDeadlineSeconds: 108000   # 30 h; see the backoffLimit note
+  template:
+    spec:
+      restartPolicy: Never
+      # PINNED TO WEST-COAST NODES. This stage is pure network I/O against
+      # NASA OB.DAAC in AWS us-west-2, and node placement dominates it:
+      #
+      #   8 workers on moff.sdstate.edu   13.7 s/granule  -> 0.073 granules/s
+      #   1 worker  on humboldt.edu        7.7 s/granule  -> 0.13  granules/s
+      #   1 worker  on the workstation     4.7-7.4 s      (Santa Cruz)
+      #
+      # i.e. ONE California worker beat the entire 8-worker South Dakota pod by
+      # ~1.8x, and the 8 workers there bought nothing because they contend for
+      # the node's bandwidth (CPU sat at 74 millicores across all 8). Measured
+      # 2026-09-27 with an identical CMR-lookup + L1B-open probe.
+      #
+      # CMR is NOT the bottleneck: the lookup is 0.4-1.4 s, ~1% of the cost. So
+      # --jobs 8 is kept purely as the CMR etiquette cap from the working
+      # agreements, not because 8 is a throughput choice.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                - bw6600-01.ts.fresnostate.edu
+                - bw6600-02.ts.fresnostate.edu
+                - controller0.calit2.optiputer.net
+                - controller0.sdsc.optiputer.net
+                - controller1.sdsc.optiputer.net
+                - cph-blade10.humboldt.edu
+                - cph-blade11.humboldt.edu
+                - cph-blade12.humboldt.edu
+                - cph-blade13.humboldt.edu
+                - cph-blade14.humboldt.edu
+                - cph-blade15.humboldt.edu
+                - cph-blade16.humboldt.edu
+                - cph-dgx-node1.humboldt.edu
+                - cph-dgx-node2.humboldt.edu
+                - cph-dgx-node4.humboldt.edu
+                - cph-dgx-node5.humboldt.edu
+                - cph-dgx-node6.humboldt.edu
+                - cph-dgx-node7.humboldt.edu
+                - cph-dgx-node8.humboldt.edu
+                - cph-dgx-node9.humboldt.edu
+                - cph-perfsonar.humboldt.edu
+                - edex.calit2.optiputer.net
+                - exp-19-09.sdsc.optiputer.net
+                - exp-19-10.sdsc.optiputer.net
+                - exp-19-11.sdsc.optiputer.net
+                - exp-19-12.sdsc.optiputer.net
+                - gateway.calit2.optiputer.net
+                - hd200-01.ts.fresnostate.edu
+                - jump.sdsc.optiputer.net
+                - jupyter.calit2.optiputer.net
+                - k8s-100g-dtn-6.ucsc.edu
+                - k8s-4090-01.calit2.optiputer.net
+                - k8s-4090-02.calit2.optiputer.net
+                - k8s-bf2-01.sdsc.optiputer.net
+                - k8s-chase-ci-01.calit2.optiputer.net
+                - k8s-chase-ci-02.calit2.optiputer.net
+                - k8s-chase-ci-04.calit2.optiputer.net
+                - k8s-chase-ci-07.calit2.optiputer.net
+                - k8s-chase-ci-10.calit2.optiputer.net
+                - k8s-epyc-01.sdsc.optiputer.net
+                - k8s-gen4-03.calit2.optiputer.net
+                - k8s-gen4-05.calit2.optiputer.net
+                - k8s-gen5-01.sdsc.optiputer.net
+                - k8s-gen5-02.sdsc.optiputer.net
+                - k8s-gpu-01.calit2.optiputer.net
+                - k8s-gpu-1.ucsc.edu
+                - k8s-gpu-2.ucsc.edu
+                - k8s-gpu-6.ucsc.edu
+                - k8s-haosu-03.sdsc.optiputer.net
+                - k8s-haosu-05.sdsc.optiputer.net
+                - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-haosu-11.sdsc.optiputer.net
+                - k8s-haosu-15.sdsc.optiputer.net
+                - k8s-haosu-18.sdsc.optiputer.net
+                - k8s-haosu-19.sdsc.optiputer.net
+                - k8s-haosu-22.sdsc.optiputer.net
+                - k8s-haosu-24.sdsc.optiputer.net
+                - k8s-haosu-25.sdsc.optiputer.net
+                - k8s-haosu-26.sdsc.optiputer.net
+                - k8s-haosu-27.sdsc.optiputer.net
+                - k8s-haosu-28.sdsc.optiputer.net
+                - k8s-haosu-29.sdsc.optiputer.net
+                - k8s-igrok-01.calit2.optiputer.net
+                - k8s-igrok-02.calit2.optiputer.net
+                - k8s-igrok-03.calit2.optiputer.net
+                - k8s-igrok-04.calit2.optiputer.net
+                - k8s-igrok-05.calit2.optiputer.net
+                - k8s-igrok-06.calit2.optiputer.net
+                - k8s-nvme-01.sdsc.optiputer.net
+                - k8s-ravi-01.calit2.optiputer.net
+                - k8s-s-00.sdsc.optiputer.net
+                - k8s-stratix-10-02.sdsc.optiputer.net
+                - k8s-u200-00.calit2.optiputer.net
+                - k8s-usra-01.calit2.optiputer.net
+                - k8s-usra-02.calit2.optiputer.net
+                - nautilus-ext-gpu01.fullerton.edu
+                - nautilus-it-cpu01.fullerton.edu
+                - nautilus-it-cpu02.fullerton.edu
+                - nautilus-it-cpu03.fullerton.edu
+                - nautilus-it-cpu04.fullerton.edu
+                - nautilus-it-cpu05.fullerton.edu
+                - nautilus-it-cpu06.fullerton.edu
+                - nautilus-it-cpu07.fullerton.edu
+                - nautilus-it-cpu08.fullerton.edu
+                - nautilus-it-cpu09.fullerton.edu
+                - nautilus-it-cpu11.fullerton.edu
+                - nautilus-it-cpu12.fullerton.edu
+                - nautilus-it-cpu13.fullerton.edu
+                - nautilus-it-cpu14.fullerton.edu
+                - nautilus-it-cpu15.fullerton.edu
+                - nautilus-it-cpu16.fullerton.edu
+                - nautilus-it-cpu17.fullerton.edu
+                - nautilus-it-gpu01.fullerton.edu
+                - nautilus-it-gpu02.fullerton.edu
+                - nautilus-it-gpu03.fullerton.edu
+                - nautilus-it-gpu04.fullerton.edu
+                - nautilus-it-gpu05.fullerton.edu
+                - nautilus-it-gpu06.fullerton.edu
+                - nautilus-it-gpu07.fullerton.edu
+                - nautilus-it-gpu08.fullerton.edu
+                - nautilus-it-storage01.fullerton.edu
+                - nautilus-it-storage02.fullerton.edu
+                - nautilus-it-storage03.fullerton.edu
+                - node-1-1.sdsc.optiputer.net
+                - node-1-2.sdsc.optiputer.net
+                - node-1-3.sdsc.optiputer.net
+                - node-1-5.sdsc.optiputer.net
+                - node-1-6.sdsc.optiputer.net
+                - node-2-1.sdsc.optiputer.net
+                - node-2-10.sdsc.optiputer.net
+                - node-2-11.sdsc.optiputer.net
+                - node-2-12.sdsc.optiputer.net
+                - node-2-2.sdsc.optiputer.net
+                - node-2-3.sdsc.optiputer.net
+                - node-2-4.sdsc.optiputer.net
+                - node-2-5.sdsc.optiputer.net
+                - node-2-6.sdsc.optiputer.net
+                - node-2-7.sdsc.optiputer.net
+                - node-2-8.sdsc.optiputer.net
+                - node-2-9.sdsc.optiputer.net
+                - node-3-5.sdsc.optiputer.net
+                - node-3-6.sdsc.optiputer.net
+                - nrp-ai-100-01.sdsc.optiputer.net
+                - nrp-s63-25.sdsc.optiputer.net
+                - nrp-s63-27.sdsc.optiputer.net
+                - patternlab.calit2.optiputer.net
+                - proc-01.ts.fresnostate.edu
+                - proc-02.ts.fresnostate.edu
+                - prp-perfsonar-1.ucsc.edu
+                - rci-nrp-cpu-01.sdsu.edu
+                - rci-nrp-cpu-02.sdsu.edu
+                - rci-nrp-cpu-03.sdsu.edu
+                - rci-nrp-cpu-04.sdsu.edu
+                - rci-nrp-dtn-01.sdsu.edu
+                - rci-nrp-dtn-02.sdsu.edu
+                - rci-nrp-dtn-03.sdsu.edu
+                - rci-nrp-gpu-01.sdsu.edu
+                - rci-nrp-gpu-02.sdsu.edu
+                - rci-nrp-gpu-03.sdsu.edu
+                - rci-nrp-gpu-04.sdsu.edu
+                - rci-nrp-gpu-05.sdsu.edu
+                - rci-nrp-gpu-06.sdsu.edu
+                - rci-nrp-gpu-07.sdsu.edu
+                - rci-nrp-gpu-08.sdsu.edu
+                - rci-tide-cpu-01.sdsu.edu
+                - rci-tide-cpu-02.sdsu.edu
+                - rci-tide-cpu-03.sdsu.edu
+                - rci-tide-cpu-04.sdsu.edu
+                - rci-tide-cpu-05.sdsu.edu
+                - rci-tide-cpu-06.sdsu.edu
+                - rci-tide-dtn-01.sdsu.edu
+                - rci-tide-dtn-02.sdsu.edu
+                - rci-tide-dtn-03.sdsu.edu
+                - rci-tide-gpu-01.sdsu.edu
+                - rci-tide-gpu-02.sdsu.edu
+                - rci-tide-gpu-03.sdsu.edu
+                - rci-tide-gpu-04.sdsu.edu
+                - rci-tide-gpu-05.sdsu.edu
+                - rci-tide-gpu-06.sdsu.edu
+                - rci-tide-gpu-07.sdsu.edu
+                - rci-tide-gpu-08.sdsu.edu
+                - rci-tide-gpu-09.sdsu.edu
+                - rci-tide-gpu-10.sdsu.edu
+                - rci-tide-gpu-11.sdsu.edu
+                - rci-tide-gpu-12.sdsu.edu
+                - rci-tide-gpu-13.sdsu.edu
+                - rci-tide-gpu-14.sdsu.edu
+                - rci-tide-gpu-15.sdsu.edu
+                - rci-tide-gpu-16.sdsu.edu
+                - rci-tide-gpu-17.sdsu.edu
+                - ry-gpu-01.sdsc.optiputer.net
+                - ry-gpu-02.sdsc.optiputer.net
+                - ry-gpu-03.sdsc.optiputer.net
+                - ry-gpu-04.sdsc.optiputer.net
+                - ry-gpu-06.sdsc.optiputer.net
+                - ry-gpu-07.sdsc.optiputer.net
+                - ry-gpu-08.sdsc.optiputer.net
+                - ry-gpu-09.sdsc.optiputer.net
+                - ry-gpu-10.sdsc.optiputer.net
+                - ry-gpu-11.sdsc.optiputer.net
+                - ry-gpu-12.sdsc.optiputer.net
+                - ry-gpu-13.sdsc.optiputer.net
+                - ry-gpu-14.sdsc.optiputer.net
+                - ry-gpu-15.sdsc.optiputer.net
+                - ry-gpu-16.sdsc.optiputer.net
+                - ry-storage-01.sdsc.optiputer.net
+                - ry-storage-02.sdsc.optiputer.net
+                - ry-storage-03.sdsc.optiputer.net
+                - ry-storage-04.sdsc.optiputer.net
+                - siderea.ucsc.edu
+                - storage-01.ts.fresnostate.edu
+                - storage-02.ts.fresnostate.edu
+                - storage-03.ts.fresnostate.edu
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.0.3   # PAB 99c37ef -- carries the Q8b portable_errors fix
+        imagePullPolicy: Always
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data/v2}
+        - {name: PYTHONWARNINGS, value: "ignore"}
+        - {name: RUN, value: /data/v2}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            ulimit -n 65536 || true
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/geometry.log; }
+            log "FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+            log "PROVENANCE"
+            python -c "import json; from pab.config import package_versions, pab_version; pv=package_versions(); print('pab_version', pab_version); print('git_sha', json.dumps(pv['git_sha']))" 2>&1 | tee -a $RUN/geometry.log
+            log "BEFORE"
+            python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); q=lambda s: c.execute(s).fetchone()[0]; print('pixels', q('SELECT COUNT(*) FROM matchup_pixels')); print('with theta_s', q('SELECT COUNT(*) FROM matchup_pixels WHERE theta_s IS NOT NULL')); print('granules in pixels', q('SELECT COUNT(DISTINCT granule_id) FROM matchups'))" 2>&1 | tee -a $RUN/geometry.log
+            log "GEOMETRY start (--jobs 8, whole v2 DB)"
+            pab --db $RUN/pab.db --outdir $RUN/pipeline \
+                --stage geometry --jobs 8 2>&1 \
+              | tee -a $RUN/geometry.log
+            log "GEOMETRY end"
+            log "GATES"
+            python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); q=lambda s: c.execute(s).fetchone(); n=q('SELECT COUNT(*) FROM matchup_pixels')[0]; f=q('SELECT COUNT(*) FROM matchup_pixels WHERE theta_s IS NULL')[0]; print('pixels', n, 'missing theta_s', f, 'GATE', 'PASS' if f==0 else 'FAIL'); print('geom_source', c.execute('SELECT geom_source, COUNT(*) FROM matchup_pixels GROUP BY 1').fetchall()); print('theta_s', q('SELECT MIN(theta_s), MAX(theta_s) FROM matchup_pixels')); print('theta_v', q('SELECT MIN(theta_v), MAX(theta_v) FROM matchup_pixels')); print('dphi', q('SELECT MIN(dphi), MAX(dphi) FROM matchup_pixels')); d=q('SELECT COUNT(*) FROM matchup_pixels WHERE dphi IS NOT NULL AND (dphi <= -180.0 OR dphi > 180.0)')[0]; print('dphi out of (-180,180]', d, 'GATE', 'PASS' if d==0 else 'FAIL')" 2>&1 | tee -a $RUN/geometry.log
+            log "disk"
+            du -sh $RUN 2>/dev/null | tee -a $RUN/geometry.log
+            log "V2_GEOMETRY_DONE"
+        resources:
+          requests: {cpu: "8", memory: "64Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "8", memory: "64Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}

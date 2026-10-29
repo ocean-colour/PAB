@@ -5,7 +5,7 @@ import pytest
 import xarray as xr
 
 from pab.db import Store
-from pab.pace import cloud, discover, extract, flags, l1b
+from pab.pace import cloud, discover, extract, flags, iop, l1b
 
 
 def make_granule(flagged=()):
@@ -148,6 +148,99 @@ def test_open_granule_unknown_backend():
         cloud.open_granule("x", backend="bogus")
 
 
+# -- pre-download / local cache (no network) --------------------------------
+def test_granule_cache_path_uses_basename(tmp_path):
+    url = "https://host/path/PACE_OCI.20250124T215746.L2.OC_AOP.V3_1.nc"
+    p = cloud.granule_cache_path(url, tmp_path)
+    assert p == tmp_path / "PACE_OCI.20250124T215746.L2.OC_AOP.V3_1.nc"
+
+
+def test_download_granule_local_passthrough(tmp_path):
+    # a local path source is returned unchanged (no network)
+    local = tmp_path / "g.nc"
+    assert cloud.download_granule(str(local), tmp_path) == local
+
+
+def test_download_granule_idempotent_skips_network(tmp_path, monkeypatch):
+    # a cached granule is reused without invoking earthaccess.download.
+    # earthaccess is an optional dep (not in the lean CI env), so skip when absent.
+    earthaccess = pytest.importorskip("earthaccess")
+
+    def _boom(*a, **k):  # pragma: no cover - must not be called
+        raise AssertionError("earthaccess.download should not run for a cache hit")
+
+    monkeypatch.setattr(earthaccess, "download", _boom)
+    url = "https://host/g.nc"
+    target = cloud.granule_cache_path(url, tmp_path)
+    target.write_bytes(b"cached")
+    assert cloud.download_granule(url, tmp_path) == target
+
+
+def test_download_granule_logs_in_before_a_fresh_download(tmp_path, monkeypatch):
+    # A fresh process has no earthaccess session -- download_granule must log
+    # in itself (the bug fixed for open_s3 in first_runs.md Task 2, but missed
+    # here: 'NoneType' object has no attribute 'get' on a cold `--download`
+    # run before this fix).
+    earthaccess = pytest.importorskip("earthaccess")
+    monkeypatch.setattr(cloud, "_EARTHACCESS_LOGGED_IN", False)
+    calls = []
+    monkeypatch.setattr(earthaccess, "login", lambda **kw: calls.append("login"))
+
+    def _fake_download(urls, local_path):
+        assert calls == ["login"], "download must run after login"
+        calls.append("download")
+        target = tmp_path / "g.nc"
+        target.write_bytes(b"x")
+        return [str(target)]
+
+    monkeypatch.setattr(earthaccess, "download", _fake_download)
+    out = cloud.download_granule("https://host/g.nc", tmp_path)
+    assert out == tmp_path / "g.nc"
+    assert calls == ["login", "download"]
+
+
+def test_cached_opener_opens_local_path_directly(tmp_path, monkeypatch):
+    ds = make_granule()
+    seen = {}
+
+    def _open_local(fn):
+        seen["fn"] = fn
+        return ds
+
+    monkeypatch.setattr(cloud, "open_local", _open_local)
+    opener = cloud.cached_opener(tmp_path)
+    out = opener(str(tmp_path / "g.nc"))
+    assert out.identical(ds)
+    assert seen["fn"] == str(tmp_path / "g.nc")
+
+
+def test_cached_opener_downloads_then_opens(tmp_path, monkeypatch):
+    ds = make_granule()
+    calls = {}
+
+    def _download(src, cd):
+        calls["dl"] = src
+        return tmp_path / "g.nc"
+
+    def _open_local(fn):
+        calls["fn"] = fn
+        return ds
+
+    monkeypatch.setattr(cloud, "download_granule", _download)
+    monkeypatch.setattr(cloud, "open_local", _open_local)
+    opener = cloud.cached_opener(tmp_path)
+    out = opener("https://host/g.nc")
+    assert out.identical(ds)
+    assert calls["dl"] == "https://host/g.nc"
+    assert calls["fn"] == str(tmp_path / "g.nc")
+
+
+def test_cached_opener_no_download_raises_when_missing(tmp_path):
+    opener = cloud.cached_opener(tmp_path, download=False)
+    with pytest.raises(FileNotFoundError):
+        opener("https://host/missing.nc")
+
+
 # -- discovery persistence (no network) -------------------------------------
 def test_persist_granules_from_table():
     import pandas as pd
@@ -214,3 +307,110 @@ def test_l1b_stub_raises():
     assert l1b.RRS_SOURCE_L2 == "L2_AOP"
     with pytest.raises(NotImplementedError):
         l1b.rrs_from_l1b()
+
+
+# -- NASA GIOP baseline (pab.pace.iop) ---------------------------------------
+def test_iop_source_for_aop_swaps_tag():
+    aop = "https://x/PACE_OCI.20260309T153836.L2.OC_AOP.V3_2.nc"
+    assert iop.iop_source_for_aop(aop) == (
+        "https://x/PACE_OCI.20260309T153836.L2.OC_IOP.V3_2.nc"
+    )
+
+
+def test_iop_source_for_aop_raises_on_non_aop():
+    with pytest.raises(ValueError, match="not an AOP granule"):
+        iop.iop_source_for_aop("PACE_OCI.20260309T153836.L2.OC_IOP.V3_2.nc")
+
+
+def make_iop_granule(with_aph_adg_unc: bool = False):
+    """A tiny 3x3x3 IOP-shaped dataset (bbp_442/adg_442/adg_s/bbp_s/bbp_unc_442,
+    a/bb/aph spectral; optionally the aph_unc_442/adg_unc_442 fields)."""
+    nx, ny, nw = 3, 3, 3
+    lat = np.linspace(44.0, 44.2, nx)
+    lon = np.linspace(-31.0, -30.8, ny)
+    lons2d, lats2d = np.meshgrid(lon, lat)
+    wave = np.array([440.0, 470.0, 500.0])
+    aph = np.zeros((nx, ny, nw))
+    aph[1, 1, :] = [0.05, 0.06, 0.07]
+    data = {
+        "a": (("x", "y", "wl"), np.zeros((nx, ny, nw))),
+        "bb": (("x", "y", "wl"), np.zeros((nx, ny, nw))),
+        "aph": (("x", "y", "wl"), aph),
+        "adg_s": (("x", "y"), np.full((nx, ny), 0.018)),
+        "adg_442": (("x", "y"), np.full((nx, ny), 0.03)),
+        "bbp_442": (("x", "y"), np.full((nx, ny), 0.004)),
+        "bbp_unc_442": (("x", "y"), np.full((nx, ny), 0.0005)),
+        "bbp_s": (("x", "y"), np.full((nx, ny), 1.2)),
+    }
+    if with_aph_adg_unc:
+        data["aph_unc_442"] = (("x", "y"), np.full((nx, ny), 0.01))
+        data["adg_unc_442"] = (("x", "y"), np.full((nx, ny), 0.006))
+    return xr.Dataset(
+        data,
+        coords={
+            "latitude": (("x", "y"), lats2d),
+            "longitude": (("x", "y"), lons2d),
+            "wavelength": ("wl", wave),
+        },
+    )
+
+
+def test_nearest_pixel_no_flag_filtering():
+    ds = make_iop_granule()
+    lat = float(ds["latitude"].values[1, 1])
+    lon = float(ds["longitude"].values[1, 1])
+    ix, iy, dist_km = iop.nearest_pixel(ds, lat, lon)
+    assert (ix, iy) == (1, 1)
+    assert dist_km == pytest.approx(0.0, abs=1e-6)
+
+
+def test_nearest_wavelength_index():
+    assert iop.nearest_wavelength_index([400.0, 450.0, 500.0], target=442.0) == 1
+
+
+def test_extract_iop_quantities_values_and_uncertainty():
+    ds = make_iop_granule()
+    out = {q["quantity"]: q for q in iop.extract_iop_quantities(ds, 1, 1)}
+    bbp = out["bbp_442"]
+    assert bbp["value"] == pytest.approx(0.004)
+    assert bbp["value_lo"] == pytest.approx(0.004 - 0.0005)
+    assert bbp["value_hi"] == pytest.approx(0.004 + 0.0005)
+    assert out["bbp_unc_442"]["value"] == pytest.approx(0.0005)
+    assert out["adg_442"]["value"] == pytest.approx(0.03)
+    # dataset lacks the aph/adg unc fields (pre-fix ocpy loader) -> no
+    # credible interval and no *_unc_442 rows: the graceful-degradation path
+    assert out["adg_442"]["value_lo"] is None and out["adg_442"]["value_hi"] is None
+    assert "adg_unc_442" not in out and "aph_unc_442" not in out
+    # wavelength 440 is nearest to the 442 nm reference -> aph[...,0] = 0.05
+    assert out["aph_442"]["value"] == pytest.approx(0.05)
+    assert out["aph_442"]["value_lo"] is None and out["aph_442"]["value_hi"] is None
+
+
+def test_extract_iop_quantities_aph_adg_uncertainties():
+    ds = make_iop_granule(with_aph_adg_unc=True)
+    out = {q["quantity"]: q for q in iop.extract_iop_quantities(ds, 1, 1)}
+    adg = out["adg_442"]
+    assert adg["value_lo"] == pytest.approx(0.03 - 0.006)
+    assert adg["value_hi"] == pytest.approx(0.03 + 0.006)
+    assert out["adg_unc_442"]["value"] == pytest.approx(0.006)
+    aph = out["aph_442"]
+    assert aph["value_lo"] == pytest.approx(0.05 - 0.01)
+    assert aph["value_hi"] == pytest.approx(0.05 + 0.01)
+    assert out["aph_unc_442"]["value"] == pytest.approx(0.01)
+    # bbp behaviour unchanged
+    assert out["bbp_442"]["value_hi"] == pytest.approx(0.004 + 0.0005)
+
+
+def test_open_iop_local_attaches_flags(monkeypatch):
+    pytest.importorskip("ocpy")
+    xds = make_iop_granule()
+    l2 = np.zeros((3, 3), dtype=np.int64)
+    l2[0, 0] = 1
+
+    def fake_load_iop_l2(fn):
+        return xds, l2
+
+    monkeypatch.setattr("ocpy.pace.io.load_iop_l2", fake_load_iop_l2)
+    ds = iop.open_iop_local("fake.nc")
+    assert "l2_flags" in ds
+    assert int(ds["l2_flags"].values[0, 0]) == 1

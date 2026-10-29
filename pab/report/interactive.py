@@ -11,7 +11,19 @@ works without it.
 from __future__ import annotations
 
 #: Columns shown in the hover tooltip when present in the frame.
-HOVER_FIELDS = ("matchup_id", "wmo", "cycle", "bbp_bing", "bbp_argo", "chl_bing")
+HOVER_FIELDS = (
+    "matchup_id",
+    "wmo",
+    "cycle",
+    "bbp_bing",
+    "bbp_argo",
+    "chl_bing",
+    "chla_argo",
+    "chl_oc",
+)
+
+#: Palette for ``extra_series`` overlays (distinct from the default primary glyph).
+_EXTRA_COLORS = ("#e66101", "#5e3c99", "#1b7837")
 
 
 def comparison_scatter(
@@ -22,6 +34,9 @@ def comparison_scatter(
     label: str = "b_bp",
     artifact_url_col: str | None = None,
     title: str | None = None,
+    extra_series: list[tuple[str, str]] | None = None,
+    xlabel: str | None = None,
+    ylabel: str | None = None,
 ):
     """A log-log satellite-vs-in-situ Bokeh scatter with a 1:1 line and hover.
 
@@ -29,8 +44,14 @@ def comparison_scatter(
         df: Per-matchup frame (``gather_matchups`` output).
         sat_col, insitu_col: Columns to plot (satellite vs in-situ).
         label, title: Axis label and figure title.
+        xlabel, ylabel: Full axis-label overrides for pairings that are not
+            satellite-vs-in-situ (e.g. BING vs NASA GIOP).
         artifact_url_col: If given (and present), tapping a point opens that URL
             (the matchup's figure/artifact).
+        extra_series: Optional ``[(col, legend_label), …]`` overlaid against the
+            same ``insitu_col`` x-axis (e.g. an OC4 band-ratio Chl alongside the
+            BING Chl). When given, the primary glyph also gets a legend entry so
+            the two satellite sources are distinguishable.
 
     Returns:
         A ``bokeh.plotting.figure``.
@@ -45,16 +66,31 @@ def comparison_scatter(
         title=title or f"satellite vs in-situ {label}",
         x_axis_type="log",
         y_axis_type="log",
-        x_axis_label=f"in-situ {label}",
-        y_axis_label=f"satellite {label}",
+        x_axis_label=xlabel or f"in-situ {label}",
+        y_axis_label=ylabel or f"satellite {label}",
         width=560,
         height=520,
         output_backend="webgl",  # stays responsive at 10^4–10^5 points
         tools="pan,box_zoom,wheel_zoom,reset,save,tap",
     )
-    fig.scatter(insitu_col, sat_col, source=src, size=7, alpha=0.7)
-    finite = df[[sat_col, insitu_col]].to_numpy(dtype=float)
-    finite = finite[np.isfinite(finite).all(axis=1) & (finite > 0).all(axis=1)]
+    extra = [(c, lab) for c, lab in (extra_series or []) if c in df.columns]
+    primary_kw = {"legend_label": f"satellite {label}"} if extra else {}
+    fig.scatter(insitu_col, sat_col, source=src, size=7, alpha=0.7, **primary_kw)
+    for (col, leg), color in zip(extra, _EXTRA_COLORS, strict=False):
+        fig.scatter(
+            insitu_col,
+            col,
+            source=src,
+            size=7,
+            alpha=0.7,
+            color=color,
+            marker="triangle",
+            legend_label=leg,
+        )
+    # 1:1 line spanning every plotted series (primary + overlays).
+    span_cols = [sat_col, insitu_col, *(c for c, _ in extra)]
+    finite = df[span_cols].to_numpy(dtype=float)
+    finite = finite[np.isfinite(finite) & (finite > 0)]
     if finite.size:
         lo, hi = float(finite.min()) * 0.7, float(finite.max()) * 1.4
         fig.line([lo, hi], [lo, hi], color="black", legend_label="1:1")

@@ -94,6 +94,13 @@ def aggregate_healpix(
 
     if nside is None:
         nside = nside_for_cell_size(cell_size_deg)
+    # An Argo delayed-mode refresh can retract a matched profile's position
+    # (latitude/longitude -> NULL); those rows cannot be spatially binned and
+    # must not crash healpy's ang2pix.
+    lat = np.asarray(df[lat_col], dtype=float)
+    lon = np.asarray(df[lon_col], dtype=float)
+    positioned = np.isfinite(lat) & np.isfinite(lon)
+    df = df[positioned]
     cells = assign_healpix(df[lat_col], df[lon_col], nside)
     work = df.assign(_hpix=cells)
     rows = []
