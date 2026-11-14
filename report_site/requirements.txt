@@ -1,0 +1,6 @@
+# Build deps for the generated reporting site (Read the Docs builds report_site/
+# on the dedicated `report-site` branch). The build needs ONLY the Sphinx stack:
+# report_site/conf.py has extensions=[] (no autodoc -> no `pab` import) and bakes
+# the BokehJS CDN list as a literal, so no Bokeh / heavy sci deps are required.
+sphinx
+sphinx-rtd-theme

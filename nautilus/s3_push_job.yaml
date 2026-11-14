@@ -1,0 +1,59 @@
+# Push the 1k pilot outputs from the PVC to Nautilus S3 (s3://pab).
+#
+# The image ships no aws/rclone CLI, so the upload runs through boto3 via
+# nautilus/s3_push.py, mounted as a ConfigMap. Idempotent: an object already
+# present with the same size is skipped, so re-applying after an interruption
+# only sends what is missing.
+#
+# Layout in the bucket (chains included — they are part of the pilot, and live
+# outside /data/run1k because chain paths resolve from $PAB_DATA_DIR):
+#   s3://pab/run1k/{pab.db,run.log,pipeline/...}
+#   s3://pab/run1k/fit_chains/...
+#
+# NOTE the bucket is public-read, so these objects become publicly downloadable
+# at https://s3-west.nrp-nautilus.io/pab/run1k/... — that is intended (the report
+# links artifacts by URL), and the content is science data + figures only.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars create configmap pab-s3push \
+#     --from-file=s3_push.py=nautilus/s3_push.py --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl -n sea-meets-the-stars delete job pab-s3push --ignore-not-found
+#   kubectl apply -f nautilus/s3_push_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-s3push
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-s3push
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 2          # idempotent, so a retry is safe
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: push
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.2
+        imagePullPolicy: IfNotPresent
+        env:
+        - {name: HOME, value: /root}
+        - {name: ENDPOINT_URL, value: "https://s3-west.nrp-nautilus.io"}
+        - {name: AWS_PROFILE, value: "default"}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            echo "=== PUSH start $(date -Is) ==="
+            python /cfg/s3_push.py /data/run1k pab run1k --jobs 16 || exit 1
+            python /cfg/s3_push.py /data/fit_chains pab run1k/fit_chains --jobs 16 || exit 1
+            echo "=== PUSH_DONE $(date -Is) ==="
+        resources:
+          requests: {cpu: "2", memory: "4Gi", ephemeral-storage: "2Gi"}
+          limits: {cpu: "2", memory: "4Gi", ephemeral-storage: "4Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+        - {name: script, mountPath: /cfg}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}
+      - {name: script, configMap: {name: pab-s3push}}

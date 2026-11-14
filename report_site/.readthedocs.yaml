@@ -1,0 +1,31 @@
+# Read the Docs config for the PAB community REPORTING site (the second RTD
+# project). RTD requires the config file be named `.readthedocs.yaml`, but it may
+# live in a SUBFOLDER — so this second config sits in report_site/ while the
+# developer docs keep the root `.readthedocs.yaml` (-> docs/conf.py). Both live on
+# the same branch; the two RTD projects differ only by their configured
+# "Path to configuration file":
+#   - dev docs project:  .readthedocs.yaml             (root; default)
+#   - report project:    report_site/.readthedocs.yaml
+#
+# NOTE: all paths below are relative to the REPOSITORY ROOT (RTD's rule), not to
+# this file's folder.
+#
+# (Re)generate the site sources before committing:
+#   pab --db "$PAB_DATA_DIR/pab.db" --emit-site report_site
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.12"          # matches the project floor (>= 3.12)
+
+sphinx:
+  configuration: report_site/conf.py
+  fail_on_warning: false
+
+python:
+  install:
+    # Slim, self-contained build deps (no `pab`, no heavy sci stack): report_site/
+    # conf.py has extensions=[] and bakes the BokehJS CDN list as a literal, so the
+    # build needs only Sphinx + the theme. See report_site/requirements.txt.
+    - requirements: report_site/requirements.txt

@@ -1,0 +1,32 @@
+# Throwaway pod to inspect the pab-data CephFS PVC (what a run left on it).
+# Usage:
+#   kubectl apply -f nautilus/inspect_pod.yaml
+#   kubectl -n sea-meets-the-stars logs pab-inspect        # (after it Succeeds)
+#   kubectl -n sea-meets-the-stars delete pod pab-inspect  # cleanup
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pab-inspect
+  namespace: sea-meets-the-stars
+spec:
+  restartPolicy: Never
+  containers:
+  - name: inspect
+    image: python:3.12-slim
+    command: ["/bin/bash", "-lc"]
+    args:
+      - |
+        echo "=== /data tree ==="
+        find /data -maxdepth 3 -type f 2>/dev/null | head -40
+        echo "=== /data usage ==="
+        du -sh /data/* 2>/dev/null
+        echo "=== db counts ==="
+        python -c "import os, sqlite3; db='/data/val/pab.db'; c=sqlite3.connect(db) if os.path.exists(db) else None; print('NO pab.db at', db) if c is None else [print(t, c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0]) for t in ('profiles','granules','matchups','matchup_pixels','fits','fit_results')]"
+        echo INSPECT_DONE
+    resources:
+      requests: {cpu: "500m", memory: "1Gi", ephemeral-storage: "2Gi"}
+      limits: {cpu: "1", memory: "1Gi", ephemeral-storage: "2Gi"}
+    volumeMounts:
+    - {name: data, mountPath: /data}
+  volumes:
+  - {name: data, persistentVolumeClaim: {claimName: pab-data}}

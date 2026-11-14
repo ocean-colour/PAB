@@ -1,7 +1,7 @@
 # PACE and BGC-Argo Matchup Analysis Design Document
 
-**Version:** 0.4.3
-**Date:** 2026-06-23
+**Version:** 0.5
+**Date:** 2026-09-03
 **Authors:** JXP and Claude
 
 **Versioning convention:** bump the **minor** version for substantive changes
@@ -110,7 +110,7 @@ PAB and those packages.
 
 | Dataset | Role | Type | Key variables | Access path | Loader / API |
 |---|---|---|---|---|---|
-| **BGC-Argo** | Primary (in-situ truth) | Float vertical profiles | `BBP700`, `CHLA`, `PSAL`, `TEMP`, `PRES` | argopy → Ifremer ERDDAP | `argopy.DataFetcher(ds='bgc', src='erddap')`; `argopy.ArgoIndex(index_file='bgc-s')` |
+| **BGC-Argo** | Primary (in-situ truth) | Float vertical profiles | `BBP700`, `CHLA`, `CDOM`, `PSAL`, `TEMP`, `PRES` | argopy → GDAC | `argopy.DataFetcher(ds='bgc', src='gdac')`; `argopy.ArgoIndex(index_file='bgc-s')` |
 | **PACE / OCI L2 AOP** | Primary (satellite) | Hyperspectral L2 granules | `Rrs(λ)`, `Rrs_unc(λ)`, `l2_flags`, `nflh` | NASA Earthdata Cloud (OB.DAAC) | `earthaccess` (search/open) → `ocpy.pace.io.load_oci_l2*` |
 | **PACE / OCI L2 IOP** | Secondary (NASA baseline) | Hyperspectral L2 granules | `a`, `bb`, `aph`, `bbp_442`, `adg_*` | NASA Earthdata Cloud (OB.DAAC) | `ocpy.pace.io.load_iop_l2` |
 | **Future** (other in-situ archives, MODIS/VIIRS/OLCI, other satellites) | Hooks | — | — | TBD | new loader modules |
@@ -178,8 +178,41 @@ The processing each dataset receives before matchup/analysis:
   exceeds its 10 m value by 0.03 kg m⁻³), using `ds.argo.teos10([...,'SIG0'])`
   for density and a per-profile reducer; **de-spike** `BBP700` within the MLD
   with a 3-point moving median (removes bubble spikes); then **average**
-  `BBP700` and `CHLA` and record mean `PSAL`/`TEMP` within the MLD. This yields
-  one summary record per profile.
+  `BBP700`, `CHLA`, and **`CDOM`** and record mean `PSAL`/`TEMP` within the MLD.
+  This yields one summary record per profile. (`CDOM` — added 2026-09, design
+  v0.5 — gets the same plain mixed-layer mean as `CHLA`, no de-spike/IQR filter,
+  since Bisson's despiking recipe was derived for `BBP700` specifically.)
+- **BGC-Argo provenance (added 2026-09, design v0.5).** PAB's production run
+  used `argo_mode='expert'` (raw, un-post-processed measured values — chosen
+  because `standard`/`research` mode return zero data for recent real-time
+  profiles) and recorded only a single, coarse, whole-**profile** `data_mode`
+  (Argo's R/A/D). This is insufficient: Argo's own BGC files carry a
+  per-**parameter** `PARAMETER_DATA_MODE` (e.g. `CHLA` and `PSAL` on the same
+  profile can be in different modes), plus `<PARAM>_ADJUSTED`/`_ADJUSTED_QC`/
+  `_ADJUSTED_ERROR` and `SCIENTIFIC_CALIB_COMMENT`/`_EQUATION`/`_COEFFICIENT`
+  fields documenting exactly which correction/reference a DAC applied — none of
+  which PAB captured. Going forward, ingestion additionally records, per
+  profile and per BGC parameter (starting with `CHLA` and `CDOM`): the
+  parameter-level data mode, the `_ADJUSTED` value when present, and which DAC
+  processed the float (`PROJECT_NAME`/`DATA_CENTRE` — e.g. distinguishing AOML-
+  from Coriolis-processed floats), so a matchup population can be
+  screened/stratified by processing provenance the way it already is by scene
+  quality. This closes a gap first raised while investigating whether a
+  reported Chl-a "physiological, satellite-informed correction" is visible in
+  PAB's data (`claude_prompts/chl_cdom_matchups.md`): under `expert` mode it was
+  not, and there was no stored metadata to check after the fact either way.
+- **Known CDOM sensor calibration issue (documented 2026-09, design v0.5).** Per
+  an official Sea-Bird Scientific customer notice (2024-12-11), **CDOM
+  fluorometers calibrated/serviced before 2023-01-13 — most of the historical
+  BGC-Argo fleet — carry a systemic bias**, with a determined Reference
+  Adjustment Factor of **5.62** (`CDOM_adjusted = 5.62 × CDOM_raw`) for one part
+  of it, plus a second, separate sensor-reference bias whose correction table
+  was still unpublished as of this writing. Whether the GDAC's own
+  `CDOM_ADJUSTED` field already reflects this is unconfirmed pending a direct
+  spot-check (first task of the implementation pass); PAB's ingestion should
+  record enough provenance (the raw value, the DAC's adjusted value if any, and
+  the sensor calibration date when available) to apply or revisit this
+  correction without re-fetching.
 - **PACE AOP:** apply `mask_and_scale` (the stored Rrs are scaled integers);
   screen pixels with the standard ocean `l2_flags` mask (`ATMFAIL`, `LAND`,
   `HIGLINT`, `HILT`, `STRAYLIGHT`, `CLDICE`, `COCCOLITH`, `HISATZEN`,
@@ -481,6 +514,18 @@ satellite vs. float `bbp` in log space:
 - **BING vs. NASA L2 IOP** — the same statistics computed between the two
   satellite retrievals, to separate algorithm differences from
   satellite-vs-float differences.
+- **CDOM — qualitative/correlative only (added 2026-09, design v0.5).** The
+  nearest BING quantity, `Adg` (the amplitude of the exponential CDOM+detritus
+  absorption term), is a **combined CDOM+particulate-detrital absorption
+  coefficient in m⁻¹**, while Argo `CDOM` is a **fluorescence proxy in ppb
+  QSDE** — a different unit and a different (broader) physical quantity. The
+  ratio/log-bias metrics above, which assume a shared quantity and unit, do
+  **not** honestly apply to CDOM without an empirical, instrument/region-
+  dependent ppb→absorption conversion PAB does not have. The CDOM comparison is
+  therefore **qualitative and correlative only** — rank correlation, sign
+  agreement, and regional/seasonal patterns — with scatter plots presented
+  **without** a 1:1 or ratio reference line, and with the combined-quantity
+  caveat stated alongside every such figure.
 
 All metrics are computed across the matchup population and **stratified by
 region, season, and `Rrs` spatial variability** (Bisson's caveat that skill
@@ -547,6 +592,64 @@ with a `pab_version` and a `created` timestamp, and outputs are stored under a
 path/ID that encodes the matchup and `pab_version`. Re-running under a new
 `pab_version` produces a new record rather than silently overwriting, enabling
 side-by-side comparison of algorithm/prior changes across versions.
+
+**A major version gets its own database (adopted at 2.0).** "A new version adds
+records" works while the versions share a schema and a matchup set. 2.0 broke
+both: it required schema v5 (per-pixel viewing geometry and the RT
+configuration) and it re-ran discovery over a longer mission window, so it has
+matchups 1.0 never saw. Keeping both in one file would have meant migrating the
+published 1.0 release in place — losing the ability to reproduce it — and every
+query carrying a version predicate forever.
+
+So each major version lives in its own database: `v1/pab.db` (frozen,
+`chmod a-w`, schema v4) and `v2/pab.db` (schema v5). Consequences worth stating
+because they are easy to get wrong:
+
+- **The frozen release is attached read-only**, never opened for writing. Use a
+  `file:…?mode=ro` URI, which requires the connection itself to be opened with
+  `uri=True`; without that SQLite treats the string as a literal filename and a
+  fallback to a plain-path `ATTACH` silently attaches it **read-write**. There
+  is deliberately no such fallback: a failed read-only attach must raise.
+- **Cross-version comparison joins on `matchup_id` *and* `pixel_id`.**
+  `matchup_id` identifies the profile/granule pair, not which pixel was fitted;
+  joining on it alone pairs retrievals of *different pixels* and reports a
+  spatial difference as an algorithmic one.
+- **Metrics filter to a single `pab_version`.** A store holding two versions of
+  one matchup yields two rows from an unfiltered gather, silently doubling every
+  count and mixing two configurations into one scatter.
+- **Not every row is re-stamped.** A record whose *product* did not change keeps
+  its own version: the NASA-GIOP baseline rows are the same NASA product read by
+  the same code in both releases and stay at `1.1`. Re-stamping them `2.0` would
+  claim a re-analysis that did not happen.
+
+**A patch version shares the database (adopted at 2.0.1).** Between a major
+version and a backfill sits the case where a *subset* of fits is re-done under a
+changed configuration — 2.0.1 re-fitted the 51 fits that had run to the `Bnw`
+prior ceiling, with the priors capped at physical values, on the same spectra.
+That is a re-analysis (it earns a version), but it changes neither the schema
+nor the matchup set, so it does not earn a database. A patch version `X.Y.Z`
+therefore lives in its base's database: its fits are **new rows** (the `fit_id`
+carries `_vX.Y.Z`, `prior_set` records the changed priors, `rrs_source` the
+replayed spectrum), every row keeps its own `pab_version` stamp, and the base
+rows are **never deleted or edited** — the provenance rule above. What makes the
+patch visible is a **report-side overlay, keyed on matchup *and* pixel**
+(`compare.version_family` / `compare.overlay_patch`): the gatherers, the
+`figure` stage's default and the download manifest select the base version plus
+its patches and drop a base row wherever a patch row exists for the same
+`(matchup_id, pixel_id)`; a patch fit of a different pixel supersedes nothing. An
+explicit version (`--figure-version 2.0`, `gather_matchups(pab_version="2.0")`)
+means exactly that version, with no overlay. The exported tables carry each
+row's `pab_version` plus `fit_id_superseded`/`bbp_bing_superseded`, so a reader
+can tell a patched row from a base row and recover the value it replaced.
+
+**The "end = today" backfill rule.** A mission-length run has no fixed end date:
+the Argo and PACE archives keep growing, so "the full mission" means
+*start → today*, and the end moves every time the pipeline is re-run. Record the
+window actually processed rather than a nominal one, and treat a later re-run as
+a **backfill** that adds records for the newly available interval rather than as
+a re-analysis — it does not earn a new `pab_version`. (The 1.0 Chl-a/CDOM
+provenance re-ingest is the documented precedent: schema/provenance backfill,
+same version.)
 
 ### Outputs & community exposure
 

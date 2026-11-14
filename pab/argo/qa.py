@@ -11,10 +11,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
 
 from pab.argo import summary as _summary
+
+# Force the non-interactive backend before importing pyplot — these figures are
+# rendered headless and, in `ingest`, alongside argopy's worker threads, where an
+# interactive (Tk) backend aborts the process at teardown. Belt-and-suspenders
+# with the MPLBACKEND default in ``pab/__init__.py`` (import-order independent).
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402  (backend must be set first)
 
 
 def plot_profile(

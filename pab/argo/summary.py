@@ -14,6 +14,7 @@ through :class:`pab.db.store.Store`.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,6 +23,8 @@ from numpy.typing import ArrayLike
 
 from pab.argo import mld as _mld
 from pab.config import pab_version
+
+_log = logging.getLogger("pab.argo.summary")
 
 
 def moving_median(values: ArrayLike, window: int = 3) -> np.ndarray:
@@ -39,7 +42,9 @@ def moving_median(values: ArrayLike, window: int = 3) -> np.ndarray:
     """
     if window < 1 or window % 2 == 0:
         raise ValueError("window must be a positive odd integer")
-    x = np.asarray(values, dtype=float)
+    # atleast_1d: a profile with a single BBP700/CHLA sample arrives 0-dimensional,
+    # and slicing a 0-d array raises IndexError (crashed a real ingest run).
+    x = np.atleast_1d(np.asarray(values, dtype=float))
     n = x.size
     half = window // 2
     out = np.full(n, np.nan)
@@ -112,9 +117,22 @@ def mixed_layer_mean(
     Returns:
         ``(mean, std, n_points)`` over the retained mixed-layer samples.
     """
-    pres = np.asarray(pres, dtype=float)
-    vals = np.asarray(values, dtype=float)
+    pres = np.atleast_1d(np.asarray(pres, dtype=float))
+    vals = np.atleast_1d(np.asarray(values, dtype=float))
     if not np.isfinite(mld):
+        return float("nan"), float("nan"), 0
+    if vals.shape != pres.shape:
+        # Some argopy returns carry a variable that is not aligned with the
+        # profile's pressure axis (e.g. a single BBP700 value against 555
+        # pressures). numpy would happily *broadcast* the finite-mask and then
+        # raise on the indexing, killing the profile; there is no honest way to
+        # place those samples in the mixed layer, so report "no data" for this
+        # variable and let the rest of the profile through.
+        _log.warning(
+            "variable/pressure length mismatch (%s vs %s); skipping this variable",
+            vals.shape,
+            pres.shape,
+        )
         return float("nan"), float("nan"), 0
     if despike_values:
         vals = moving_median(vals)
@@ -132,6 +150,8 @@ def summarize_profile(
     *,
     bbp700: ArrayLike | None = None,
     chla: ArrayLike | None = None,
+    chla_adjusted: ArrayLike | None = None,
+    cdom: ArrayLike | None = None,
     psal: ArrayLike | None = None,
     temp: ArrayLike | None = None,
     lon: float | None = None,
@@ -152,6 +172,16 @@ def summarize_profile(
         pres: Pressure (dbar ≈ m).
         bbp700, chla, psal, temp: Profile variables aligned with ``pres``
             (any may be omitted).
+        chla_adjusted: Argo's ``CHLA_ADJUSTED``, aligned with ``pres``, when
+            present (NaN/omitted profiles are not yet delayed-mode/adjusted —
+            common for BGC Chl, see ``chl_cdom_matchups.md``). Averaged the
+            same plain way as ``chla`` — no de-spike/IQR filter.
+        cdom: Argo ``CDOM`` (raw, ppb QSDE), aligned with ``pres``. Averaged
+            the same plain way as ``chla`` — Bisson's despike/IQR recipe is
+            ``BBP700``-specific. No corrected/adjusted CDOM is computed here
+            (as of 2026-09, no BGC-Argo float has ever had CDOM delayed-mode
+            processed, so ``CDOM_ADJUSTED`` is never populated fleet-wide; a
+            PAB-side correction is deferred pending JXP's BGC-Argo consult).
         lon, lat: Profile location (needed for TEOS-10 if ``sig0`` is absent).
         sig0: Potential density; if omitted it is derived from ``psal``/``temp``.
         despike_bbp: 3-point moving-median de-spike of ``BBP700``.
@@ -161,7 +191,8 @@ def summarize_profile(
     Returns:
         Dict with the ``mld_summary`` fields (no ``profile_id``): ``mld``,
         ``mld_method``, ``bbp700``, ``bbp700_std``, ``chla``, ``chla_std``,
-        ``psal``, ``temp``, ``n_points``.
+        ``chla_adjusted``, ``cdom``, ``cdom_std``, ``psal``, ``temp``,
+        ``n_points``.
     """
     pres = np.asarray(pres, dtype=float)
 
@@ -183,6 +214,9 @@ def summarize_profile(
         "bbp700_std": float("nan"),
         "chla": float("nan"),
         "chla_std": float("nan"),
+        "chla_adjusted": float("nan"),
+        "cdom": float("nan"),
+        "cdom_std": float("nan"),
         "psal": float("nan"),
         "temp": float("nan"),
         "n_points": 0,
@@ -196,6 +230,11 @@ def summarize_profile(
     if chla is not None:
         mean, std, _ = mixed_layer_mean(pres, chla, mld_val)
         summary.update(chla=mean, chla_std=std)
+    if chla_adjusted is not None:
+        summary["chla_adjusted"] = mixed_layer_mean(pres, chla_adjusted, mld_val)[0]
+    if cdom is not None:
+        mean, std, _ = mixed_layer_mean(pres, cdom, mld_val)
+        summary.update(cdom=mean, cdom_std=std)
     if psal is not None:
         summary["psal"] = mixed_layer_mean(pres, psal, mld_val)[0]
     if temp is not None:
@@ -216,6 +255,9 @@ def persist_summary(
     data_mode: str | None = None,
     project_name: str | None = None,
     data_center: str | None = None,
+    chla_data_mode: str | None = None,
+    cdom_data_mode: str | None = None,
+    bbp700_data_mode: str | None = None,
     created: str | None = None,
 ) -> int:
     """Upsert the float, profile, and mixed-layer summary rows; return profile_id.
@@ -228,8 +270,14 @@ def persist_summary(
         wmo: Float WMO id.
         cycle: Profile cycle number.
         summary: Output of :func:`summarize_profile`.
-        latitude, longitude, time, data_mode: Profile metadata.
-        project_name, data_center: Float metadata.
+        latitude, longitude, time, data_mode: Profile metadata (``data_mode``
+            is the coarse whole-profile mode; unpopulated for real BGC fetches
+            — see :func:`pab.argo.fetch.iter_profiles`).
+        project_name, data_center: Float metadata (the processing DAC, e.g.
+            distinguishing AOML- from Coriolis-processed floats).
+        chla_data_mode, cdom_data_mode, bbp700_data_mode: Per-**parameter**
+            Argo data mode (R/A/D) for each BGC variable, since a single BGC
+            profile can have different modes per parameter.
         created: Timestamp to stamp (defaults to now, UTC ISO-8601).
 
     Returns:
@@ -268,11 +316,17 @@ def persist_summary(
                 "bbp700_std",
                 "chla",
                 "chla_std",
+                "chla_adjusted",
+                "cdom",
+                "cdom_std",
                 "psal",
                 "temp",
                 "n_points",
             )
         }
     )
+    row["chla_data_mode"] = chla_data_mode
+    row["cdom_data_mode"] = cdom_data_mode
+    row["bbp700_data_mode"] = bbp700_data_mode
     store.upsert("mld_summary", row)
     return profile_id

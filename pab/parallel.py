@@ -1,0 +1,193 @@
+"""Small shared helpers for the pipeline's parallel stages.
+
+``ingest`` (network + argopy parsing), ``match`` (granule open + extract) and
+``fit`` (BING MCMC) all fan out the same way: workers do the expensive
+per-record work, the parent keeps the single SQLite writer. These two helpers
+are what they share.
+"""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+
+__all__ = [
+    "picklable",
+    "init_worker",
+    "PROGRESS_EVERY",
+    "cgroup_mem_gb",
+    "mem_breakdown",
+    "WorkerError",
+    "portable_errors",
+]
+
+#: How often a long stage emits a progress line (records). A stage that runs for
+#: tens of minutes in silence is indistinguishable from a hung one — `match` was
+#: exactly that when a 1000-profile run was OOM-killed five minutes into it with
+#: nothing logged.
+PROGRESS_EVERY: int = 50
+
+
+def picklable(obj) -> bool:
+    """Whether ``obj`` survives a pickle round-trip to a spawned worker.
+
+    ``None`` trivially does; a module-level function does; a lambda, closure or
+    locally-defined function does not. Callers use this to decide between a
+    process pool and a safe fallback (threads, or serial) instead of failing
+    every record in the pool.
+    """
+    if obj is None:
+        return True
+    import pickle
+
+    try:
+        pickle.dumps(obj)
+    except Exception:  # noqa: BLE001 — any pickling failure means "don't fork it"
+        return False
+    return True
+
+
+#: Thread caps applied in every worker. The pool is the parallelism; each
+#: worker should stay single-threaded or N workers fight over the same cores.
+#:
+#: ``XLA_FLAGS`` is the JAX/XLA equivalent of the BLAS caps and is needed from
+#: 2.0 on, because the ``robust_*`` backends run their forward model under
+#: ``jax.jit``. XLA's CPU backend otherwise spins up its own intra-op thread
+#: pool sized to the whole machine **inside each worker**, so ``--jobs 16``
+#: would ask for 16 × ncores threads. It must be set **before JAX initialises
+#: its backend**, which is why it belongs here in the initialiser rather than
+#: anywhere in the fit code.
+_THREAD_CAPS = {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "VECLIB_MAXIMUM_THREADS": "1",
+    "XLA_FLAGS": ("--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"),
+}
+
+
+def init_worker() -> None:  # pragma: no cover - runs in worker processes
+    """Cap BLAS/OpenMP **and XLA** threads in a worker.
+
+    Applies :data:`_THREAD_CAPS` with ``setdefault``, so a caller who has
+    deliberately set one of these keeps their value.
+    """
+    import os
+
+    for var, value in _THREAD_CAPS.items():
+        os.environ.setdefault(var, value)
+
+
+
+class WorkerError(RuntimeError):
+    """A worker-side failure flattened to a picklable message.
+
+    Carries ``origin`` (the original exception's class name) so a caller can
+    still branch on what went wrong, even though the original object did not
+    survive the process boundary.
+    """
+
+    def __init__(self, message: str, *, origin: str = "") -> None:
+        super().__init__(message)
+        self.origin = origin
+
+
+@contextmanager
+def portable_errors(context: str):
+    """Re-raise an **unpicklable** worker exception as a :class:`WorkerError`.
+
+    A ``ProcessPoolExecutor`` returns a worker's exception by pickling it. When
+    the exception cannot be pickled, the pool raises a *different* error from
+    ``Future.result()`` and the real cause is lost. That is not hypothetical:
+    the 2026-09-25 ``match`` run logged
+
+    .. code-block:: text
+
+        TypeError: can't pickle multidict._multidict.CIMultiDictProxy objects
+
+    whose actual cause, two frames up, was a NASA **503 Service Unavailable**
+    on an OB.DAAC granule. ``aiohttp``'s ``ClientResponseError`` holds the HTTP
+    headers as a ``CIMultiDictProxy``, which pickle refuses — so a transient
+    server error was reported as a serialization bug in our own code. The next
+    person to hit it would debug pickling instead of reading NASA's status
+    page.
+
+    Picklable exceptions are re-raised **unchanged**, so callers that branch on
+    a specific type keep working; only the ones that would be destroyed in
+    transit are flattened to ``"<context>: <OriginalType>: <message>"``.
+
+    Args:
+        context: What was being attempted, e.g. the granule source.
+    """
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001 — re-raised either way
+        if picklable(exc):
+            raise
+        raise WorkerError(
+            f"{context}: {type(exc).__name__}: {exc}", origin=type(exc).__name__
+        ) from None
+
+
+def cgroup_mem_gb() -> float | None:
+    """Current memory charged to this container, in GB, or ``None`` off-cgroup.
+
+    This is the number the OOM killer watches — RSS summed over the parent and
+    every worker, plus page cache. Logging it alongside stage progress turns "the
+    pod died at 15 min" into "memory climbed 3 GB/min from the third chunk", which
+    is the difference between diagnosing a leak in one run and in five.
+    """
+    for path in (
+        "/sys/fs/cgroup/memory.current",  # cgroup v2
+        "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+    ):  # v1
+        try:
+            with open(path) as fh:
+                return int(fh.read().strip()) / 1024**3
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def mem_breakdown() -> str:
+    """``"cgroup X.X | parent Y.Y + N kids Z.Z GB"`` — who is holding the memory.
+
+    The cgroup total alone says a pod is dying but not why. Splitting parent from
+    children is what distinguishes "the driver is accumulating state" from "the
+    workers are leaking", and those have completely different fixes. Three
+    consecutive OOM investigations guessed at this instead of measuring it.
+    """
+    import os
+
+    def _rss_gb(pid: str | int) -> float:
+        try:
+            with open(f"/proc/{pid}/status") as fh:
+                for line in fh:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1]) / 1024**2
+        except OSError:
+            pass
+        return 0.0
+
+    me = os.getpid()
+    parent = _rss_gb(me)
+    kids, kid_rss = 0, 0.0
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit() or int(entry) == me:
+                continue
+            try:
+                with open(f"/proc/{entry}/status") as fh:
+                    ppid = next(
+                        (ln.split()[1] for ln in fh if ln.startswith("PPid:")), None
+                    )
+            except OSError:
+                continue
+            if ppid == str(me):
+                kids += 1
+                kid_rss += _rss_gb(entry)
+    except OSError:
+        pass
+    total = cgroup_mem_gb()
+    head = "cgroup ?" if total is None else f"cgroup {total:.1f}"
+    return f"{head} | parent {parent:.1f} + {kids} kids {kid_rss:.1f} GB"

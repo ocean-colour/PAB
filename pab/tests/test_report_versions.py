@@ -1,0 +1,761 @@
+"""The 1.0-vs-2.0 section of the report (Prompt 8 Task 2).
+
+The section compares two *databases*, so its failure modes are different from
+the rest of the report: it must vanish cleanly when the v1 database is not
+given, it must not let a bad v1 take the whole site build down with it, and
+the description of what changed must come from one place rather than being
+restated on three pages that can then drift apart.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from pab.db.store import Store
+from pab.report import rst
+
+
+def _seed_one(store, matchup_id, *, wmo, cycle, bbp, chl, version, aph=None):
+    """A matchup with one BING fit, pixel_id set (the version join needs it)."""
+    from pab.argo.summary import persist_summary
+
+    pid = persist_summary(
+        store,
+        wmo=wmo,
+        cycle=cycle,
+        summary={
+            "mld": 30.0,
+            "mld_method": "x",
+            "bbp700": 1e-3,
+            "chla": 0.1,
+            "n_points": 6,
+        },
+        latitude=20.0,
+        longitude=-50.0,
+        time="2025-05-01T12:00:00",
+    )
+    gid = f"G_{cycle}"
+    store.upsert("granules", {"granule_id": gid, "data_url": f"s3://b/{gid}.nc"})
+    store.upsert(
+        "matchups",
+        {
+            "matchup_id": matchup_id,
+            "profile_id": pid,
+            "granule_id": gid,
+            "n_spectra": 1,
+        },
+    )
+    store.upsert(
+        "matchup_pixels",
+        {"matchup_id": matchup_id, "ix": 2, "iy": 2, "rank": 1, "flagged": 0},
+    )
+    pixel_id = store.query(
+        "SELECT pixel_id FROM matchup_pixels WHERE matchup_id = ?", (matchup_id,)
+    )[0]["pixel_id"]
+    fit_id = f"{matchup_id}_v{version}"
+    store.upsert(
+        "fits",
+        {
+            "fit_id": fit_id,
+            "matchup_id": matchup_id,
+            "pixel_id": pixel_id,
+            "algorithm": "BING",
+            "model_pair": "ExpBPow",
+            "chisq": 1.1,
+            "success": 1,
+            "pab_version": version,
+        },
+    )
+    vals = {"bbp700": bbp, "chl": chl}
+    if aph is not None:
+        vals["Aph"] = aph
+    if version == "2.0":
+        vals["Bp"] = 0.02
+    for q, v in vals.items():
+        store.upsert(
+            "fit_results",
+            {"fit_id": fit_id, "quantity": f"BING_ExpBPow_{q}", "value": v},
+        )
+    return fit_id
+
+
+def _v1_db(tmp_path, *, bbps=(2e-3, 4e-3), name="v1.db"):
+    """A frozen-v1-shaped database with 1.0 BING fits on M1/M2."""
+    path = tmp_path / name
+    with Store.open(str(path)) as s:
+        for i, bbp in enumerate(bbps, 1):
+            _seed_one(
+                s, f"M{i}", wmo=7902220 + i, cycle=i, bbp=bbp, chl=0.10, version="1.0"
+            )
+    return path
+
+
+def _v2_store(store, *, bbps=(1e-3, 2e-3)):
+    """The matching 2.0 fits: half the b_bp, 20 % more Chl."""
+    for i, bbp in enumerate(bbps, 1):
+        _seed_one(
+            store, f"M{i}", wmo=7902220 + i, cycle=i, bbp=bbp, chl=0.12, version="2.0"
+        )
+
+
+# -- the section appears, with the numbers -----------------------------------
+def test_version_section_reports_the_ratio(tmp_path):
+    v1 = _v1_db(tmp_path)
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        out = rst.version_section(store, v1, sortable=False)
+        assert "1.0 vs 2.0" in out
+        # both seeded pairs are exactly 2.0/1.0 = 0.5
+        assert "n = 2" in out
+        assert "0.5" in out
+        # Chl went the other way (0.12 / 0.10 = 1.2) — the two must not be
+        # reported with the same sign of change.
+        assert "1.2" in out
+
+
+def test_version_section_states_what_changed_from_the_constant(tmp_path):
+    """The 'what changed' text is one constant, not three copies."""
+    v1 = _v1_db(tmp_path)
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        out = rst.version_section(store, v1, sortable=False)
+        assert rst.V2_CHANGES in out, "the section restates the changes itself"
+    # And the same constant reaches the Methods page.
+    assert rst.V2_CHANGES in rst.methods_page(compare_db=v1)
+
+
+def test_v2_changes_states_cdom_off_and_window_unchanged():
+    """Two claims in the brief that the actual run contradicts.
+
+    `include_cdom_fl = 0` in every 2.0 fit, and `wave_min`/`wave_max` are
+    400/700 in *both* releases. Describing either as a 2.0 improvement would
+    be a false claim in a published report.
+    """
+    assert "**off** in this run" in rst.V2_CHANGES
+    assert "fit window is unchanged" in rst.V2_CHANGES
+
+
+# -- the section's absence ----------------------------------------------------
+def test_version_section_empty_without_compare_db(caplog):
+    """No v1 asked for is not a failure, so it must not log one.
+
+    Without the up-front guard this still returns "" — the broad `except`
+    around `gather_version_pair` swallows it — so asserting only on the empty
+    string passes for the wrong reason. The absence of a warning is what
+    distinguishes "nothing was asked for" from "something went wrong".
+    """
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        with caplog.at_level("WARNING", logger="pab.report"):
+            assert rst.version_section(store, None) == ""
+        assert caplog.records == []
+
+
+def test_version_section_empty_when_the_file_is_missing(caplog, tmp_path):
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        with caplog.at_level("WARNING", logger="pab.report"):
+            assert rst.version_section(store, tmp_path / "nope.db") == ""
+        assert caplog.records == []
+
+
+def test_version_section_empty_when_no_matchup_is_shared(tmp_path):
+    """A v1 from a different run must produce no section, not bogus pairs."""
+    path = tmp_path / "other.db"
+    with Store.open(str(path)) as s:
+        _seed_one(s, "OTHER", wmo=1, cycle=9, bbp=2e-3, chl=0.1, version="1.0")
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        assert rst.version_section(store, path) == ""
+
+
+def test_a_corrupt_v1_does_not_break_the_build(caplog, tmp_path):
+    """The build survives an unusable v1 — but says so, loudly.
+
+    A section that silently disappears from a published report is worse than
+    one that errors: the site looks complete and the comparison is just gone.
+    """
+    bad = tmp_path / "bad.db"
+    bad.write_bytes(b"this is not a sqlite database")
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        with caplog.at_level("WARNING", logger="pab.report"):
+            assert rst.version_section(store, bad) == ""
+        assert any("could not read" in r.message for r in caplog.records)
+        written = rst.build_site(
+            store, tmp_path / "site", sortable=False, compare_db=bad
+        )
+        assert written["comparisons"].is_file()
+
+
+def test_a_v1_sharing_no_matchup_is_logged(caplog, tmp_path):
+    """Pointing at the wrong v1 yields an empty section; that must be visible."""
+    path = tmp_path / "other.db"
+    with Store.open(str(path)) as s:
+        _seed_one(s, "OTHER", wmo=1, cycle=9, bbp=2e-3, chl=0.1, version="1.0")
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        with caplog.at_level("WARNING", logger="pab.report"):
+            assert rst.version_section(store, path) == ""
+        assert any("shares no fitted matchup" in r.message for r in caplog.records)
+
+
+# -- the retrieval-failure note ----------------------------------------------
+def test_failure_note_counts_non_physical_bbp(tmp_path):
+    """0.33 % of real 2.0 fits return b_bp > 1 m^-1; the report must say so --
+    and, since O3 (Q&A/Outliers 1 = B), that they are *excluded* from the
+    b_bp statistics, with the corrected reading in place of the Chl-rate table."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4))  # the second fit is non-physical
+        out = rst.version_section(store, v1, sortable=False)
+        assert "Retrieval failures" in out
+        assert "1 of 2" in out
+        # and that 1.0 produced none of them, which is what makes it 2.0's
+        assert "1.0 produce 0 such values" in out
+        # gated, not left in: the note says so with the computed clause, and
+        # the b_bp stats line is built from the gated frame (n = 1) while the
+        # Chl line is not gated (n = 2; Q&A/Outliers 6 = A)
+        assert "**excluded**" in out and "left in" not in out
+        gate = "1 failed retrieval (50.00 %, ``b_bp`` > 1 m⁻¹) excluded"
+        assert gate in out
+        assert "- **b_bp(700 nm)** — n = 1; median 2.0/1.0 ratio = 0.5" in out
+        assert "- **chlorophyll** — n = 2;" in out
+        assert "n = 2; median 2.0/1.0 ratio = 1.2" in out
+        assert "chlorophyll of the same fits is not gated" in out
+        # the "clear-water tail" misreading and its retrieved-Chl rate table
+        # are gone, replaced by the corrected reading and the pointer
+        assert "Rate by retrieved chlorophyll" not in out
+        assert "clear-water tail" not in out.replace("not a clear-water tail", "")
+        assert not hasattr(rst, "_runaway_regime_note")
+        assert not hasattr(rst, "_RUNAWAY_CHL_EDGES")
+        assert "not a clear-water tail" in out
+        assert "negative* blue ``Rrs``" in out
+        assert "``Bnw`` prior ceiling of 10⁵ m⁻¹" in out
+        assert "physical basin with a *better* χ²" in out
+        assert "2.0.1" in out and "pending" in out
+        assert (
+            "https://github.com/ocean-colour/PAB/blob/main/versions/v2/"
+            "high_bbp_outliers.md" in out
+        )
+        # the float Chl under the failed fit, computed from this store
+        # (every seeded profile has chla = 0.1)
+        assert "median Chl of 0.10 mg m⁻³, against 0.10 for the population" in out
+
+
+def test_failure_note_without_a_store_still_explains(tmp_path):
+    """The note's float-Chl numbers need the store; without one the paragraph
+    stands on its own rather than quoting NaN."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "matchup_id": ["A", "B"],
+            "bbp700_v1": [2e-3, 4e-3],
+            "bbp700_v2": [1e-3, 5e4],
+        }
+    )
+    out = rst._version_failure_note(df)
+    assert "**excluded**" in out and "nan" not in out.lower()
+    assert "median Chl of" not in out and "high_bbp_outliers.md" in out
+
+
+def test_no_failure_note_when_every_fit_is_physical(tmp_path):
+    v1 = _v1_db(tmp_path)
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        assert "Retrieval failures" not in rst.version_section(store, v1, sortable=False)
+
+
+def test_aph_is_not_given_its_own_statistics(tmp_path):
+    """`chl = Aph / 0.05582`, so an Aph line would duplicate the Chl line."""
+    v1 = tmp_path / "v1.db"
+    with Store.open(str(v1)) as s:
+        _seed_one(s, "M1", wmo=1, cycle=1, bbp=2e-3, chl=0.10, aph=0.0056, version="1.0")
+    with Store.open(":memory:") as store:
+        _seed_one(
+            store, "M1", wmo=1, cycle=1, bbp=1e-3, chl=0.12, aph=0.0067, version="2.0"
+        )
+        out = rst.version_section(store, v1, sortable=False)
+        assert "**A_ph** —" not in out
+        assert "fixed rescaling" in out  # said once, instead
+
+
+# -- the figures --------------------------------------------------------------
+def test_static_figures_and_bp_histogram_at_scale(tmp_path):
+    v1 = _v1_db(tmp_path)
+    out_dir = tmp_path / "site"
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        out = rst.version_section(store, v1, outdir=out_dir, max_interactive=1)
+        dest = out_dir / "_static" / "comparisons"
+        assert (dest / "v2_vs_v1_bbp700.png").is_file()
+        assert (dest / "v2_vs_v1_chl.png").is_file()
+        assert (dest / "v2_bp_hist.png").is_file()
+        assert ".. raw:: html" not in out  # no Bokeh embed at scale
+        assert "B_p" in out and "prior" in out
+
+
+def test_bp_histogram_absent_when_bp_was_not_fitted(tmp_path):
+    """1.0-only stores have no Bp column; the block must drop out, not raise."""
+    v1 = _v1_db(tmp_path)
+    out_dir = tmp_path / "site"
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        store.conn.execute(
+            "DELETE FROM fit_results WHERE quantity = 'BING_ExpBPow_Bp'"
+        )
+        out = rst.version_section(store, v1, outdir=out_dir, max_interactive=1)
+        assert not (out_dir / "_static" / "comparisons" / "v2_bp_hist.png").is_file()
+        assert "v2_bp_hist.png" not in out
+
+
+def test_clip_percentile_bounds_the_axes_and_counts_off_scale():
+    """An outlier must change the title, not silently vanish from the plot."""
+    pd = pytest.importorskip("pandas")
+    from pab.plotting import population
+
+    df = pd.DataFrame(
+        {"x": [1e-3] * 99 + [1e-3], "y": [1e-3] * 99 + [1e4]},
+    )
+    fig = population.comparison_scatter(df, "y", "x", clip_percentile=99.0)
+    ax = fig.axes[0]
+    assert ax.get_ylim()[1] < 1e4, "the outlier still sets the axis range"
+    assert "off-scale" in ax.get_title()
+
+
+# -- wiring -------------------------------------------------------------------
+def test_build_site_threads_compare_db_to_every_page(tmp_path):
+    v1 = _v1_db(tmp_path)
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        written = rst.build_site(
+            store, tmp_path / "site", sortable=False, compare_db=v1
+        )
+        assert "1.0 vs 2.0" in written["comparisons"].read_text()
+        assert "1.0 vs 2.0 (elastic vs inelastic)" in written["summary"].read_text()
+        methods = written["methods"].read_text()
+        assert "Two databases" in methods
+        assert "pab_version`` semantics" in methods
+
+
+def test_build_site_unchanged_without_compare_db(tmp_path):
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        written = rst.build_site(store, tmp_path / "site", sortable=False)
+        assert "1.0 vs 2.0" not in written["comparisons"].read_text()
+        assert "1.0 vs 2.0" not in written["summary"].read_text()
+        methods = written["methods"].read_text()
+        assert "Two databases" not in methods
+        # the 2.0 configuration still describes this release on its own
+        assert rst.V2_CHANGES in methods
+
+
+def test_cli_compare_db_reaches_build_site(tmp_path, monkeypatch):
+    """`--compare-db` is forwarded, not accepted-and-ignored (the Prompt 5 trap)."""
+    from pab import pipeline
+    from pab.report import rst as _rst
+
+    db = tmp_path / "v2.db"
+    with Store.open(str(db)) as store:
+        _v2_store(store)
+    seen = {}
+
+    def _fake_build_site(store, outdir, **kw):
+        seen.update(kw)
+        return {}
+
+    monkeypatch.setattr(_rst, "build_site", _fake_build_site)
+    rc = pipeline.main(
+        [
+            "--db",
+            str(db),
+            "--emit-site",
+            str(tmp_path / "site"),
+            "--compare-db",
+            "/path/to/v1.db",
+        ]
+    )
+    assert rc == 0
+    assert seen.get("compare_db") == "/path/to/v1.db"
+
+
+def test_ratio_is_reported_by_level_not_as_one_number(tmp_path):
+    """A single median invites use as a correction factor; the shift is not flat.
+
+    In the real data the tercile ratios run 0.66 / 0.74 / 0.81, and far wider
+    at the extremes — so the section must show the trend, not just the median.
+    """
+    v1 = tmp_path / "v1.db"
+    n = 60
+    with Store.open(str(v1)) as s:
+        for i in range(n):
+            _seed_one(
+                s, f"M{i}", wmo=7900000 + i, cycle=i, bbp=1e-4 * (i + 1),
+                chl=0.1, version="1.0",
+            )
+    with Store.open(":memory:") as store:
+        for i in range(n):
+            # ratio ramps 0.2 -> 0.9 with the 1.0 level
+            r = 0.2 + 0.7 * i / (n - 1)
+            _seed_one(
+                store, f"M{i}", wmo=7900000 + i, cycle=i, bbp=1e-4 * (i + 1) * r,
+                chl=0.12, version="2.0",
+            )
+        out = rst.version_section(store, v1, sortable=False)
+        assert "clearest third" in out and "most-scattering third" in out
+        assert "not** a correction factor" in out
+
+
+def test_no_level_split_on_a_handful_of_matchups(tmp_path):
+    """Terciles of 2 points are noise dressed as a trend."""
+    v1 = _v1_db(tmp_path)
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        assert "clearest third" not in rst.version_section(store, v1, sortable=False)
+
+
+def test_captions_contain_no_matplotlib_mathtext(tmp_path):
+    """`$b_{bp}$` is an axis label; in RST it renders as literal dollar signs."""
+    v1 = _v1_db(tmp_path)
+    out_dir = tmp_path / "site"
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        out = rst.version_section(store, v1, outdir=out_dir, max_interactive=1)
+    assert "$" not in out, (
+        "Matplotlib mathtext leaked into the page:\n"
+        + "\n".join(ln for ln in out.splitlines() if "$" in ln)
+    )
+
+
+def test_clear_water_result_is_framed_as_a_result(tmp_path):
+    """Q2: JXP confirmed the clear-water behaviour is expected physics."""
+    v1 = tmp_path / "v1.db"
+    n = 120
+    with Store.open(str(v1)) as s:
+        for i in range(n):
+            _seed_one(
+                s, f"M{i}", wmo=7900000 + i, cycle=i, bbp=1e-4 * (i + 1),
+                chl=0.1, version="1.0",
+            )
+    with Store.open(":memory:") as store:
+        for i in range(n):
+            r = 0.2 + 0.7 * i / (n - 1)
+            _seed_one(
+                store, f"M{i}", wmo=7900000 + i, cycle=i,
+                bbp=1e-4 * (i + 1) * r, chl=0.12, version="2.0",
+            )
+        out = rst.version_section(store, v1, sortable=False)
+        assert "Result:" in out, "the level dependence is still framed as a caveat"
+        assert "expected behaviour of the physics" in out
+        assert "Raman" in out and "inventing particulate backscatter" in out
+
+
+def test_bp_block_reports_the_pile_up_at_both_bounds(tmp_path):
+    """Q3: the censoring must be stated, not left to the panel title."""
+    pytest.importorskip("bing.rt.defs")  # the prior bounds come from bing
+    import numpy as np
+
+    v1 = _v1_db(tmp_path)
+    out_dir = tmp_path / "site"
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        # put Bp hard against both bounds
+        for fid, bp in (("M1_v2.0", 0.004), ("M2_v2.0", 0.05)):
+            store.upsert(
+                "fit_results",
+                {"fit_id": fid, "quantity": "BING_ExpBPow_Bp", "value": bp},
+            )
+        out = rst.version_section(store, v1, outdir=out_dir, max_interactive=1)
+        assert "both bounds" in out or "both ends" in out
+        assert "censored" in out
+        assert np.isfinite(0.0)  # keep numpy import meaningful
+
+
+# -- the site must not copy a payload nothing links to ------------------------
+def _seed_with_figures(store, n, tmp_path):
+    """n matchups whose fit figure and scene exist on disk."""
+    figdir = tmp_path / "figs"
+    figdir.mkdir(exist_ok=True)
+    for i in range(n):
+        fid = _seed_one(
+            store, f"M{i}", wmo=7900000 + i, cycle=i, bbp=1e-3, chl=0.1,
+            version="2.0",
+        )
+        fp = figdir / f"{fid}_fit.png"
+        fp.write_bytes(b"png")
+        sp = figdir / f"M{i}_scene.png"
+        sp.write_bytes(b"png")
+        store.execute(
+            "UPDATE fits SET figure_path = ? WHERE fit_id = ?", (str(fp), fid)
+        )
+        store.execute(
+            "UPDATE matchups SET scene_path = ? WHERE matchup_id = ?",
+            (str(sp), f"M{i}"),
+        )
+
+
+def _staged(outdir):
+    d = outdir / "_static"
+    return sum(1 for _ in d.rglob("*.png")) if d.is_dir() else 0
+
+
+def test_figures_are_staged_below_the_gallery_threshold(tmp_path):
+    out = tmp_path / "site"
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 3, tmp_path)
+        rst.build_site(store, out, sortable=False)
+    assert _staged(out) > 0, "a small site should still carry its thumbnails"
+
+
+def test_scene_gallery_does_not_stage_when_suppressed(tmp_path):
+    """The N-guard protected the HTML but not the payload.
+
+    At 10^4 matchups the real run copied ~32,000 PNGs (636 MB, 3.2 h on
+    CephFS) into a site that renders none of them.
+    """
+    out = tmp_path / "site"
+    out.mkdir()
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 6, tmp_path)
+        page = rst.scene_gallery(store, out, max_inline=2)
+    assert "too many to show inline" in page, page
+    scenes = out / "_static" / "scenes"
+    staged = list(scenes.glob("*.png")) if scenes.is_dir() else []
+    assert not staged, (
+        f"{len(staged)} scenes copied into a site that shows none of them"
+    )
+
+
+def test_scene_gallery_does_stage_when_it_renders(tmp_path):
+    out = tmp_path / "site"
+    out.mkdir()
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 3, tmp_path)
+        page = rst.scene_gallery(store, out, max_inline=50)
+    assert ".. raw:: html" in page
+    assert len(list((out / "_static" / "scenes").glob("*.png"))) == 3
+
+
+def test_fit_figures_not_staged_at_scale(tmp_path, monkeypatch):
+    """`_gather_with_figures` staged every fit figure unconditionally.
+
+    At scale only the representative selection (E5) is staged and linked; every
+    other row's URL is None and no other file is copied.
+    """
+    out = tmp_path / "site"
+    out.mkdir()
+    monkeypatch.setattr(rst, "MAX_INLINE_FIGURES", 2)
+    monkeypatch.setattr(rst, "MAX_INTERACTIVE_MATCHUPS", 2)
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 6, tmp_path)
+        df = rst._gather_with_figures(store, out)
+    chosen = set(rst.select_representative_fits(df)["matchup_id"])
+    assert 0 < len(chosen) < len(df)
+    staged_rows = df[df[rst.FIGURE_URL_COL].notna()]
+    assert set(staged_rows["matchup_id"]) == chosen, "URLs point at unstaged files"
+    figs = out / "_static" / "figures"
+    staged = list(figs.glob("*.png")) if figs.is_dir() else []
+    assert len(staged) == len(chosen), (
+        f"{len(staged)} fit figures copied for {len(chosen)} that link to them"
+    )
+
+
+def test_fit_figures_staged_below_threshold(tmp_path):
+    out = tmp_path / "site"
+    out.mkdir()
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 3, tmp_path)
+        df = rst._gather_with_figures(store, out)
+    assert df[rst.FIGURE_URL_COL].notna().all()
+    assert len(list((out / "_static" / "figures").glob("*.png"))) == 3
+
+
+def test_suppressed_figure_gallery_still_tells_the_reader(tmp_path, monkeypatch):
+    """Not staging must not make the section vanish.
+
+    Once `_gather_with_figures` stops staging at scale every URL is None, so a
+    gallery that counts surviving items sees zero and returns "" — silently
+    dropping the line that says the figures exist as downloads.
+    """
+    out = tmp_path / "site"
+    out.mkdir()
+    monkeypatch.setattr(rst, "MAX_INLINE_FIGURES", 2)
+    monkeypatch.setattr(rst, "MAX_INTERACTIVE_MATCHUPS", 2)
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 6, tmp_path)
+        df = rst._gather_with_figures(store, out)
+        page = rst.figure_gallery(df, max_inline=2)
+    assert "Per-matchup figures" in page, "the whole section disappeared"
+    assert "6 matchups" in page
+    assert "downloads" in page
+
+
+def test_suppressed_gallery_does_not_promise_a_tappable_scatter(tmp_path, monkeypatch):
+    """At this scale the Comparisons page renders static PNGs, not Bokeh."""
+    out = tmp_path / "site"
+    out.mkdir()
+    monkeypatch.setattr(rst, "MAX_INLINE_FIGURES", 2)
+    monkeypatch.setattr(rst, "MAX_INTERACTIVE_MATCHUPS", 2)
+    with Store.open(":memory:") as store:
+        _seed_with_figures(store, 6, tmp_path)
+        df = rst._gather_with_figures(store, out)
+        page = rst.figure_gallery(df, max_inline=2)
+    assert "tapping a point" not in page, (
+        "the page promises a tap-to-open scatter that is suppressed at this scale"
+    )
+
+
+def test_pages_have_no_malformed_inline_literals(tmp_path):
+    """``literal``(paren) is an unterminated inline literal in docutils.
+
+    Sphinx reports it as a WARNING and renders the backticks verbatim, so the
+    reader sees ``b_bp``(700 nm) on the page.
+    """
+    import re
+
+    v1 = _v1_db(tmp_path)
+    out = tmp_path / "site"
+    with Store.open(":memory:") as store:
+        _v2_store(store)
+        written = rst.build_site(store, out, sortable=False, compare_db=v1)
+    bad = []
+    for name, path in written.items():
+        if not str(path).endswith(".rst"):
+            continue
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            # a closing `` followed immediately by an opening paren or word char
+            if re.search(r"``[\(\w]", line.replace("``(url", "")):
+                if re.search(r"[^`]``[\(]", line):
+                    bad.append(f"{name}.rst:{i}: {line[:90]}")
+    assert not bad, "malformed inline literals:\n" + "\n".join(bad)
+
+
+def test_failure_note_quotes_the_negative_blue_rate_when_recorded(tmp_path):
+    """O4: once the 2.0 fits carry ``n_neg_blue`` the failure note says how
+    many spectra have a negative blue band and how many of the failures do --
+    computed from the store, omitted while the column is all NaN."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4))
+        out = rst.version_section(store, v1, sortable=False)
+        assert "fitted spectra (" not in out  # nothing recorded yet
+        for m, n in (("M1", 0), ("M2", 2)):
+            store.upsert(
+                "fit_results",
+                {"fit_id": f"{m}_v2.0", "quantity": "BING_ExpBPow_n_neg_blue", "value": n},
+            )
+        out = rst.version_section(store, v1, sortable=False)
+        assert (
+            "400–450 nm (the floats under them report a median Chl of 0.10 mg m⁻³, "
+            "against 0.10 for the population). In this release 1 of 2 fitted "
+            "spectra (50.00 %) have at least one negative band at 400–450 nm "
+            "(``n_neg_blue`` ≥ 1); 1 of the 1 failed retrieval does. On such a "
+            "spectrum" in out
+        )
+
+
+# -- the 2.0.1 story (O7, Q&A/Outliers 1 = C, 10 = A, 11 = A) ------------------
+def _patch_m2(store, *, bbp=4e-4, chl=0.005, success=0):
+    """Re-fit M2 (the runaway of ``_v2_store(bbps=(1e-3, 5e4))``) under 2.0.1
+    on the same pixel, the O6 shape: ceiling ``prior_set``, replay stamp."""
+    from pab.tests.test_compare_versions import PATCH_PRIOR_SET, _add_bing_fit
+
+    pixel_id = store.query(
+        "SELECT pixel_id FROM matchup_pixels WHERE matchup_id = 'M2'"
+    )[0]["pixel_id"]
+    store.execute("UPDATE fits SET pixel_id = ? WHERE fit_id = 'M2_v2.0'", (pixel_id,))
+    return _add_bing_fit(
+        store, "M2", pixel_id, version="2.0.1", bbp=bbp, chl=chl, success=success,
+        prior_set=PATCH_PRIOR_SET,
+    )
+
+
+def test_failure_note_tells_the_2_0_1_story_when_patched(tmp_path):
+    """With a 2.0.1 re-fit in the store the note counts the runaways from the
+    2.0 rows (which stay), quotes the prior_set and ceilings, says how many
+    re-fits sit below the gate (and that those values are what the page
+    uses), how many still above, the Chl < 0.01 count (Q&A 11 = A) and the
+    success = 0 fit kept as recorded (Q&A 10 = A) -- every number computed."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4))
+        _patch_m2(store)
+        for m, n in (("M1", 0), ("M2", 2)):
+            store.upsert(
+                "fit_results",
+                {"fit_id": f"{m}_v2.0", "quantity": "BING_ExpBPow_n_neg_blue", "value": n},
+            )
+        out = rst.version_section(store, v1, sortable=False)
+        assert "**Retrieval failures.** 1 of 2 2.0 fits (50.00 %)" in out
+        assert "the largest is 5e+04 m⁻¹" in out
+        assert "1.0 produce 0 such values" in out
+        assert "**re-fitted under ``pab_version`` 2.0.1**" in out
+        assert (
+            '``prior_set = "bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"`` — '
+            "``b_bp`` (600 nm) ≤ 0.1 m⁻¹, ``A_dg`` ≤ 10 m⁻¹, ``A_ph`` ≤ 10 m⁻¹"
+        ) in out
+        assert "1 of the 1 re-fitted fits now return a ``b_bp`` below the 1 m⁻¹ gate" in out
+        assert "those re-fitted values are what every statistic and figure on this site uses" in out
+        assert "``fit_id_superseded``, ``bbp_bing_superseded``" in out
+        assert "None remains above the gate" in out
+        assert "0 failed retrievals (0.00 %, ``b_bp`` > 1 m⁻¹) excluded" in out
+        assert "1 of the 1 re-fitted fits retrieve a chlorophyll below 0.01 mg m⁻³" in out
+        assert "``A_ph`` at its 10⁻⁶ prior floor" in out
+        assert (
+            "1 of the re-fitted fits (7902222/2) records ``success = 0``" in out
+            and "as for 0 of the 2 2.0 fits" in out
+            and "is kept as recorded" in out
+        )
+        # the O3 "pending" sentence is gone; the basin sentence points at the re-fit
+        assert "pending" not in out
+        assert "The 2.0.1 re-fit above lands in that basin" in out
+        # the negative-blue clause still names the failed retrieval, computed
+        # on the 2.0 rows (the overlaid frame no longer flags any)
+        assert "1 of 2 fitted spectra (50.00 %)" in out
+        assert "1 of the 1 failed retrieval does." in out
+        # the float Chl under the failed fit is still quoted
+        assert "median Chl of 0.10 mg m⁻³" in out
+        # the stats lines use the overlaid pair (1.0 vs 2.0.1 for M2): both
+        # pairs count, nothing excluded, and the intro says which
+        assert "- **b_bp(700 nm)** — n = 2;" in out
+        assert "1 of the pairs use the 2.0.1 re-fit of a 2.0 fit" in out
+        assert "- **chlorophyll** — n = 2;" in out
+        # the whole site still builds and has no malformed literal
+        written = rst.build_site(store, tmp_path / "site", sortable=False, compare_db=v1)
+        text = written["comparisons"].read_text()
+        assert "re-fitted under" in text
+        import re
+
+        for name in ("summary", "comparisons", "methods", "downloads"):
+            for line in written[name].read_text().splitlines():
+                # the predicate of test_pages_have_no_malformed_inline_literals
+                if re.search(r"``[\(\w]", line.replace("``(url", "")):
+                    assert not re.search(r"[^`]``[\(]", line), line
+
+
+def test_failure_note_still_says_pending_without_a_patch(tmp_path):
+    """The old regime: runaways and no 2.0.1 rows -> gated, re-fit pending."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4))
+        out = rst.version_section(store, v1, sortable=False)
+        assert "pending" in out and "re-fitted under" not in out
+        assert "1 failed retrieval (50.00 %, ``b_bp`` > 1 m⁻¹) excluded" in out
+
+
+def test_patch_still_above_the_gate_stays_excluded(tmp_path):
+    """A re-fit that is still non-physical remains gated, and the note says
+    so with the count; an unpatched runaway counts as still above too."""
+    v1 = _v1_db(tmp_path, bbps=(2e-3, 4e-3, 6e-3))
+    with Store.open(":memory:") as store:
+        _v2_store(store, bbps=(1e-3, 5.0e4, 7.0e4))  # M2 and M3 run away
+        _patch_m2(store, bbp=3.0, chl=0.2, success=1)  # re-fitted, still > 1
+        out = rst.version_section(store, v1, sortable=False)
+        assert "**Retrieval failures.** 2 of 3 2.0 fits" in out
+        assert "0 of the 1 re-fitted fits now return" in out
+        assert "2 remain above the gate (1 re-fitted and still above it and 1 not re-fitted) and stay excluded" in out
+        assert "2 failed retrievals (66.67 %, ``b_bp`` > 1 m⁻¹) excluded" in out
+        assert "0 of the 1 re-fitted fits retrieve a chlorophyll below" in out
+        assert "``success = 0``" not in out
+        assert "- **b_bp(700 nm)** — n = 1;" in out  # only M1 survives the gate

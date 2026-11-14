@@ -1,0 +1,84 @@
+# Task 17a — full-selection `match` (50,292 candidate-bearing profiles).
+#
+# Split from `fit` deliberately, for two reasons:
+#  1. match is bound by NASA S3 latency, not CPU — but it is MEMORY-bound before
+#     it is latency-bound. Each worker materialises a granule's nav arrays
+#     (lat/lon/l2_flags ~43 MB) plus fsspec read-ahead per open, ~2.5 GB resident
+#     in practice. 32 workers on 80Gi OOM-killed SIX times (45.7 GB at 50 profiles,
+#     79 GB at ~100). Back to the pilot's proven ratio: **16 workers on 100Gi**
+#     = ~6 GB/worker headroom. Slower (~7 s/profile => ~4 days) but it finishes.
+#  2. it lets the matchup rate be checked before committing ~52 h of MCMC.
+#
+# All matchups derive from the complete 67,435-granule pool: the 278 pilot-era ones
+# were dropped first (see nautilus/reset_full_matchups_job.yaml), so selection
+# criteria are uniform across the dataset.
+#
+# Protections that earned their place in the 1k pilot, all active here:
+#   * per-granule read timeout (120 s) — a wedged HTTPS read once hung `fit` 8.6 h
+#   * chunked pools + 120 s stall guard — kills a wedged chunk and continues
+#   * resume pre-filter — matched profiles are skipped BEFORE any granule is opened
+#   * footprint pre-filter — ~6 candidate opens/profile instead of ~291
+#
+# Expect ~42 h, ~14,100 matchups (28% of 50,292, the pilot's rate), 0 stalls that
+# cost more than 120 s each.
+#
+# Usage:
+#   kubectl -n sea-meets-the-stars delete job pab-full-match --ignore-not-found
+#   kubectl apply -f nautilus/full_match_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-full-match
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-full-match
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4          # preemption-tolerant; resume skips finished profiles
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.2
+        imagePullPolicy: IfNotPresent
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data}
+        - {name: PYTHONPATH, value: /data/src}
+        - {name: RUN, value: /data/full}
+          # curb glibc arena fragmentation: each granule read allocates and frees
+          # tens of MB of nav arrays, and per-thread arenas otherwise keep the RSS
+        - {name: MALLOC_ARENA_MAX, value: "2"}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            # Headroom + tripwire for the parallel-match pool churn. The FD leak
+            # that wedged the first attempt (192 killed pools left ~1009 pipes vs a
+            # 1024 soft limit) is fixed in code (_reclaim_pool); this is insurance.
+            ulimit -n 65536 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
+            echo "=== FD limit soft=$(ulimit -Sn) hard=$(ulimit -Hn) ===" | tee -a $RUN/run.log
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $RUN/run.log; }
+            counts() { python -c "import os,sqlite3; c=sqlite3.connect(os.environ['RUN']+'/pab.db'); print('counts:', {t: c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('profiles','granules','matchups','matchup_pixels','fits','fit_results')})" 2>&1 | tee -a $RUN/run.log; }
+            log "MATCH start (full selection, jobs=16)"
+            counts
+            if ! pab --db $RUN/pab.db --outdir $RUN/pipeline \
+              --stage match --jobs 16 2>&1 | tee -a $RUN/run.log; then
+              log "MATCH FAILED — stopping (re-apply the Job to resume)"
+              counts
+              exit 1
+            fi
+            log "MATCH end"
+            counts
+            du -sh $RUN /data/fit_chains 2>/dev/null | tee -a $RUN/run.log
+            log "MATCH_DONE"
+        resources:
+          requests: {cpu: "16", memory: "100Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "16", memory: "100Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: netrc, mountPath: /root/.netrc, subPath: .netrc}
+        - {name: awscreds, mountPath: /root/.aws/credentials, subPath: credentials}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: netrc, secret: {secretName: earthdata-netrc}}
+      - {name: awscreds, secret: {secretName: prp-s3-credentials}}

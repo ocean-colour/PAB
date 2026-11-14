@@ -1,0 +1,43 @@
+# Drop the pilot-era matchups from the FULL run's store before Task 17's match.
+#
+# Why: these 278 matchups (and their 273 fits) were derived when the store held
+# 2,734 granules; it now holds 67,435 after Tasks 15-16. Keeping them would leave
+# 2% of the dataset selected under a different candidate pool from the rest, and
+# --replace cannot repair it — a different best-granule produces a SECOND row,
+# since `matchups` is unique on (profile_id, granule_id), not profile_id.
+#
+# Safe: these rows are recomputable, and the pilot snapshot is preserved both at
+# /data/run1k and at s3://pab/run1k/.
+#
+#   kubectl -n sea-meets-the-stars delete job pab-reset-full --ignore-not-found
+#   kubectl apply -f nautilus/reset_full_matchups_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-reset-full
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-reset-full
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: reset
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:1.0.2
+        imagePullPolicy: Always
+        env:
+        - {name: RUN, value: /data/full}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            python -c "import os,sqlite3; db=os.environ['RUN']+'/pab.db'; c=sqlite3.connect(db); t=('profiles','granules','matchups','matchup_pixels','fits','fit_results'); print('before:', {x: c.execute('SELECT COUNT(*) FROM '+x).fetchone()[0] for x in t}); [c.execute(s) for s in ('DELETE FROM fit_results','DELETE FROM fits','DELETE FROM matchup_pixels','DELETE FROM matchups')]; c.commit(); print('after: ', {x: c.execute('SELECT COUNT(*) FROM '+x).fetchone()[0] for x in t})"
+            echo RESET_DONE
+        resources:
+          requests: {cpu: "1", memory: "2Gi", ephemeral-storage: "2Gi"}
+          limits: {cpu: "1", memory: "2Gi", ephemeral-storage: "4Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}

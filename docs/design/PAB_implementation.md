@@ -1,7 +1,7 @@
 # PAB Implementation Record
 
-**Version:** 0.7.1
-**Date:** 2026-06-26
+**Version:** 1.1
+**Date:** 2026-09-07
 **Authors:** JXP and Claude
 
 **Status:** living document — updated as each stage is implemented.
@@ -34,6 +34,9 @@ every bump.
 | 7 | Reporting | ✅ done | `pab.report.{aggregate,rst,interactive,publish}` |
 | 8 | End-to-end pipeline & CLI | ✅ done | `pab.pipeline` + ``pab`` CLI |
 | 9 | Extensibility & options | ⬜ future | — |
+| — | **Full-mission production run (Nautilus)** | ✅ done | `pab_version = 1.0` over the PACE mission — see §10 |
+| 10 | BGC-Argo provenance & CDOM ingestion | ✅ done | schema v4; `pab.argo.fetch`/`pab.pipeline` DAC fix; `pab.argo.summary` CDOM + adjusted-Chl + per-parameter data-mode fields — see §11 |
+| — | **Chl-a/CDOM deep-dive analysis & reports** | ✅ done | `pab/matchup/chl/`, `pab/matchup/cdom/` (internal, not RTD); `reports/PAB/pab_chl_matchups_report.md`, `reports/PAB/pab_cdom_matchups_report.md` — see §11 |
 
 **Environment notes.** Workstation Python is 3.14.5 (plan floor 3.12);
 `bing`, `ocpy`, `remote_sensing`, `argopy`, `earthaccess`, `gsw`, `pandas`,
@@ -43,11 +46,19 @@ installs a lean dependency set (numpy/scipy/pandas/pyarrow/xarray/gsw/matplotlib
 `-W`. The test suite is fully offline (no network/S3); tests touching the
 heavy/optional deps use `pytest.importorskip`.
 
-**Verification (current).** `pytest` → 117 tests: 115 passed + 2 skipped when the
-BING Loisel aph-basis data file is absent (the `b_bp`-recovery and fit-figure
-smoke skip, e.g. on lean CI / when the data mount is down), 117 passed when it is
-present; `ruff check pab` and `ruff format --check pab` → clean; `sphinx-build
--W` → build succeeded.
+**Verification (current).** `pytest` → 192 tests passed (grew from 117 across
+Stage 10's provenance-fix, CDOM-ingestion, and schema-migration test additions;
+the BING-guarded `b_bp`-recovery/fit-figure smoke tests still skip when the
+Loisel aph-basis data file is absent); `ruff check pab` and
+`ruff format --check pab` → clean; `sphinx-build -W` → build succeeded. Schema
+is at **v4** (see §11).
+
+**Production run.** The full-mission run over the entire PACE mission completed
+2026-08-20 on NSF/Nautilus (`pab_version = 1.0`): 54,031 profiles ingested,
+14,610 matchups, 14,609 fits. See §10 and the full-run report
+[`PAB_full_run_report.md`](PAB_full_run_report.md). The database was
+subsequently backfilled in place (still `pab_version = 1.0`, a documented
+one-time exception) by Stage 10 — see §11.
 
 ---
 
@@ -503,10 +514,22 @@ reconstruction are mockable/lazy seams.
 - **`gather_matchups` filters `fits` by `model_pair`** (`AND f.model_pair = ?`),
   so a second model pair (or other fits) on the same matchup yields one row, not
   duplicates.
-- **NASA L2 IOP baseline is deferred** (not ingested). BING-vs-Argo (`b_bp`,
-  Chl) is implemented; BING-vs-NASA awaits an `ocpy.pace.io.load_iop_l2` ingest
-  that populates `NASA_L2IOP_*` — a thin lazy seam the quantity-agnostic metric
-  slots into. Documented in `metrics.rst`.
+- **NASA L2 IOP baseline is ingested + published** (2026-09-09/11, closing the
+  deferral this bullet used to record). NASA's `PACE_OCI_L2_IOP` (GIOP) product
+  is read per matchup at the *same pixel* as the BING fit and persisted as a
+  **parallel `fits` row** (`algorithm = 'NASA_GIOP'`, MCMC columns NULL, its
+  own `pab_version = "1.1"`) plus namespaced `NASA_GIOP_*` `fit_results` —
+  note the namespace is `NASA_GIOP_*`, not the `NASA_L2IOP_*` placeholder the
+  design reserved. Modules: `pab.pace.iop` (granule mapping/extraction; the
+  AOP→IOP granule join is a verified filename-tag swap),
+  `pab.fit.nasa_giop` (idempotent batch driver + `python -m pab.fit.nasa_giop`
+  CLI), `pab.metrics.compare.gather_nasa_giop`, and a "BING vs NASA GIOP"
+  report section (`pab.report.rst.nasa_giop_section`). Full-mission ingest:
+  **14,609/14,609 matchups**, every IOP-granule nearest-pixel search landing
+  **0.0000 km** from the recorded BING pixel; the 442 nm-vs-700 nm `b_bp`
+  wavelength mismatch is deliberately not adjusted and is labelled on every
+  figure/stat. Full decision record + run report:
+  `claude_prompts/pace_giop_gsm.md`.
 
 **Tests** — `pab/tests/test_metrics.py` (11): `log_comparison` known-values +
 NaN/nonpositive handling; `season_of`/`region_of`; `gather_matchups` + `compare`
@@ -554,6 +577,15 @@ are lazily-imported seams; the aggregation math and manifest are pure.
   `sphinx-build <outdir> <outdir>/_build`). The binned tables are **sortable**
   Bokeh `DataTable` embeds when `bokeh` is present (`aggregates_page(sortable=)`),
   falling back to a static `list-table`. **No per-matchup page** is ever emitted.
+  Above `MAX_INTERACTIVE_MATCHUPS` the Comparisons page switches to the static
+  `pab.plotting.population` figures (density-plus-dots panels and the two
+  maps) and above `MAX_INLINE_FIGURES` the Figures page shows a deterministic
+  representative selection — see §13. Every `b_bp` statistic and figure
+  passes through `pab.metrics.compare.gate_bbp` (`BBP_IMPLAUSIBLE = 1 m⁻¹`,
+  O3 of `claude_prompts/v2/report_improvements.md`, 2026-10-18): the failed
+  retrievals are excluded with the computed count in each caption, the Chl,
+  the gallery pick and the exported raw values are not — see §13.5 and
+  `versions/v2/high_bbp_outliers.md`.
 
 ### 5e.3 Interactive (`pab/report/interactive.py`)
 
@@ -567,10 +599,12 @@ are lazily-imported seams; the aggregation math and manifest are pure.
 - `export_tables` (summary CSV/Parquet; the raw SQLite file is **not** a
   published download), `file_checksum` (SHA-256), `build_manifest` (one row per
   per-matchup artifact: `matchup_id`→URL+checksum, stamped `pab_version`), and
-  `publish_release` (exports + manifest + stub "uploads", writes `manifest.json`
-  with `pkg_versions`). `LocalStubBackend` copies to the filesystem (no network);
-  `NautilusS3Backend`/`ZenodoBackend` are explicit `NotImplementedError` stubs
-  (deferred, config-gated).
+  `publish_release` (exports + manifest + "uploads", writes `manifest.json`
+  with `pkg_versions`). `LocalStubBackend` copies to the filesystem (no network,
+  the offline default); **`NautilusS3Backend` is the live NSF/Nautilus Ceph-RGW
+  S3 backend** (path-style, public-read `s3://pab`; lazy `boto3` import; injectable
+  `client` for offline tests); `ZenodoBackend` remains an explicit
+  `NotImplementedError` stub.
 
 ### 5e.5 Key decisions
 
@@ -595,8 +629,9 @@ lean-CI regression); the **generated site builds** under `sphinx-build`;
 `stats_table` columns are sortable; `rst_table` rendering;
 Bokeh `comparison_scatter`/`embed`; `export_tables` round-trip; `build_manifest`
 id↔URL+checksum+`pab_version` and `LocalStubBackend` copies-not-network;
-`publish_release` writes the manifest; the real S3/Zenodo backends raise
-`NotImplementedError`.
+`publish_release` writes the manifest; `NautilusS3Backend` uploads via an
+injected fake S3 client (no network) and returns the public path-style URL; the
+`ZenodoBackend` still raises `NotImplementedError`.
 
 **Docs page** — `reporting.rst` (aggregate-not-per-matchup rationale, HEALPix,
 interactive embed, downloads/manifest, stubbed publish + config gate, how to
@@ -719,10 +754,658 @@ pab/
     aggregate.py       ✅ region/season + HEALPix aggregation
     rst.py             ✅ aggregate .rst pages (no per-matchup pages)
     interactive.py     ✅ standalone Bokeh scatter/map (embed)
-    publish.py         ✅ exports + download manifest + stubbed backends
+    publish.py         ✅ exports + download manifest + live Nautilus-S3 backend (Zenodo stubbed)
   pipeline.py          ✅ stage runner (ingest→…→report) + ``pab`` CLI
   tests/               test_smoke, test_db, test_argo, test_pace, test_matchup, test_fit, test_metrics, test_report, test_pipeline
 ```
+
+---
+
+## Stage 9 — richer Report (Chl plots, Q&A figures, context)
+
+Closed out the community Report so it is complete and self-explanatory, without
+bloating git or breaking the no-per-matchup-pages rule.
+
+- **Headless plotting (bug fix).** `pab/__init__.py` sets
+  `os.environ.setdefault("MPLBACKEND", "Agg")` and `pab/argo/qa.py` calls
+  `matplotlib.use("Agg")` before importing pyplot. Cause: `ingest` renders Q&A
+  figures *alongside argopy's worker threads*, where an interactive (Tk) backend
+  aborts the process at teardown (`Tcl_AsyncDelete: … wrong thread`).
+- **Schema → v3.** `mld_summary.qa_path` (v2) and `matchups.scene_path` (v3), each
+  added via a registered forward migration; `SCHEMA_VERSION = 3`.
+- **Q&A figures wired in.** `ingest` emits per-profile Argo Q&A plots
+  (`_emit_profile_qa` → `outdir/argo_qa/<wmo>_<cycle>.png`, live-fetch path only,
+  gated on `make_figures`); the `figure` stage records `scene_path` and a plain
+  `--stage figure` re-run **backfills** already-rendered scenes (no re-render).
+- **Report additions** (`pab.report.rst`): a **Chl** scatter (reusing
+  `comparison_scatter`, with an OC4 `chl_oc` overlay when `build_site(opener=…)`);
+  N-guarded `figure_gallery` / `scene_gallery` / `argo_qa_gallery` sharing one
+  `_thumbnail_gallery` + `_stage_static` copier; a `matchup_quality_table`
+  (distance/Δt/spectra) on the aggregates page; a `provenance_block`
+  (`pab_version` + build date + `package_versions()`); coverage medians on the
+  summary; and a fleshed-out reader-facing `methods_page`.
+- **CLI.** `pab --emit-site DIR` regenerates the RTD site sources; with
+  `--download` it uses the local granule cache so the OC4 cross-check can run
+  network-free. Published on Read the Docs from `report_site/.readthedocs.yaml`
+  (a second project; see `HOWTO.md` §7a).
+
+---
+
+## 10. Full-mission production run (Nautilus)
+
+The first production run of the whole `pab` pipeline
+(ingest→discover→match→fit→figure→report) over the **entire PACE mission**,
+completed 2026-08-20 under `pab_version = "1.0"`.
+
+### 10.1 What ran
+
+The pipeline was containerized and run on **NSF/Nautilus** (Kubernetes + Ceph +
+S3), namespace `sea-meets-the-stars`, image
+`gitlab-registry.nrp-nautilus.io/profx/pab:1.0.3`. One pod = one SQLite writer;
+the heavy stages parallelize *in-process* via `--jobs`. PACE granules are read
+**lazily** from NASA's `us-west-2` S3 — only the ~MB of pixels each matchup
+needs ever moves; the ~18.55 TB of mission granules were never downloaded.
+
+### 10.2 Results
+
+| Stage | Result |
+|---|---|
+| `ingest` | 54,031 profiles (881 floats) |
+| `discover` | 67,435 granules |
+| `match` | 14,610 matchups / 146,100 pixels |
+| `fit` | 14,609 fits / 146,090 `fit_results` rows (1 fit failed) |
+| `figure` | 14,609 fit figures + 14,586 scenes |
+| `report` | 7-page RST site + release manifest |
+
+### 10.3 Provenance
+
+`pab_version = "1.0"` is stamped on 100% of `matchups`/`fits`/`mld_summary`
+rows, and every fit records a `pkg_versions` JSON (pab 1.0, argopy 1.4.0,
+numpy 2.4.6, scipy 1.18.0, xarray 2025.9.0, earthaccess 0.17.0, …). Fit
+outputs are 10 IOP quantities per matchup
+(`BING_ExpBPow_{Adg,Aph,Bnw,Sdg,anw440,anw700,bbp440,bbp700,beta,chl}`). MCMC
+chains are ~1.3 MB each, ~18.1 GiB total.
+
+### 10.4 Production-hardening fixes (implementation decisions)
+
+Three fixes made during the run, recorded here as implementation decisions:
+
+1. **`pab/matchup/engine.py` — file-descriptor leak wedged `match`.** Transient
+   S3-read stalls triggered ~192 worker-pool recreations, each leaking ~5 pipes
+   → the pod hit `ulimit -n`. Fixed with `_reclaim_pool`
+   (kill→reap→`shutdown(wait=True)`, guarded by a 30 s watchdog thread), plus
+   `ulimit -n 65536` headroom in the Job.
+2. **`fit` on CephFS — SQLite locking, not throughput.** The killer was
+   SQLite's sustained locked access to the DB on CephFS (the gather phase hung
+   12+ min on the CephFS DB vs 0.6 s on a local copy). Fixed via a
+   **Job-wrapper** (no code change): run `fit` against a node-local
+   (`emptyDir`) copy of `pab.db`, keep the bulk chain writes on CephFS, and
+   checkpoint the DB back by local-backup→file-copy (never `sqlite3.backup()`
+   to CephFS).
+3. **`figure` is memory-bound**, not CPU-bound like `fit` — it re-opens PACE
+   granules for scenes, and running it with fit's worker shape OOM-killed
+   pods. Retuned to match's 16-worker / 100 GiB ratio.
+
+### 10.5 Publishing & backup status
+
+The run's `report` used the `LocalStubBackend`. Since then **`NautilusS3Backend`
+is implemented** (live Ceph-RGW S3) and the full production DB is published to
+`https://s3-west.nrp-nautilus.io/pab/full/pab.db` (public-read, verified). The
+whole dataset (DB + chains + site) is also backed up off-site to the Google shared
+drive `AIOcean:PAB/` (Nautilus PVCs are not backed up). **Still pending:** the bulk
+artifact publish (chains/figures → `s3://pab` with real manifest URLs), RTD, and a
+Zenodo DOI (`ZenodoBackend` still a `NotImplementedError` stub).
+
+### 10.6 Verification & close-out
+
+Close-out checks on the production DB: **`pab_version = "1.0"` on 100%** of
+`matchups`/`fits`/`mld_summary`; referential integrity clean (0 orphans,
+`PRAGMA integrity_check = ok`); matchup spot-check sensible (separation median
+0.80 km ≤ 5 km cap, Δtime median 10.2 h ≤ 24 h window, fit `chisq` median 0.47);
+14,586/14,610 scenes rendered. Full-run timings + failure rates (ingest 0.89%,
+discover 0%, fit 1/14,610) are tabulated in
+[`PAB_full_run_report.md`](PAB_full_run_report.md), the standalone narrative of
+the run.
+
+---
+
+## 11. Stage 10 — BGC-Argo provenance, CDOM ingestion & the Chl-a/CDOM deep-dive analysis
+
+Two linked passes, executed back-to-back per `claude_prompts/chl_cdom_prompt_1.md`
+(implementation) and `claude_prompts/chl_cdom_prompt_2.md` (analysis + reports),
+following Stage 10 of `PAB_coding_plan.md` (v0.2) and the design additions in
+`PAB_design.md` (v0.5). Recorded together, last, per this project's established
+"plan → implement → go back and record" pattern.
+
+### 11.1 What Stage 10 actually built (implementation pass)
+
+**Schema v3 → v4** (`pab/db/schema.py`, `_v3_to_v4` forward migration
+alongside the inline `CREATE TABLE` DDL): six new `mld_summary` columns —
+`cdom`, `cdom_std`, `chla_adjusted`, `chla_data_mode`, `cdom_data_mode`,
+`bbp700_data_mode`. `SCHEMA_VERSION` bumped 3 → 4.
+
+**DAC/project-name provenance fix.** `floats.project_name`/`data_center` and
+`profiles.data_mode` existed since Stage 1 but were never populated — a
+genuine bug, not a schema gap. Root cause: `pab/argo/fetch.py::iter_profiles`
+never extracted `PROJECT_NAME`/`DATA_CENTRE` at all, and
+`pab/pipeline.py::ingest()` dropped even the `DATA_MODE` it did extract before
+forwarding to `persist_summary()`. Fixed in both files; regression tests added
+(`test_iter_profiles_extracts_dac_and_project_metadata`,
+`test_ingest_persists_dac_and_project_provenance`). Also discovered: a bare
+`DATA_MODE` variable does not exist on real BGC/GDAC datasets at all — only
+per-parameter `<PARAM>_DATA_MODE` — so `profiles.data_mode` remains
+structurally unpopulated for BGC data; the per-parameter fields below are the
+real fix.
+
+**CDOM ingestion + per-parameter data mode.** `"CDOM"` added to
+`pab/argo/fetch.py::DEFAULT_PARAMS`; `iter_profiles` extended to extract
+`CDOM`, `CHLA_ADJUSTED`, and per-parameter `<PARAM>_DATA_MODE` for
+CHLA/CDOM/BBP700. `pab/argo/summary.py::summarize_profile` averages
+`chla_adjusted`/`cdom` the same plain way as `chla` (no despike/IQR — that
+remains BBP700-specific); `persist_summary` writes the three new data-mode
+fields straight from profile-level metadata.
+
+**Scope decision (Q1 of `chl_cdom_prompt_1.md`): no `cdom_adjusted` was
+ingested.** A spot-check against live GDAC data found `CDOM_ADJUSTED` is
+**100% empty fleet-wide** (90,270 CDOM profile-rows / 694 floats checked
+against the live GDAC index — zero `'A'`/`'D'` mode, all `'R'`): no BGC-Argo
+float has ever had CDOM delayed-mode processed, so there was nothing for a
+`cdom_adjusted` column to mirror. JXP chose to ingest raw `cdom` only, pending
+a BGC-Argo consult on how to apply Sea-Bird Scientific's documented ~5.62×
+Reference Adjustment Factor (a manufacturer-confirmed calibration bias
+affecting most CDOM fluorometers calibrated/serviced before 2023-01-13). This
+is a deliberate, documented scope reduction from the original Stage 10 plan,
+not an oversight.
+
+**Combined re-ingestion over the existing 881 floats.** A full re-fetch of
+all 54,031 profiles (`replace=True` — required, since populating new
+per-profile fields on already-ingested profiles needs a genuine re-fetch, not
+a cheap patch): **52,844 written, 1,187 failed (2.2%)**, in line with this
+project's historical argopy transient-failure rate. Verified against known
+external facts: AOML count landed at 612/881 directly, reconciling to the
+externally-verified 617/881 once the 8 floats with 100%-failed re-fetches are
+cross-checked (5 of those 8 are AOML); CDOM populated for 394/881 floats
+(44.7%, matching the ~46% fleet-coverage figure in
+`pab/argo/BGC_Argo_Coverage_Report.md`); `chla_adjusted` populated for 89.5%
+of profiles (matching the live GDAC CHLA data-mode breakdown: ~89% `'A'` + 8%
+`'D'`). Pre-existing science fields (`chla`, `bbp700`, `mld`) were unchanged
+to bit-for-bit precision on the sampled smoke-test profiles, with only tiny
+(~0.02%), strictly-positive deltas fleet-wide from genuine upstream Argo
+delayed-mode drift between the original and re-fetch dates — not data loss.
+
+**Publishing.** The updated `pab.db` (schema v4, 141,156,352 B) was
+re-published to `s3://pab/full/pab.db` and backed up to `AIOcean:PAB/`,
+**under the same `pab_version = "1.0"`** — a deliberate, documented one-time
+exception to the project's usual versioning principle (a new version should
+*add* records, not overwrite), justified because this pass is a provenance/
+schema backfill with no analysis-method change, not a re-analysis. Verified
+via a genuine round-trip download + sha256 match, not just a clean upload
+exit code.
+
+**Docs.** `docs/db_schema.rst` and `docs/argo_ingestion.rst` updated for the
+v4 fields, the DAC/per-parameter-mode provenance, and the CDOM unit/caveat.
+
+**Tests.** Suite grew 187 → 192 (six new/modified tests across
+`test_argo.py`/`test_db.py`/`test_pipeline.py`); full suite + `ruff` clean
+throughout.
+
+### 11.2 What the analysis pass actually built
+
+**`pab/matchup/chl/`** — internal, standalone scripts (not part of the `pab`
+package API, not on Read the Docs): a shared loader
+(`data.py::load_chl_matchups()`, wrapping `gather_matchups()` + `add_strata()`
+plus the Stage 10 joins) and eight figure scripts (1:1 scatter, histogram,
+static+interactive global maps, Δt/distance/MLD/season/basin stratification,
+data-quality + Argo-data-mode stratification, three Chl-specific diagnostics,
+adjusted-vs-raw Argo Chl, and DAC stratification), plus `run_all.py`. The
+original rough `pab/matchup/plot_chl_matchup_scatter.py` (hardcoded
+`/Users/alliejames/...` paths) was absorbed into this subfolder and removed
+from its old flat location.
+
+**`pab/matchup/cdom/`** — likewise internal/standalone: a loader that reuses
+`pab.matchup.chl.data.load_chl_matchups()` rather than re-deriving joins, plus
+four figures (overall scatter, by-basin and by-season small multiples, a
+descriptive coverage map) and `run_all.py`. Every figure carries the
+mandated caveats (fluorescence-ppb-QSDE vs. combined-absorption-m⁻¹ unit
+mismatch; the unapplied Sea-Bird RAF) per the qualitative/correlative-only
+scope agreed in `chl_cdom_matchups.md` (C1–C4).
+
+**Two GitHub-facing reports** in `reports/PAB/`:
+[`pab_chl_matchups_report.md`](../../reports/PAB/pab_chl_matchups_report.md)
+and
+[`pab_cdom_matchups_report.md`](../../reports/PAB/pab_cdom_matchups_report.md)
+(a separate file, per Q1 of `chl_cdom_prompt_2.md`).
+
+### 11.3 Headline scientific findings (full detail in the reports themselves)
+
+- **Chl-a's PACE-vs-Argo bias is real but weaker and structurally different
+  from bbp700's**, and — the key result — **concentration-dependent**: PACE
+  reads low relative to Argo below roughly 0.1–0.2 mg/m³ and high above it, so
+  no single constant bias number describes the population.
+- **The in-situ reference matters more than any other factor tested.**
+  Recomputing the bias against the newly-available `chla_adjusted` (delayed-
+  mode/NPQ-corrected) reference instead of raw Argo Chl-a moves the median
+  from +0.13 to +0.58 — a larger swing than the geometric, seasonal, basin, or
+  quality stratifications combined. PAB's production matchups compare against
+  *raw* Chl-a by design; this is flagged as the report's central open
+  question, not resolved by this pass.
+- **Processing DAC correlates with bias strength** (AOML median +0.06 vs.
+  +0.25 for all other DACs combined) — plausibly reflecting cross-DAC
+  calibration/QC heterogeneity, tied to the same reference-uncertainty theme
+  above.
+- **CDOM shows essentially no rank correlation with the fitted `Adg`
+  amplitude** (Spearman ρ = -0.03 overall, near-zero in every basin/season
+  slice) — notably weaker than the modest Chl-bias-vs-`Adg` correlation found
+  in the Chl-a analysis (ρ=-0.24), suggesting `Adg`'s connection to actual
+  dissolved CDOM is weak. Because Spearman ρ is invariant under a uniform
+  rescaling, this finding will not change once the pending Sea-Bird RAF
+  correction (a uniform ×5.62, if that is the whole fix) is applied.
+
+### 11.4 Key decisions carried forward
+
+- Raw `cdom` ingested; `cdom_adjusted` deliberately deferred pending a
+  BGC-Argo consult (§11.1) — downstream CDOM analysis is raw-only throughout,
+  with the calibration caveat stated on every figure and in both reports.
+- CDOM comparisons stay qualitative/correlative permanently (no 1:1 line, no
+  bias percentage) — a `PAB_design.md` §*Comparison & metrics* design
+  principle, not just a one-off analysis choice, given the fluorescence-vs-
+  absorption unit/quantity mismatch has no fixed conversion.
+- The Chl-a and CDOM reports are separate files (Q1/Q5 of
+  `chl_cdom_prompt_2.md`) rather than one combined document, since the CDOM
+  comparison's much smaller N and qualitative-only framing risked being
+  conflated with the Chl-a report's quantitative bias claims if merged.
+- `pab_version` was **not** bumped for the Stage 10 backfill (§11.1) — a
+  documented, one-time exception; any future re-ingestion pass that changes
+  ingested values (as opposed to backfilling previously-dropped provenance
+  fields) should default to bumping the version per the project's normal
+  convention.
+
+---
+
+## 12. The 2.0 inelastic re-analysis
+
+**`pab_version = 2.0`, completed 2026-10-05.** The full factual record is
+[`PAB_v2_run_report.md`](PAB_v2_run_report.md); this section records what
+changed in the *implementation*.
+
+### 12.1 What changed
+
+The 1.0 fits used the **elastic** Gordon RT model. 2.0 re-fits the same spectra
+with an **inelastic** forward model: `rt_backend='robust_hybrid'` (a
+neural-network emulator of a full RT solution) replacing the analytic `gordon`
+parameterisation, Raman scattering included, chlorophyll fluorescence included
+at `phi_C = 0.02`, and the backscatter phase-function parameter `B_p` promoted
+from a fixed constant to a **sixth fitted parameter** with a uniform prior over
+`[0.004, 0.05]`.
+
+Two things that were *planned* and are **not** in the run, stated here because
+describing them otherwise would be a false claim: **CDOM fluorescence is off**
+(`include_cdom_fl = 0` on all 15,971 fits), and the **fit window is unchanged**
+at 400–700 nm. The red edge was evaluated and deliberately excluded —
+`Rrs(719)` is negative or noise-dominated on 44 % of a 97-matchup diagnostic
+sample.
+
+### 12.2 Schema v5
+
+`PRAGMA user_version = 5`. Two groups of columns (see `docs/db_schema.rst`):
+
+- `matchup_pixels` gains `theta_s`, `theta_v`, `dphi` (degrees) and
+  `geom_source` — the per-pixel viewing geometry the inelastic backend needs.
+- `fits` gains `rt_backend`, `include_raman`, `include_chl_fl`,
+  `include_cdom_fl`, `phi_c`, `fit_bp` — the RT configuration, so a row states
+  which physics produced it rather than relying on `pab_version` as a proxy.
+
+`BING_<model_pair>_Bp` is the eleventh stored quantity per BING fit (1.0 had
+ten).
+
+### 12.3 The `geometry` stage
+
+A new stage between `match` and `fit` (`pab.matchup.geometry.build_geometry`).
+It reads each matchup pixel's solar/sensor geometry from the co-temporal **PACE
+L1B** granule, grouped **by granule** — 146,100 pixels sit on 11,494 granules,
+so it is one ~1.8 GB lazy open per granule rather than per pixel.
+
+**R3: geometry is never silently defaulted.** A fit whose pixel has no
+`theta_s` is refused and recorded under `failed`, before its granule is opened.
+Defaulting to nadir would produce a plausible-looking retrieval from an
+assumption the data never supported. In the production run this refused exactly
+5 matchups (the only 5 with no L1B geometry at all), so
+**15,971 fits + 5 refused = 15,976 matchups**.
+
+The stage sets `max_tasks_per_child=5`: measured per-worker RSS grows ~7.8 MB
+per granule, reaching OOM at ~950. `fit` deliberately does **not** recycle
+workers — it would re-pay an ~11 min JAX compile, and its memory plateaus.
+
+### 12.4 Two databases, and the seams that follow
+
+Each major version now lives in its own file (the rationale is in
+`PAB_design.md` → *Provenance & versioning*). The implementation seams:
+
+- `Store.open` passes **`uri=True`**, so `ATTACH DATABASE 'file:…?mode=ro'`
+  actually parses as a URI. Without it SQLite reads the string as a literal
+  filename, the attach fails, and a fallback to a plain-path `ATTACH` silently
+  attaches the frozen release **read-write**. `gather_version_pair` therefore
+  has **no fallback**: a failed read-only attach raises.
+- `compare.newest_bing_version` + a `pab_version` filter on
+  `compare.gather_matchups`, so a store holding two versions of a matchup
+  cannot double every count.
+- `compare.gather_version_pair(store, v1_path)` joins on `matchup_id` **and**
+  `pixel_id`.
+- `rst.V2_CHANGES` states what changed **once**, consumed by the Comparisons
+  section, the Methods page and the summary headline.
+- `pab --emit-site --compare-db PATH` wires the frozen release in; the section
+  returns `""` when it is absent, and logs a warning when it is present but
+  unreadable (a section that vanishes silently from a published report is worse
+  than one that errors).
+
+### 12.5 Fixes made along the way
+
+- **`figure` rendered rows it could not render.** The stage iterated every
+  `fits` row, and 15,976 of 31,947 are NASA-GIOP ingests with no MCMC chains.
+  Now filtered to BING fits of one `pab_version` (`--figure-version`).
+- **`figure` re-rendered scenes that already existed.** The scene re-opens the
+  granule and 14,586 matchups already had one; it now renders only where
+  `scene_path IS NULL` (`want_scene`), resolved once in the parent.
+- **The report stage copied a payload nothing linked to.** `MAX_INLINE_FIGURES`
+  and `MAX_INTERACTIVE_MATCHUPS` suppressed the gallery *HTML* while
+  `_stage_static` had already copied every figure — ~17,000 PNGs, 1.3 GB, at
+  2.8 files/s on CephFS, to display none of them. Staging moved **inside**
+  `_thumbnail_gallery`, after the N-check. The same build went from 7.09 h to
+  8.8 s and from 1.3 GB to 1.1 MB.
+- **NASA-GIOP rows were stamped with the running code's version.** The driver
+  used `config.pab_version`; `pab.fit.nasa_giop.PRODUCT_VERSION` now pins
+  `"1.1"`. An existing test had been holding the bug in place by asserting
+  against the same wrong source.
+- **`parallel.portable_errors`** flattens unpicklable worker exceptions, so a
+  NASA 503 is reported as such rather than as
+  `TypeError: can't pickle CIMultiDictProxy`.
+- **`build_fits` gained selection and progress instrumentation** —
+  `--matchup`/`--matchups-csv`, and separate logging of worker-spawn/JAX-compile
+  startup cost from steady-state per-fit cost (a total-wall ÷ fits figure read
+  385 s/fit where the real steady state was 164 s).
+- **`population.comparison_scatter` gained `clip_percentile`**, which bounds the
+  axes and **counts** the off-scale points in the panel title rather than
+  dropping them.
+
+---
+
+## 13. Report improvements (2026-10-17/18, `claude_prompts/v2/report_improvements.md`)
+
+Six edits (E1–E6) to the 2.0 report, driven by reading the published site. The
+decisions are recorded in that file's Q&A; this section records what the code
+now does. The committed `report_site/` was regenerated on 2026-10-18 with the
+command in HOWTO §7a.
+
+### 13.1 NASA-GIOP `b_bp` compared at 700 nm (derived, never persisted)
+
+NASA's GIOP `b_bp` is stored at 442 nm and BING's headline value at 700 nm;
+the 1.0 report compared them as stored. `compare.gather_nasa_giop` now
+`LEFT JOIN`s NASA's own per-pixel power-law slope (`NASA_GIOP_bbp_s`) and
+derives `bbp_700_nasa` (+ `_lo`/`_hi`, scaled by the same factor) with
+`compare.giop_bbp_to_700(bbp_442, slope)` = `bbp_442 × (442/700)^bbp_s` — the
+one place the factor lives (`GIOP_BBP_WAVE`, `BING_BBP_WAVE` and the
+reader-facing `GIOP_BBP_SHIFT_FORMULA` are built from the same constants, so
+the Methods text cannot drift from the code). NaN where the slope row is
+missing (no default slope); every 442 column is kept. Nothing is written to the
+database — the value is reproducible from stored rows, so no new `pab_version`
+— and the 700 nm numbers are distributed only through the new
+`nasa_giop_summary.{csv,parquet}` download (`publish.export_tables`, uploaded
+to `s3://pab/v2/`). `compare.giop_slope_ceiling_fraction` computes the share of
+slopes pinned at GIOP's ceiling of 2.0 (`bbp_s ≥ 1.99`), quoted by the
+Comparisons note and the Methods page rather than hard-coded. On the 2.0 data:
+median NASA(700)/BING(700) = 0.94 (was 2.15 unadjusted, quoted once for
+continuity), Spearman 0.89, 14.6 % of slopes at the ceiling.
+
+### 13.2 `population.density_scatter` — the comparison panels
+
+The five static comparison panels (`b_bp`, Chl, GIOP-vs-BING, and the two
+1.0-vs-2.0 panels) were all-dots scatters whose axes were set by 51
+non-physical BING `b_bp` retrievals (up to 9.3 × 10⁴ m⁻¹). They now share
+`density_scatter(df, sat_col, insitu_col, *, cmap, bins=50, min_count=5,
+clip_percentile=99.0)`: log–log axes spanning the central 99 % of the pooled
+values (× 0.7 / × 1.4, the `comparison_scatter` rule, factored into
+`_clipped_range`), a `numpy.histogram2d` whose cells with ≥ `DENSITY_MIN_COUNT`
+matchups are drawn as a `pcolormesh` with a `LogNorm` count colorbar, and every
+matchup in a sparser cell as an individual dot in a dark shade of the same hue;
+the 1:1 and median-ratio lines, a legend and the `n ρ bias RMS [N off-scale]`
+title with statistics from `log_comparison` on **all** finite positive pairs
+(runaways stay in the statistics, off the axes). Hues: Blues for `b_bp`, Greens
+for Chl, Purples for GIOP. `population.offscale_count` gives captions the same
+`N` as the title. The minor log grid is off (it cost 25 KB per PNG and
+cluttered the light cells); all panels sit under `SIZE_BUDGET`.
+`comparison_scatter` is kept for small runs and the tests.
+
+### 13.3 The two maps — Robinson dots and HEALPix medians, fixed ±0.5 dex
+
+`population.matchup_map` draws on cartopy `Robinson` axes with Natural Earth
+land (110m, facecolor 0.85) and coastlines, dots at marker size 3, colour =
+`log10(satellite / float b_bp)` computed inside the function (a caller can no
+longer leak a runaway-driven `ratio` column into the colour scale) on `RdBu_r`,
+symmetric about 0 and **clipped at a fixed `LOG_RATIO_VMAX = 0.5` dex**
+(Q&A/Edits 5 = B: the agreed 2nd–98th-percentile rule came out at ±1.86 dex
+because the low tail alone set it, leaving 88 % of matchups in the palest
+tints; a fixed limit also makes releases comparable). The title and captions
+state the saturated count (`saturated_count` / `log_ratio_saturated`: 1,858 of
+15,274, 12.2 %, on the 2.0 data) and draw matchups without a ratio in grey.
+`population.healpix_map` draws the per-cell median log-ratio
+(`healpix_medians` via `aggregate.assign_healpix`, nside 8 ≈ 7.3° for the
+requested 5°) for cells holding ≥ `HEALPIX_MIN_COUNT = 5` matchups as
+`healpy.boundaries` polygons through `PlateCarree`, on the same scale; cells
+straddling the dateline are split (Sutherland–Hodgman against ±180°, with a
+tolerance so an edge *on* the dateline cannot produce a degenerate ring that
+cartopy projects as the whole globe) and the pole vertex of a polar-cap cell
+takes its neighbours' longitude. Fallbacks live in `_map_axes`: no cartopy →
+plain lon/lat axes with a warning; cartopy but no cached/downloadable
+shapefiles → Robinson without land with a warning; `projection=None` forces the
+plain path so the tests never touch the network. `cartopy` is in
+`requirements.txt`; the Docker image was not rebuilt because `--emit-site`
+runs on the workstation.
+
+### 13.4 Representative galleries and `--figure-root`
+
+The Figures page above `MAX_INLINE_FIGURES` showed nothing ("too many").
+`rst.select_representative_fits(df)` now picks ≤ 8 matchups deterministically
+— nearest the 5th/25th/50th/75th/95th percentiles of `log10(bbp_bing /
+bbp_argo)`, the runaway with the largest `bbp_bing` above `BBP_IMPLAUSIBLE`,
+and the matchup nearest the median ratio within the clearest and the most
+productive `chl_bing` terciles (ties → smallest `matchup_id`; de-duplicated in
+order) — each with a `WMO/cycle — <why>` caption; `select_representative_scenes`
+picks one per `add_strata` latitude band (four exist). The Argo Q&A gallery
+shows the profiles behind the selected fits, so the three galleries tell one
+story. `_gather_with_figures` and `_thumbnail_gallery(representative=)` stage
+**only** those files, through `_downscaled_copy` (longest side
+`GALLERY_MAX_SIDE = 1200` px; verbatim when smaller), and log the bytes staged
+(20 files, 1.04 MB on the 2.0 data). Because the database records PVC paths,
+`pab --emit-site` gained a repeatable `--figure-root OLD=NEW`
+(`pipeline.figure_root_pair`, `rst.remap_figure_path`: longest whole-component
+prefix wins) applied inside `_stage_static`; a file still missing is dropped
+with one counted `_log.warning` per gallery and the page says so. The files
+the galleries need were fetched from the Drive backup into
+`$PAB_DATA_DIR/gallery/` (E1 findings; E1b brought the 5,453 backfill Q&A
+plots, which only existed on the PVC, to the workstation and to
+`AIOcean:PAB/v2/argo_qa/`).
+
+### 13.5 What the rebuild showed (E6, 2026-10-18)
+
+The regeneration ran in 10 s with zero dropped-figure warnings and both
+databases byte-identical before and after; `sphinx -b html` built with zero
+warnings. `report_site/` in git grew from 1.36 MB to 2.59 MB (+1.22 MB: the
+20 gallery files, `healpix_map.png`, and larger density/map PNGs). Things the
+new figures make visible that the old ones hid: a vertical pile of satellite
+`b_bp` at 3 × 10⁻⁶–10⁻⁴ m⁻¹ (the prior floor) under float values of
+5 × 10⁻⁴–10⁻³; a horizontal GIOP floor at 2–4 × 10⁻⁴ m⁻¹ wherever BING retrieves
+less than 10⁻⁴ (a 442 nm amplitude that never gets small, not an artefact of
+the shift); the subtropical gyres red (satellite high) and the Southern Ocean,
+subpolar North Pacific and Arctic shelves blue on both maps, with the
+Mediterranean the one saturated HEALPix cell (median −1.48); and the selected
+runaway's observed Rrs **negative** at 400–430 nm — a failed atmospheric
+correction, not a bright scene, which the Outliers prompt should pick up.
+
+The Outliers work did pick it up (2026-10-18, `versions/v2/high_bbp_outliers.md`):
+the 51 fits above 1 m⁻¹ are LM warm-starts delivered to the `Bnw` prior
+ceiling on depressed-blue marginal-sea spectra, not a clear-water tail. Since
+O3 they are gated out of every `b_bp` statistic and figure by
+`compare.gate_bbp` (`compare.BBP_IMPLAUSIBLE`, still importable as
+`rst.BBP_IMPLAUSIBLE`), each caption and the Methods page carry the computed
+"N failed retrievals (x.xx %) excluded" clause, `gather_matchups` adds a
+`bbp_bing_implausible` flag to the exported table, and the run report §2.5
+was corrected; the `b_bp` headline moved from n = 15,274 / 1.15 / ρ 0.415 /
+RMS 0.645 to 15,224 / 1.14 / 0.411 / 0.492.
+
+## 14. The high-`b_bp` outliers: gate, QA count, 2.0.1 and the patch overlay (2026-10-18/20, `claude_prompts/v2/report_improvements.md` Outliers O3–O9)
+
+`versions/v2/high_bbp_outliers.md` found that the 51 BING 2.0 fits with
+`b_bp`(700) > 1 m⁻¹ (all at 5–9 × 10⁴ m⁻¹, pressed against the `Bnw` prior
+ceiling of 10⁵) are LM warm-starts delivered to a spurious basin on
+depressed-blue marginal-sea spectra — not clear water — while a physical basin
+with a better χ² exists in every case. Seven prompts followed; this section
+records what the code now does. The decisions are Q&A/Outliers 1–13 in the
+prompt file.
+
+### 14.1 The `b_bp` gate (O3)
+
+`compare.BBP_IMPLAUSIBLE = 1.0` (with `BBP_OUTLIERS_URL`, the GitHub pointer
+every page uses; `rst.BBP_IMPLAUSIBLE` re-exports it), `compare.implausible_bbp`
+(finite and above the gate) and `compare.gate_bbp(df, col="bbp_bing") ->
+(df_gated, n_excluded)` — a copy with only that column set to NaN. `rst._gated`
+feeds the gated frame to **every** `b_bp` statistic and figure (summary
+headline, density panel, both maps, aggregates, NASA-GIOP and 1.0-vs-2.0
+sections, the small-N Bokeh branch) and prints the computed "N failed
+retrievals (x.xx %, ``b_bp`` > 1 m⁻¹) excluded" clause on each — at N = 0 too,
+so a page says the gate exists. Not gated, by decision: the Chl of the same
+fits (Q&A 6 = A), `select_representative_fits` and `export_tables`
+(`gather_matchups` adds a 0/1 `bbp_bing_implausible` column instead). The
+Chl-rate "clear-water tail" table was deleted and the run report §2.5
+corrected. On the 2.0 data the honest effect is on the mean-square statistic:
+log-RMS 0.645 → 0.492 (median and ρ barely move).
+
+### 14.2 The negative-blue QA count (O4)
+
+`run.BLUE_QA_BAND = (400, 450)` and the pure `run.rrs_qa_quantities(wave, Rrs)`
+return one quantity, `n_neg_blue` — finite bands with `Rrs < 0` in the window,
+inclusive — computed on the **windowed** spectrum (what `save_chains` stores),
+appended to `fit_spectrum`'s quantities and persisted as
+`BING_ExpBPow_n_neg_blue` with no schema change. Never a refusal.
+`pab.fit.rrs_qa_backfill` (`--db --chains-root [--dry-run] [--replace]
+--backup-copy`) backfills existing fits from their NPZs by basename, with the
+write discipline built in: dry runs open read-only, a real run needs a
+sha-verified backup copy, refuses `v1/` and `-journal`/`-wal` sidecars, prints a
+fingerprint (file sha, per-table counts, checksums over `fits` and the non-QA
+`fit_results` rows, `integrity_check`) before and after and exits non-zero if
+anything but the QA rows changed. Run on the live v2 DB on 2026-10-18 after the
+chains were `rclone copy`'d to the workstation: +15,971 rows, 156 (0.98 %) ≥ 1,
+40 of the 51 runaways. `gather_matchups` LEFT JOINs it as `n_neg_blue` (NaN
+where unrecorded) and the Comparisons note and Methods page quote the computed
+rate.
+
+### 14.3 The 2.0.1 configuration (O5)
+
+`FitConfig.bbp600_max = 0.1`, `adg_max = 10.0`, `aph_max = 10.0` (m⁻¹; `None`
+= BING's 10⁵). `build_models` calls the factory as before, then
+`p._replace(apriors=…, bpriors=…)` with **per-dict copies** whose `pmax` is
+`log10(ceiling)` for `Adg`/`Aph`/`Bnw` located by `pnames` — the copy matters
+because `expb_pow` builds `apriors = [dict(...)] * 3`, three references to one
+dict. `set_standard_priors` takes them verbatim, so `_prior_bounds` (the LM)
+and BING's `log_prob` see the same ceiling; BING is untouched.
+`models.CEILING_FIELDS` maps field → `prior_set` token → BING pname once;
+`prior_set_label(config)` → `"bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"`
+(or `"bing_standard"`) is what `persist_fit` stamps and
+`ceilings_from_prior_set` inverts it (`fit_fig._config_from_row` round-trips).
+`FitConfig.v2_0()` is the frozen unceilinged 2.0; `v1()` sets the three to
+`None`. `pab.config.pab_version = "2.0.1"` (`setup.py` to match; `make_fit_id`
+→ `…_v2.0.1`, so the rows coexist). `run.chain_start_report(chains,
+param_names, config)` gives the step-0 walker median of each capped parameter
+in dex below its ceiling and `started_below_wall` (≥ 0.5 dex); `fit_spectrum`
+warns, never fails. The **replay seam**: `build_fits(…, spectra=)` /
+`fit_matchup(…, spectrum=)` take a provider `inp -> (wave, Rrs, Rrs_unc[,
+rrs_source])` and open no granule; `replay.spectrum_from_chains(root,
+version="2.0")` returns the 2.0 NPZ's spectrum by basename and the stamp
+`"L2_AOP:replay:<2.0 fit_id>"`; CLI `--replay-chains DIR`.
+
+### 14.4 What the re-fit showed (O6)
+
+Run on the workstation (`--jobs 8`, 11 min; `--matchups-csv
+versions/v2/high_bbp_outliers/refit_51.csv` the only guard against a
+15,971-fit re-run) into the live DB with a dated copy first and the 2.0
+checksums identical after. 51 rows at 2.0.1; **51/51 started below the wall
+(`B_nw` margin 1.07–4.47 dex), 51/51 below the gate, χ² lower in 51/51 (median
+8×), 0 posteriors within 5 % of a ceiling** — the ceilings removed the basin
+and never bound the answer. Against the float (50 with a value): median ratio
+0.76, 30 within 2×, 40 within 3×; the 11 all-positive type-B spectra are the
+best-constrained group. 11 of 51 retrieve Chl < 0.01 (`A_ph` at its floor:
+rescued `b_bp`, not Chl — stated, not gated, Q&A 11 = A); 6990528/121 has
+`success = 0` (LM raised; walkers from the clipped guess, like 144 2.0 fits)
+and is kept as recorded (Q&A 10 = A). Appendix C of the outliers report has the
+51-row table and figure. Chains and figures backed up to `AIOcean:PAB/v2/`, the
+DB to `AIOcean:PAB/pab_v2_2026-10-18.db`.
+
+### 14.5 The patch overlay (O7)
+
+Before O7 `gather_matchups` filtered to `newest_bing_version()` (the site would
+have shrunk to 51 matchups) and `gather_nasa_giop`/`gather_version_pair` had no
+version filter (the 51 would have appeared twice). Now:
+`compare.is_patch_version`/`base_version`; `version_family(store, version=None)
+-> (base, patches)` — the newest base plus its patches, an explicit base
+exactly the base; `resolve_versions`; `overlay_patch(df, carry=())` keeps, per
+`(matchup_id, pixel_id)` (+ `model_pair` when present), only the newest
+version's row, carrying `<col>_superseded`. Applied in the three gatherers
+(the matchup frame always carries `pab_version`, `pixel_id`,
+`fit_id_superseded`, `bbp_bing_superseded`), the `figure` stage's default
+version, `publish.build_manifest` (each row the fit's own `pab_version` plus
+`superseded_by` from `publish.superseded_fits`) and the summary page
+(`fit_version_counts`: "15,971 (15,920 at 2.0, 51 re-fitted at 2.0.1)").
+`patch_refit_summary` computes every number in the Comparisons retrieval-
+failure note and the Methods re-fit sentence from the 2.0 rows that stay in
+the database (runaways, below/above the gate after the patch, Chl < 0.01,
+`success = 0`). `select_representative_fits` turns the "non-physical
+retrieval" slot into "re-fitted runaway" (largest superseded 2.0 value, the
+2.0.1 figure). The design doc's *Provenance & versioning* has the rule: a
+patch shares the database and matchup set, rows keep their own stamp, base
+rows are never deleted, the report overlays by matchup **and pixel**. Site
+acceptance: `b_bp` headline back to n = 15,274 / 1.14 / ρ 0.414 / log-RMS
+0.493; gate excludes 0; HEALPix back to 1 saturated cell.
+
+### 14.6 The emulator out-of-domain slice test (O8) and the two open items
+
+`versions/v2/ztt_slice.md` (script `versions/v2/ztt_slice/run_ztt_slice.py`,
+runtime monkeypatches only, nothing persisted): robust's `"ztt"` policy as
+shipped is pure ZTT for **every** PACE pixel, because the packaged emulator's
+`cos_theta_v`/`cos_dphi` domain is `[1, 1]` (trained at nadir, zero azimuth)
+and all 15,971 fitted pixels are off-nadir (θ_v 13–60°). It does not remove
+the runaway basin or the χ² wall (both are the backbone's `u → 1` limit),
+rescues 32 of 51 LM runaways while creating 3, and shifts ordinary `b_bp`(700)
+by +0.05–0.10 dex with no χ² gain. Decisions (Q&A 12 = A, 13 = A): production
+stays at `"warn"` with no `FitConfig` field; the `B_p` prior stays BING's
+[0.004, 0.05] although the posterior-median `B_p` lies outside the trained
+[0.0103, 0.018] for 86 % of v2 fits. Both are **stated** on the report's
+Methods page in one paragraph (`rst._methods_forward_model`), with the
+fraction computed from the database (`compare.forward_model_domain_summary`,
+over the overlaid family, θ_v range from `matchup_pixels`) and the trained
+range read from `robust` at build time (`compare.emulator_bp_domain`, falling
+back to the recorded `EMULATOR_BP_TRAINED`), and in `docs/fitting.rst`. The two
+items are **open for robust/BING** (run report §7 items 8–9; `ztt_slice.md`
+§7 is the question phrased for those repos): judge the domain on learned
+features only and document the nadir-only training; retrain over the `B_p`
+prior range and more view geometries, or narrow `BP_PRIOR`.
+
+### 14.7 Rebuild and publish (O9, 2026-10-20)
+
+The 19 gallery files O7's overlay re-picked were copied from Drive into
+`$PAB_DATA_DIR/gallery/`, and the E6 command rebuilt `report_site/` from the
+gated, overlaid frame (0 dropped-figure warnings, Sphinx 0 warnings, both
+databases byte-identical). The rebuild surfaced one defect: the previous
+build's 19 thumbnails stayed under `_static/` as tracked orphans and the
+"staged N files" log counted them, so `build_site` now empties the three
+gallery folders (`rst.GALLERY_SUBDIRS`, `rst._clear_gallery_dirs`) before
+staging; the committed tree is 2.5 MB. Publishing (Q&A 9 = A): the objects on
+S3 were downloaded to `v2/s3_prev_2026-10-20/` and sha-checked against the
+record first; then `v2/matchup_summary.{csv,parquet}` and
+`v2/nasa_giop_summary.{csv,parquet}` were replaced, the 2026-10-07 database
+was uploaded under `v2/pab_2026-10-07.db`, and `v2/pab.db` was replaced by the
+live `9503015b…` file — each verified by re-download (HOWTO §5b and the run
+report §6 carry the sizes and sha256). `report_site/conf.py` now says
+`release = "2.0.1"` and the summary page "Built from ``pab_version``
+``2.0.1``".
 
 ---
 
