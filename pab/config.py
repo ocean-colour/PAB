@@ -30,7 +30,15 @@ from typing import Any
 #: ``_v2.0.1`` so it can never overwrite a 2.0 one, and the report overlays a
 #: patch row on its 2.0 row by matchup **and pixel** (O7 defines the overlay).
 #: Q&A/Outliers 2 = A, named 2.0.1.
-pab_version = "2.0.1"
+#: ``2.1`` = the **normalized-geometry** release: every 2.0 fit re-done with the
+#: forward model evaluated at the geometry the PACE L2 AOP ``Rrs`` is actually
+#: normalized to — (θ_s, θ_v, Δφ) = (0, 0, 0), l2gen ``brdf_opt = 7`` — and the
+#: inelastic ``Ed`` at θ_s = 0, instead of the pixel's observed L1B angles
+#: (``FitConfig.geometry_mode = 'normalized'``, stamped as ``fits.geom_mode``,
+#: schema v6). Same spectra (replayed from the 2.0 chain NPZs), same priors as
+#: 2.0.1. A new **base** version, not a patch: the physics changes for every
+#: fit. ``claude_prompts/v2/build_v2_1_rerun.md``.
+pab_version = "2.1"
 
 #: Packages whose versions are captured per fit for reproducibility.
 _PROVENANCE_PACKAGES = (

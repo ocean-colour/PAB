@@ -78,7 +78,9 @@ def persist_fit(
     ``include_raman``, ``include_chl_fl``, ``include_cdom_fl``, ``phi_c``,
     ``fit_bp``). Those six are what distinguish a 2.0 fit from a 1.0 one: the
     ``model_pair`` is identical between them, so without them the two
-    generations are indistinguishable in the store.
+    generations are indistinguishable in the store. Schema v6 adds
+    ``geom_mode`` (``FitConfig.geometry_mode``), which is what distinguishes a
+    2.1 fit — evaluated at (0, 0, 0) — from a 2.0 / 2.0.1 one.
 
     Returns:
         The ``fit_id``.
@@ -121,6 +123,8 @@ def persist_fit(
             "include_cdom_fl": int(bool(config.include_CDOM_fl)),
             "phi_c": float(config.phi_C),
             "fit_bp": int(bool(config.fit_Bp)),
+            # --- schema v6: where the forward model was evaluated (2.1) ---
+            "geom_mode": getattr(config, "geometry_mode", None),
         },
     )
     prefix = f"BING_{config.model_pair}_"

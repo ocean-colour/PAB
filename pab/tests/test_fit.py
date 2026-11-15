@@ -35,8 +35,9 @@ def test_make_fit_id_does_not_produce_the_1_0_format():
     produced = run.make_fit_id("7902226_5_G1", 3, 4, "ExpBPow")
     assert produced != legacy
     assert produced.startswith(legacy + "_v")
-    assert produced.endswith("_v2.0.1")  # the current version; 2.0 ids end "_v2.0"
-    assert produced != legacy + "_v2.0"  # a 2.0.1 row never overwrites a 2.0 one
+    assert produced.endswith("_v2.1")  # the current version; 2.0 ids end "_v2.0"
+    assert produced != legacy + "_v2.0"  # a 2.1 row never overwrites a 2.0 one
+    assert produced != legacy + "_v2.0.1"  # ...nor a 2.0.1 one
 
 
 def test_fit_ids_of_the_three_generations_do_not_collide():
@@ -443,7 +444,7 @@ def test_fitconfig_v1_accepts_overrides_without_losing_the_rt_settings():
     assert c.rt_backend == "gordon" and c.fit_Bp is False
 
 
-def test_pab_version_is_2_0_1():
+def test_pab_version_is_2_1():
     """The version stamped on rows, and the one provenance reports, must agree.
 
     ``package_versions()`` reads the *installed distribution* metadata, not
@@ -453,14 +454,17 @@ def test_pab_version_is_2_0_1():
     from pab.config import pab_version as v
     from pab.config import package_versions
 
-    assert v == "2.0.1"
-    assert package_versions()["pab"] == "2.0.1", (
+    assert v == "2.1"
+    # the package is 2.1.0 (setup.py); pab_version is the 2.1 base version
+    assert package_versions()["pab"] == "2.1.0", (
         "installed dist version is stale — re-run `pip install -e . --no-deps`"
     )
-    # a 2.0.1 fit id coexists with -- never overwrites -- the 2.0 one
+    # a 2.1 fit id coexists with -- never overwrites -- the 2.0 / 2.0.1 ones
     new = run.make_fit_id("m", 1, 2, "ExpBPow")
     old = run.make_fit_id("m", 1, 2, "ExpBPow", version="2.0")
-    assert new.endswith("_v2.0.1") and old.endswith("_v2.0") and new != old
+    patch = run.make_fit_id("m", 1, 2, "ExpBPow", version="2.0.1")
+    assert new.endswith("_v2.1") and old.endswith("_v2.0")
+    assert len({new, old, patch}) == 3
 
 
 # --- the 2.0.1 prior ceilings (Outliers O5 step 1) ---------------------------
@@ -586,7 +590,7 @@ def test_persist_fit_stamps_prior_set_from_the_config():
         assert rows["NEW"]["prior_set"] == (
             "bing_standard+ceiling:bbp600<=0.1,adg<=10,aph<=10"
         )
-        assert rows["NEW"]["pab_version"] == "2.0.1"
+        assert rows["NEW"]["pab_version"] == "2.1"
         assert rows["OLD"]["prior_set"] == "bing_standard"
 
 
@@ -664,7 +668,7 @@ def test_spectrum_from_chains_reproduces_the_npz_spectrum(tmp_path, monkeypatch)
     provider = replay.spectrum_from_chains(path.parent)
     inp = {"matchup_id": "7902226_5_G1", "ix": 2, "iy": 2, "model_pair": "ExpBPow",
            "fit_id": run.make_fit_id("7902226_5_G1", 2, 2, "ExpBPow")}
-    assert inp["fit_id"].endswith("_v2.0.1")  # the fit being made is 2.0.1...
+    assert inp["fit_id"].endswith("_v2.1")  # the fit being made is 2.1...
     wave, rrs, unc, source = provider(inp)
     # ...but the spectrum is the 2.0 fit's
     assert np.array_equal(wave, res.wave) and np.array_equal(rrs, res.Rrs)
@@ -950,7 +954,8 @@ def test_gather_fit_input_reports_no_geometry_as_none():
 
 
 def test_build_fits_without_geometry_fails_every_pixel_and_opens_nothing():
-    """R3: no geometry → recorded under ``failed``, and the granule is untouched."""
+    """R3 (observed mode): no geometry → recorded under ``failed``, and the
+    granule is untouched."""
     opens = []
 
     def _counting_opener(src):
@@ -959,7 +964,9 @@ def test_build_fits_without_geometry_fails_every_pixel_and_opens_nothing():
 
     with Store.open(":memory:") as store:
         matchup_id, _ = _seed_matchup(store, geometry=False)
-        out = run.build_fits(store, config=FitConfig(), opener=_counting_opener)
+        out = run.build_fits(
+            store, config=FitConfig.v2_0_1(), opener=_counting_opener
+        )
 
     assert out["written"] == [] and out["skipped"] == []
     assert out["failed"] == [run.make_fit_id(matchup_id, 2, 2, "ExpBPow")]
@@ -994,7 +1001,7 @@ def test_fit_matchup_raises_a_clear_error_without_geometry():
         matchup_id, _ = _seed_matchup(store, geometry=False)
         with pytest.raises(ValueError, match="no viewing geometry"):
             run.fit_matchup(
-                store, matchup_id, config=FitConfig(), opener=lambda _s: None
+                store, matchup_id, config=FitConfig.v2_0_1(), opener=lambda _s: None
             )
 
 
@@ -1038,7 +1045,8 @@ def _synth_rrs_robust(config, wave, truth_lin, Chl, geom, Bp):
 
 
 def test_robust_fit_has_six_columns_and_recovers_bbp():
-    """Toy 2.0 fit: 6-parameter chain, ``Bp`` inside its prior, bbp700 recovered."""
+    """Toy 2.0.1 fit (observed geometry): 6-parameter chain, ``Bp`` inside its
+    prior, bbp700 recovered."""
     pytest.importorskip("bing")
     pytest.importorskip("emcee")
     pytest.importorskip("robust")
@@ -1046,7 +1054,7 @@ def test_robust_fit_has_six_columns_and_recovers_bbp():
     np.random.seed(0)
 
     geom = _geom()
-    config = FitConfig(nsteps=1000, nburn=300, analysis_burn=300)
+    config = FitConfig.v2_0_1(nsteps=1000, nburn=300, analysis_burn=300)
     wave = np.arange(405.0, 715.0, 10.0)
     Chl = 0.1
     truth = [0.02, 0.017, 0.03, 0.004, 1.0]  # Adg, Sdg, Aph, Bnw, beta
@@ -1088,7 +1096,9 @@ def test_robust_fit_without_geometry_raises():
     wave = np.arange(405.0, 715.0, 10.0)
     rrs = np.full(wave.size, 0.003)
     with pytest.raises(ValueError, match="requires geometry"):
-        run.fit_spectrum(wave, rrs, 0.02 * rrs, Chl=0.1, config=FitConfig(nsteps=10))
+        run.fit_spectrum(
+            wave, rrs, 0.02 * rrs, Chl=0.1, config=FitConfig.v2_0_1(nsteps=10)
+        )
 
 
 # --- Ed for the inelastic terms ----------------------------------------------
@@ -1225,7 +1235,8 @@ def test_persist_fit_writes_the_v5_rt_columns():
         assert fit["fit_bp"] == 1
         assert fit["phi_c"] == pytest.approx(0.02)
         assert fit["wave_max"] == pytest.approx(700.0)
-        assert fit["pab_version"] == "2.0.1"
+        assert fit["pab_version"] == "2.1"
+        assert fit["geom_mode"] == "normalized"  # schema v6
         # the git SHAs ride along in the provenance JSON
         pkg = json.loads(fit["pkg_versions"])
         assert pkg["git_sha"]["PAB"]
@@ -1376,7 +1387,9 @@ def test_geometry_from_row_reads_the_pixel_back():
     pytest.importorskip("bing")
     with Store.open(":memory:") as store:
         matchup_id, pixel_id = _seed_matchup(store)
-        geom = _geometry_from_row(store, {"pixel_id": pixel_id})
+        geom = _geometry_from_row(
+            store, {"pixel_id": pixel_id}, FitConfig.v2_0_1()
+        )
         assert geom.theta_s == pytest.approx(GEOM["theta_s"])
         assert geom.theta_v == pytest.approx(GEOM["theta_v"])
         assert geom.dphi == pytest.approx(GEOM["dphi"])

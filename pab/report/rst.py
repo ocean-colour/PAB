@@ -258,6 +258,19 @@ def _patched_pairs_sentence(df, version_col: str = "version_v2") -> str:
     )
 
 
+def _v2_label(df, version_col: str = "version_v2") -> str:
+    """The base version of the **newer** arm of a 1.0-vs-2.x pair frame —
+    ``"2.0"`` on the 2.0 / 2.0.1 store, ``"2.1"`` once the 2.1 re-fit is the
+    store's newest family. Read off the frame's own version column, so a
+    label can never name a version the numbers next to it did not come from.
+    ``"2.0"`` for a frame without the column (the historical default)."""
+    if version_col in df and len(df):
+        bases = {compare.base_version(str(v)) for v in df[version_col].dropna()}
+        if bases:
+            return max(bases, key=compare._version_key)
+    return "2.0"
+
+
 def _version_headline(store, compare_db) -> str:
     """The 1.0-vs-2.0 headline block for the summary page (``""`` without a v1).
 
@@ -277,6 +290,7 @@ def _version_headline(store, compare_db) -> str:
         return ""
     if not len(df):
         return ""
+    v2 = _v2_label(df)
     df, bbp_clause = _gated(df, "bbp700_v2")
     lines = []
     for key, label in (("bbp700", "b_bp(700 nm)"), ("chl", "chlorophyll")):
@@ -287,15 +301,15 @@ def _version_headline(store, compare_db) -> str:
         if st.get("n"):
             tail = f"; {bbp_clause}" if key == "bbp700" else ""
             lines.append(
-                f"- **{label}** — median 2.0/1.0 ratio = "
+                f"- **{label}** — median {v2}/1.0 ratio = "
                 f"{_fmt(st['median_ratio'])} (n = {st['n']:,}{tail})\n"
             )
     if not lines:
         return ""
-    out = [_heading("1.0 vs 2.0 (elastic vs inelastic)", "-")]
+    out = [_heading(f"1.0 vs {v2} (elastic vs inelastic)", "-")]
     out.append(
         f"The same {len(df):,} matchups and the same pixels, retrieved with the "
-        "elastic (1.0) and inelastic (2.0) forward model — what the re-analysis "
+        f"elastic (1.0) and inelastic ({v2}) forward model — what the re-analysis "
         "changed:\n"
     )
     out.extend(lines)
@@ -626,10 +640,11 @@ def version_section(
         )
         return ""
 
-    out = [_heading("1.0 vs 2.0 — elastic vs inelastic retrieval", "-"), ""]
+    v2 = _v2_label(df)
+    out = [_heading(f"1.0 vs {v2} — elastic vs inelastic retrieval", "-"), ""]
     out.append(
         f"The **same {len(df):,} matchups**, fitted twice: the 1.0 results come "
-        "from the frozen v1 release, the 2.0 results from this one. Rows are "
+        f"from the frozen v1 release, the {v2} results from this one. Rows are "
         "paired on matchup **and pixel**, so a difference below is a difference "
         "in the retrieval, not in which patch of ocean was looked at. See the "
         ":doc:`Methods <methods>` page for the two-database provenance."
@@ -660,7 +675,7 @@ def version_section(
             continue
         tail = f"; {bbp_clause}" if key == "bbp700" else ""
         out.append(
-            f"- **{label}** — n = {st['n']:,}; median 2.0/1.0 ratio = "
+            f"- **{label}** — n = {st['n']:,}; median {v2}/1.0 ratio = "
             f"{_fmt(st['median_ratio'])} "
             f"(IQR {_fmt(st['ratio_iqr_lo'])}–{_fmt(st['ratio_iqr_hi'])}); "
             f"Spearman ρ = {_fmt(st['spearman'])}; "
@@ -694,14 +709,14 @@ def version_section(
                     df,
                     sat_col=c2,
                     insitu_col=c1,
-                    title=f"{label}: 2.0 (inelastic) vs 1.0 (elastic)",
+                    title=f"{label}: {v2} (inelastic) vs 1.0 (elastic)",
                     xlabel=f"1.0 {label}{unit}",
-                    ylabel=f"2.0 {label}{unit}",
+                    ylabel=f"{v2} {label}{unit}",
                 )
                 out.append(interactive.raw_html(fig))
         except ImportError:
             out.append(
-                "(The interactive 1.0-vs-2.0 scatters require ``bokeh`` at "
+                f"(The interactive 1.0-vs-{v2} scatters require ``bokeh`` at "
                 "build time.)\n"
             )
     if outdir is not None:
@@ -756,6 +771,7 @@ def _version_ratio_by_level(df) -> str:
 
     if "bbp700_v1" not in df or "bbp700_v2" not in df:
         return ""
+    v2l = _v2_label(df)
     df, _ = _gated(df, "bbp700_v2")  # the runaways would sit in a tercile
     v1 = np.asarray(df["bbp700_v1"], dtype=float)
     v2 = np.asarray(df["bbp700_v2"], dtype=float)
@@ -782,9 +798,9 @@ def _version_ratio_by_level(df) -> str:
         "The single median ratio understates and overstates by turns, because "
         "the shift is a strong, monotonic function of how much backscatter "
         "there is to begin with. Split by the 1.0 ``b_bp`` into terciles, the "
-        "median 2.0/1.0 ratio runs " + "; ".join(parts) + " (tercile edges "
+        f"median {v2l}/1.0 ratio runs " + "; ".join(parts) + " (tercile edges "
         f"{lo_e:.3g} and {hi_e:.3g} m⁻¹), and it keeps going at the extremes: "
-        "below 2e-4 m⁻¹ the ratio is ~0.02, i.e. 2.0 retrieves some **fifty "
+        f"below 2e-4 m⁻¹ the ratio is ~0.02, i.e. {v2l} retrieves some **fifty "
         "times less** backscatter than 1.0.\n"
         "\n"
         "This is the expected behaviour of the physics, not an artifact. Raman "
@@ -793,7 +809,7 @@ def _version_ratio_by_level(df) -> str:
         "them. In clear water the elastic contribution is small, so the "
         "inelastic terms are a large fraction of ``Rrs`` — and the 1.0 model, "
         "which has no inelastic terms at all, could only explain that radiance "
-        "by inventing particulate backscatter. 2.0 attributes it to the "
+        f"by inventing particulate backscatter. {v2l} attributes it to the "
         "processes that actually produce it, and the retrieved ``b_bp`` drops "
         "accordingly. In productive water the elastic signal dominates, the "
         "inelastic terms are a small correction, and the two versions "
@@ -816,6 +832,7 @@ def _ratio_figure_block(df, outdir) -> str:
         return ""
     if "bbp700_v1" not in df or "bbp700_v2" not in df:
         return ""
+    v2l = _v2_label(df)
     df, bbp_clause = _gated(df, "bbp700_v2")
     v1 = np.asarray(df["bbp700_v1"], dtype=float)
     if np.isfinite(v1).sum() < 200:  # the curve needs populated bins
@@ -829,14 +846,14 @@ def _ratio_figure_block(df, outdir) -> str:
             "bbp700_v1",
             outfile=dest / "v2_v1_ratio_vs_level.png",
             xlabel="1.0 (elastic) $b_{bp}$(700 nm) [m$^{-1}$]",
-            ylabel="2.0 / 1.0",
+            ylabel=f"{v2l} / 1.0",
         )
     except Exception:  # noqa: BLE001 — a bad panel must not break the build
         return ""
     return (
         ".. figure:: _static/comparisons/v2_v1_ratio_vs_level.png\n"
         "   :width: 560px\n\n"
-        "   The 2.0/1.0 ``b_bp`` ratio against the 1.0 value, with the "
+        f"   The {v2l}/1.0 ``b_bp`` ratio against the 1.0 value, with the "
         "interquartile band. The curve rises from ~0.02 in the clearest water "
         "to ~0.95 in the most scattering: the inelastic correction is large "
         "where the elastic signal is weak and vanishes where it is strong. "
@@ -1137,6 +1154,7 @@ def _version_static_figures(df, outdir) -> str:
     dest = Path(outdir) / "_static" / "comparisons"
     dest.mkdir(parents=True, exist_ok=True)
     figs: list[tuple[str, str]] = []
+    v2l = _v2_label(df)
     df, bbp_clause = _gated(df, "bbp700_v2")
     # Two labels per row, deliberately: `mpl` is Matplotlib mathtext for the
     # axis, `rst` is what goes in the caption. Reusing one put a literal
@@ -1160,13 +1178,13 @@ def _version_static_figures(df, outdir) -> str:
                 c1,
                 outfile=dest / f"v2_vs_v1_{key}.png",
                 xlabel=f"1.0 (elastic) {mpl} [{unit}]",
-                ylabel=f"2.0 (inelastic) {mpl} [{unit}]",
+                ylabel=f"{v2l} (inelastic) {mpl} [{unit}]",
                 cmap=cmap,
             )
             figs.append(
                 (
                     f"v2_vs_v1_{key}.png",
-                    f"2.0 (inelastic) vs 1.0 (elastic) {rst_label}, log-log, "
+                    f"{v2l} (inelastic) vs 1.0 (elastic) {rst_label}, log-log, "
                     "same matchup and same pixel. "
                     + _density_caption(df, c2, c1)
                     + (f" {bbp_clause}." if key == "bbp700" else ""),
@@ -1239,7 +1257,8 @@ def _bp_histogram_block(df, outdir) -> str:
     return (
         ".. figure:: _static/comparisons/v2_bp_hist.png\n"
         "   :width: 520px\n\n"
-        f"   Posterior-median ``B_p`` across the {n:,} 2.0 fits. ``B_p`` was "
+        f"   Posterior-median ``B_p`` across the {n:,} {_v2_label(df)} fits. "
+        "``B_p`` was "
         "**fixed** in 1.0, so there is no 1.0 counterpart to scatter it "
         "against. The dotted lines are the uniform prior's bounds; the "
         "fraction within 1 % of an edge is given in the panel title.\n"

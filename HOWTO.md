@@ -136,7 +136,7 @@ pab --db data/pab.db --download
 | `discover` | Find in-window PACE granules per profile (earthaccess; parallel via `--discover-jobs`). A profile is skipped only if the store already holds a granule **whose footprint covers that profile's own position** in its time window. | → `granules` |
 | `match` | Build PACE↔Argo matchups (Stage 4 spatial/temporal gate). Candidates come from an in-memory `GranuleIndex` (time window **+** footprint bounding box padded by `MatchupConfig.footprint_pad_deg`), so only granules that plausibly cover the float are opened. | → `matchups` |
 | `geometry` | Read each matchup pixel's solar/sensor geometry (`theta_s`, `theta_v`, `dphi`) from the co-temporal **PACE L1B** granule. Grouped **by granule** — 146,100 pixels sit on 11,494 granules, so it is one 1.8 GB lazy open per granule, not per pixel. Parallel via `--jobs`. | → `matchup_pixels.theta_s`/`theta_v`/`dphi`/`geom_source` |
-| `fit` | Run BING spectral fits per matchup (needs BING + emcee). **From 2.0 the defaults are the inelastic configuration** — `rt_backend='robust_hybrid'`, Raman + Chl fluorescence on, free `B_p` — which *requires* `geometry` to have run. A pixel with no geometry is recorded under `failed` and its granule is never opened. **From 2.0.1 the physical prior ceilings are the default** (`bbp600_max=0.1`, `adg_max=10`, `aph_max=10` m⁻¹; stamped in `fits.prior_set`; `FitConfig.v2_0()` is the unceilinged 2.0 configuration), every fit records the `n_neg_blue` QA quantity, and `--replay-chains DIR` re-fits from the 2.0 chain NPZ instead of the granule (§3). | → `fits`, `fit_results` |
+| `fit` | Run BING spectral fits per matchup (needs BING + emcee). **From 2.0 the defaults are the inelastic configuration** — `rt_backend='robust_hybrid'`, Raman + Chl fluorescence on, free `B_p` — which *requires* `geometry` to have run. A pixel with no geometry is recorded under `failed` and its granule is never opened. **From 2.0.1 the physical prior ceilings are the default** (`bbp600_max=0.1`, `adg_max=10`, `aph_max=10` m⁻¹; stamped in `fits.prior_set`; `FitConfig.v2_0()` is the unceilinged 2.0 configuration), every fit records the `n_neg_blue` QA quantity, and `--replay-chains DIR` re-fits from the 2.0 chain NPZ instead of the granule (§3). **From 2.1 the forward model runs at the normalized geometry (0, 0, 0)** (`FitConfig.geometry_mode='normalized'`, stamped in `fits.geom_mode`, schema v6), so a pixel without L1B angles is **no longer refused**; the R3 refusal applies only under `geometry_mode='observed'` (`FitConfig.v2_0_1()` / `.v2_0()`). | → `fits`, `fit_results` |
 | `figure` | Render per-matchup fit + scene figures (best-effort; needs Loisel data; parallel via `--jobs` — the costliest stage per matchup at ~42 s serial). | → `outdir/figures` |
 | `report` | Build the static site + a release manifest (Stage 7). | → `outdir/site`, `outdir/release` |
 
@@ -192,6 +192,17 @@ the three to `None` too). Same data, physics and matchups as 2.0: a *patch*,
 applied to the 51 runaways by replaying their 2.0 spectra (§5b), which the
 report overlays on the 2.0 rows by matchup and pixel. See `docs/fitting.rst`
 *Prior ceilings (2.0.1)*.
+
+**2.1 (the current default) changes the geometry and nothing else.** The PACE
+L2 AOP `Rrs` is normalized by l2gen (`brdf_opt = 7`) to a zenith sun and a
+nadir view, so `FitConfig()` now evaluates the `robust_hybrid` forward model —
+and the inelastic `Ed` — at (θ_s, θ_v, Δφ) = (0, 0, 0)
+(`geometry_mode='normalized'`) instead of the pixel's observed L1B angles.
+`FitConfig.v2_0_1()` is the frozen 2.0.1 configuration (ceilings + observed
+geometry). The choice is stamped per fit as `fits.geom_mode` (schema v6; NULL
+on older rows = observed), and the figure reconstruction reads it back, so a
+2.1 figure is drawn at (0, 0, 0). The L1B angles stay on `matchup_pixels` as QA
+metadata. 2.1 is a new **base** version, not a patch (§5c).
 
 **Chains do not follow `--db`.** `fits.chains_path` is
 `$PAB_DATA_DIR/fit_chains/<fit_id>.npz` — keyed off the **root** of
@@ -398,6 +409,25 @@ It exits non-zero if any check fails. v2 as built:
 The NASA-GIOP rows are kept because they are the baseline the v2 comparison is
 measured against, and `matchups.scene_path` is kept so the v2 site reuses v1's
 14,586 PACE scene quick-looks instead of re-rendering them.
+
+
+## 5c. The 2.1 re-fit — normalized geometry (in progress)
+
+`claude_prompts/v2/build_v2_1_rerun.md`. Every 2.0 matchup re-fitted with the
+forward model at (0, 0, 0), replaying the 2.0 spectrum from its chain NPZ
+(`--replay-chains`), as **new rows** in the live v2 DB (`fit_id …_v2.1`,
+`pab_version = '2.1'`, `geom_mode = 'normalized'`); the 2.0 and 2.0.1 rows stay
+untouched. `version_family` makes 2.1 the report headline (`("2.1", [])`) and
+`--compare-db` gives a 1.0-vs-2.1 section. The full run is on **Nautilus**
+(V6 = B). The five matchups with no 2.0 fit are left out.
+
+Schema note: opening the v2 DB with 2.1 code (`Store.open`, default
+`create=True`) migrates it **v5 → v6** (adds the NULL `fits.geom_mode`
+column). Take the dated, sha-verified copy first.
+
+Status (2026-11-14): code, tests and the local check done (Task 1); the slice
+gate (Task 2), the full run, figures and publish are pending. The commands
+and checks will be recorded here as they are run.
 
 
 ## 6. Notes & gotchas

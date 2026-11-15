@@ -36,7 +36,7 @@ from collections.abc import Callable
 
 #: Bumped whenever the DDL changes; stored in ``PRAGMA user_version`` so a
 #: database file knows which schema it was created under (see ``migrate``).
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 #: Ordered list of ``CREATE TABLE``/``CREATE INDEX`` statements. ``IF NOT
 #: EXISTS`` keeps ``create_all`` idempotent.
@@ -170,7 +170,11 @@ TABLES: tuple[str, ...] = (
         include_chl_fl  INTEGER,        -- 0/1 chlorophyll fluorescence; v5
         include_cdom_fl INTEGER,        -- 0/1 CDOM fluorescence; v5
         phi_c           REAL,           -- chlorophyll fluorescence quantum yield; v5
-        fit_bp          INTEGER         -- 0/1 was B_p a free parameter; v5
+        fit_bp          INTEGER,        -- 0/1 was B_p a free parameter; v5
+        geom_mode       TEXT            -- forward-model geometry: 'observed'
+                                        -- (pixel L1B angles) | 'normalized'
+                                        -- ((0, 0, 0), 2.1 on); NULL on legacy
+                                        -- rows = observed for robust fits; v6
     )
     """,
     # --- Namespaced scalar IOP results (long format) -----------------------
@@ -322,6 +326,22 @@ def _v4_to_v5(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
 
 
+def _v5_to_v6(conn: sqlite3.Connection) -> None:
+    """v5 → v6: ``fits.geom_mode`` — the geometry the forward model ran at.
+
+    ``'observed'`` = the pixel's L1B (θ_s, θ_v, Δφ) from ``matchup_pixels``
+    (every 2.0 and 2.0.1 fit); ``'normalized'`` = (0, 0, 0), the geometry the
+    PACE L2 AOP ``Rrs`` is normalized to (2.1 on;
+    ``claude_prompts/v2/build_v2_1_rerun.md`` V4). Without it the only record
+    that a fit used (0, 0, 0) would be its version string, and the figure
+    reconstruction would have to infer physics from it.
+
+    NULL on legacy rows, which **means observed** for a robust fit (and is
+    moot for a Gordon or NASA-GIOP row): no existing row is rewritten.
+    """
+    conn.execute("ALTER TABLE fits ADD COLUMN geom_mode TEXT")
+
+
 # Forward migrations: map a *starting* version to a callable that upgrades the
 # database by one step.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
@@ -329,6 +349,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _v2_to_v3,
     3: _v3_to_v4,
     4: _v4_to_v5,
+    5: _v5_to_v6,
 }
 
 

@@ -136,8 +136,15 @@ Read before Task 1:
 
 ## Plan
 
-*Drafted 2026-11-14. It assumes the recommendation on every question in
-Q&A / Round 1. Revise after the answers.*
+*Drafted 2026-11-14; revised the same day with JXP's Round 1 answers. Every
+answer took the recommendation except **V6 = B: the full re-fit runs on
+Nautilus**, because the workstation's cores are needed by other projects.
+§3, §4 and §6 and Tasks 2–5 are rewritten for that. Decisions in force:
+V1 = A (live v2 DB, new `_v2.1` rows), V2 = replay, V3 = the 15,971 with a
+2.0 NPZ (the 5 without are listed in the write-up), V4 = `fits.geom_mode`,
+V5 = no R3 refusal under `"normalized"`, V6 = **Nautilus**, V7 = (a)–(c),
+V8 = A, V9 = re-render all fit figures, V10 = in place under `v2/`,
+V11 = keep `"warn"`, V12 = as stated.*
 
 ### 1. What changes, and what does not
 
@@ -175,14 +182,29 @@ confirm three things: the 2.1 forward model is called with (0, 0, 0); the
 2.0.1 config reproduces the stored 2.0.1/2.0 posteriors to MCMC noise; and
 the `bbp700` ratio has the expected sign.
 
-### 3. The gate (Task 2): a geometry-stratified slice
+### 3. The gate (Task 2): a geometry-stratified slice, on Nautilus
 
 - **Selection** (V7): **200 matchups**, stratified 50 per θ_v band (<25°,
   25–35°, 35–45°, >45°) and spread across basins and seasons. Include the
   50 of `ztt_slice` (re-used for comparability) and ~10 of the 51 2.0.1
   re-fits. Write the selection to `versions/v2.1/slice_200.csv`.
-- **Run** on a scratch copy of the v2 DB, `--replay-chains`, `--jobs 20`.
-  Measure s/fit from a few dozen fits in, never from the first ten.
+- **Image.** Build `pab:2.1.0` from the Task 1 tree with
+  `nautilus/build_image.sh` (`TAG=2.1.0`), with `PAB_GIT_SHAS` baked in and
+  checked against the commit JXP makes. Confirm with JXP before `--push`.
+  The slice is the image's first real use, so the image is validated before
+  the 2-day run depends on it.
+- **Run** on Nautilus (V6 = B), DB-local in the pod: a **scratch copy** of
+  the v2 DB (`/data/v2.1_slice/pab.db`, never `/data/v2/pab.db`),
+  `--matchups-csv slice_200.csv`, `--replay-chains /data/v2/fit_chains`,
+  `PAB_DATA_DIR=/data/v2.1_slice` (so slice chains never mix with the
+  production ones), `--jobs 50`, `PYTHONWARNINGS=ignore`. The job spec is
+  `nautilus/v21_slice_job.yaml`, modelled on `v2_fit_slice_job.yaml`. Measure
+  s/fit from the `fit progress` lines, never from total wall time (the
+  ~11 min one-time JAX compile per pool). Pull the slice DB back to the
+  workstation for the analysis.
+- **Before the pod**: a local safety run on the workstation (a `--dry-run`,
+  then 2 matchups with `--jobs 2` on a scratch copy). That is the only
+  local compute.
 - **Report** in `versions/v2.1/geometry_rerun.md` (new):
   - The `bbp700(2.1)/bbp700(2.0 or 2.0.1)` distribution, overall and per
     θ_v band, against θ_s, and against the analysis.md prediction.
@@ -196,26 +218,43 @@ the `bbp700` ratio has the expected sign.
   failure rate > 2 %; median s/fit > 300 s; or any χ² or acceptance change
   JXP finds implausible. **Stop for JXP's review in every case.**
 
-### 4. The full re-fit (Task 3)
+### 4. The full re-fit (Task 3), on Nautilus
 
-- Where (V6): the **workstation**. Replay needs no granule, the DB and
-  chains are already local, no image rebuild is needed, and there is a
-  single custodian. About 2 days at `--jobs 20`, run in the background with
-  a tee'd log in `$PAB_DATA_DIR/v2/logs/` and progress checked at intervals.
-  Nautilus is the fallback (Plan §6).
+- Where (V6 = B): **Nautilus**, job `nautilus/v21_fit_job.yaml` (from
+  `v2_fit_job.yaml`): image `pab:2.1.0` (the one the slice validated),
+  50 CPU / 100 Gi, `--jobs 50`, DB-local in `emptyDir` with the 2-minute
+  `sqlite3.backup()` checkpoint back to CephFS (never `backup()` onto
+  CephFS), `PAB_DATA_DIR=/data/v2` so the 2.1 chains land beside the 2.0
+  ones in `/data/v2/fit_chains/`, `--replay-chains /data/v2/fit_chains`,
+  `PYTHONWARNINGS=ignore`, `MALLOC_ARENA_MAX=2`, `backoffLimit` for
+  preemption. 15,971 × ~200 s ÷ 50 ≈ **18 h** of fitting, plus the compile.
+- **Staging.** The PVC copy of the v2 DB must be the **live** one: push the
+  workstation `v2/pab.db` (after the dated copy, below) to `/data/v2/pab.db`
+  and check the sha on both sides. Check that `/data/v2/fit_chains/` still
+  holds all 15,971 `_v2.0.npz` (and the 51 `_v2.0.1.npz`); any missing NPZ
+  is staged from the workstation first.
+- **Custody.** While the pod runs, the PVC DB is the master: **no writes to
+  the workstation v2 DB** until it is brought back. After the run: pull the
+  DB back (sha on both sides), and rsync the ~15,971 new `_v2.1.npz` chains
+  (~18 GB) into `$PAB_DATA_DIR/v2/fit_chains/`, verifying the count.
 - Selection: the **15,971 matchups with a 2.0 NPZ** (V3), via
   `--matchups-csv versions/v2.1/refit_all.csv`. This guards against a
   silent all-matchup run.
 - Idempotent and resumable (keyed on the `_v2.1` `fit_id`). A crash
   resumes where it left off.
-- Before: a dated DB copy, counts and checksums. After: 2.0 and 2.0.1 rows
-  byte-identical; `integrity_check`; 15,971 rows at 2.1 (minus failures,
-  listed).
+- Before: a dated DB copy (`v2/pab_pre_v21_<date>.db`, sha-verified),
+  counts and checksums of the 2.0 and 2.0.1 `fits` / `fit_results`. After
+  (on the workstation, on the returned DB): 2.0 and 2.0.1 rows
+  byte-identical; `integrity_check`; schema v6; 15,971 rows at 2.1 (minus
+  failures, listed), all `geom_mode = 'normalized'`.
 
 ### 5. Figures, report, write-up (Task 4)
 
-- `--stage figure --figure-version 2.1` for every 2.1 fit (V9). Scenes are
-  untouched; the v1 scene paths still apply.
+- `--stage figure --figure-version 2.1` for every 2.1 fit (V9), on
+  **Nautilus** as well (the chains are there; ~9 h at 16 workers on the
+  workstation was the old estimate, so a pod is the better fit here too),
+  with the figures `rclone copy`'d back as in 2.0.1. Scenes are untouched;
+  the v1 scene paths still apply.
 - Rebuild `report_site/` with 2.1 as the headline and
   `--compare-db $PAB_DATA_DIR/v1/pab.db`.
 - Finish `versions/v2.1/geometry_rerun.md` with the full-population numbers.
@@ -233,12 +272,8 @@ the `bbp700` ratio has the expected sign.
 - JXP pushes `report_site/` (RTD).
 - Close-out log entries here and in HOWTO §5c.
 
-*Nautilus fallback (only if V6 = B):* image `pab:2.1.0` with the baked
-`PAB` SHA checked against the commit; stage the v2 DB and the 2.0 chains
-(they are already at `/data/v2/fit_chains/`); the DB-local wrapper from
-`nautilus/v2_fit_job.yaml` with `--replay-chains /data/v2/fit_chains`;
-`PYTHONWARNINGS=ignore`; tee to the PVC; return the DB and the new chains to
-the workstation afterwards.
+*(V6 = B made Nautilus the primary path; the old fallback paragraph is folded
+into §3 and §4.)*
 
 ## Tasks
 
@@ -252,25 +287,36 @@ matchups. No writes to the live v2 DB.
 
 ### Task 2: the slice and the gate (STOP for review)
 
-Build `versions/v2.1/slice_200.csv` per Plan §3 and run it on a scratch copy
-of the v2 DB with `--replay-chains $PAB_DATA_DIR/v2/fit_chains`. Write the
-§3 report into `versions/v2.1/geometry_rerun.md`, with figures in
-`versions/v2.1/`. Put the go/no-go recommendation, and any new questions, in
-Q&A / Round 2. **Do not start Task 3.**
+Build `versions/v2.1/slice_200.csv` per Plan §3. Do the local safety run
+(dry run + 2 matchups on a scratch copy). Write
+`nautilus/v21_slice_job.yaml`; build `pab:2.1.0` and, **after JXP
+confirms**, push it and apply the slice job (scratch DB copy on the PVC,
+`--replay-chains /data/v2/fit_chains`). Pull the slice DB back, write the
+§3 report into `versions/v2.1/geometry_rerun.md` with figures in
+`versions/v2.1/`, and put the go/no-go recommendation and any new
+questions in Q&A / Round 2. **Do not start Task 3.**
 
-### Task 3: the full re-fit
+### Task 3: the full re-fit (Nautilus)
 
-After JXP's go: run the pre-flight, the dated copy and the checksums, then
-the safety run (dry-run plus 2 matchups on scratch), then the full 15,971
-on the live v2 DB per Plan §4. Monitor it. When it finishes, verify and
-list any failures with their reasons. Re-try failures once, and leave the
-rest listed for JXP.
+After JXP's go: on the workstation, the pre-flight (counts, checksums of
+the 2.0 / 2.0.1 rows, `integrity_check`) and the dated, sha-verified copy
+`v2/pab_pre_v21_<date>.db`. Then, each step confirmed with JXP: stage the
+live DB to `/data/v2/pab.db` (sha both sides), verify the 2.0 NPZs on the
+PVC, apply `nautilus/v21_fit_job.yaml` with
+`--matchups-csv versions/v2.1/refit_all.csv`. Monitor the progress lines
+(s/fit, failures, `mem_breakdown`). When it finishes: pull the DB back (sha),
+rsync the `_v2.1` chains, then verify on the workstation per Plan §4 and
+list any failures with their reasons. Re-try failures once (a second apply
+resumes on `fit_id`), and leave the rest listed for JXP.
 
 ### Task 4: figures, report, write-up
 
-Plan §5. Rebuild the site locally and check it renders (summary headline
-reads 2.1; the comparison section is 1.0 vs 2.1; the 2.1 fit figures link
-correctly). Complete `versions/v2.1/geometry_rerun.md`.
+Plan §5. Render the 2.1 fit figures on Nautilus (confirm with JXP before
+applying) and bring them back. Rebuild the site locally and check it renders
+(summary headline reads 2.1; the comparison section is 1.0 vs 2.1; the 2.1
+fit figures link correctly; the V8 = A sentence + link to
+`geometry_rerun.md` on the summary page; any remaining hard-coded 2.0
+narrative is revised). Complete `versions/v2.1/geometry_rerun.md`.
 
 ### Task 5: publish, backup, close-out
 
@@ -292,7 +338,7 @@ recommendation, and the Plan assumes it.*
 - **B.** A new `v2.1/pab.db` split from v2 (a third DB, a new S3 prefix,
   and `--compare-db` plumbing for 2.0-vs-2.1).
 
-**Your answer:**
+**Your answer:** Use A.
 
 **V2: Spectrum source.** Replay each pixel's spectrum from its **2.0 chain
 NPZ** (`--replay-chains`, the 2.0.1 seam), so 2.0 → 2.1 differs only by
@@ -300,7 +346,7 @@ geometry. The alternative is to re-read the granules, which picks up any
 NASA reprocessing since the 2.0 run, costs ~25 GB+ of downloads, and
 confounds the comparison. *(My recommendation: replay.)*
 
-**Your answer:**
+**Your answer:** Replay
 
 **V3: Scope.** Re-fit the **15,971 matchups that have a 2.0 fit**. The 51
 runaways are included: they replay their 2.0 spectrum under the 2.1 config,
@@ -310,7 +356,7 @@ with no 2.0 fit** have no NPZ to replay. Under `"normalized"` geometry they
 but that means a granule download and a mixed `rrs_source`. Leave them out
 of 2.1? *(My recommendation: leave them out and list them in the write-up.)*
 
-**Your answer:**
+**Your answer:** Leave them out and list them in the write-up.
 
 **V4: Provenance of the geometry.** Add **`fits.geom_mode`** (schema v6;
 `'observed'` / `'normalized'`; NULL on legacy rows means observed). Without
@@ -319,7 +365,7 @@ it, the only record that a fit used (0, 0, 0) is the version number, and
 string. The alternative is to imply it from `pab_version >= 2.1`, with no
 migration. *(My recommendation: the explicit column.)*
 
-**Your answer:**
+**Your answer:** Agreed, add the column.
 
 **V5: R3 (strict "no geometry → no fit") under the normalized mode.** R3
 existed so that θ_s was never *assumed*. Under `"normalized"`, the geometry
@@ -330,7 +376,7 @@ is fixed by NASA's product definition, not assumed. Proposal: in
 doesn't affect this run, where every replayed pixel has angles, but it
 matters for future granule fits.)*
 
-**Your answer:**
+**Your answer:** Yes, I agree
 
 **V6: Where does the full re-fit run?**
 - **A (recommended).** The **workstation**: 24 cores, `--jobs 20`, ~45–55 h,
@@ -340,7 +386,9 @@ matters for future granule fits.)*
   image build, DB staging, the DB-local wrapper, and bringing the DB and
   ~18 GB of new chains back.
 
-**Your answer:**
+**Your answer:**  I am using this workstation for a number of other projects
+that need many of those procesors.  Let's use Nautilus.  Rewrite the Tasks
+accordingly.
 
 **V7: The gate.**
 - (a) A **200-matchup** slice stratified by θ_v band (50 each), including the
@@ -352,7 +400,7 @@ matters for future granule fits.)*
 
 *(My recommendation: (a)–(c) as written.)*
 
-**Your answer:**
+**Your answer:** Ok, go with (a)-(c)
 
 **V8: Report presentation.** On the v2 DB, 2.1 becomes the site's headline
 automatically, and the existing comparison section becomes **1.0 vs 2.1**
@@ -364,14 +412,14 @@ via `--compare-db`.
   which needs a version-pair gatherer inside one store.
 - **C.** Swap the comparison section to 2.0 vs 2.1 and drop 1.0 vs 2.x.
 
-**Your answer:**
+**Your answer:** Use A.
 
 **V9: Figures.** Re-render the **fit figures for all ~15,971 2.1 fits**.
 They encode the fitted physics, and the gallery and tap-through would
 otherwise show 2.0 fits. The earlier estimate was ~9 h at 16 workers. Scenes
 stay as they are, still the v1 ones per R7. *(My recommendation: yes.)*
 
-**Your answer:**
+**Your answer:** Yes, I agree
 
 **V10: Publishing.** Update `s3://pab/v2/pab.db` and `v2/matchup_summary.*`
 **in place** (the same DB, with 2.1 rows added), plus a dated `AIOcean`
@@ -379,7 +427,7 @@ backup and the RTD site rebuild. The alternative is a new `s3://pab/v2.1/`
 prefix. *(My recommendation: in place under `v2/`, consistent with V1 = A
 and with how 2.0.1 was published.)*
 
-**Your answer:**
+**Your answer:** Ok, in place is fine
 
 **V11: `on_out_of_domain`.** At (0, 0, 0) the view-geometry breach that
 made `"ztt"` mean "pure ZTT everywhere" (O8) disappears. The `B_p` breach
@@ -390,13 +438,37 @@ alternative is to revisit the policy now. *(My recommendation: keep
 `"warn"`. Retraining the emulator over the `B_p` prior range is the real fix
 and belongs to the RoB repo.)*
 
-**Your answer:**
+**Your answer:** Keep "warn"
 
 **V12: Version naming.** Use `pab_version = "2.1"` (fit ids `…_v2.1`),
 package `2.1.0`, and add `FitConfig.v2_0_1()` as a frozen constructor
 alongside `.v1()` / `.v2_0()`. It is a minor bump, not a patch, because the
 physics changes for every fit, so it is a new **base** version and not an
 overlay on 2.0. *(My recommendation: as stated.)*
+
+**Your answer:** Agreed, as stated.
+
+### Round 1b (from the Task 1 check, 2026-11-14)
+
+**T1-Q1: the free `B_p` absorbs part of the geometry change.** In the Task 1
+check (5 matchups, θ_v 22–53°; `versions/v2.1/task1_check.json`) the 2.1
+`bbp700` against the same-spectrum 2.0.1 re-run is ×0.99, ×1.26, ×0.85,
+×0.85, ×0.99 (median **0.99**). The prediction is 1.05–1.10. `B_p`, though,
+moves in the same direction on 4 of 5: from 0.016–0.023 to **0.012–0.015**,
+which is inside the emulator's trained range [0.0103, 0.018]. The fifth
+(the 2.0.1 re-fit, `B_p` at the 0.004 floor) goes the other way, to 0.020.
+χ²_red is slightly worse under 2.1 on 3 of 5 (0.87→0.94, 0.45→0.63,
+0.37→0.45). `B_p` sets the angular shape (f/Q), so with `B_p` free the fit
+can trade the geometry term against `B_p` instead of against `b_bp`. The
+analysis.md prediction was made at fixed IOPs and fixed `B_p`. Five fits are
+MCMC-noise-dominated and settle nothing, but this is exactly what the
+"ratio < 1, stop and look" trigger is for. Proposal for Task 2: report
+`B_p(2.1)` against `B_p(2.0)` per θ_v band as a first-class gate quantity,
+and add a **50-matchup fixed-`B_p` arm** (`fit_Bp=False`,
+`Bp_value = 0.012`, both geometries; about 100 extra fits) to separate
+geometry from `B_p` compensation. The alternative is to read the 200-fit
+slice as planned and decide afterwards. *(My recommendation: add the arm. It
+costs ~1 pod-hour and is the only way to tell the two effects apart.)*
 
 **Your answer:**
 
@@ -434,3 +506,96 @@ headline on the v2 DB without new code. Wrote Goals, Context (code seams,
 measured facts, the expected 1.05–1.10 `bbp700` ratio), a Plan (code a–i,
 gate, full run, report, publish), five Tasks with a hard stop after the
 slice, and questions V1–V12. No code or DB changes.
+
+### 2026-11-14 (Prompt 1: Round 1 folded in, Tasks rewritten for Nautilus; Task 1 code, tests and local check done)
+
+**Plan.** Folded JXP's Round 1 answers into the Plan header. All took the
+recommendation except V6 = B. Rewrote Plan §3, §4 and §6 and Tasks 2–5 for
+Nautilus: the slice runs in a pod too, and doubles as the first use of the
+`pab:2.1.0` image. The workstation does only a dry run and a 2-matchup
+safety run. Staging and custody are spelled out: the PVC DB is the master
+while the pod runs, with a sha on both sides and the `_v2.1` chains rsync'd
+back. Figures also go to a pod.
+
+**Code (Plan §2 a–i, in the order f→a→b→e→c→d→g→h→i).**
+- f: `pab_version = "2.1"` with a docstring entry; `setup.py` 2.1.0. The
+  editable install was refreshed (`pip install -e . --no-deps`), because
+  `package_versions()` reads the dist metadata.
+- a: `FitConfig.geometry_mode`, default `"normalized"`, validated in
+  `__post_init__`; constants `GEOM_OBSERVED` / `GEOM_NORMALIZED`. New frozen
+  `FitConfig.v2_0_1()` (ceilings + observed). `v2_0()` and `v1()` pin
+  observed. `v2_0_1() == FitConfig(geometry_mode="observed")` exactly.
+- b: `run.fit_geometry(config, θs, θv, Δφ)` is the one resolver:
+  normalized → `normalized_geometry()` = `ObsGeometry(0, 0, 0)`; observed →
+  `obs_geometry`; Gordon → None. `_geometry_or_none(inp, config)` uses it in
+  `fit_matchup`, the serial and the parallel `build_fits` paths. `Ed` and
+  diagnostics follow automatically, because they take the same `geom`.
+  `fit_spectrum` also guards itself: under normalized, `geom=None` becomes
+  (0, 0, 0), and a non-zero geom **raises** rather than being silently
+  overridden.
+- e: `requires_geometry` (the backend needs an ObsGeometry) is split from
+  the new `requires_pixel_angles` (true only for robust + observed). R3 in
+  `build_fits` keys on the latter (V5).
+- c: schema **v6** `fits.geom_mode` (`_v5_to_v6`); `persist_fit` stamps it.
+  `_config_from_row` reads it back, and NULL means observed.
+- d: `fit_fig._geometry_from_row(store, row, config)` dispatches through
+  `fit_geometry`, so a 2.1 figure is drawn at (0, 0, 0) and a 2.0 one at
+  the pixel angles. `reconstruct_fit` no longer gates on
+  `requires_geometry` itself.
+- g: `version_family` gives `("2.1", [])` on a 2.0+2.0.1+2.1 store, and
+  `gather_version_pair` pairs 1.0 with 2.1 (both tested). Added
+  `rst._v2_label(df)` (the newer arm's base version, from the frame's own
+  `version_v2`). The 1.0-vs-2.x headings, ratio labels, axis labels and
+  captions now say 2.1 when the data are 2.1. Left for Task 4: the
+  narrative paragraphs ("What changed in 2.0", Methods "Retrieval
+  configuration (2.0)", the runaway-failure note, which has nothing to say
+  on a 2.1 base, and hard-coded numbers such as "~0.02 in the clearest
+  water"). They need the full-population 2.1 numbers.
+- h: new `pab/tests/test_geometry_mode.py` (24 tests): the constructors,
+  the resolver, the normalized fit refusing an observed geom, (0, 0, 0)
+  reaching `build_models` and `set_inelastic_Ed`, `robust.rt.ed.Ed` called
+  at exactly 0°, the diagnostics geometry, a NULL-angle pixel fitted under
+  normalized (`build_fits` and `fit_matchup`), observed vs normalized on
+  the same stored angles, the v5→v6 migration (legacy rows NULL,
+  idempotent), the `geom_mode` stamp, `_config_from_row` / `_geometry_from_row`,
+  `reconstruct_fit` at the row geometry (parametrized: normalized / NULL /
+  observed), the 2.1 headline and the 1.0-vs-2.1 labels, and a real toy
+  robust fit at (0, 0, 0) that recovers `bbp700`. Updated 10 existing tests:
+  the R3 tests now pin `FitConfig.v2_0_1()`; version strings changed to
+  2.1; the v5 asserts moved to `SCHEMA_VERSION`.
+- i: HOWTO §4 (fit row, "2.1 changes the geometry and nothing else") and a
+  new §5c (in progress, with the v5→v6 migrate-on-open warning); `docs/db_schema.rst`
+  (v6); `docs/fitting.rst`; BING `bing/rt/defs.py` `robust_hybrid` docstring
+  (trained at nadir; PAB evaluates at (0, 0, 0) from 2.1). The BING edit is
+  in the **bing** repo, for JXP to commit.
+
+**New baseline: 537 passed, 1 skipped** (was 494 + 1 at 2.0.1; this
+includes tests added since). `ruff check pab` is clean.
+
+**Gotcha for Task 3.** `Store.open()` defaults to `create=True`, which runs
+`migrate`. The first 2.1-code open of the v2 DB therefore adds the
+`geom_mode` column (a schema write). Take the dated copy before any 2.1 code
+touches the live file. In this task the live DB was only `cp`'d. Its sha is
+unchanged (`9503015b…`) and it is still `user_version = 5`.
+
+**End-of-task check** (scratch copy of the v2 DB, `PAB_DATA_DIR` = scratch,
+no persistence; `versions/v2.1/task1_check.{py,json}`). Five matchups:
+θ_v 22, 33, 45, 48 and 53°, the last a 2.0.1 re-fit. Each was fitted
+under `FitConfig()` and `FitConfig.v2_0_1()` on the replayed 2.0 spectrum,
+10 workers, ~140–155 s CPU/fit. `ObsGeometry.to_robust` was patched in each
+worker to record every geometry the forward model received.
+1. **Geometry: confirmed.** Every 2.1 forward call saw exactly
+   (0, 0, 0). Every 2.0.1 call saw the pixel's own angles.
+2. **Reproduction: yes, to MCMC noise.** The 2.0.1 re-run against the
+   stored value gives `bbp700` ×0.994, ×1.036, ×1.034, ×1.123 and ×1.217
+   (the last against the stored 2.0.1; 0.00136 against a 5–95 % of
+   [0.00091, 0.00134]). Chl ×0.68–1.02; one Chl is at the 1e-3 floor with a
+   CI spanning three decades. χ² and acceptance are within a few
+   hundredths.
+3. **Sign: not as predicted, on n = 5.** `bbp700(2.1)/bbp700(2.0.1 re-run)`
+   = 0.99, 1.26, 0.85, 0.85, 0.99 (median 0.99; against the stored values,
+   median 0.98). `B_p` dropped to 0.012–0.015 on 4 of 5. Free `B_p` looks
+   able to absorb the geometry term. Raised as **T1-Q1** in Q&A / Round 1b,
+   with a proposed fixed-`B_p` arm for the Task 2 slice. Nothing else was
+   changed because of it.
+
