@@ -3,9 +3,9 @@ matchups under FitConfig() (2.1) and FitConfig.v2_0_1() on a scratch DB copy,
 replaying the 2.0 spectrum; record the geometry every robust forward call saw.
 No DB writes (persist=False path: gather -> replay -> fit_spectrum)."""
 import json
+import multiprocessing as mp
 import sys
 from concurrent.futures import ProcessPoolExecutor
-import multiprocessing as mp
 from pathlib import Path
 
 SCR = Path(sys.argv[1])
