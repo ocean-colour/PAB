@@ -123,15 +123,17 @@ Read before Task 1:
 ## Prompts
 
 1. Read this file. JXP has answered the questions in Q&A / Round 1. Fold the
-   answers into the Plan, then execute **Task 1**. Use Opus 5.5. Log your
-   work.
-2. Execute **Task 2** (the slice and the gate). Stop for JXP's review. Use
+   answers into the Plan, then execute **Task 1**. 
+   Use Opus 5.5. Log your work.
+1. Read my answer to T1-Q1 and modify the plan accordingly.
+   Use Opus 5.5. Log your work.
+1. Execute **Task 2** (the slice and the gate). Stop for JXP's review. Use
    Opus 5.5. Log your work.
-3. JXP has reviewed the slice. Execute **Task 3** (the full re-fit). Use
+1. JXP has reviewed the slice. Execute **Task 3** (the full re-fit). Use
    Opus 5.5. Log your work.
-4. Execute **Task 4** (figures, report, write-up). Use Opus 5.5. Log your
+1. Execute **Task 4** (figures, report, write-up). Use Opus 5.5. Log your
    work.
-5. Execute **Task 5** (publish, backup, close-out). Use Opus 5.5. Log your
+1. Execute **Task 5** (publish, backup, close-out). Use Opus 5.5. Log your
    work.
 
 ## Plan
@@ -202,13 +204,67 @@ the `bbp700` ratio has the expected sign.
   s/fit from the `fit progress` lines, never from total wall time (the
   ~11 min one-time JAX compile per pool). Pull the slice DB back to the
   workstation for the analysis.
-- **Before the pod**: a local safety run on the workstation (a `--dry-run`,
-  then 2 matchups with `--jobs 2` on a scratch copy). That is the only
-  local compute.
+- **The fixed-`B_p` arm** (T1-Q1 = add it). It tells a geometry effect on
+  `b_bp` apart from a free `B_p` absorbing it.
+  - *Selection*: **50 of the 200**, `versions/v2.1/bp_arm_50.csv`, 12–13
+    per θ_v band, spread in θ_s. Prefer `ztt_slice` members, take only
+    `success = 1` 2.0 fits, and **exclude the 2.0.1 re-fits**, whose
+    pathological spectra and floor-pinned `B_p` would confound the
+    comparison.
+  - *Two passes on the same 50*, both on the replayed 2.0 spectrum, both
+    with `fit_Bp=False` and **`Bp_value = 0.014`**. 0.014 is the value
+    analysis.md Viewing-angle finding 3 computed its 1.05–1.10 prediction
+    at (T1-Q1 proposed 0.012; 0.014 makes the arm directly comparable) and
+    lies inside the emulator's trained `B_p` range [0.0103, 0.018].
+    - **arm-N**: `FitConfig(fit_Bp=False, Bp_value=0.014)`, i.e. normalized.
+    - **arm-O**: `FitConfig.v2_0_1(fit_Bp=False, Bp_value=0.014)`, i.e.
+      observed.
+    The pair differs by the geometry only.
+  - *Mechanics*: arm-N, arm-O and the main slice would all mint the same
+    `…_v2.1` `fit_id`, so each pass gets its **own DB copy and its own
+    `PAB_DATA_DIR`** (chains would otherwise overwrite each other by
+    filename): `/data/v2.1_slice/{main,arm_norm,arm_obs}/`.
+    `fits.geom_mode` and `fits.fit_bp` tell the rows apart. The `pab` CLI
+    exposes no `FitConfig` fields, and the production CLI stays as it is,
+    so the arm runs through a small driver,
+    **`nautilus/v21_bp_arm.py`** (`--db`, `--matchups-csv`,
+    `--replay-chains`, `--geometry-mode`, `--bp`, `--jobs`). It sets
+    `PAB_DATA_DIR` before importing `pab` and calls `run.build_fits(…,
+    selection=, spectra=spectrum_from_chains(…))`, the same path as the CLI.
+  - *Cost*: 100 five-parameter fits. The two arm passes run concurrently
+    in the slice pod after the main pass, `--jobs 25` each, about one
+    round of fits plus the ~11 min JAX compile per pool, so **≈ 1 pod-hour**
+    on top of the slice.
+- **Before the pod**: a local safety run on the workstation: a `--dry-run`;
+  2 matchups with `--jobs 2` through the CLI on a scratch copy; and the same
+  2 matchups through `v21_bp_arm.py` in both geometry modes, each on its own
+  scratch copy. Check `geom_mode` / `fit_bp` / `Bp` on the written rows.
+  That is the only local compute.
 - **Report** in `versions/v2.1/geometry_rerun.md` (new):
   - The `bbp700(2.1)/bbp700(2.0 or 2.0.1)` distribution, overall and per
     θ_v band, against θ_s, and against the analysis.md prediction.
-  - The same for `a_ph(440)`, Chl, `A_dg` and `B_p`.
+  - The same for `a_ph(440)`, Chl, `A_dg` and `B_p`. **`B_p(2.1)` against
+    `B_p(2.0)` per θ_v band is a first-class gate quantity** (T1-Q1),
+    including the fraction at each prior bound in both versions.
+  - **The fixed-`B_p` arm**:
+    - `R_fix = bbp700(arm-N)/bbp700(arm-O)`, overall, per θ_v band and
+      against θ_s / θ_v.
+    - Compared with the analysis.md 1.05–1.10, and **per pixel** with the
+      forward-model prediction `Rrs₇₀₀(observed)/Rrs₇₀₀(0,0,0)` evaluated at
+      that pixel's arm-O posterior-median IOPs and `B_p = 0.014`. This costs
+      no fit, and the predicted-against-measured scatter is the direct test.
+    - Beside it, `R_free = bbp700(2.1)/bbp700(2.0)` and the `B_p` shift on
+      the **same 50** from the main slice, plus χ²_red fixed against free.
+    - Read together they give one of three outcomes:
+      - **(a) compensation**: `R_fix` ≈ prediction, `R_free` ≈ 1, `B_p`
+        falls. The geometry effect is real but goes into `B_p`.
+      - **(b) the prediction does not survive a fit**: `R_fix` ≈ 1. Another
+        parameter (`A_dg`, `β`) absorbs it, or the red-band linearity
+        argument fails. Look further before Task 3.
+      - **(c) noise**: `R_fix` ≈ `R_free` ≈ prediction. The Task 1 n = 5 was
+        MCMC noise.
+    - Each outcome gets its own recommendation in Round 2. (a) in particular
+      raises the question of whether 2.1 should still fit `B_p` free.
   - χ²_red and acceptance against 2.0.
   - The `DomainWarning` breach mix (the view features should be gone).
   - LM `success` rate and failures.
@@ -216,7 +272,10 @@ the `bbp700` ratio has the expected sign.
     as predicted.
 - **Pause triggers** (V7): median `bbp700` ratio outside **[0.98, 1.20]**;
   failure rate > 2 %; median s/fit > 300 s; or any χ² or acceptance change
-  JXP finds implausible. **Stop for JXP's review in every case.**
+  JXP finds implausible. **Stop for JXP's review in every case.** The arm adds
+  no numeric trigger. Its outcome (a)/(b)/(c) is read alongside the
+  `bbp700` trigger: a main-slice median below 0.98 under outcome (a) is
+  explained, under (b) it is not.
 
 ### 4. The full re-fit (Task 3), on Nautilus
 
@@ -287,14 +346,18 @@ matchups. No writes to the live v2 DB.
 
 ### Task 2: the slice and the gate (STOP for review)
 
-Build `versions/v2.1/slice_200.csv` per Plan §3. Do the local safety run
-(dry run + 2 matchups on a scratch copy). Write
-`nautilus/v21_slice_job.yaml`; build `pab:2.1.0` and, **after JXP
-confirms**, push it and apply the slice job (scratch DB copy on the PVC,
-`--replay-chains /data/v2/fit_chains`). Pull the slice DB back, write the
-§3 report into `versions/v2.1/geometry_rerun.md` with figures in
-`versions/v2.1/`, and put the go/no-go recommendation and any new
-questions in Q&A / Round 2. **Do not start Task 3.**
+Build `versions/v2.1/slice_200.csv` and `versions/v2.1/bp_arm_50.csv` per
+Plan §3. Write `nautilus/v21_bp_arm.py` (with a unit test of its config
+construction). Do the local safety run: a dry run, 2 matchups through the
+CLI, and the same 2 through the arm driver in both modes, each on its own
+scratch copy. Write `nautilus/v21_slice_job.yaml`: the main pass, then
+arm-N and arm-O concurrently, each on its own DB copy and `PAB_DATA_DIR`
+under `/data/v2.1_slice/`. Build `pab:2.1.0` and, **after JXP confirms**,
+push it and apply the slice job (`--replay-chains /data/v2/fit_chains`).
+Pull the three slice DBs back. Write the §3 report, arm included, into
+`versions/v2.1/geometry_rerun.md` with figures in `versions/v2.1/`. Put the
+go/no-go recommendation, the arm outcome (a)/(b)/(c) and any new questions
+in Q&A / Round 2. **Do not start Task 3.**
 
 ### Task 3: the full re-fit (Nautilus)
 
@@ -470,7 +533,11 @@ geometry from `B_p` compensation. The alternative is to read the 200-fit
 slice as planned and decide afterwards. *(My recommendation: add the arm. It
 costs ~1 pod-hour and is the only way to tell the two effects apart.)*
 
-**Your answer:**
+**Your answer:** Ok, add the arm.
+
+*Folded into Plan §3 and Task 2 (2026-11-14). The fixed value is 0.014, not
+0.012: 0.014 is the value the analysis.md prediction used, so the arm tests
+it directly. It is still inside the emulator range.*
 
 ## Logging
 
@@ -598,4 +665,45 @@ worker to record every geometry the forward model received.
    able to absorb the geometry term. Raised as **T1-Q1** in Q&A / Round 1b,
    with a proposed fixed-`B_p` arm for the Task 2 slice. Nothing else was
    changed because of it.
+
+### 2026-11-14 (Prompt 2: T1-Q1 answered, so the fixed-`B_p` arm is added to the Task 2 gate)
+
+JXP answered T1-Q1: add the arm. Folded it into Plan §3 and Task 2. No code
+and no DB touched.
+
+- **Design.** 50 of the 200 slice matchups (`versions/v2.1/bp_arm_50.csv`):
+  12–13 per θ_v band, spread in θ_s, `ztt_slice` members preferred,
+  `success = 1` only, the 2.0.1 re-fits excluded. Each is fitted twice on
+  the replayed 2.0 spectrum with `fit_Bp=False`: arm-N
+  (`FitConfig(fit_Bp=False, Bp_value=0.014)`) and arm-O
+  (`FitConfig.v2_0_1(fit_Bp=False, Bp_value=0.014)`). The two differ only
+  in geometry.
+- **`Bp_value = 0.014`, not the 0.012 I proposed.** Rereading analysis.md
+  Viewing-angle finding 3 showed that its 1.05–1.10 prediction was computed
+  at `B_p = 0.014`. Fixing the arm at the same value makes `R_fix` a direct
+  test of that number, and 0.014 is inside the emulator's trained range
+  [0.0103, 0.018].
+- **Mechanics.** All three passes (main, arm-N, arm-O) would mint the same
+  `…_v2.1` `fit_id`, and the chain NPZs are named by `fit_id`. So each pass
+  gets its own DB copy and `PAB_DATA_DIR` under
+  `/data/v2.1_slice/{main,arm_norm,arm_obs}/`. The `pab` CLI has no
+  `FitConfig` flags, and the production CLI is left alone, so the arm runs
+  through a new driver `nautilus/v21_bp_arm.py` (written in Task 2). It
+  goes through the same `run.build_fits(…, selection=, spectra=)` path as
+  the CLI. The local safety run now also exercises the driver in both
+  modes.
+- **Analysis added to the §3 report.**
+  - `R_fix` overall, per band and against θ_s / θ_v.
+  - A per-pixel test against the forward-model ratio
+    `Rrs₇₀₀(obs)/Rrs₇₀₀(0,0,0)` at each pixel's arm-O IOPs and
+    `B_p = 0.014`. It needs no fits.
+  - `R_free` and the `B_p` shift on the same 50.
+  - `B_p(2.1)` against `B_p(2.0)` per band (with the bound fractions) as a
+    first-class gate quantity.
+  - The three readings to report: (a) compensation, (b) the prediction
+    does not survive a fit, (c) noise.
+- **Gate.** No new numeric trigger. The arm outcome is read alongside the
+  `bbp700` [0.98, 1.20] trigger, and every case still stops for review.
+- **Cost.** About one extra pod-hour: the two arm passes run concurrently
+  in the slice pod at `--jobs 25` each, after the main pass.
 

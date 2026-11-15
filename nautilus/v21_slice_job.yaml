@@ -1,0 +1,134 @@
+# v2.1 Task 2 — the 200-matchup geometry-stratified SLICE + the fixed-B_p ARM.
+# claude_prompts/v2/build_v2_1_rerun.md Plan §3.
+#
+# Everything here is SCRATCH: three copies of /data/v2/pab.db, each fitted
+# DB-local in /scratch and checkpointed to /data/v2.1_slice/<pass>/pab.db.
+# /data/v2/pab.db is only READ (cp), never written. Each pass has its own
+# PAB_DATA_DIR, so its chains land in /data/v2.1_slice/<pass>/fit_chains and
+# never touch the production /data/v2/fit_chains (which is only READ, for the
+# replay).
+#
+#   main      pab CLI, FitConfig() = 2.1 (normalized, free B_p),
+#             versions/v2.1/slice_200.csv, --jobs 50
+#   arm_norm  nautilus/v21_bp_arm.py --geometry-mode normalized --bp 0.014
+#   arm_obs   nautilus/v21_bp_arm.py --geometry-mode observed   --bp 0.014
+#             both on versions/v2.1/bp_arm_50.csv, --jobs 25 each, concurrently,
+#             after the main pass (all three passes would mint the same
+#             ..._v2.1 fit_id, hence three DBs and three PAB_DATA_DIRs)
+#
+# The selections and the arm driver are read from the IMAGE
+# (/opt/src/PAB/...), so the image tag pins exactly what was fitted.
+#
+# Cost: 200 fits at ~200 s over 50 workers ≈ 4 rounds ≈ 15 min, plus the
+# one-time ~11 min JAX compile per pool (three pools). Expect ~1.5 h in all.
+# Measure s/fit from the `fit progress` lines (median per-fit), NEVER from
+# total wall / fits.
+#
+# *** DB-LOCAL, not optional. *** SQLite on CephFS wedged four pods in the 1.0
+# run. Copy to emptyDir, run there, checkpoint back every 2 min by local
+# sqlite3.backup() + plain file copy. Never sqlite3.backup() onto CephFS.
+#
+# The first 2.1-code open of each copy migrates it v5 -> v6 (fits.geom_mode).
+# That is expected and only ever happens to the scratch copies here.
+#
+# Usage (after JXP confirms):
+#   kubectl -n sea-meets-the-stars delete job pab-v21-slice --ignore-not-found
+#   kubectl apply -f nautilus/v21_slice_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v21-slice
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v21-slice
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4                # preemption-tolerant; a resume skips finished fits
+  activeDeadlineSeconds: 28800   # 8 h against a ~1.5 h expectation
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.1.0
+        imagePullPolicy: Always
+        env:
+        - {name: HOME, value: /root}
+        - {name: OUT, value: /data/v2.1_slice}
+        - {name: SRC, value: /opt/src/PAB}
+        - {name: CHAINS, value: /data/v2/fit_chains}
+        - {name: PYTHONWARNINGS, value: "ignore"}  # robust emits a DomainWarning per forward call
+        - {name: MALLOC_ARENA_MAX, value: "2"}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            ulimit -n 65536 2>/dev/null || true
+            mkdir -p $OUT/main $OUT/arm_norm $OUT/arm_obs
+            LOG=$OUT/slice.log
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $LOG; }
+            bkup() {  # bkup <pass>: /scratch/<pass>.db -> $OUT/<pass>/pab.db
+              python -c "import sqlite3,os,shutil; s=sqlite3.connect('/scratch/$1.db'); d=sqlite3.connect('/scratch/$1.bak'); s.backup(d); d.close(); s.close(); shutil.copy('/scratch/$1.bak','$OUT/$1/pab.db.tmp'); os.replace('$OUT/$1/pab.db.tmp','$OUT/$1/pab.db')"
+            }
+            counts() {  # counts <pass>
+              python -c "import sqlite3; c=sqlite3.connect('/scratch/$1.db'); q=lambda s: c.execute(s).fetchall(); print('$1', 'schema', q('PRAGMA user_version')[0][0], 'fits by (version, geom_mode, fit_bp):', q('SELECT pab_version, geom_mode, fit_bp, COUNT(*) FROM fits GROUP BY 1,2,3'))" 2>&1 | tee -a $LOG
+            }
+            log "PROVENANCE"
+            python -c "import json; from pab.config import package_versions, pab_version; from pab.db.schema import SCHEMA_VERSION; pv=package_versions(); print('pab_version', pab_version, 'pkg', pv['pab'], 'schema', SCHEMA_VERSION); print('git_sha', json.dumps(pv['git_sha']))" 2>&1 | tee -a $LOG
+            log "SOURCE DB (read-only cp) + selections"
+            sha256sum /data/v2/pab.db | tee -a $LOG
+            wc -l $SRC/versions/v2.1/slice_200.csv $SRC/versions/v2.1/bp_arm_50.csv | tee -a $LOG
+            sha256sum $SRC/versions/v2.1/slice_200.csv $SRC/versions/v2.1/bp_arm_50.csv | tee -a $LOG
+            python - <<'PY' 2>&1 | tee -a $LOG
+            import csv, os
+            ids = [r["fit_id"] for r in csv.DictReader(open("/opt/src/PAB/versions/v2.1/slice_200.csv"))]
+            miss = [i for i in ids if not os.path.isfile(f"/data/v2/fit_chains/{i}.npz")]
+            print("replay NPZs present:", len(ids) - len(miss), "/", len(ids), "missing:", miss[:5])
+            PY
+            for p in main arm_norm arm_obs; do cp /data/v2/pab.db /scratch/$p.db; done
+            ( while true; do sleep 120; for p in main arm_norm arm_obs; do bkup $p 2>>$LOG || true; done; echo "=== DB backup $(date -Is) ===" >>$LOG; done ) &
+            BGPID=$!
+            ( while true; do
+                M=$(cat /sys/fs/cgroup/memory.current 2>/dev/null || echo 0)
+                echo "MEMSAMPLE $(date -Is) cgroup_gb=$(python -c "print(f'{$M/1073741824:.1f}')")" >> $LOG
+                sleep 60
+              done ) &
+            MEMPID=$!
+
+            log "MAIN start (2.1 default config, --jobs 50)"
+            PAB_DATA_DIR=$OUT/main pab --db /scratch/main.db --outdir $OUT/main/pipeline \
+                --stage fit --jobs 50 \
+                --matchups-csv $SRC/versions/v2.1/slice_200.csv \
+                --replay-chains $CHAINS 2>&1 | tee -a $LOG
+            RC_MAIN=$?
+            bkup main; counts main
+            log "MAIN end rc=$RC_MAIN"
+
+            log "ARMS start (fixed B_p = 0.014; normalized + observed, --jobs 25 each)"
+            ARMPIDS=""
+            for m in normalized observed; do
+              p=arm_norm; [ $m = observed ] && p=arm_obs
+              ( python $SRC/nautilus/v21_bp_arm.py --db /scratch/$p.db --data-dir $OUT/$p \
+                  --matchups-csv $SRC/versions/v2.1/bp_arm_50.csv \
+                  --replay-chains $CHAINS --geometry-mode $m --bp 0.014 --jobs 25 \
+                  2>&1 | sed -u "s/^/[$p] /" | tee -a $LOG ) &
+              ARMPIDS="$ARMPIDS $!"
+            done
+            wait $ARMPIDS
+            for p in arm_norm arm_obs; do bkup $p; counts $p; done
+            log "ARMS end"
+
+            kill $BGPID $MEMPID 2>/dev/null || true
+            for p in main arm_norm arm_obs; do bkup $p; done
+            log "CHAINS"
+            for p in main arm_norm arm_obs; do echo "$p $(ls $OUT/$p/fit_chains 2>/dev/null | wc -l)"; done | tee -a $LOG
+            sha256sum /data/v2/pab.db | tee -a $LOG   # must equal the SOURCE line above
+            log "V21_SLICE_DONE"
+            [ "$RC_MAIN" = 0 ] || exit 1
+        resources:
+          requests: {cpu: "50", memory: "100Gi", ephemeral-storage: "20Gi"}
+          limits: {cpu: "50", memory: "100Gi", ephemeral-storage: "40Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: scratch, mountPath: /scratch}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: scratch, emptyDir: {sizeLimit: 5Gi}}
