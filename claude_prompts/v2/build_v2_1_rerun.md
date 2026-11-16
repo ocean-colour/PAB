@@ -298,7 +298,9 @@ the `bbp700` ratio has the expected sign.
   (~18 GB) into `$PAB_DATA_DIR/v2/fit_chains/`, verifying the count.
 - Selection: the **15,971 matchups with a 2.0 NPZ** (V3), via
   `--matchups-csv versions/v2.1/refit_all.csv`. This guards against a
-  silent all-matchup run.
+  silent all-matchup run. The `:2.1.0` image predates the CSV, so it is
+  staged to `/data/v2/v21/refit_all.csv` with the DB, and the job checks
+  its sha. *(Added at Task 3, 2026-11-16.)*
 - Idempotent and resumable (keyed on the `_v2.1` `fit_id`). A crash
   resumes where it left off.
 - Before: a dated DB copy (`v2/pab_pre_v21_<date>.db`, sha-verified),
@@ -596,7 +598,7 @@ go. For the record, the corrected expectation for the full population is
 ≈ 1.14 median, and a full-run median outside ~[1.05, 1.25] should stop the
 close-out for a look.)*
 
-**Your answer:**
+**Your answer:** Yes, we are ready for Task 3
 
 **R2-Q2: keep `B_p` free in 2.1?**
 - With `B_p` free, 2.1 drops `B_p` (median 0.024 → 0.020). The count at the
@@ -609,7 +611,7 @@ close-out for a look.)*
   in the same release, and it makes 2.0 → 2.1 no longer a geometry-only
   comparison.
 
-**Your answer:**
+**Your answer:** Yes, keep `B_p` free (A)
 
 **R2-Q3: for the paper (no action in this doc).** 2.1 moves PACE `b_bp(700)`
 up by ~14 % on the population and widens the PACE > Argo offset: δ median
@@ -617,6 +619,47 @@ up by ~14 % on the population and widens the PACE > Argo offset: δ median
 "bias low by ~15–20 %, mostly from θ_s". Noted here so the bbp-paper prompt
 picks it up from the Task 4 numbers. *(Nothing to answer unless you want it
 handled differently.)*
+
+**Your answer:** Nothing to add.
+
+### Round 3 (Task 3, before staging and the pod; 2026-11-16)
+
+The local part of Task 3 is done and passed (see the log): the snapshot of
+the 2.0 / 2.0.1 / NASA rows, the dated copy `v2/pab_pre_v21_20261116.db`,
+`refit_all.csv` (15,971 matchups; every 2.0 NPZ present), and the job spec
+`nautilus/v21_fit_job.yaml`. Its pre-flight was exercised locally. The next
+two steps are outward-facing.
+
+**T3-Q1: stage the live DB and the selection onto the PVC?** With a
+throw-away pod (`pab-v21-stage`, PVC mounted read-write, deleted after), I
+would:
+1. Rename the stale `/data/v2/pab.db` to `/data/v2/pab_stale_7d44e1f3.db`.
+   It is byte-identical to the workstation's `v2/pab.db.pre-scenepath-bak`
+   (Oct 5), so nothing is lost either way. The rename is only for caution.
+2. Stream the workstation `v2/pab.db` to `/data/v2/pab.db.tmp`, check the
+   sha (`9503015b…`), then `mv` it into place.
+3. Copy `refit_all.csv` to `/data/v2/v21/refit_all.csv` and check its sha
+   (`a244835e…`).
+4. Count the `_v2.0.npz` files of the selection under `/data/v2/fit_chains`.
+   Any missing ones would be streamed from the workstation.
+
+The workstation DB is only read.
+
+**Your answer:**
+
+**T3-Q2: apply `nautilus/v21_fit_job.yaml`?**
+- **Resources:** one pod, image `pab:2.1.0` (validated by the slice),
+  50 CPU and 100 Gi, `--jobs 50`.
+- **Duration:** a 48 h deadline against an expected ~21.6 h.
+- **Location:** it runs DB-local in emptyDir, with a 2-minute checkpoint to
+  `/data/v2/pab.db`.
+- **Chains:** the 2.1 chains go to `/data/v2/fit_chains` (about 18 GB).
+- **Refusals:** it will not start a fresh run on any DB other than the
+  staged sha, and it refuses any DB without the 51 2.0.1 rows.
+- **Retries:** `backoffLimit` 6. A retry resumes on `fit_id`.
+- **Custody:** from the apply until the DB is pulled back, **the PVC DB is
+  the master**. Nothing writes to the workstation v2 DB in that time, and
+  that includes report or figure stages run against it.
 
 **Your answer:**
 
@@ -939,3 +982,72 @@ asks whether to keep `B_p` free (recommended: yes). R2-Q3 is a note for the
 paper. **Task 3 not started.** Expected Task 3 cost: ≈ 21.6 h at 50
 workers.
 
+
+### 2026-11-16 (Prompt 4, Task 3 part 1: pre-flight, dated copy, selection, fit job spec; stopped before staging and the pod)
+
+JXP answered Round 2: R2-Q1 go, R2-Q2 = A (keep `B_p` free), R2-Q3 nothing
+to add. With Claude Opus 5.5.
+
+**Pre-flight** (`versions/v2.1/preflight.py`; read-only `mode=ro` URI, never
+`Store.open`, which would migrate the DB).
+- `snapshot` writes `versions/v2.1/preflight_snapshot.json`: schema,
+  `integrity_check`, fits by (algorithm, version), and sha256 digests over the
+  ordered rows of each legacy group. The digests cover the **v5 columns only**
+  of `fits`, plus their `fit_results`, `matchups` and `matchup_pixels`.
+- Live DB `9503015b…`: schema 5, integrity `ok`.
+  - BING 2.0: 15,971 fits / 191,652 results.
+  - BING 2.0.1: 51 / 612.
+  - NASA_GIOP 1.1: 15,976 / 127,808.
+  - matchups: 15,976; pixels: 159,760.
+- `verify` re-snapshots a returned DB and checks it against the snapshot:
+  integrity, schema 6, legacy digests identical, and every 2.1 row
+  normalized. I tested it on a scratch copy migrated v5 → v6 through
+  `Store.open`: **no problems**, so the digests survive the migration as
+  designed.
+- **Dated copy** `v2/pab_pre_v21_20261116.db`, sha equal to the live DB
+  (`9503015b…`), set `chmod a-w`.
+
+**Selection** (`versions/v2.1/make_refit_all.py`) → `refit_all.csv`:
+- 15,971 matchups, one per 2.0 fit, with columns `matchup_id, fit_id_v2_0,
+  ix, iy`; sha `a244835e…`.
+- All 15,971 `_v2.0.npz` are present on the workstation, and no `_v2.1.npz`
+  exist yet.
+- The 5 matchups with no 2.0 fit, for the write-up:
+  `1902650_44_…20250516T071437`, `5905597_32_…20250803T042640`,
+  `5906562_52_…20240628T154213`, `6990670_31_…20250629T150432`,
+  `7901102_75_…20260514T222245`.
+
+**The stale PVC DB** (`7d44e1f3…`) is byte-identical to the workstation's
+`v2/pab.db.pre-scenepath-bak` (Oct 5). It predates the scene paths, the
+negblue fix and 2.0.1. Replacing it loses nothing, and T3-Q1 proposes
+renaming it anyway.
+
+**Job spec** `nautilus/v21_fit_job.yaml` (`pab-v21-fit`), modelled on
+`v2_fit_job.yaml` and the slice job.
+- **Run:** image `pab:2.1.0`, 50 CPU / 100 Gi, `--jobs 50`.
+- **Paths:** `PAB_DATA_DIR=/data/v2`; `--matchups-csv
+  /data/v2/v21/refit_all.csv`; `--replay-chains /data/v2/fit_chains`.
+- **Persistence:** DB-local with a 2-minute checkpoint; memory sampled every
+  5 min.
+- **Limits:** 48 h deadline; `backoffLimit` 6.
+- **Pre-flight inside the job:**
+  - the selection sha;
+  - the 2.0.1 row count must be 51 (this rejects the stale copy);
+  - a *fresh* run (no 2.1 rows) requires the staged DB sha; a resume skips
+    the sha check, because the checkpoint changes it;
+  - all 15,971 replay NPZs must be present.
+- **Close-out gates:** integrity, the 2.1 count and the count not
+  normalized, LM successes, the replayed count, duplicate `fit_id`s, and
+  NPZ counts.
+- **Checks run locally:**
+  - the YAML parses and the script passes `bash -n`;
+  - the pre-flight block passed three local cases: it passes on the live
+    copy and aborts with rc 2 on a stale-style DB (0 2.0.1 rows) and on a
+    tampered selection;
+  - a CLI `--dry-run` on a scratch copy prints the plan. It gives no fit
+    count; the job's first progress line will.
+- ruff is clean (`pab`, `versions/v2.1/`, the arm driver). The cluster
+  namespace is empty.
+
+**Stopped** for T3-Q1 (stage the DB and selection on the PVC) and T3-Q2
+(apply the job) in Q&A / Round 3. The live DB is unchanged (`9503015b…`).
