@@ -539,6 +539,87 @@ costs ~1 pod-hour and is the only way to tell the two effects apart.)*
 0.012: 0.014 is the value the analysis.md prediction used, so the arm tests
 it directly. It is still inside the emulator range.*
 
+### Round 2a (Task 2, before the pod; 2026-11-14)
+
+Everything local for Task 2 is done and passed: the selections, the arm
+driver, the safety run, the job spec and the analysis script (see the log).
+The next three steps are outward-facing, so they need your go.
+
+**T2-Q1: commit the bing docstring, then build and push `pab:2.1.0`?**
+`nautilus/build_image.sh` stages the **working trees** but bakes the
+**HEAD** SHAs into `PAB_GIT_SHAS`. PAB HEAD is `6563a65`. The PAB working
+tree differs only in non-runtime files (`versions/v2.1/analyze_slice.py`,
+which is new, and a ruff import-order fix in `task1_check.py`). **bing** has
+the uncommitted Task 1 docstring edit in `bing/rt/defs.py`. It is
+docstring-only, but an image built now would carry it under the SHA
+`bf56f6d`. Proposal: you commit bing (and, optionally, the two PAB files),
+then I run `TAG=2.1.0 bash nautilus/build_image.sh --push`. Note that the
+script also retags and pushes **`:latest`**. Every job spec pins an
+explicit tag, so nothing should move with it. The Dockerfile's
+self-check now asserts `pab 2.1.0`, `geometry_mode = 'normalized'`,
+schema 6, `fit_geometry(…) == (0, 0, 0)`, and the arm driver present in the
+image.
+
+**Your answer:**  I have committed the bing docstring.  Do build and push pab:2.1.0
+
+**T2-Q2: apply `nautilus/v21_slice_job.yaml`?** It is one pod, 50 CPU and
+100 Gi, with an 8 h deadline against an expected ~1.5 h. It runs the main
+200 (`--jobs 50`), then arm-N and arm-O concurrently (`--jobs 25` each).
+Each pass gets its own copy of `/data/v2/pab.db` (only `cp`'d; its sha is
+logged before and after) and writes only under `/data/v2.1_slice/`.
+`/data/v2/fit_chains` is read for the replay, and the job logs how many of
+the 200 NPZs are present before it fits. One thing to check in the log: the
+PVC `/data/v2/pab.db` sha against the workstation's `9503015b…`. If the PVC
+copy predates the 2.0.1 re-fit, the slice is still valid, because pixels and
+2.0 spectra are unchanged and the 2.0 / 2.0.1 reference values are read from
+the workstation DB in the analysis. I will flag any mismatch either way.
+
+**Your answer:** Yes, I confirm you can apply that job
+
+### Round 2 (the slice gate; 2026-11-15)
+
+The full write-up is `versions/v2.1/geometry_rerun.md`. In short:
+- 200/200 fitted, 0 failed, 244 s/fit.
+- Median `bbp700` ratio **1.212**, just over the 1.20 trigger. Reweighted
+  to the population's θ_s it is 1.14.
+- The arm says the geometry effect is real and predicted per pixel
+  (ρ = 0.86). `b_bp` responds with elasticity ≈ 2 to the `Rrs` change.
+- The free `B_p` adds +6 % rather than compensating. Task 1's 0.99 was a
+  low-θ_s sample.
+
+**R2-Q1: go for Task 3?** The plain `bbp700` median trips the 1.20 bound
+by 0.012. It is explained by θ_s over-sampling in the slice, by an
+elasticity of about 2 that the bound assumed was 1, and by +6 % from the
+free `B_p`. Population-reweighted it is 1.14–1.15. Every other trigger is
+clear, and the view and θ_s domain breaches are gone. *(My recommendation:
+go. For the record, the corrected expectation for the full population is
+≈ 1.14 median, and a full-run median outside ~[1.05, 1.25] should stop the
+close-out for a look.)*
+
+**Your answer:**
+
+**R2-Q2: keep `B_p` free in 2.1?**
+- With `B_p` free, 2.1 drops `B_p` (median 0.024 → 0.020). The count at the
+  0.004 floor goes from 9 to 23 of 200, and `b_bp` comes out +6 % above the
+  fixed-`B_p` result. χ² is the same either way.
+- **A (recommended).** Keep it free, as planned. 2.1 then changes the
+  geometry and nothing else, and the floor pile-up and the +6 % are
+  reported in the write-up and on the Methods page.
+- **B.** Fix `B_p` (e.g. 0.014) for 2.1. That is a second physics change
+  in the same release, and it makes 2.0 → 2.1 no longer a geometry-only
+  comparison.
+
+**Your answer:**
+
+**R2-Q3: for the paper (no action in this doc).** 2.1 moves PACE `b_bp(700)`
+up by ~14 % on the population and widens the PACE > Argo offset: δ median
++0.07 → +0.23 on the slice. analysis.md's "bias low by 5–10 %" becomes
+"bias low by ~15–20 %, mostly from θ_s". Noted here so the bbp-paper prompt
+picks it up from the Task 4 numbers. *(Nothing to answer unless you want it
+handled differently.)*
+
+**Your answer:**
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -706,4 +787,155 @@ and no DB touched.
   `bbp700` [0.98, 1.20] trigger, and every case still stops for review.
 - **Cost.** About one extra pod-hour: the two arm passes run concurrently
   in the slice pod at `--jobs 25` each, after the main pass.
+
+### 2026-11-14 (Prompt 3, Task 2 part 1: selections, arm driver, safety run, job spec, analysis script; stopped before the image push and the pod)
+
+**Selections** (`versions/v2.1/make_slice.py`, seed 2110, read-only on the v2
+DB).
+- `slice_200.csv`: 50 per θ_v band; round-robin over basin × season cells
+  within each band; 10 of the 51 2.0.1 re-fits forced in. Basins: Arctic 17,
+  Atlantic 31, Baltic 32, Indian 31, Med 29, Pacific 31, Southern 29.
+  Seasons 45–53 each. θ_s 6.5–74.6°.
+- `bp_arm_50.csv`: 13/13/12/12 per band, `success = 1`, no re-fits, evenly
+  spaced in θ_s.
+- Lat/lon come from the pixel, falling back to the profile, because some
+  profile rows have NULL coordinates.
+- The selection is **basin-balanced, not population-proportional**: the
+  Baltic and the Med are over-weighted. So the analysis also reports a
+  band × basin **population-weighted** median `bbp700` ratio beside the
+  plain one.
+- **Deviation from Plan §3:** the 50 `ztt_slice` ordinary fits could not be
+  included. Their 300-fit sample list and the run's `specs.json` lived in
+  `/tmp` and were lost when the workstation rebooted (it is on a new kernel).
+  The seeded draw above replaces them.
+
+**Arm driver** `nautilus/v21_bp_arm.py`. `arm_config(mode, bp)` builds
+`FitConfig(fit_Bp=False, Bp_value=bp)` or
+`FitConfig.v2_0_1(fit_Bp=False, Bp_value=bp)`. The driver sets
+`PAB_DATA_DIR` before importing `pab` (and checks that it took), then calls
+`run.build_fits(…, selection=, spectra=spectrum_from_chains(…))`. Tests in
+`pab/tests/test_v21_bp_arm.py` (4) include "the two configs differ only in
+`geometry_mode`".
+
+**Local safety run** (scratch, 3 DB copies, 2 matchups from the arm set: θ_v
+24° and 50°). Dry runs printed the right plan and configs. Real runs: CLI
+main pass `--jobs 2` and both arm passes `--jobs 2`, concurrently,
+~3 min each including the ~3 min compile. **All 2/2 written, 0 failed**.
+Each copy migrated to **schema 6**. The 2.1 rows had `geom_mode` normalized,
+or normalized and observed for the arms, `fit_bp` 1/0/0, and
+`rrs_source` replay. The 2.0, 2.0.1 and 1.1 rows were intact with
+`geom_mode` NULL. Chains landed only in each pass's own
+`PAB_DATA_DIR/fit_chains`; production `fit_chains` holds 0 `_v2.1` files.
+The live DB sha is unchanged (`9503015b…`).
+
+**Analysis script** `versions/v2.1/analyze_slice.py` (written now, exercised
+on the safety outputs).
+- Slice: ratios for `bbp700`, Aph, Chl, Adg and `B_p` overall, per band and
+  per θ_s bin, plus the population-weighted median. `B_p` quantiles, bound
+  fractions and emulator-domain counts for both versions. χ² and acceptance;
+  LM success and failures; float δ.
+- Arm: `R_fix`, `R_free`, the per-pixel forward prediction
+  `Rrs700(obs)/Rrs700(0,0,0)` at the arm-O posterior median with
+  `B_p = 0.014`, and their rank correlation.
+- Domain-breach mix at the posterior medians (2.0 observed against 2.1
+  normalized).
+- Figures `fig_slice_ratios.png` and `fig_bp_arm.png`.
+- The two safety pixels already show the machinery working, n = 2, no
+  conclusions:
+  - the **view breaches (`cos_theta_v`, `cos_dphi`) vanish under 2.1** (2/2
+    → 0/2) and only the `B_p` breach remains;
+  - the **per-pixel predicted ratio is below 1 for both** (0.96 at θs 15°/θv
+    24°; 0.87 at θs 6°/θv 50°), and `R_fix` follows it (0.93 and 0.71).
+- So the analysis.md "1.05–1.10 on median" is a population median over
+  pixels whose individual prediction can sit either side of 1. A small-θ_s,
+  large-θ_v pixel is predicted *below* 1. The per-pixel prediction, not the
+  population number, is the right yardstick for `R_fix`. The slice will show
+  where the population median lands.
+
+**Docker.** The Dockerfile self-check still asserted `pab == '2.0'`, which
+would have failed the 2.1.0 build. It now asserts 2.1.0, normalized
+geometry, schema 6, `fit_geometry → (0, 0, 0)` and that the driver is in the
+image. JXP committed it in `6563a65`.
+
+**Job spec** `nautilus/v21_slice_job.yaml`. Three passes, DB-local in
+`/scratch`, checkpointed every 2 min to `/data/v2.1_slice/<pass>/pab.db`. The
+source DB sha is logged before and after, and the replay NPZs are counted.
+Arm PIDs are waited on explicitly. The YAML parses and the embedded script
+passes `bash -n`.
+
+**Baseline: 541 passed, 1 skipped**; ruff is clean (`pab`, the driver,
+`versions/v2.1/`).
+
+**Stopped** for T2-Q1 (commit bing, then build and push `pab:2.1.0`) and
+T2-Q2 (apply the slice job) in Q&A / Round 2a. The rest of Task 2 (run,
+pull back, `geometry_rerun.md`, Round 2) follows your answers.
+
+### 2026-11-15 (Prompt 3, Task 2 part 2: image pushed, slice + arm run on Nautilus, gate report written; stopped for review)
+
+JXP committed bing (`9acbe53`) and confirmed T2-Q1 and T2-Q2.
+
+**Image.** `TAG=2.1.0 bash nautilus/build_image.sh --push`. SHAs PAB
+`1f4b770`, bing `9acbe53`, ocpy `5261256`, remote_sensing `2b85c65`,
+retrieve-or-bust `78d7de7`. The Dockerfile self-check printed `PAB 2.1 OK
+robust_hybrid normalized schema 6`, and the smoke test passed (provenance,
+stage order). `:2.1.0` and `:latest` pushed.
+
+**Slice pod** `pab-v21-slice`, 2026-11-15 01:27–02:03 UTC.
+- The log shows `pab_version 2.1 / pkg 2.1.0 / schema 6` and the baked SHAs.
+  The selection shas were logged, and replay NPZs were 200/200 present.
+- Main: first result after 302 s; **200/200 written, 0 failed** by 01:50.
+- Arms (concurrent, `--jobs 25`): **50/50 + 50/50, 0 failed** by 02:02.
+- Every DB is schema 6, with the expected
+  `(2.1, normalized|observed, fit_bp)` rows. Memory was flat at ~26 GB.
+- **The PVC `/data/v2/pab.db` sha is `7d44e1f3…`, not the workstation's
+  `9503015b…`.** It holds no 2.0.1 rows, i.e. it is a pre-2.0.1 copy. The
+  sha was unchanged before and after the pod, so it was only read. It does
+  not affect the slice, because the references are read from the
+  workstation DB and rows are keyed on matchup/ix/iy. It confirms that
+  Task 3 must stage the live DB onto the PVC first.
+- The progress-line "median s/fit" (331–736) counts queue time inside the
+  2×jobs in-flight window. The real cost, from the `created` stamps, is
+  **244 s/fit** steady state at 50 workers (arms ~205 s all-in).
+
+**Pull-back.** A throw-away read-only pod (`pab-v21-pull`, deleted after)
+streamed `tar czf` → `$PAB_DATA_DIR/v2.1_slice/`. The three DB shas match the
+PVC (main `3e87b214…`, arm_norm `7201fc17…`, arm_obs `74eb1370…`), and all
+300 chain NPZs load with finite chains. (The local du is about half the PVC
+du, from ZFS compression. A stray `--exclude` warning from tar was harmless,
+and the shas prove it.)
+
+**Analysis** (`analyze_slice.py`, plus a `--figures-only` mode with the ratio
+panels clipped to [1/3, 3] so the 9 clear-water extremes stop flattening the
+plots). Full numbers are in `versions/v2.1/geometry_rerun.md`:
+- **`bbp700` ratio median 1.212** [1.00, 1.51]. Population-reweighted:
+  1.139 by θ_s, 1.149 by θ_v band × basin.
+- **The driver is θ_s**: 0.96 (<20°) → 1.07 → 1.18 → 1.30 → 1.39 (≥50°).
+  The θ_v bands are flat. The slice's median θ_s is 41.8° against the
+  population's 31.4°.
+- A_ph / Chl ×1.00; A_dg ×0.92; `B_p` ×0.84 (0.024 → 0.020).
+- `B_p` floor pile-up 9 → 23; in the emulator `B_p` range 28 → 49.
+- χ² ×0.97; acceptance −0.007; LM success 197/200 (three kept);
+  0 failures.
+- Domain breaches at the posterior median: view 190 → **0**, `cos_theta_s`
+  33 → **0**, `B_p` 162 → 140.
+- Float δ median +0.07 → +0.23.
+- **Arm: outcome (c), not (a).**
+  - `R_fix` 1.154 against a per-pixel predicted `Rrs` ratio of 1.067,
+    Spearman 0.86. **Elasticity d ln `b_bp` / d ln `Rrs` ≈ 2.1** (Theil–Sen).
+    The fixed inelastic and `b_bw` share of red `Rrs` makes `b_bp` move
+    about twice the `Rrs` change; analysis.md had assumed 1.
+  - `R_free`/`R_fix` = 1.06: the free `B_p` drop *adds* to `b_bp`, at
+    equal χ².
+  - 1.067^2.1 × 1.06 ≈ 1.21 reproduces the slice median.
+  - Task 1's 0.99 (n = 5) is explained: those pixels had θ_s 17–33°.
+- 9 / 200 extreme ratios (0.09–32): all are clear-water fits with a 2.0
+  `b_bp(700)` of 5e-6 to 5e-4. The big ones move toward the float. They
+  do not move the medians.
+
+**Pause trigger:** the plain median (1.212) is 0.012 over the 1.20 bound.
+Every other trigger is clear. The recommendation is **go** (R2-Q1), with the
+explanation and a corrected full-population expectation of ≈1.14. R2-Q2
+asks whether to keep `B_p` free (recommended: yes). R2-Q3 is a note for the
+paper. **Task 3 not started.** Expected Task 3 cost: ≈ 21.6 h at 50
+workers.
 

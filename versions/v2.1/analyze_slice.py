@@ -161,7 +161,13 @@ def main(argv=None):
     ap.add_argument("--chains20", required=True, help="production fit_chains (2.0 NPZs)")
     ap.add_argument("--out", default=str(HERE))
     ap.add_argument("--no-forward", action="store_true", help="skip breach/prediction")
+    ap.add_argument("--figures-only", action="store_true",
+                    help="redraw the figures from <out>/slice_table.csv + arm_table.csv")
     a = ap.parse_args(argv)
+    if a.figures_only:
+        rows, arows = _load_tables(Path(a.out))
+        _figures(rows, arows, Path(a.out))
+        return
     warnings.filterwarnings("ignore")
     root, out = Path(a.slice_root), Path(a.out)
     from pab.fit import run as frun
@@ -341,6 +347,33 @@ def main(argv=None):
     print("arm R_fix", S["arm"]["R_fix"], "pred", S["arm"]["pred"], "R_free", S["arm"]["R_free"])
 
 
+def _load_tables(out):
+    def conv(d):
+        o = {}
+        for k, v in d.items():
+            if v in ("", "None"):
+                o[k] = None
+                continue
+            try:
+                o[k] = int(v) if k in ("band", "ix", "iy", "refit", "success") else float(v)
+            except ValueError:
+                o[k] = v
+        return o
+
+    with open(out / "slice_table.csv", newline="") as fh:
+        rows = [conv(d) for d in csv.DictReader(fh)]
+    with open(out / "arm_table.csv", newline="") as fh:
+        arows = [conv(d) for d in csv.DictReader(fh)]
+    return rows, arows
+
+
+LIM = (1 / 3, 3.0)  # ratio panels: the bulk; points beyond are drawn at the edge
+
+
+def _clip(x):
+    return np.clip(np.asarray(x, float), LIM[0] * 1.02, LIM[1] / 1.02)
+
+
 def _figures(rows, arows, out):
     import matplotlib
 
@@ -359,8 +392,11 @@ def _figures(rows, arows, out):
     ax[0].axvline(0, color="k", lw=0.8)
     ax[0].set_xlabel("log10 bbp700(2.1)/bbp700(ref)")
     ax[0].legend(fontsize=8)
-    sc = ax[1].scatter([d["theta_v"] for d in good], [d["bbp700_ratio"] for d in good],
+    sc = ax[1].scatter([d["theta_v"] for d in good], _clip([d["bbp700_ratio"] for d in good]),
                        c=[d["theta_s"] for d in good], s=14, cmap="viridis")
+    ax[1].set_ylim(*LIM)
+    n_out = sum(1 for d in good if not LIM[0] < d["bbp700_ratio"] < LIM[1])
+    ax[1].set_title(f"{n_out} of {len(good)} beyond the axes, drawn at the edge", fontsize=9)
     plt.colorbar(sc, ax=ax[1], label="θs (deg)")
     ax[1].axhline(1, color="k", lw=0.8)
     ax[1].set_yscale("log")
@@ -383,18 +419,24 @@ def _figures(rows, arows, out):
         fig, ax = plt.subplots(1, 2, figsize=(11, 4.2))
         p = [e for e in ok if e["pred"]]
         if p:
-            ax[0].scatter([e["pred"] for e in p], [e["R_fix"] for e in p],
-                          c=[e["theta_v"] for e in p], s=18)
+            ax[0].scatter([e["pred"] for e in p], np.clip([e["R_fix"] for e in p], 0.6, 1.79),
+                          c=[e["theta_s"] for e in p], s=18, cmap="viridis")
+            ax[0].set_ylim(0.6, 1.8)
+            ax[0].set_title("colour = θs; points beyond 1.8 drawn at the edge", fontsize=9)
             lim = [0.8, 1.4]
             ax[0].plot(lim, lim, "k-", lw=0.8)
             ax[0].set_xlabel("predicted Rrs700(obs)/Rrs700(0,0,0)")
             ax[0].set_ylabel("R_fix = bbp700(arm-N)/bbp700(arm-O)")
-        ax[1].scatter([e["theta_v"] for e in ok], [e["R_fix"] for e in ok], s=18, label="R_fix (B_p fixed)")
-        ax[1].scatter([e["theta_v"] for e in ok if e["R_free"]],
-                      [e["R_free"] for e in ok if e["R_free"]], s=18, marker="x",
-                      label="R_free (2.1 / 2.0)")
+        ax[1].scatter([e["theta_s"] for e in ok], np.clip([e["R_fix"] for e in ok], 0.6, 1.79),
+                      s=18, label="R_fix (B_p fixed)")
+        ax[1].scatter([e["theta_s"] for e in ok if e["R_free"]],
+                      np.clip([e["R_free"] for e in ok if e["R_free"]], 0.6, 1.79), s=18,
+                      marker="x", label="R_free (2.1 / 2.0)")
+        ax[1].scatter([e["theta_s"] for e in ok if e["pred"]],
+                      [e["pred"] for e in ok if e["pred"]], s=10, marker="s", label="predicted")
+        ax[1].set_ylim(0.6, 1.8)
         ax[1].axhline(1, color="k", lw=0.8)
-        ax[1].set_xlabel("θv (deg)")
+        ax[1].set_xlabel("θs (deg)")
         ax[1].legend(fontsize=8)
         fig.tight_layout()
         fig.savefig(out / "fig_bp_arm.png", dpi=110)
