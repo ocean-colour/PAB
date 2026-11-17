@@ -21,6 +21,9 @@ Use Opus 5.5.  Log your work.
 2. I have answered the first round of questions in the Q&A/Conversion section below.  Please continue with the conversion.  Do not write the LateX file yet.
 Use Opus 5.5.  Log your work.
 
+3. Ok, we are ready to convert the Google Doc to LaTeX.  Please do so.
+If you have any questions afterwards, ask me.
+Use Opus 5.5.  Log your work.
 
 ## Q&A
 
@@ -258,6 +261,48 @@ Everything below is decided; `pace_argo_bbp.tex` has **not** been written yet.
   made freely available by the International Argo Program and the national
   programs that contribute to it…"), NASA PACE project, `% TODO` funding.
 
+### Post-conversion questions (prompt #3, 2026-11-16)
+
+The `.tex` is written and compiles (see Logs). Questions that came up while
+converting. Answer inline (A: ...).
+
+1. **Figure placement.** I placed the 17 figure placeholders after their first
+   mention, using `figure*` (two-column) for maps and multi-panel figures and
+   `figure` for single panels. In `manuscript` mode they render one-column anyway.
+   Keep them in the text, or move them all after the references (Copernicus
+   "Option 2")?  **[keep in text]**
+   A:
+
+2. **Unreferenced figures.** Only Figs. 1, 5 (mis-cited, should be 6) and 7 are
+   referenced in the text. Figs. 2–4 and 8–17 are never cited. Shall I add
+   `Fig.~\ref{}` calls where the text obviously describes them (e.g., "Monthly median
+   δ…" → Fig. 11)? This changes the text slightly.  **[yes, add them]**
+   A:
+
+3. **Equation numbering.** The GIOP extrapolation became Eq. (1) because it comes
+   before the Δ/δ definitions (Eqs. 2–3) in Sect. 2.2. If the duplicated GIOP
+   paragraph in the Results is removed, should I also move the GIOP method after
+   "Statistical metrics" so that δ is Eq. (1)?  **[decide when the duplicate is resolved]**
+   A:
+
+4. **Argo citation.** I added `argo2000` (Argo GDAC, doi:10.17882/42182) to the
+   .bib and cited it in the data availability statement. This is standard for
+   Argo data users. OK? Should argopy (Maze and Balem 2020, JOSS) also be cited in
+   Sect. 2.1?  **[yes to both]**
+   A:
+
+5. **Statistic check (Fig. 9).** The caption says n = 278, but with n = 278,
+   Pearson r = 0.04 gives p ≈ 0.51 and r = −0.05 gives p ≈ 0.41, not the
+   p = 0.23 and 0.14 in the text. Those p values imply n ≈ 900. Which n is right?
+   A:
+
+6. **Small rewording choices.** I kept the text verbatim except for: em-dashes in
+   the Raman/fluorescence bullets → `--`; "Figure N" → `Fig.~\ref{}`
+   (Copernicus style); numbers with units → thin spaces (`5\,km`, `81\,\%`);
+   thousands → `13\,971`; stray quote marks removed from the Fig. 9 caption.
+   OK?  **[OK]**
+   A:
+
 ## Logs
 
 ### 2026-11-16 (Review for Word → LaTeX conversion; questions posed)
@@ -308,3 +353,33 @@ Executed prompt #2 using the answers in Q&A/Conversion. Per the instruction, did
   and suggested back-matter wording.
 
 Next step: write `pace_argo_bbp.tex` from the plan (prompt #3).
+### 2026-11-16 (Word → LaTeX conversion written)
+
+Executed prompt #3. Overwrote `~/Projects/Overleaf/pace_argo_bbp/pace_argo_bbp.tex`
+with the full conversion of `paper_allie_2026nov16.docx`, following the Conversion
+plan. Nothing was committed or pushed.
+
+- `\documentclass[bg, manuscript]{copernicus}`; authors James and Prochaska
+  (Prochaska corresponding), UCSC affiliation; title and running title are `TEXT`.
+- Notation macros: `\bbp` ($b_{\rm b,p}$), `\bbpl`, `\bbpsev`, `\Rrs`, `\Rrssev`,
+  `\aph`, `\acdom`, `\anw`, `\bbnw`, `\Cphyto`. All are `\ensuremath`, so they work in
+  text and in math. In text, use `{}` before a following space (e.g. `\bbpsev{} values`).
+- Three numbered equations: `eq:giop` (Eq. 1), `eq:Delta`/`eq:delta` (Eqs. 2–3),
+  `eq:graff` (Eq. 4).
+- 17 figure placeholders with captions and labels (no graphics).
+- Back matter uses `\codedataavailability`, `\authorcontribution`,
+  `\competinginterests` and `acknowledgements` with suggested wording. The unused
+  template sections and trailing comment blocks were removed.
+- The text has 65 `% TODO` comment lines (one issue can span several lines), covering
+  the 16 planned items plus per-figure "add graphic" and "not referenced in text"
+  notes, MLD threshold, FLH definition, Graff units, and argopy citation.
+- Added `argo2000` (doi:10.17882/42182) to `pace_argo_bbp.bib` (now 19 entries).
+- Verified: compiled a copy in the scratchpad with pdflatex → bibtex → pdflatex ×3.
+  The result has 16 pages, no errors, no undefined references or citations, and no
+  overfull boxes; 17 bibliography items (the 2 kept-uncited entries are correctly
+  absent).
+- Checked the Fig. 9 statistics with scipy: with n = 278, r = 0.04 gives p = 0.51 and
+  r = −0.05 gives p = 0.41, which contradicts the text (p = 0.23, 0.14). Posted as
+  post-conversion question 5.
+
+Posted 6 post-conversion questions in Q&A.
