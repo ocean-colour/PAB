@@ -645,7 +645,7 @@ would:
 
 The workstation DB is only read.
 
-**Your answer:**
+**Your answer:**  Yes, proceed with these actions
 
 **T3-Q2: apply `nautilus/v21_fit_job.yaml`?**
 - **Resources:** one pod, image `pab:2.1.0` (validated by the slice),
@@ -661,7 +661,7 @@ The workstation DB is only read.
   the master**. Nothing writes to the workstation v2 DB in that time, and
   that includes report or figure stages run against it.
 
-**Your answer:**
+**Your answer:** yes, perform this Task.
 
 ## Logging
 
@@ -1051,3 +1051,110 @@ renaming it anyway.
 
 **Stopped** for T3-Q1 (stage the DB and selection on the PVC) and T3-Q2
 (apply the job) in Q&A / Round 3. The live DB is unchanged (`9503015b…`).
+
+### 2026-11-16 (Prompt 5, Task 3 part 2: DB staged on the PVC, full 2.1 re-fit launched)
+
+JXP confirmed T3-Q1 and T3-Q2. With Claude Opus 5.5.
+
+**Staging** (throw-away pod `pab-v21-stage`, PVC read-write, deleted after):
+- The stale `/data/v2/pab.db` (`7d44e1f3…`) was renamed to
+  `/data/v2/pab_stale_7d44e1f3.db`.
+- The workstation `v2/pab.db` was streamed to `/data/v2/pab.db.tmp`; its
+  sha `9503015b…` matched on both sides; it was then moved into place.
+- `refit_all.csv` → `/data/v2/v21/refit_all.csv`, sha `a244835e…` ✓.
+- The PVC `fit_chains` holds 15,971 files. All 15,971 `_v2.0.npz` of the
+  selection are present (0 missing), and there are no `_v2.1` files.
+
+**Job** `pab-v21-fit` applied at 16:11 UTC. Image provenance: 2.1 / 2.1.0 /
+schema 6 / normalized, SHAs as for the slice.
+- **Pre-flight passed.** It saw the staged sha, 0 rows at 2.1 and 51 at
+  2.0.1, and found all 15,971 replay NPZs. The NPZ `isfile` scan takes
+  **~13 min on CephFS**, and a resume pays it again.
+- BEFORE: schema 5, BING 2.0 15,971 / 2.0.1 51 / NASA 15,976.
+- The fit started at 16:25 UTC. "selection restricts to 15971"; first result
+  after 291 s.
+- **Custody: from now until the pull-back, the PVC DB is the master. No
+  writes to the workstation v2 DB.**
+
+### 2026-11-17 (Prompt 5, Task 3 part 3: full 2.1 re-fit complete, DB and chains back on the workstation, verified)
+
+**Run** `pab-v21-fit`.
+- Fitting ran 2026-11-16 16:25 → 2026-11-17 18:57 UTC (26 h with the
+  pre-flight), on a single pod with 0 restarts.
+- **15,971 / 15,971 written, 0 failed.**
+- Cost: 6.0 s/fit wall at 50 workers, i.e. **~300 s/fit per worker**. That
+  is slower than the slice's 244 s and right at the V7 300 s line. It was
+  steady all run. The progress-line "median 595 s/fit" counts queue time.
+- Memory: the cgroup figure climbed from 23 GB to ~59 GB, with the 51
+  processes flat at 35.6 GB. The growth is page cache from the chain
+  writes. That is well inside 100 Gi; no `max_tasks_per_child` needed.
+- In-pod gates:
+  - schema 6; integrity ok;
+  - 2.1 rows: 15,971, all normalized and all replayed;
+  - LM success 15,885; 0 duplicate `fit_id`s;
+  - 15,971 `_v2.1.npz` beside the 15,971 `_v2.0.npz`;
+  - final PVC DB sha `aca3d69f…`.
+
+**Pull-back.**
+- **DB:** read-only pod `pab-v21-pull2`. The DB was streamed to
+  `v2/pab_v21_returned.db` with sha `aca3d69f…`, matching both sides.
+- **Verify:** `preflight.py verify` against the Task 3 snapshot reported
+  **no problems** (written to `versions/v2.1/postrun_verify.json`):
+  - schema 6; integrity ok;
+  - BING 2.0 (15,971 fits / 191,652 results), 2.0.1 (51 / 612) and
+    NASA_GIOP 1.1 (15,976 / 127,808) are **byte-identical** on the v5
+    columns;
+  - `matchups` and `matchup_pixels` are unchanged;
+  - all 15,971 2.1 rows are `geom_mode = 'normalized'`.
+- **Swap:** the live `v2/pab.db` was byte-identical (`cmp`) to
+  `pab_pre_v21_20261116.db`, so the returned DB was moved into place. The
+  live v2 DB is now **`aca3d69f…`**, the same as the PVC. **Custody is back
+  on the workstation.**
+- **Chains** (~18 GB): the first single `tar` stream died at 3,727 files on
+  a `connection reset by peer` (kubectl exec), leaving one truncated file.
+  I re-did it as a resumable puller with pod `pab-v21-pull3`:
+  - it lists the PVC sizes, then fetches every file missing locally or of
+    the wrong size, 1,000 per `tar` stream;
+  - it finished in 14 batches (12,245 fetched; that includes the truncated
+    file);
+  - all **15,971 `_v2.1.npz` load**, with finite `wave` / `Rrs` / `varRrs`
+    and non-empty chains.
+
+  For the next large pull, use batches from the start.
+- Both pull pods were deleted. The completed job object is left for its
+  logs.
+
+**Failures:** none, so there was nothing to retry. LM `success = 0` on 86
+fits (2.0: 144): 83 lost and 141 gained against 2.0. As in 2.0, those are
+kept; their MCMC started from the clipped initial guess.
+
+**First full-population numbers** (2.1 / reference, where the reference is
+2.0, or 2.0.1 for the 51 re-fits; n = 15,971). The full write-up is Task 4.
+
+| quantity | median ratio [16–84 %] |
+|---|---|
+| `bbp700` | **1.168** [0.94, 1.50] |
+| `bbp440` | 1.190 |
+| `B_p` | 0.797 [0.44, 1.04] |
+| `A_dg` | 0.915 |
+| `A_ph` / Chl | 0.979 |
+| `beta` | 1.034 |
+| χ² | 0.984 |
+
+- Acceptance: median 0.338 → 0.321.
+- `bbp700` ratio by θ_s:
+
+  | θ_s | ≤20° | 20–30° | 30–40° | 40–50° | >50° |
+  |---|---|---|---|---|---|
+  | ratio | 0.962 | 1.101 | 1.246 | 1.376 | 1.437 |
+  | n | 3,328 | 4,220 | 3,019 | 2,359 | 3,045 |
+
+- By θ_v band: 1.19 / 1.13 / 1.10 / 1.24, so no monotone trend.
+- 382 ratios lie outside [1/3, 3]; 82.9 % lie within ×1.5.
+- **Against the R2-Q1 expectation:** 1.168 is inside the [1.05, 1.25] stop
+  band, so the run does not stop. It is above the slice's reweighted
+  estimate of 1.14, because the per-θ_s-bin medians run 0.03–0.07 above the
+  slice's. The θ_s driver is confirmed on the full population.
+
+**Next:** Task 4. Rendering the 2.1 figures on Nautilus needs JXP's
+confirmation; the rest is local.
