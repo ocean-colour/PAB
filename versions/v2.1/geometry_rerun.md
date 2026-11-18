@@ -1,7 +1,13 @@
 # v2.1 geometry re-run: the slice gate
 
-*Task 2 of `claude_prompts/v2/build_v2_1_rerun.md`; 2026-11-15. The
-full-population numbers are added in Task 4.*
+*Tasks 2–4 of `claude_prompts/v2/build_v2_1_rerun.md`. §1–§4 are the
+200-matchup slice gate (2026-11-15). §5 has the full-population result of
+the 15,971-fit re-fit (2026-11-17), and §6 the notes for the paper.*
+
+**In one line:** fitting at the geometry the PACE `Rrs` is actually
+normalized to raises BING `b_bp(700)` by a median **×1.17** (15,971 fits).
+Sun angle drives the change: ×0.96 at θ_s ≤ 20°, ×1.44 at θ_s > 50°. The fit
+is no worse, with χ² ×0.98.
 
 v2.1 fits every v2 BING matchup with the `robust_hybrid` forward model
 evaluated at the geometry the PACE L2 AOP `Rrs` is normalized to,
@@ -177,3 +183,118 @@ The decisions are in Q&A / Round 2 of the prompt doc.
 
 **Cost of Task 3 at the measured rate:** 15,971 × 244 s / 50 workers ≈
 **21.6 h** plus a ~5 min compile; memory flat at ~26 GB for 50 workers.
+
+## 5. The full population (Task 3 re-fit; Task 4 analysis)
+
+| | |
+|---|---|
+| Run | `nautilus/v21_fit_job.yaml`, image `pab:2.1.0`, 50 workers, 2026-11-16 16:25 → 11-17 18:57 UTC |
+| Fits | **15,971 / 15,971 written, 0 failed**; all `geom_mode = 'normalized'`, all replayed from their 2.0 NPZ |
+| Reference | each fit's 2.0 fit (15,920) or its 2.0.1 re-fit (51), paired on matchup **and** pixel, which is the overlay the site applies |
+| Cost | 6.0 s/fit wall at 50 workers, i.e. ~300 s/fit per worker |
+| Custody | the returned DB passed `preflight.py verify`: the 2.0 / 2.0.1 / NASA rows are byte-identical, and so are `matchups` and `matchup_pixels` |
+| Analysis | `analyze_full.py` → `full_summary.json`, `full_table.csv`, `fig_full_ratios.png` |
+
+Median ratio 2.1 / reference [16–84 %], n = 15,971:
+
+| quantity | ratio |
+|---|---|
+| **`b_bp(700)`** | **1.168** [0.94, 1.50] |
+| `b_bp(440)` | 1.190 [0.94, 1.54] |
+| `A_ph` (= Chl) | 0.979 [0.88, 1.09] |
+| `A_dg` | 0.915 [0.81, 1.01] |
+| `S_dg` | 1.018 [0.98, 1.08] |
+| `β` (`b_bp` slope) | 1.034 [0.89, 1.25] |
+| `B_p` | 0.797 [0.44, 1.04] |
+| χ²_red | 0.984 [0.88, 1.12]; median 0.421 → 0.416 |
+| acceptance | 0.338 → 0.321; Δ −0.009 [−0.05, +0.02] |
+
+**Against the gate.** 1.168 lies inside the R2-Q1 stop band [1.05, 1.25]. It
+is 0.03 above the slice's reweighted forecast of 1.14, because the per-θ_s
+medians run 0.03–0.07 above the slice's own. The forecast was built from
+the slice's bins, and the full population has more data per bin.
+
+**The driver is θ_s.**
+
+| θ_s | ≤20° | 20–30° | 30–40° | 40–50° | >50° |
+|---|---|---|---|---|---|
+| n | 3,328 | 4,220 | 3,019 | 2,359 | 3,045 |
+| median ratio | 0.962 | 1.101 | 1.246 | 1.376 | 1.437 |
+| 16–84 % | 0.81–1.08 | 0.93–1.23 | 1.03–1.44 | 1.13–1.70 | 1.20–1.96 |
+
+- The θ_v band medians (1.19 / 1.13 / 1.10 / 1.24 for <25 / 25–35 / 35–45 /
+  ≥45°) are not monotone. They mix θ_s, because θ_s and θ_v are correlated
+  across the swath.
+- Taken jointly (right panel), θ_v **modulates** the θ_s trend. At small
+  θ_s a large θ_v pulls the ratio *below* 1 (0.75–0.9 for θ_s < 10°,
+  θ_v 35–50°). At large θ_s a large θ_v pushes it further up (> 1.5 for
+  θ_s > 40°, θ_v > 55°).
+- That is the same sign pattern as the per-pixel forward-model prediction
+  in §3: the observed-geometry model under-predicts `Rrs` for a high sun
+  and an oblique view, and over-predicts it for a low sun.
+- The θ_s curve peaks near 57° and eases above 60°. Above 60° there are few
+  pixels, and the observed θ_s also lay outside the emulator's `cos θ_s`
+  domain there.
+
+![full population](fig_full_ratios.png)
+
+*Left: the median `b_bp(700)` ratio 2.1 / 2.0 in 5° θ_s bins, with the
+16–84 % band; bins with n ≥ 30. Right: the median ratio per
+(θ_s, θ_v) cell with ≥ 20 fits, on a diverging scale centred at 1.*
+
+By basin, the ratio is highest where the sun is low:
+- Arctic 1.33 and Southern 1.32;
+- Baltic 1.20, Atlantic 1.17, Indian 1.16;
+- Pacific 1.14 and Med 1.13.
+
+**`B_p`.** The free `B_p` drops further than in the slice:
+- **Median:** 0.0237 [0.009–0.036] under 2.0 becomes **0.0170
+  [0.006–0.029]** under 2.1.
+- **At the 0.004 floor** (within 2 % of the prior span): **854 → 1,767 fits**
+  (5.3 % → 11.1 %).
+- **At the ceiling:** 253 → 169.
+- **Inside the emulator's trained range** [0.0103, 0.018]: 2,197 → 4,288.
+
+The floor pile-up doubles. The arm (§3) showed that this drop adds about
++6 % to `b_bp`; R2-Q2 = A keeps `B_p` free, and the pile-up is reported here
+and on the site's Comparisons page (the `B_p` histogram).
+
+**LM warm start.** `success = 1` on 15,885 fits under 2.1, against 15,826
+for the reference. 83 lost it and 142 gained it. Those without it are kept,
+as in 2.0; their MCMC started from the clipped initial guess.
+
+**Extremes.**
+- 382 ratios lie outside [1/3, 3]: 88 below and 294 above.
+- 82.9 % lie within ×1.5.
+- The 382 have a reference `b_bp(700)` with median 5.0e-5 m⁻¹
+  [4.6e-6, 1.6e-4]. This is the clear-water regime the slice identified,
+  where the inelastic terms carry the red `Rrs` and `b_bp` is weakly
+  constrained.
+- No 2.1 fit exceeds the 1 m⁻¹ failed-retrieval gate, against 51 runaways
+  in 2.0 (all re-fitted at 2.0.1).
+
+**Against the float** (n = 15,274 with a float `BBP700`):
+
+| | 2.0 / 2.0.1 | 2.1 |
+|---|---|---|
+| median sat / float | 1.143 [0.57, 2.15] | **1.335** [0.73, 2.41] |
+| median δ = (PACE − Argo) / PACE | +0.125 | **+0.251** |
+
+So the normalized geometry moves PACE further **above** the floats, and it
+also narrows the low tail: the 16th percentile goes from 0.57 to 0.73.
+
+## 6. For the paper
+
+- **The bias numbers in `papers/bbp/bias_discussion_draft.md` were computed
+  on 2.0 / 2.0.1 and must be refreshed from 2.1.** The headline sat/float
+  ratio goes from 1.14 to 1.33.
+- analysis.md's expectation of "bias low by 5–10 % from the geometry" becomes
+  **~17 % on median, ×0.96–×1.44 by θ_s**.
+- The refresh is a separate bbp-paper prompt (R2-Q3), not this one.
+- The direction is the one analysis.md anticipated. The size is larger, for
+  the two reasons established in §3:
+  - an elasticity of about 2 between red `Rrs` and `b_bp`;
+  - a free-`B_p` drop worth about +6 %.
+- Any θ_s-stratified result in the paper should use 2.1. Under 2.0 the
+  geometry error was correlated with θ_s (median ×0.96 to ×1.44 across
+  the θ_s bins).

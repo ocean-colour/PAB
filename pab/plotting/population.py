@@ -329,6 +329,34 @@ def density_scatter(
     return _finish(fig, outfile, dpi)
 
 
+def ratio_level_bins(df, num_col: str, den_col: str, *, nbins: int = 12,
+                     min_per_bin: int = 20):
+    """The binning behind :func:`ratio_vs_level`: ``(xs, med, lo, hi, ns)``
+    per log bin of ``den`` (0.5-99.5 percentile span), bins with fewer than
+    ``min_per_bin`` points dropped. Shared so a caption quoting the curve's
+    ends reads the same numbers the figure plots."""
+    num = np.asarray(df[num_col], dtype=float)
+    den = np.asarray(df[den_col], dtype=float)
+    ok = np.isfinite(num) & np.isfinite(den) & (num > 0) & (den > 0)
+    num, den = num[ok], den[ok]
+    xs, med, lo, hi, ns = [], [], [], [], []
+    if num.size < min_per_bin:
+        return xs, med, lo, hi, ns
+    edges = np.logspace(np.log10(np.percentile(den, 0.5)),
+                        np.log10(np.percentile(den, 99.5)), nbins + 1)
+    for a, b in zip(edges[:-1], edges[1:], strict=False):
+        m = (den >= a) & (den < b)
+        if m.sum() < min_per_bin:
+            continue
+        q1, q2, q3 = np.percentile(num[m] / den[m], [25, 50, 75])
+        xs.append(float(np.sqrt(a * b)))
+        med.append(float(q2))
+        lo.append(float(q1))
+        hi.append(float(q3))
+        ns.append(int(m.sum()))
+    return xs, med, lo, hi, ns
+
+
 def ratio_vs_level(
     df,
     num_col: str,
@@ -357,29 +385,13 @@ def ratio_vs_level(
     """
     import matplotlib.pyplot as plt
 
+    fig, ax = plt.subplots(figsize=(5.4, 3.6))
+    xs, med, lo, hi, ns = ratio_level_bins(
+        df, num_col, den_col, nbins=nbins, min_per_bin=min_per_bin)
     num = np.asarray(df[num_col], dtype=float)
     den = np.asarray(df[den_col], dtype=float)
-    ok = np.isfinite(num) & np.isfinite(den) & (num > 0) & (den > 0)
-    num, den = num[ok], den[ok]
-    fig, ax = plt.subplots(figsize=(5.4, 3.6))
-    if num.size >= min_per_bin:
-        edges = np.logspace(
-            np.log10(np.percentile(den, 0.5)),
-            np.log10(np.percentile(den, 99.5)),
-            nbins + 1,
-        )
-        xs, med, lo, hi, ns = [], [], [], [], []
-        for a, b in zip(edges[:-1], edges[1:], strict=False):
-            m = (den >= a) & (den < b)
-            if m.sum() < min_per_bin:
-                continue
-            r = num[m] / den[m]
-            xs.append(float(np.sqrt(a * b)))
-            q1, q2, q3 = np.percentile(r, [25, 50, 75])
-            med.append(q2)
-            lo.append(q1)
-            hi.append(q3)
-            ns.append(int(m.sum()))
+    n_ok = int((np.isfinite(num) & np.isfinite(den) & (num > 0) & (den > 0)).sum())
+    if n_ok >= min_per_bin:
         if xs:
             ax.fill_between(xs, lo, hi, color="C0", alpha=0.22, label="IQR")
             ax.plot(xs, med, "o-", color="C0", lw=1.6, ms=5, label="median ratio")

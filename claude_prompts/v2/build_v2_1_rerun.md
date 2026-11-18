@@ -663,6 +663,45 @@ The workstation DB is only read.
 
 **Your answer:** yes, perform this Task.
 
+### Round 4 (Task 4, before the figure render; 2026-11-18)
+
+The local half of Task 4 is done (see the log):
+- The report code now states the 2.1 change. On the summary page that is
+  V8 = A, one sentence with a computed number and a link.
+- `geometry_rerun.md` has the full-population numbers and the paper note.
+- A scratch site build checks out.
+
+The remaining step is the 15,971 fit figures (V9). After them, the final
+site rebuild needs **18 gallery files**: 7 fit figures, plus 4 scenes and
+7 Argo Q&A plots that are not on the workstation.
+
+**T4-Q1: where to render the 2.1 fit figures?** Plan §5 put this on
+Nautilus because the old estimate was ~9 h at 16 workers. I measured it on
+3 real 2.1 fits: **~6–8 s per figure**, and the figures are correct (drawn
+at (0, 0, 0); the model goes through the data).
+- **A (recommended). The workstation**, `--jobs 8`, about **3–4 h** on 8 of
+  the 24 cores.
+  - The chains are already here, and the figures land directly in
+    `$PAB_DATA_DIR/v2/pipeline/figures`.
+  - No DB round trip and no custody switch.
+  - It does write `figure_path` into the live DB, so the O6 discipline
+    applies first: a dated copy `pab_pre_v21fig_<date>.db`, then
+    `preflight.py verify --snapshot prefigure_snapshot.json` afterwards
+    (every row identical except the 2.1 `figure_path`).
+- **B. Nautilus, as planned.** Apply `nautilus/v21_figure_job.yaml`: 32 CPU,
+  ~1 h.
+  - The PVC DB already *is* the live one (`aca3d69f…`), so there is no
+    staging.
+  - The PVC becomes the master until the DB is pulled back and verified.
+    The ~0.9 GB of figures are pulled back in batches.
+
+Either way, the 4 scenes and 7 Argo Q&A plots for the new representative
+picks are fetched **read-only**, as in E1/E5: `rclone copy AIOcean:… --files-from`
+into `$PAB_DATA_DIR/gallery/`, or from the PVC with a read-only pod under B.
+Then I rebuild `report_site/` and check it renders.
+
+**Your answer:** A, use my workstation
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -1158,3 +1197,153 @@ kept; their MCMC started from the clipped initial guess.
 
 **Next:** Task 4. Rendering the 2.1 figures on Nautilus needs JXP's
 confirmation; the rest is local.
+
+### 2026-11-18 (Prompt 6, Task 4 part 1: report text for 2.1, full-population write-up, figure job; stopped before the render)
+
+With Claude Opus 5.5.
+
+**Report code** (V8 = A, plus the stale-narrative fixes Task 4 asks for).
+Changes in `pab/metrics/compare.py`:
+- `geometry_shift_summary(store)`. It pairs the newest family with the
+  previous base family, its patches overlaid, on matchup + pixel, and
+  returns the median `b_bp(700)` ratio.
+  - It returns `None` unless every shown fit is `geom_mode = 'normalized'`,
+    so 2.0 stores are unaffected.
+  - On the live DB it gives **1.168, n = 15,971**.
+- `forward_model_domain_summary` gains `n_normalized`.
+- `GEOMETRY_RERUN_URL`.
+
+Changes in `pab/report/rst.py`:
+- **`V21_CHANGES` and `_geometry_change(store, short=)`** (the 2.1 text
+  plus the computed shift and the link) appear:
+  - on the **summary page** as a "What changed in 2.1" sentence: V8 = A,
+    one sentence and the link;
+  - in the Comparisons 1.0-vs-2.1 section, after the 2.0 block, with a note
+    that the 1.0-vs-2.1 differences include the geometry;
+  - in Methods.
+- **Methods:**
+  - The heading reads "Retrieval configuration (2.1)", taken from the store.
+  - The `pab_version` list gains a sentence calling 2.1 a re-analysis, not
+    a patch.
+  - "1.0-vs-2.0" became `1.0-vs-<label>`.
+  - **The forward-model-domain paragraph** no longer says "outside its
+    trained geometry for every fit" when the fits are normalized. It says
+    (0, 0, 0) lies *inside* the trained geometry, that the observed θ_v of
+    13–60° is metadata, and that 2.0 was evaluated outside.
+  - **Failed retrievals:** "the figure gallery shows one such fit on
+    purpose" is now conditional on there being one. 2.1 has none.
+
+Tests:
+- New `pab/tests/test_report_v21.py` (4 tests): the summary pairing with the
+  overlay; observed-geometry 2.1 gives no note; the page text; a 2.0 store
+  keeps the 2.0 wording.
+- Two `test_report.py` assertions now match the heading prefix, because
+  their fixtures stamp fits with the running version (2.1).
+- **545 passed, 1 skipped** (the full suite); ruff clean.
+
+**Scratch site build** (read-only on the live DB; sha unchanged at
+`aca3d69f…`). The summary headline reads 2.1, the comparison is "1.0 vs
+2.1", and Methods reads 2.1. The galleries are empty for now:
+- no 2.1 fit figure exists yet;
+- the representative picks moved with the 2.1 values: 7 fits (no runaway
+  pick, because 2.1 has no failed retrieval), 4 scenes and 7 Argo plots,
+  none of them in `$PAB_DATA_DIR/gallery/`.
+
+**Full population** (`versions/v2.1/analyze_full.py`, read-only) →
+`full_summary.json`, `full_table.csv`, `fig_full_ratios.png`, and
+`geometry_rerun.md` §5–§6:
+- **`b_bp(700)` ×1.168**, Chl ×0.979, `A_dg` ×0.915, `B_p` ×0.797, χ² ×0.984.
+- By θ_s: 0.96 / 1.10 / 1.25 / 1.38 / 1.44.
+- New relative to the slice: the (θ_s, θ_v) grid shows **θ_v modulating
+  the θ_s trend**. At θ_s < 10° with θ_v 35–50° the ratio is 0.75–0.9; at
+  high θ_s with high θ_v it is > 1.5. This matches the per-pixel prediction.
+- By basin: Arctic and Southern ×1.33, Pacific and Med ×1.13–1.14.
+- `B_p` floor pile-up 854 → 1,767 (11 %).
+- Sat/float median 1.14 → **1.34**; δ +0.13 → +0.25.
+- 0 fits above the 1 m⁻¹ gate. 382 extreme ratios, all clear water.
+- §6 flags the paper's bias numbers for a refresh from 2.1.
+
+**Figures.**
+- I rendered 3 real 2.1 fit figures on a scratch copy, with the chains
+  linked in. They are correct at (0, 0, 0) (the model goes through the
+  data), at **~6–8 s/figure**, far below the old ~9 h estimate.
+- `preflight.py` now also digests the 2.1 rows *without* `figure_path`.
+  `prefigure_snapshot.json` snapshots the live DB, and verifying the
+  scratch DB with its 3 written figure paths gives **no problems**.
+- `nautilus/v21_figure_job.yaml` is written:
+  - 32 CPU, `--figure-version 2.1`;
+  - pre-flight on the 2.1, normalized and NPZ counts, scenes = 0, and the
+    Task 3 sha; it also checks the image has the `geom_mode` figure
+    dispatch;
+  - the YAML parses and the script passes `bash -n`.
+
+**Stopped** for T4-Q1 (workstation or Nautilus for the render) in Q&A /
+Round 4. The live DB is unchanged (`aca3d69f…`). `report_site/` has not
+been touched.
+
+### 2026-11-18 (Prompt 7, Task 4 part 2: 2.1 fit figures rendered on the workstation (T4-Q1 = A), site rebuilt and checked)
+
+With Claude Opus 5.5.
+
+**Render** (T4-Q1 = A, the workstation; `nautilus/v21_figure_job.yaml` was
+not used and is kept only for reference).
+- Dated copy before the write: `v2/pab_pre_v21fig_20261118.db`, sha
+  `aca3d69f…d4e2`, equal to the live DB, chmod a-w. `preflight.py verify`
+  against `prefigure_snapshot.json` passed before the render.
+- `pab --stage figure --jobs 8 --figure-version 2.1`, with
+  `PAB_DATA_DIR=$PAB_DATA_DIR/v2`; log in `v2/logs/v21_figures_20261118.log`.
+  - Ran 10:01–11:10: **15,971 written, 0 failed, 0 skipped**, 0 scenes
+    needed.
+  - About 1.1 h on 8 processes (~2 s/figure wall).
+- Figures are in `$PAB_DATA_DIR/v2/pipeline/figures/*_v2.1_fit.png`.
+  `figure_path` now holds those workstation paths: set on 15,971 / 15,971
+  2.1 rows, and on 0 NASA rows.
+- **Post-render verify** (`versions/v2.1/postfigure_verify.json`): **no
+  problems**.
+  - Legacy 2.0 / 2.0.1 / NASA rows, matchups and pixels are byte-identical.
+  - The 2.1 rows are identical except `figure_path`.
+- **Live `v2/pab.db` is now `d0c286bf…8cc5`.** `v1/pab.db` is unchanged
+  (`09de0a6d…`).
+
+**Gallery inputs.** The 11 files the moved 2.1 picks need were fetched
+read-only from AIOcean (`rclone copy --files-from --no-traverse`):
+- 3 v1 scenes into `gallery/v1_scenes/`;
+- 1 v2 scene into `gallery/v2_figures/`;
+- 7 Argo QA plots into `gallery/argo_qa/`.
+
+**Site rebuild** (`report_site/`, the HOWTO §7a `--emit-site` command; the
+DB was read-only throughout and its sha is unchanged).
+- Staged 18 gallery files (7 fits, 4 scenes, 7 QA) with no
+  dropped-file warnings. All 7 fit thumbnails are `_v2.1_fit.png`.
+- `sphinx -b html` into scratch builds cleanly. Checked in the HTML:
+  - The summary headline reads `pab_version` 2.1 (15,971 BING fits).
+  - "What changed in 2.1" carries the sentence (×**1.17**, n = 15,971,
+    rising with θ_s) and the link to `geometry_rerun.md`. This is V8 = A.
+  - The comparison is "1.0 vs 2.1" (n = 14,604): `b_bp` ×0.877, Chl ×1.14.
+  - Methods reads "Retrieval configuration (2.1)", with the re-analysis
+    semantics and the normalized-geometry domain paragraph.
+- **Two more hard-coded 2.0 numbers found and fixed** in the 1.0-vs-2.x
+  narrative:
+  - The text said "below 2e-4 m⁻¹ the ratio is ~0.02 … **fifty** times
+    less". It is now computed by `_clear_extreme`: under 2.1 it reads
+    ~0.018 (n = 52), **55 times** less.
+  - The ratio-curve caption said "rises from ~0.02 … to ~0.95". It now
+    quotes the plotted bins' ends, through a new shared
+    `pab.plotting.population.ratio_level_bins` (the figure uses the same
+    helper). Under 2.1 the top end is **~1.1**: in the most-scattering
+    water the geometry raise outweighs the inelastic drop, so the old
+    "vanishes" wording is now "small".
+  - I viewed the figure, and it agrees with the caption.
+- The remaining "What changed in 2.0" blocks are kept on purpose. 2.1
+  inherits the 2.0 physics, and the 2.1 geometry note follows each of
+  them.
+
+**`geometry_rerun.md`** is complete for Task 4: §5 covers the full
+population and §6 the paper. The "refresh from 2.1 (Task 4)" note at line
+105 belongs to the 200-matchup slice section, and §5 provides that refresh.
+
+**Tests:** 545 passed, 1 skipped (the full suite, after the caption fix); ruff clean.
+
+Nothing was published or uploaded, and no pod was used. Next is Task 5
+(publish, backup, close-out), and each outward step will be confirmed
+first.

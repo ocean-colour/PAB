@@ -1,0 +1,65 @@
+{
+ "db": "/mnt/tank/Oceanography/data/Color/PAB/v2/pab.db",
+ "schema": 6,
+ "integrity_check": "ok",
+ "fits_by_version": {
+  "BING|2.0": 15971,
+  "BING|2.0.1": 51,
+  "BING|2.1": 15971,
+  "NASA_GIOP|1.1": 15976
+ },
+ "fits_2_1_by_geom_mode": {
+  "normalized": 15971
+ },
+ "legacy": {
+  "BING|2.0": {
+   "fits": [
+    15971,
+    "f485f32f9847192da70cb30d7442a650a29b67fa94442adbc00004d3473a27ba"
+   ],
+   "fit_results": [
+    191652,
+    "0901381699dc95f129b6832b546a3b1f25ddf7c466ddba8004e1c1cd29d38313"
+   ]
+  },
+  "BING|2.0.1": {
+   "fits": [
+    51,
+    "475353036b7ac490efa66e5787fe0da65c2e0dd6fff4c99a866d313ce5562097"
+   ],
+   "fit_results": [
+    612,
+    "9679860e43fd6265a4c6fea9ebef8b8a21f29af8c9b428b54729cc68873702aa"
+   ]
+  },
+  "NASA_GIOP|1.1": {
+   "fits": [
+    15976,
+    "020feeeacbfeca2064be81dcc76604581a0cc01399be73909a540eca545af14b"
+   ],
+   "fit_results": [
+    127808,
+    "21a643a51c9d2c95578c9998371f6054dc9699f8e5540f54d70dfd6f79bee7b7"
+   ]
+  }
+ },
+ "v2_1_nofig": {
+  "fits": [
+   15971,
+   "559c605c1baa624e8a24a5d5ea1fa278d2f4345fcbbb6ab24223a0151b1967b6"
+  ],
+  "fit_results": [
+   191652,
+   "4c73b78880c736105ad9aa9f125a32027021673df7929534ece7d5b60b21c879"
+  ]
+ },
+ "v2_1_figure_path": 0,
+ "matchups": [
+  15976,
+  "e63ec9eda303878dbacba819d9b04822d50c4433b3511d6ab9145b7171b7693b"
+ ],
+ "matchup_pixels": [
+  159760,
+  "ff1af6318673f71df55972aaf586c1c00cb8704e7e3d631afda0679db3f766ed"
+ ]
+}

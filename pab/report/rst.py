@@ -210,6 +210,10 @@ def summary_page(store, *, pab_version: str | None = None, compare_db=None) -> s
             ":doc:`Methods <methods>` pages for the formula and its caveat.\n"
         )
     out.append(_version_headline(store, compare_db))
+    geo = _geometry_change(store, short=True)
+    if geo:
+        out.append(_heading(f"What changed in {_bing_version}", "-"))
+        out.append(geo)
     out.append(_heading("Explore the results", "-"))
     out.append(
         "- :doc:`Comparisons <comparisons>` — interactive ``b_bp`` & Chl scatters "
@@ -421,6 +425,63 @@ V2_CHANGES = (
     "negative or noise-dominated on **44 %** of matchups, so including it "
     "would feed the inelastic terms mostly noise.\n"
 )
+
+#: What 2.1 changed on top of 2.0 / 2.0.1 (build_v2_1_rerun.md): the geometry
+#: and nothing else. Shown after :data:`V2_CHANGES` whenever the store's newest
+#: fits were made at the normalized geometry; the computed shift and the link
+#: are appended by :func:`_geometry_change`.
+V21_CHANGES = (
+    "**What changed in 2.1.** 2.1 re-fits the same spectra as 2.0 — each "
+    "replayed bit-identically from its 2.0 chain file — with **one** change: "
+    "the forward model is evaluated at the geometry the PACE L2 AOP ``Rrs`` is "
+    "normalized to, a sun at zenith and a nadir view, (θ_s, θ_v, Δφ) = "
+    "(0, 0, 0), with the inelastic terms' downwelling irradiance taken at "
+    "θ_s = 0. 2.0 used each pixel's observed L1B angles, but NASA's processing "
+    "(``l2gen``, ``brdf_opt = 7``) distributes an exact-normalized reflectance, "
+    "so the 2.0 model was evaluated at a different geometry from the data it "
+    "fitted. The backend, the inelastic terms, the priors (with the 2.0.1 "
+    "ceilings), the free ``B_p`` and the fit window are unchanged. The observed "
+    "angles stay in the database as pixel metadata."
+)
+
+
+def _geometry_change(store, *, short: bool = False) -> str:
+    """The 2.0 → 2.1 geometry note (V8 = A): :data:`V21_CHANGES` plus the
+    computed median ``b_bp`` shift and the link to ``geometry_rerun.md``;
+    ``short`` gives the one-sentence summary-page form. ``""`` when the store's
+    newest fits were not made at the normalized geometry, or there is no
+    older family to compare with."""
+    if store is None:
+        return ""
+    try:
+        g = compare.geometry_shift_summary(store)
+    except Exception:  # noqa: BLE001 — the page must build without it
+        g = None
+    if g is None:
+        return ""
+    link = f"`geometry_rerun.md <{compare.GEOMETRY_RERUN_URL}>`__"
+    patched = (
+        f" ({' / '.join(g['old_patches'])} where re-fitted)" if g["old_patches"] else ""
+    )
+    shift = (
+        f"over the {g['n']:,} fits paired on matchup and pixel, the median "
+        f"``b_bp`` (700 nm) ratio of {g['new']} to {g['old']}{patched} is "
+        f"**{_fmt(g['median_ratio'])}**"
+    )
+    if short:
+        return (
+            f"{g['new']} evaluates the forward model at the normalized geometry "
+            "the PACE ``Rrs`` is distributed at (sun at zenith, nadir view) "
+            f"instead of the observed angles {g['old']} "
+            f"used; {shift}, rising with the solar zenith angle — see "
+            f"{link} and the :doc:`Methods <methods>` page.\n"
+        )
+    return (
+        V21_CHANGES
+        + f" In this release, {shift}; the shift grows with the solar zenith "
+        f"angle, and the full comparison is in {link}.\n"
+    )
+
 
 #: The free-``B_p`` prior bounds, read from the fitter rather than restated, so
 #: the edges drawn on the histogram cannot drift from the ones actually used.
@@ -652,6 +713,13 @@ def version_section(
         + "\n"
     )
     out.append(V2_CHANGES)
+    geo = _geometry_change(store)
+    if geo:
+        out.append(
+            geo.rstrip("\n")
+            + f" The 1.0-vs-{v2} differences below therefore include that "
+            "geometry change as well as the inelastic physics.\n"
+        )
 
     # `aph` is gathered (it is in the downloadable table) but deliberately NOT
     # given its own stats line: the stored `Aph` is the linear amplitude and
@@ -799,9 +867,7 @@ def _version_ratio_by_level(df) -> str:
         "the shift is a strong, monotonic function of how much backscatter "
         "there is to begin with. Split by the 1.0 ``b_bp`` into terciles, the "
         f"median {v2l}/1.0 ratio runs " + "; ".join(parts) + " (tercile edges "
-        f"{lo_e:.3g} and {hi_e:.3g} m⁻¹), and it keeps going at the extremes: "
-        f"below 2e-4 m⁻¹ the ratio is ~0.02, i.e. {v2l} retrieves some **fifty "
-        "times less** backscatter than 1.0.\n"
+        f"{lo_e:.3g} and {hi_e:.3g} m⁻¹)" + _clear_extreme(v1, v2, v2l) + ".\n"
         "\n"
         "This is the expected behaviour of the physics, not an artifact. Raman "
         "scattering and chlorophyll fluorescence contribute a roughly fixed "
@@ -821,6 +887,22 @@ def _version_ratio_by_level(df) -> str:
         "end of this curve a matchup sits on matters more than the median "
         "does.\n"
     )
+
+def _clear_extreme(v1, v2, v2l, *, edge=2e-4, min_n=20) -> str:
+    """The clearest-water end of the ratio, from this build's pairs: the
+    median ``v2/v1`` where the 1.0 ``b_bp`` is below ``edge`` (``""`` when
+    fewer than ``min_n`` pairs sit there)."""
+    import numpy as np
+
+    m = v1 < edge
+    if m.sum() < min_n:
+        return ""
+    r = float(np.median(v2[m] / v1[m]))
+    tail = (f", i.e. {v2l} retrieves some **{1 / r:.0f} times less** backscatter "
+            "than 1.0") if r < 0.2 else ""
+    return (f", and it keeps going at the extremes: below {edge:g} m⁻¹ "
+            f"(n = {int(m.sum()):,}) the ratio is ~{r:.2g}{tail}")
+
 
 def _ratio_figure_block(df, outdir) -> str:
     """The 2.0/1.0 ratio as a function of the 1.0 ``b_bp`` — the Q2 result."""
@@ -850,13 +932,19 @@ def _ratio_figure_block(df, outdir) -> str:
         )
     except Exception:  # noqa: BLE001 — a bad panel must not break the build
         return ""
+    # the curve's ends, from the same bins the figure plots
+    _, med, _, _, _ = population.ratio_level_bins(df, "bbp700_v2", "bbp700_v1")
+    ends = ""
+    if len(med) >= 2:
+        ends = (f" The curve rises from ~{med[0]:.2g} in the clearest water to "
+                f"~{med[-1]:.2g} in the most scattering: the inelastic correction "
+                "is large where the elastic signal is weak and small where it is "
+                "strong.")
     return (
         ".. figure:: _static/comparisons/v2_v1_ratio_vs_level.png\n"
         "   :width: 560px\n\n"
         f"   The {v2l}/1.0 ``b_bp`` ratio against the 1.0 value, with the "
-        "interquartile band. The curve rises from ~0.02 in the clearest water "
-        "to ~0.95 in the most scattering: the inelastic correction is large "
-        "where the elastic signal is weak and vanishes where it is strong. "
+        "interquartile band." + ends + " "
         f"Bins with fewer than 20 matchups are not plotted; {bbp_clause}.\n"
     )
 
@@ -2240,7 +2328,24 @@ def _methods_forward_model(store) -> str:
         except Exception:  # noqa: BLE001 — the page must build without it
             summary = None
     lo, hi = (summary["lo"], summary["hi"]) if summary else compare.emulator_bp_domain()
-    if summary and np.isfinite(summary["theta_v_min"]):
+    normalized = bool(summary) and summary.get("n_normalized", 0) == summary["n"]
+    if normalized:
+        geometry = (
+            ". Since 2.1 every fit evaluates the model at the normalized "
+            "geometry (θ_s, θ_v, Δφ) = (0, 0, 0), which lies **inside** that "
+            "trained geometry"
+        )
+        if np.isfinite(summary["theta_v_min"]):
+            geometry += (
+                f" (the pixels' observed θ_v, "
+                f"{summary['theta_v_min']:.0f}–{summary['theta_v_max']:.0f}°, are "
+                "kept as metadata and no longer enter the fit)"
+            )
+        geometry += (
+            "; the 2.0 fits were evaluated at the observed angles, so for them "
+            "the correction was applied outside its trained geometry"
+        )
+    elif summary and np.isfinite(summary["theta_v_min"]):
         geometry = (
             f" the pixels fitted here are viewed at θ_v "
             f"{summary['theta_v_min']:.0f}–{summary['theta_v_max']:.0f}° "
@@ -2268,8 +2373,14 @@ def _methods_forward_model(store) -> str:
         "correction, run with its out-of-domain policy at the default "
         "``on_out_of_domain=\"warn\"`` (the correction is applied everywhere and "
         "a warning is raised, never an error). The packaged emulator was trained "
-        "at **nadir view and zero relative azimuth**, while" + geometry + ", so "
-        "the correction is applied outside its trained geometry for every fit. "
+        "at **nadir view and zero relative azimuth**"
+        + (
+            geometry + ". "
+            if normalized
+            else ", while" + geometry + ", so the correction is applied outside "
+            "its trained geometry for every fit. "
+        )
+        +
         "The alternative ``\"ztt\"`` policy — drop the correction outside the "
         "trained domain — was tested on the failed retrievals and a sample of "
         "ordinary fits and **not adopted**: it does not remove the runaway "
@@ -2340,9 +2451,21 @@ def _methods_failed_retrievals(df, store=None) -> str:
     2.0.1 ceilings (:func:`_methods_refit`), and the pointer to the
     investigation."""
     count = ""
+    n_failed = None
     if df is not None:
         _, clause = _gated(df, "bbp_bing")
         count = f" In this release that is {clause}."
+        if "bbp_bing" in df:
+            n_failed = int(compare.implausible_bbp(df["bbp_bing"]).sum())
+    gallery = (
+        "" if n_failed == 0 else " the figure gallery shows one such fit on purpose,"
+    )
+    label = "2.0"
+    if store is not None:
+        try:
+            label = compare.version_family(store)[0] or "2.0"
+        except Exception:  # noqa: BLE001
+            pass
     if not count:
         count = " The *Comparisons* page reports how many fits this excludes in this release."
     return (
@@ -2352,10 +2475,10 @@ def _methods_failed_retrievals(df, store=None) -> str:
         "the fit ran to the prior ceiling on a spectrum with a depressed or "
         "negative blue ``Rrs``. Such fits are **excluded from every ``b_bp`` "
         "statistic and figure** on this site — the headline, the density "
-        "panels, both maps, the aggregates and the NASA-GIOP and 1.0-vs-2.0 "
+        f"panels, both maps, the aggregates and the NASA-GIOP and 1.0-vs-{label} "
         "comparisons — and each caption says how many." + count + " The "
-        "chlorophyll of the same fits is not gated, the figure gallery shows "
-        "one such fit on purpose, and the downloadable summary table keeps the "
+        "chlorophyll of the same fits is not gated," + gallery + " and the "
+        "downloadable summary table keeps the "
         "raw values with a 0/1 ``bbp_bing_implausible`` column so a reader can "
         "apply or lift the gate." + _methods_refit(store) + " What went wrong "
         f"and why is in `high_bbp_outliers.md <{compare.BBP_OUTLIERS_URL}>`__.\n"
@@ -2422,8 +2545,18 @@ def methods_page(*, compare_db=None, store=None) -> str:
     out.append(_methods_neg_blue(matchups_df))
     out.append(_methods_forward_model(store))
 
-    out.append(_heading("Retrieval configuration (2.0) & the two databases", "-"))
+    base = None
+    if store is not None:
+        try:
+            base = compare.version_family(store)[0]
+        except Exception:  # noqa: BLE001 — the page must build without it
+            base = None
+    label = base or "2.0"
+    out.append(_heading(f"Retrieval configuration ({label}) & the two databases", "-"))
     out.append(V2_CHANGES)
+    geo = _geometry_change(store)
+    if geo:
+        out.append(geo)
     out.append(
         "**``pab_version`` semantics.** Every row carries the version of the "
         "*analysis* that produced it, not of the code that wrote it. ``1.0`` is "
@@ -2437,14 +2570,23 @@ def methods_page(*, compare_db=None, store=None) -> str:
         "2.0 ones; on this site a 2.0.1 row **supersedes the 2.0 row of the same "
         "matchup and pixel** in every statistic, figure and table, the 2.0 row "
         "stays in the database, and the ``pab_version`` column of the "
-        "downloadable tables says which rows are patched.\n"
+        "downloadable tables says which rows are patched."
+        + (
+            " ``2.1`` is a new **re-analysis**, not a patch: the same spectra "
+            "re-fitted at the normalized geometry, stored as new rows next to "
+            "the 2.0 and 2.0.1 ones, all of which stay in the database; on this "
+            "site every statistic, figure and table shows the 2.1 fits."
+            if label == "2.1"
+            else ""
+        )
+        + "\n"
     )
     if compare_db:
         out.append(
             "**Two databases.** The 1.0 fits are not in this release's database. "
             "They live in the **frozen v1 database**, which is held read-only "
             "(and at an older schema) so published results cannot be edited "
-            "after the fact; the 1.0-vs-2.0 comparison attaches it read-only "
+            f"after the fact; the 1.0-vs-{label} comparison attaches it read-only "
             "and joins on matchup **and pixel**, so each pair is two retrievals "
             "of one spectrum. Matchups fitted in only one of the two releases "
             "are absent from that comparison rather than being half-filled.\n"

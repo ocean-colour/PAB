@@ -13,7 +13,9 @@ Checksums are a sha256 over the rows, ordered, of the **v5 columns only**, so
 that the v6 migration (which adds ``fits.geom_mode``, NULL on legacy rows)
 leaves them unchanged. Covered: every non-2.1 ``fits`` row (BING 2.0, BING
 2.0.1, NASA_GIOP 1.1) and their ``fit_results``, plus ``matchups`` and
-``matchup_pixels`` (which the fit stage never writes).
+``matchup_pixels`` (which the fit stage never writes). Once 2.1 rows exist
+(Task 4), also the 2.1 rows **except** ``figure_path``, so a figure render can
+be checked to have written that column and nothing else.
 """
 
 from __future__ import annotations
@@ -84,6 +86,19 @@ def snapshot(db) -> dict:
             (alg, ver)))
         groups[f"{alg}|{ver}"] = {"fits": [nf, hf], "fit_results": [nr, hr]}
     out["legacy"] = groups
+    # the 2.1 rows, minus ``figure_path`` (the one column the Task 4 figure
+    # render writes) and with ``geom_mode``: present once the re-fit is in
+    if "geom_mode" in _cols(c, "fits"):
+        cols21 = ", ".join([k for k in FITS_V5 if k != "figure_path"] + ["geom_mode"])
+        nf, hf = _digest(c.execute(
+            f"SELECT {cols21} FROM fits WHERE algorithm='BING' AND pab_version='2.1' "
+            "ORDER BY fit_id"))
+        nr, hr = _digest(c.execute(
+            f"SELECT {rcols} FROM fit_results r JOIN fits f USING (fit_id) "
+            "WHERE f.algorithm='BING' AND f.pab_version='2.1' ORDER BY r.fit_id, r.quantity"))
+        out["v2_1_nofig"] = {"fits": [nf, hf], "fit_results": [nr, hr]}
+        out["v2_1_figure_path"] = c.execute(
+            "SELECT COUNT(figure_path) FROM fits WHERE pab_version='2.1'").fetchone()[0]
     for t in ("matchups", "matchup_pixels"):
         cols = ", ".join(_cols(c, t))
         out[t] = list(_digest(c.execute(f"SELECT {cols} FROM {t} ORDER BY rowid")))
@@ -102,6 +117,9 @@ def verify(db, snap: dict) -> list[str]:
     for k, v in snap["legacy"].items():
         if now["legacy"].get(k) != v:
             bad.append(f"legacy rows changed: {k}: {now['legacy'].get(k)} != {v}")
+    if "v2_1_nofig" in snap and now.get("v2_1_nofig") != snap["v2_1_nofig"]:
+        bad.append(f"2.1 rows changed beyond figure_path: {now.get('v2_1_nofig')} "
+                   f"!= {snap['v2_1_nofig']}")
     for t in ("matchups", "matchup_pixels"):
         if now[t] != snap[t]:
             bad.append(f"{t} changed: {now[t]} != {snap[t]}")

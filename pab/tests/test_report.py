@@ -733,7 +733,7 @@ def test_methods_page_failed_retrievals_paragraph():
         assert "``bbp_bing_implausible``" in out
         assert _OUTLIERS_URL in out
         # the paragraph sits with the retrieval description, before 2.0's config
-        assert out.index("**Failed retrievals.**") < out.index("Retrieval configuration (2.0)")
+        assert out.index("**Failed retrievals.**") < out.index("Retrieval configuration (")
     # without a store the count is deferred, never quoted
     out = rst.methods_page()
     assert "**Failed retrievals.**" in out and _OUTLIERS_URL in out
@@ -1333,7 +1333,7 @@ def test_methods_page_defines_n_neg_blue_and_quotes_the_rate_only_when_recorded(
         assert "no rate is quoted" in out and "fitted spectra (" not in out
         # the paragraph sits with the retrieval description
         assert out.index("**Failed retrievals.**") < out.index("**Negative-blue QA count.**")
-        assert out.index("**Negative-blue QA count.**") < out.index("Retrieval configuration (2.0)")
+        assert out.index("**Negative-blue QA count.**") < out.index("Retrieval configuration (")
 
         _record_neg_blue(store, M1=0, M2=3)
         out = rst.methods_page(store=store)

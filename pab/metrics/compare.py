@@ -584,6 +584,94 @@ def forward_model_domain_summary(store, *, model_pair: str = "ExpBPow", domain=N
         "theta_v_max": float(theta.max()) if len(theta) else float("nan"),
         "n_theta_v": int(len(theta)),
         "n_off_nadir": int((theta > 0).sum()),
+        "n_normalized": _n_normalized(store, kept["fit_id"]),
+    }
+
+
+def _has_geom_mode(store) -> bool:
+    """Whether ``fits`` carries the schema-v6 ``geom_mode`` column."""
+    return any(r["name"] == "geom_mode" for r in store.query("PRAGMA table_info(fits)"))
+
+
+def _n_normalized(store, fit_ids) -> int:
+    """How many of ``fit_ids`` were fitted at the normalized geometry
+    (``fits.geom_mode = 'normalized'``, 2.1 on); 0 on a pre-v6 store."""
+    ids = [str(i) for i in fit_ids]
+    if not ids or not _has_geom_mode(store):
+        return 0
+    n = 0
+    for k in range(0, len(ids), 900):  # SQLite's bound-parameter limit
+        chunk = ids[k : k + 900]
+        marks = ", ".join("?" for _ in chunk)
+        n += store.query(
+            f"SELECT COUNT(*) AS n FROM fits WHERE geom_mode = 'normalized' "
+            f"AND fit_id IN ({marks})",
+            tuple(chunk),
+        )[0]["n"]
+    return int(n)
+
+
+#: Where the 2.0 → 2.1 (normalized-geometry) change is written up; the
+#: summary and Methods pages point here (build_v2_1_rerun.md V8 = A).
+GEOMETRY_RERUN_URL = (
+    "https://github.com/ocean-colour/PAB/blob/main/versions/v2.1/geometry_rerun.md"
+)
+
+
+def geometry_shift_summary(store, *, model_pair: str = "ExpBPow"):
+    """The 2.0 → 2.1 geometry change in one number, computed from the store.
+
+    When the store's newest family was fitted at the **normalized** geometry
+    (every shown fit has ``geom_mode = 'normalized'``) and the store also holds
+    the previous base family (with its patches overlaid), returns ``{"new",
+    "old", "old_patches", "n", "median_ratio"}``: the median ``b_bp(700)`` ratio new/old over
+    fits paired on matchup **and pixel**. ``None`` otherwise (a store with one
+    family, or whose newest fits used the observed angles). ``old`` is the
+    previous base version and ``old_patches`` its patches, overlaid."""
+    new_base, new_patches = version_family(store)
+    if new_base is None or not _has_geom_mode(store):
+        return None
+    bases = sorted(
+        {base_version(v) for v in _bing_versions(store)} - {new_base}, key=_version_key
+    )
+    older = [b for b in bases if _version_key(b) < _version_key(new_base)]
+    if not older:
+        return None
+    old_base = older[-1]
+    old_patches = [
+        v for v in _bing_versions(store)
+        if is_patch_version(v) and base_version(v) == old_base
+    ]
+    q = f"BING_{model_pair}_bbp700"
+
+    def _frame(versions):
+        clause, params = _version_clause("f.pab_version", versions)
+        df = store.query_df(
+            f"""
+            SELECT f.fit_id, f.matchup_id, f.pixel_id, f.pab_version, f.geom_mode,
+                   r.value AS bbp
+            FROM fits f JOIN fit_results r ON r.fit_id = f.fit_id AND r.quantity = ?
+            WHERE f.algorithm = 'BING' AND f.model_pair = ? {clause}
+            """,
+            (q, model_pair, *params),
+        )
+        return overlay_patch(df) if len(df) else df
+
+    new = _frame([new_base, *new_patches])
+    if not len(new) or not (new["geom_mode"] == "normalized").all():
+        return None
+    old = _frame([old_base, *old_patches])
+    m = new.merge(old, on=["matchup_id", "pixel_id"], suffixes=("_new", "_old"))
+    r = (m["bbp_new"] / m["bbp_old"]).to_numpy(dtype=float)
+    r = r[np.isfinite(r) & (r > 0)]
+    if not len(r):
+        return None
+    return {
+        "new": new_base,
+        "old": old_base,
+        "old_patches": old_patches,
+        "n": int(len(r)),
+        "median_ratio": float(np.median(r)),
     }
 
 
