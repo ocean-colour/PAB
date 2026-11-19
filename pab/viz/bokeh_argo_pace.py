@@ -4,11 +4,12 @@ Design: ``claude_prompts/viz_tools.md``, Q&A / Argo+PACE (AP-Q1 to AP-Q15).
 
 * **Argo panel** (left): pressure down, 0 → 2×MLD (0 → 200 m without an
   MLD). The raw ``BBP700`` samples, the de-spiked profile, the in-ML samples
-  the IQR filter rejected, the MLD (dashed), the stored ML mean ± std over
+  the IQR filter rejected (de-spike and filter over the BBP700 samples only,
+  AP-Q16), the MLD (dashed), the stored ML mean ± std over
   0 → MLD, and the PACE ``b_bp(700)`` (median, 5–95 %) over the same span.
   NASA-GIOP ``b_bp(700)`` is a toggle (dashed).
 * **PACE panel** (right): observed ``Rrs`` ± σ, the BING model median and
-  5–95 % band, a residual strip in σ units with a linked x-axis, and the
+  5–95 % band (y from 0 or below, dashed zero line), a residual strip in σ units with a linked x-axis, and the
   table of retrieved values with the Argo counterparts.
 
 :class:`ArgoPaceView` owns the figures and data sources and has one
@@ -43,6 +44,7 @@ ARGO_COLOR = "#1f77b4"
 PACE_COLOR = "#d95f02"
 GIOP_COLOR = "#1b9e77"
 RAW_COLOR = "#9e9e9e"
+ZERO_COLOR = "#444444"
 DROP_COLOR = "#c62828"
 
 #: y-extent of the Argo panel when the profile has no MLD (m).
@@ -141,6 +143,7 @@ class ArgoPaceView:
         self.drop_src = ColumnDataSource({"x": [], "y": [], "raw": []})
         self.argo_band = ColumnDataSource(dict(_EMPTY_BAND))
         self.argo_line = ColumnDataSource(dict(_EMPTY_LINE))
+        self.fixed_line = ColumnDataSource(dict(_EMPTY_LINE))
         self.pace_band = ColumnDataSource(dict(_EMPTY_BAND))
         self.pace_line = ColumnDataSource(dict(_EMPTY_LINE))
         self.giop_band = ColumnDataSource(dict(_EMPTY_BAND))
@@ -156,6 +159,9 @@ class ArgoPaceView:
                 fill_alpha=0.18, legend_label="Argo ML mean ± std")
         p.line("x", "y", source=self.argo_line, color=ARGO_COLOR, line_width=3,
                legend_label="Argo ML mean ± std")
+        self.fixed_renderer = p.line(
+            "x", "y", source=self.fixed_line, color=ARGO_COLOR, line_width=2,
+            line_dash="dotted", legend_label="ML mean, sample de-spike")
         p.harea(x1="x1", x2="x2", y="y", source=self.pace_band, fill_color=PACE_COLOR,
                 fill_alpha=0.18, legend_label="PACE (BING) 5–95 %")
         p.line("x", "y", source=self.pace_line, color=PACE_COLOR, line_width=3,
@@ -178,7 +184,7 @@ class ArgoPaceView:
         p.add_tools(HoverTool(renderers=[raw], tooltips=[
             ("P", "@y{0.0} dbar"), ("b_bp", "@x{0.00000}"), ("QC", "@qc")]))
         p.add_tools(HoverTool(renderers=[drop], tooltips=[
-            ("P", "@y{0.0} dbar"), ("de-spiked", "@x{0.00000}"), ("raw", "@raw{0.00000}")]))
+            ("P", "@y{0.0} dbar"), ("de-spiked", "@x{0.000000}"), ("raw", "@raw{0.000000}")]))
         p.xaxis.formatter = BasicTickFormatter(precision=1, power_limit_low=-2)
         p.xaxis.ticker.desired_num_ticks = 4
         p.legend.location = "bottom_right"
@@ -197,9 +203,11 @@ class ArgoPaceView:
 
         q = figure(
             width=pace_w, height=420, title="PACE Rrs and the BING fit",
-            x_axis_label=None, y_axis_label="Rrs (sr⁻¹)",
+            x_axis_label=None, y_axis_label="Rrs (sr⁻¹)", y_range=Range1d(0, 0.01),
             tools="pan,wheel_zoom,box_zoom,reset,save",
         )
+        q.add_layout(Span(location=0, dimension="width", line_dash="dashed",
+                          line_color=ZERO_COLOR, line_width=1.5))
         q.varea(x="wave", y1="lo", y2="hi", source=self.model_src, fill_color=PACE_COLOR,
                 fill_alpha=0.25, legend_label="BING 5–95 %")
         q.line("wave", "med", source=self.model_src, color=PACE_COLOR, line_width=2,
@@ -294,6 +302,10 @@ class ArgoPaceView:
             argo_bbp += f" ± {fmt(m.get('bbp700_std'))}"
         if m.get("n_points"):
             argo_bbp += f" (n={int(m['n_points'])})"
+        ly = self._layers
+        if ly is not None and ly.n and ly.ingest_differs:
+            argo_bbp += (f"<br><span style='color:#555'>sample de-spike: {fmt(ly.mean)} "
+                         f"± {fmt(ly.std)} (n={ly.n})</span>")
         argo_chl = fmt(m.get("chla"))
         if _finite(m.get("chla_adjusted")):
             argo_chl += f" (adjusted {fmt(m.get('chla_adjusted'))})"
@@ -304,7 +316,6 @@ class ArgoPaceView:
             ("Chl (mg m⁻³)", fmt_ci(res.get("chl")), argo_chl),
             ("a<sub>dg</sub>(440) (m⁻¹), CDOM + detritus", adg_txt, "—"),
             ("S<sub>dg</sub> (nm⁻¹)", fmt_ci(res.get("Sdg")), "—"),
-            ("CDOM (ppb, <i>uncorrected</i>)", "—", fmt(m.get("cdom"))),
         ]
         if self.show_giop_flag and sel.giop is not None:
             g = sel.giop
@@ -367,6 +378,7 @@ class ArgoPaceView:
         for src in (self.raw_src, self.drop_src):
             src.data = {k: [] for k in src.data}
         self.desp_src.data = dict(_EMPTY_LINE)
+        self.fixed_line.data = dict(_EMPTY_LINE)
         for src in (self.obs_src, self.model_src, self.resid_src):
             src.data = {k: [] for k in src.data}
         self._autorange_x()
@@ -379,6 +391,7 @@ class ArgoPaceView:
             self.raw_src.data = {"x": [], "y": [], "qc": []}
             self.desp_src.data = dict(_EMPTY_LINE)
             self.drop_src.data = {"x": [], "y": [], "raw": []}
+            self.fixed_line.data = dict(_EMPTY_LINE)
         else:
             ok = np.isfinite(layers.raw) & np.isfinite(layers.pres)
             self.raw_src.data = {"x": layers.raw[ok], "y": layers.pres[ok],
@@ -388,7 +401,13 @@ class ArgoPaceView:
             d = layers.dropped
             self.drop_src.data = {"x": layers.despiked[d], "y": layers.pres[d],
                                   "raw": layers.raw[d]}
+            if layers.n and layers.ingest_differs and self._sel is not None:
+                self.fixed_line.data = {"x": [layers.mean, layers.mean],
+                                        "y": [0.0, self._sel.ml_span]}
+            else:
+                self.fixed_line.data = dict(_EMPTY_LINE)
         self._autorange_x()
+        self.show_table()
 
     def set_giop_visible(self, flag: bool) -> None:
         self.show_giop_flag = bool(flag)
@@ -411,6 +430,7 @@ class ArgoPaceView:
             vals.extend(band.data["x1"])
             vals.extend(band.data["x2"])
             vals.extend(line.data["x"])
+        vals.extend(self.fixed_line.data["x"])
         vals = np.asarray([v for v in vals if _finite(v)], dtype=float)
         if not vals.size:
             return
@@ -420,10 +440,25 @@ class ArgoPaceView:
         self.argo_fig.x_range.end = hi + pad
 
     # -- PACE panel ------------------------------------------------------------
+    def _autorange_rrs(self) -> None:
+        """y from min(0, data) to the top of the data: 0 is always in view."""
+        vals = []
+        for src, keys in ((self.obs_src, ("lo", "hi")), (self.model_src, ("lo", "hi", "med"))):
+            for k in keys:
+                vals.extend(np.asarray(src.data[k], dtype=float).ravel().tolist())
+        vals = np.asarray([v for v in vals if np.isfinite(v)], dtype=float)
+        if not vals.size:
+            return
+        lo, hi = min(0.0, float(vals.min())), max(0.0, float(vals.max()))
+        pad = 0.05 * (hi - lo) if hi > lo else 1e-4
+        self.rrs_fig.y_range.start = lo - pad if lo < 0 else 0.0
+        self.rrs_fig.y_range.end = hi + pad
+
     def show_observed(self, wave, rrs, sigma) -> None:
         """Observed ``Rrs`` ± σ before the model is ready."""
         self.obs_src.data = {"wave": wave, "rrs": rrs, "lo": rrs - sigma, "hi": rrs + sigma,
                              "sigma": sigma, "model": np.full_like(rrs, np.nan)}
+        self._autorange_rrs()
 
     def show_curves(self, c: vfits.FitCurves) -> None:
         """The reconstructed model, the residuals and ``a_dg(440)``."""
@@ -433,6 +468,7 @@ class ArgoPaceView:
                                "hi": c.rrs_hi}
         self.resid_src.data = {"wave": c.wave, "rs": c.resid_sigma, "r": c.resid,
                                "pct": c.resid_pct}
+        self._autorange_rrs()
         self._adg440 = c.adg440
         self.show_table()
 
@@ -452,6 +488,13 @@ def profile_notes(sel: Selection, layers: vargo.BbpLayers | None, recomputed: di
         notes.append(f"No MLD for this profile: no ML mean; depth shown to {NO_MLD_DEPTH:.0f} m.")
     elif _finite(m.get("bbp700")) and not _finite(m.get("bbp700_std")):
         notes.append("The stored ML std is missing, so the Argo mean is drawn without a band.")
+    if layers is not None and layers.n and layers.ingest_differs:
+        notes.append(
+            f"The stored ML mean ({fmt(layers.ingest_mean)} m⁻¹, n={layers.ingest_n}) comes "
+            "from the ingest de-spike, which runs over every pressure level: with BBP700 on "
+            "only some levels it de-spikes nothing and copies samples into the empty levels. "
+            f"Over the {layers.n_samples_ml} BBP700 samples in the ML, de-spiked sample to "
+            f"sample, the mean is {fmt(layers.mean)} m⁻¹ (n={layers.n}, dotted line; AP-Q16).")
     if recomputed is not None:
         stored, new = m.get("bbp700"), recomputed.get("bbp700", np.nan)
         if not vargo.reproduces(stored, new):

@@ -57,11 +57,19 @@ class ArgoProfile:
 class BbpLayers:
     """What the Argo panel draws, all aligned with ``pres``.
 
-    ``despiked`` is the 3-point moving median of the full ``BBP700`` column;
-    ``in_ml`` marks samples at ``pres ≤ mld`` with a finite de-spiked value;
-    ``kept`` the subset the log-IQR filter keeps; ``dropped`` = in ML but
-    rejected. ``mean``/``std``/``n`` are over ``kept``, i.e.
-    :func:`summary.mixed_layer_mean` with the ingest options.
+    ``despiked`` is the 3-point moving median over the **BBP700 samples
+    only** (NaN on the pressure levels without a sample): consecutive samples
+    are the neighbours, whatever the empty CTD levels between them.
+    ``in_ml`` marks samples at ``pres ≤ mld``; ``kept`` the subset the log-IQR
+    filter keeps; ``dropped`` = in ML but rejected. ``mean``/``std``/``n`` are
+    over ``kept``.
+
+    ``ingest_*`` are the same statistics the way the ingest stage computed
+    them (:func:`summary.mixed_layer_mean`, i.e. what ``mld_summary``
+    holds). It runs the median over the full pressure column, so on a profile
+    whose BBP700 sits on every 2nd/3rd level each window holds one sample:
+    nothing is de-spiked, and each sample is copied into the empty levels
+    beside it, which inflates ``n`` and weights the mean (AP-Q16).
     """
 
     pres: np.ndarray
@@ -74,17 +82,48 @@ class BbpLayers:
     mean: float
     std: float
     n: int
+    ingest_mean: float = float("nan")
+    ingest_std: float = float("nan")
+    ingest_n: int = 0
+
+    @property
+    def n_samples_ml(self) -> int:
+        """BBP700 samples at ``pres ≤ mld`` (before the IQR filter)."""
+        return int(self.in_ml.sum())
+
+    @property
+    def ingest_differs(self) -> bool:
+        """Whether the ingest recipe gives a different ``n`` or mean (> tol)."""
+        if self.ingest_n != self.n:
+            return True
+        return not reproduces(self.ingest_mean, self.mean)
+
+
+def despike_samples(pres, bbp) -> np.ndarray:
+    """3-point moving median over the finite samples of ``bbp`` only.
+
+    Returns an array aligned with ``bbp``: the de-spiked value at each sample,
+    NaN on the levels with no sample.
+    """
+    pres = np.atleast_1d(np.asarray(pres, dtype=float))
+    bbp = np.atleast_1d(np.asarray(bbp, dtype=float))
+    out = np.full(bbp.shape, np.nan)
+    ok = np.isfinite(bbp) & np.isfinite(pres)
+    if ok.any():
+        out[ok] = summary.moving_median(bbp[ok])
+    return out
 
 
 def bbp_layers(pres, bbp, mld, qc=None) -> BbpLayers:
-    """Split a ``BBP700`` profile the way the ML summary does, at ``mld``."""
+    """Split a ``BBP700`` profile at ``mld``: de-spike, IQR filter, ML mean."""
     pres = np.atleast_1d(np.asarray(pres, dtype=float))
     raw = np.atleast_1d(np.asarray(bbp, dtype=float))
     qc = np.full(pres.shape, np.nan) if qc is None else np.asarray(qc, dtype=float)
     if raw.shape != pres.shape:
         raw = np.full(pres.shape, np.nan)
-    despiked = summary.moving_median(raw)
-    if mld is None or not np.isfinite(mld):
+    despiked = despike_samples(pres, raw)
+    has_mld = mld is not None and np.isfinite(mld)
+    if not has_mld:
         in_ml = np.zeros(pres.shape, dtype=bool)
     else:
         in_ml = np.isfinite(pres) & (pres <= mld) & np.isfinite(despiked)
@@ -95,7 +134,13 @@ def bbp_layers(pres, bbp, mld, qc=None) -> BbpLayers:
     sel = despiked[kept]
     mean = float(np.mean(sel)) if sel.size else float("nan")
     std = float(np.std(sel)) if sel.size else float("nan")
-    return BbpLayers(pres, raw, qc, despiked, in_ml, kept, dropped, mean, std, int(sel.size))
+    if has_mld:
+        im, isd, inn = summary.mixed_layer_mean(pres, raw, mld, despike_values=True,
+                                                iqr_filter=True)
+    else:
+        im, isd, inn = float("nan"), float("nan"), 0
+    return BbpLayers(pres, raw, qc, despiked, in_ml, kept, dropped, mean, std, int(sel.size),
+                     im, isd, int(inn))
 
 
 def recompute_summary(profile: ArgoProfile) -> dict:

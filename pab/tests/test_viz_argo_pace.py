@@ -47,6 +47,16 @@ def _profile(mld=30.0):
                                         "BBP700_QC": np.ones_like(pres)})
 
 
+def _gapped_profile(mld=30.0):
+    """BBP700 on every 2nd pressure level (NaN between), as many floats merge."""
+    prof = _profile(mld)
+    bbp = prof.bbp.copy()
+    bbp[1::2] = np.nan            # samples on the even indices only
+    bbp[10] = 5e-2                # one isolated spike between two good samples
+    return vargo.ArgoProfile(wmo=7902226, cycle=5, latitude=20.0, longitude=-50.0,
+                             variables={**prof.variables, "BBP700": bbp})
+
+
 def _curves(fit_id):
     wave = np.linspace(400, 700, 7)
     rrs = np.linspace(4e-3, 1e-4, 7)
@@ -98,10 +108,29 @@ def test_bbp_layers_reproduce_the_mixed_layer_summary():
                                             despike_values=True, iqr_filter=True)
     assert layers.mean == pytest.approx(mean) and layers.std == pytest.approx(std)
     assert layers.n == n
+    assert not layers.ingest_differs                 # dense sampling: same recipe
     assert layers.dropped[[19, 20, 21]].all()        # the plateau is rejected
     assert not layers.in_ml[prof.pres > 30].any()
     none = vargo.bbp_layers(prof.pres, prof.bbp, float("nan"))
     assert not none.in_ml.any() and np.isnan(none.mean)
+
+
+def test_gapped_profile_is_despiked_sample_to_sample():
+    """AP-Q16: the ingest median over every level neither de-spikes nor counts."""
+    prof = _gapped_profile()
+    layers = vargo.bbp_layers(prof.pres, prof.bbp, 30.0)
+    assert np.isnan(layers.despiked[1::2]).all()      # nothing on the empty levels
+    assert layers.despiked[10] < 1e-3                 # the spike is gone
+    assert layers.n_samples_ml == 15                  # pres 1, 3, …, 29
+    _, _, ingest_n = summary.mixed_layer_mean(prof.pres, prof.bbp, 30.0,
+                                              despike_values=True, iqr_filter=True)
+    assert layers.ingest_n == ingest_n > layers.n_samples_ml  # samples copied
+    assert layers.ingest_differs
+    with Store.open(":memory:") as store:
+        _seed(store)
+        view = ap.make_argo_pace(store, 7902226, 5, fetch=False, argo_profile=prof)
+        assert view.fixed_line.data["x"] == [layers.mean, layers.mean]
+        assert "AP-Q16" in view.notes.text and "sample de-spike" in view.table.text
 
 
 def test_reproduces_tolerance():
@@ -134,9 +163,13 @@ def test_make_argo_pace_builds_both_panels():
         assert len(view.model_src.data["wave"]) == 7
         # (obs − 1.01·obs) / (0.02·obs) = −0.5 σ in every band
         assert np.allclose(view.resid_src.data["rs"], -0.5)
-        for text in ("b<sub>bp</sub>(700)", "0.05 [0.04–0.06]", "uncorrected",
-                     "NASA-GIOP"):
+        for text in ("b<sub>bp</sub>(700)", "0.05 [0.04–0.06]", "NASA-GIOP"):
             assert text in view.table.text
+        assert "CDOM (ppb" not in view.table.text       # prompt 4: row removed
+        assert view.fixed_line.data["x"] == []          # dense profile: no dotted line
+        assert view.rrs_fig.y_range.start == 0.0        # prompt 4: Rrs from 0
+        assert any(getattr(r, "location", None) == 0 and r.line_dash == [6]
+                   for r in view.rrs_fig.center)       # dashed zero line
         view.set_giop_visible(False)
         assert "NASA-GIOP" not in view.table.text
         assert not any(r.visible for r in view.giop_renderers)

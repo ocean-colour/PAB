@@ -262,11 +262,11 @@ The views themselves come one prompt at a time (I-Q5).*
 |---|---|
 | `pab/viz/data.py` | read-only `open_store`, `set_data_dir`, `has_chains`; families (`version_families`, `family_label`); `wmos_with_matchups`, `cycles_for_wmo`, `matchup_for`, `bing_fit` (overlaid, best rank), `giop_fit` |
 | `pab/viz/fits.py` | `reconstruct(db_path, fit_id)` → `FitCurves` (LRU 64, own store per call), `observed_spectrum`, `adg_at` (`a_dg(440)` per sample) |
-| `pab/viz/argo.py` | `fetch_argo_profile` (LRU 128, ingest's src/mode), `bbp_layers` (de-spike / in-ML / IQR-kept / dropped), `recompute_summary`, `reproduces` |
+| `pab/viz/argo.py` | `fetch_argo_profile` (LRU 128, ingest's src/mode), `despike_samples` (3-pt median over the BBP700 samples only, AP-Q16), `bbp_layers` (de-spike / in-ML / IQR-kept / dropped, plus the `ingest_*` statistics as stored), `recompute_summary`, `reproduces` |
 | `pab/viz/bokeh_argo_pace.py` | `ArgoPaceView` (figures, sources, `show_*`), `load_selection`, `profile_notes`, server-free `make_argo_pace` |
 | `pab/viz/app.py` | `ArgoPaceTab` (controls, URL args, background jobs with a stale-token guard), `make_document` |
 | `pab/viz/__main__.py` | the `pab-viz` launcher and its capability report |
-| `pab/tests/test_viz_argo_pace.py` | 10 tests, no network |
+| `pab/tests/test_viz_argo_pace.py` | 11 tests, no network |
 
 `setup.py` registers `pab-viz`. Launch notes are in HOWTO §5d.
 
@@ -403,7 +403,11 @@ Use Opus 5.5. Log your work.
     - In some cases, the "de-spiked" median line appears to follow each data point, not a 3-pt median. 
       Please explore.  Also, it doesn't appear the IQR-rejected points are being ignored.
 
+Use Opus 5.5. Log your work.
 
+5. Thanks for the modifications and the discussion of the de-spike issue.  Please read
+my answers to AP-Q16 and Q17 and respond accordingly.
+I will then test the new code further.
 Use Opus 5.5. Log your work.
 
 ## Q&A
@@ -661,6 +665,95 @@ over 0→MLD (AP-Q12); the drawn Argo values from `mld_summary`, with a note
 when a re-fetch differs by > 2 % (AP-Q13); Argo left, PACE right (AP-Q14,
 "may tinker"); the failure cases as messages (AP-Q15). **Built 2026-11-19**,
 see Code / Status.
+
+#### Round 3 (2026-11-19, from prompt 4)
+
+**AP-Q16. The ingest de-spike does not de-spike gapped profiles. Fix it
+upstream?**
+
+Prompt 4 asked why the "de-spiked" line sometimes follows every point. The
+cause is in the ingest code, not the viz.
+
+- **The bug.** `summary.mixed_layer_mean(..., despike_values=True)` runs
+  `moving_median` over the whole pressure column. Many floats sample `BBP700`
+  on only every 2nd or 3rd level of the merged profile, with NaN in
+  between. Each 3-point window then holds a single sample, so:
+  - the "median" is the sample itself, and **nothing is de-spiked**;
+  - the window centred on an empty level takes its one neighbour's value, so
+    every sample is **copied into the empty levels**. `n_points` is inflated
+    and the mean is weighted (each sample counts once per copy).
+- **Example.** 1902368/25 stores n = 66 from 22 real samples in the ML; 17
+  are left after the IQR filter.
+- **How common** (60 random matchups, live re-fetch):
+
+  | measure | result |
+  |---|---|
+  | profiles with any NaN gaps between `BBP700` samples | 55 / 60 |
+  | profiles with more than half of the gaps NaN | 33 / 60 |
+  | stored `n_points` > real samples in the ML | 46 / 60 (median ratio 1.6) |
+  | change in the ML mean when fixed: median / 90th pct / max | 0.5 % / 2.0 % / 6.8 % |
+  | profiles whose mean changes > 2 % | 7 / 60 |
+
+  So the means move little, but `n_points`, `bbp700_std` and the de-spiking
+  itself are wrong on most profiles.
+- **What the viz does now.** The drawn values stay the stored ones (AP-Q13).
+  - The panel de-spikes sample to sample (`argo.despike_samples`).
+  - When the stored `n` or mean differs, it adds a dotted "ML mean, sample
+    de-spike" line, a second line in the table, and a note.
+  - The GDAC-reprocessing check still compares like with like (ingest
+    recipe vs stored).
+
+Options:
+- **A** *(recommended)*. Fix `mixed_layer_mean` / `summarize_profile` to
+  de-spike over the finite samples only, and re-derive `mld_summary` in a
+  new version. That means re-fetching the profiles: no BING re-fit, and
+  `v1/pab.db` and v2.1 are untouched. This is a pipeline task with DB writes,
+  so it belongs in its own prompt doc, not here.
+- **B**. Leave the ingest as is. The viz keeps showing both values.
+- **C**. Leave the ingest, but have the viz draw the corrected mean as the
+  main Argo band (the stored value becomes the secondary one).
+
+**Your answer:** I agree with `A`.  Generate a new prompt doc `claude_prompts/v2/de-spike-fix.md`
+that I will execute at some point.
+
+**AP-Q17. The rejected samples, and how strict the IQR filter is.**
+
+Prompt 4 also said the IQR-rejected points did not seem to be ignored. I
+checked: they are excluded from the mean, both in the ingest and here. A
+test pins this, and the `n` in the table counts only kept samples.
+
+Two things make them *look* included:
+- The black de-spiked line still runs through them, because it is the whole
+  de-spiked profile.
+- Before the fix above, a spike was never de-spiked. It stayed on the line,
+  sometimes marked with a red ×, sometimes not.
+
+With the fix, isolated spikes disappear from the line. What gets rejected
+now are runs of ≥ 2 high samples, which a 3-point median cannot remove
+(e.g. 4903848/69 at 8–10 dbar).
+
+One more observation: on a very tight ML profile, the 1.5 × IQR filter in
+log space rejects samples that are close to the mean. On 1902368/25 it
+rejects 5 of 22, all within ~15 % of the mean.
+
+Options:
+- **A** *(recommended)*. Keep the line as is and keep the filter
+  (Bisson et al.).
+- **B**. Break the de-spiked line at the rejected samples, so it shows only
+  what is averaged.
+- **C**. Also revisit the filter (e.g. a floor on the IQR) as part of the
+  AP-Q16 re-derivation.
+
+**Your answer:**  Agreed, go with `A`
+
+#### Round 3 resolved (2026-11-19)
+
+- **AP-Q16 = A.** The ingest fix and the `mld_summary` re-derivation are
+  planned in `claude_prompts/v2/de-spike-fix.md`, with Round 1 there (DS-Q1 to
+  DS-Q7). Until that runs, the viz keeps drawing the stored values, and shows
+  the sample de-spike as the dotted line, a second table line and a note.
+- **AP-Q17 = A.** No change: the de-spiked line runs through the whole
+  profile, and the log-IQR filter stays as it is.
 
 ### Init
 
@@ -1013,3 +1106,75 @@ With Claude Opus 5.5. All six round-2 answers took the recommendation
 **Docs:** HOWTO §5d (launch, flags, capability report, tunnel). Nothing was
 published, and no DB or data file was written.
 
+### 2026-11-19 (Argo+PACE prompt 4: Rrs axis and zero line, CDOM row removed; the ingest de-spike bug found; AP-Q16/17 posed)
+
+With Claude Opus 5.5.
+
+**Requested changes** (`pab/viz/bokeh_argo_pace.py`):
+- **`Rrs` y-axis** now starts at 0, or below 0 when the data or the bands go
+  negative. It is recomputed whenever the observed spectrum or the model
+  arrives (`_autorange_rrs`).
+- **Dashed dark-gray (`#444`) line at `Rrs` = 0.**
+- **CDOM row removed** from the table.
+
+**De-spike investigation.** The "de-spiked line follows every point" report
+is a real bug, and it lives in the ingest code
+(`summary.mixed_layer_mean` → `moving_median` over the full pressure
+column).
+- With `BBP700` on every 2nd/3rd level of the merged profile, each window
+  holds one sample. Nothing is de-spiked, and samples are copied into the
+  empty levels, which inflates `n_points`.
+- Survey of 60 random matchups:
+  - 55 have gaps between samples;
+  - 46 have an inflated `n_points` (median ×1.6);
+  - the ML mean changes by 0.5 % (median), 2.0 % (90th pct) and 6.8 % (max).
+- Details and options are in Q&A / AP-Q16. The rejected-points question is
+  AP-Q17.
+
+**Viz-side fix**, which leaves the stored values alone:
+- `argo.despike_samples` takes the 3-pt median over the samples only.
+- `BbpLayers` carries the `ingest_*` statistics (what `mld_summary` holds)
+  next to the corrected ones.
+- When the two differ, the view shows a dotted "ML mean, sample de-spike"
+  line, a second line under the Argo `b_bp(700)` in the table, and a note.
+
+No ingest code was changed and no DB was written; that is AP-Q16.
+
+**Verification.**
+- New test `test_gapped_profile_is_despiked_sample_to_sample`. The panel test
+  also checks the `Rrs` floor, the zero line and that the CDOM row is gone.
+- Viz tests: 11 passed. Full suite: **556 passed, 1 skipped**. `ruff` is
+  clean.
+- Live server, headless Chrome:
+  - 1902368/25 (negative `Rrs` in the blue, zero line visible; stored n=66,
+    corrected n=17);
+  - 4903848/69 (a 2-sample spike rejected);
+  - 4902680/6.
+
+### 2026-11-19 (Argo+PACE prompt 5: AP-Q16/17 answered; de-spike-fix prompt doc written)
+
+With Claude Opus 5.5. Both answers took the recommendation (see Q&A "Round 3
+resolved").
+
+**AP-Q16 = A.** I wrote `claude_prompts/v2/de-spike-fix.md`, which JXP
+will execute later. It has:
+- the bug and the 60-matchup survey;
+- the code seams, verified today:
+  - the fix goes in `summary.mixed_layer_mean`;
+  - `qa.plot_profile` has the same display bug;
+  - `pab.viz.argo` should then call the shared function;
+- a five-task plan: code; safety run (stop for review); refresh; impact on
+  the PACE vs Argo metrics; close-out;
+- Round 1 questions DS-Q1 to DS-Q7: where the new values live
+  (`mld_summary` is one row per profile), which profiles, the version label,
+  GDAC drift, keeping the old recipe, where to run, and the QA figures.
+
+Checked while writing it:
+- BING reads only `mld_summary.chla`, which has no de-spike, so **no re-fit
+  is needed**;
+- `mld_summary` holds 59,620 rows (55,948 with a `bbp700`; 15,279 matched).
+
+**AP-Q17 = A.** No code change.
+
+No code was changed in this prompt and no DB was touched. The prompt-4 viz
+changes are what JXP will test next.
