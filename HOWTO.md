@@ -411,24 +411,125 @@ measured against, and `matchups.scene_path` is kept so the v2 site reuses v1's
 14,586 PACE scene quick-looks instead of re-rendering them.
 
 
-## 5c. The 2.1 re-fit — normalized geometry (in progress)
+## 5c. The 2.1 re-fit — normalized geometry
 
-`claude_prompts/v2/build_v2_1_rerun.md`. Every 2.0 matchup re-fitted with the
-forward model at (0, 0, 0), replaying the 2.0 spectrum from its chain NPZ
-(`--replay-chains`), as **new rows** in the live v2 DB (`fit_id …_v2.1`,
-`pab_version = '2.1'`, `geom_mode = 'normalized'`); the 2.0 and 2.0.1 rows stay
-untouched. `version_family` makes 2.1 the report headline (`("2.1", [])`) and
-`--compare-db` gives a 1.0-vs-2.1 section. The full run is on **Nautilus**
-(V6 = B). The five matchups with no 2.0 fit are left out.
+`claude_prompts/v2/build_v2_1_rerun.md`; the science is
+`versions/v2.1/geometry_rerun.md`. Every 2.0 matchup is re-fitted with the
+forward model at (θs, θv, Δφ) = (0, 0, 0), the geometry the PACE L2 AOP `Rrs`
+is normalized to, replaying the 2.0 spectrum bit-identically from its chain
+NPZ (`--replay-chains`). The results are **new rows** in the live v2 DB
+(`fit_id …_v2.1`, `pab_version = '2.1'`, `geom_mode = 'normalized'`); the
+2.0, 2.0.1 and NASA-GIOP rows are untouched. 2.1 is a new **base** version:
+`version_family` returns `("2.1", [])`, so the report headline, the exported
+tables and `--compare-db` (1.0 vs 2.1) carry only 2.1 rows. The five matchups
+with no 2.0 fit are left out (15,976 matchups, 15,971 fits).
 
 Schema note: opening the v2 DB with 2.1 code (`Store.open`, default
 `create=True`) migrates it **v5 → v6** (adds the NULL `fits.geom_mode`
 column). Take the dated, sha-verified copy first.
 
-Status (2026-11-14): code, tests and the local check done (Task 1); the slice
-gate (Task 2), the full run, figures and publish are pending. The commands
-and checks will be recorded here as they are run.
+**Custody checks.** `versions/v2.1/preflight.py snapshot|verify` opens a DB
+read-only and digests every legacy row (`BING|2.0`, `BING|2.0.1`,
+`NASA_GIOP|1.1`, on the v5 columns), `matchups`, `matchup_pixels`, and the 2.1
+rows minus `figure_path`. `verify` against a snapshot proves a run wrote only
+what it should. Snapshots and verifies: `versions/v2.1/{preflight_snapshot,
+postrun_verify,prefigure_snapshot,postfigure_verify}.json`.
 
+**The full re-fit (Task 3, Nautilus, 2026-11-16/17).**
+`versions/v2.1/make_refit_all.py` → `versions/v2.1/refit_all.csv` (15,971
+rows, sha256 `a244835e…ebc62`), staged with the DB at `/data/v2/` and run by
+`nautilus/v21_fit_job.yaml` (job `pab-v21-fit`, 50 workers, DB-local, ~300
+s/fit per worker):
+
+```bash
+pab --db $LOCAL --outdir /data/v2/pipeline --stage fit --jobs 50 \
+    --matchups-csv /data/v2/v21/refit_all.csv --replay-chains /data/v2/fit_chains
+```
+
+- Result: 15,971 2.1 fits, all normalized, all replayed, 0 failures; LM
+  success 15,885.
+- The DB came back to the workstation (sha both sides). `postrun_verify.json`
+  reported no problems.
+- The 15,971 `_v2.1.npz` chains (17.7 GiB) were pulled to
+  `$PAB_DATA_DIR/v2/fit_chains/`, using batched tars of 1,000 files (a single
+  stream died at 3,727). Every file loads.
+- The DB the fit started from is kept as `v2/pab_pre_v21_20261116.db`
+  (`9503015b…cad92`, the 2.0.1 / S3 file).
+
+**The 2.1 fit figures (Task 4, workstation, 2026-11-18; T4-Q1 = A).** The
+render took ~6–8 s/figure, so it ran locally (`nautilus/v21_figure_job.yaml`
+was written but not used):
+
+```bash
+D=$PAB_DATA_DIR/v2; cd $D && PYTHONWARNINGS=ignore MPLBACKEND=Agg PAB_DATA_DIR=$D \
+  pab --db $D/pab.db --outdir $D/pipeline --stage figure --jobs 8 --figure-version 2.1
+```
+
+- 15,971 written, 0 failed, in 1.1 h. The figures (0.83 GiB) are
+  `$D/pipeline/figures/*_v2.1_fit.png`; `fits.figure_path` records those
+  workstation paths.
+- `postfigure_verify.json` reported no problems.
+- The dated copy taken before the render is `v2/pab_pre_v21fig_20261118.db`
+  (`aca3d69f…d4e2`).
+
+**The live v2 DB is now `d0c286bf992ebba35ad961afda2b8c62436a176b3448d50c39553899349c8cc5`
+(302,505,984 B, schema v6)**: 15,971 2.0 + 51 2.0.1 + 15,971 2.1 BING fits,
+plus 15,976 NASA-GIOP. `/data/v2/pab.db` on the PVC is the
+Task 3 return (`aca3d69f…`), which is identical except that its 2.1
+`figure_path` is NULL. It is **stale**; the workstation copy is the master.
+
+**Site.** `report_site/` is regenerated with the §7a command (unchanged; the
+new gallery picks' 4 scenes and 7 Argo plots were fetched read-only from
+AIOcean into `$PAB_DATA_DIR/gallery/`). The page shows:
+- the summary headline 2.1, with a "What changed in 2.1" sentence (median
+  `b_bp`(700) ×1.17 against 2.0, n = 15,971) and a link to
+  `geometry_rerun.md`;
+- the comparison as 1.0 vs 2.1;
+- Methods as "Retrieval configuration (2.1)".
+
+**Publish (Task 5).** The four summary tables are re-exported from the live
+DB into `$PAB_DATA_DIR/v2/s3_stage_v21_20261119/` (`publish.export_tables`,
+byte-reproducible). The objects currently on `s3://pab/v2/` were downloaded
+to `$PAB_DATA_DIR/v2/s3_prev_2026-11-19/`, and all five match the 2026-10-20
+sha256s in §5b. The upload, the AIOcean backup and the §5b table update wait
+for JXP's confirmation (Round 5 of the prompt doc); this section is updated
+when they run.
+
+## 5d. Viz tools (`pab-viz`)
+
+An interactive Bokeh server for exploring the matchups
+(`claude_prompts/viz_tools.md`). It is **read-only**: the DB is opened with a
+`mode=ro` URI, chain NPZs are only read, and fetched Argo profiles are held
+in memory only. Tab 1, **Argo + PACE**, shows a float's `b_bp(700)` profile
+beside the PACE `Rrs` and its BING fit for one `wmo` + `cycle`.
+
+```bash
+# workstation or laptop, any shell (ocean14 env, after `pip install -e . --no-deps`)
+pab-viz --db "$PAB_DATA_DIR/v2/pab.db" --show            # or: python -m pab.viz …
+pab-viz --db …/pab.db --wmo 4902680 --cycle 6 --show    # open a profile directly
+# browser: http://localhost:5006/?wmo=4902680&cycle=6&version=2.1
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--db` | The store, opened read-only. Default `$PAB_DATA_DIR/v2/pab.db`. |
+| `--data-dir` | The folder holding `fit_chains/`. Default: the `--db` folder. |
+| `--version` | The BING family shown first (default: the newest; `2.0` shows 2.0 with its 2.0.1 patch rows). |
+| `--wmo`, `--cycle` | The profile opened first. |
+| `--port` / `--host` | Default 5006 / `localhost`. Another host also needs `--allow-remote`. |
+| `--show` | Open a browser tab. |
+
+At start-up it prints what it can show: the DB and its version families, the
+chain counts per version under `--data-dir`, whether `bing`/`robust` import,
+and whether the Argo GDAC is reachable. A missing piece becomes a message in
+the page, not a crash. For example, without the 2.0 chains a 2.0 view shows
+the stored values and the observed `Rrs` but no model curve. Timing: an Argo
+fetch takes ~1–6 s, and a fit reconstruction ~5 s cold and ~1.5 s warm. Both
+run in the background while the page shows "…".
+
+From another machine without a local copy, run it on the workstation and
+tunnel: `ssh -N -L 5006:localhost:5006 <workstation>`, then open
+`http://localhost:5006/`.
 
 ## 6. Notes & gotchas
 

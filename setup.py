@@ -31,7 +31,7 @@ setup_keywords['zip_safe'] = False
 setup_keywords['packages'] = find_packages()
 # CLI entry point for the end-to-end pipeline (Stage 8).
 setup_keywords['entry_points'] = {
-    'console_scripts': ['pab = pab.pipeline:main'],
+    'console_scripts': ['pab = pab.pipeline:main', 'pab-viz = pab.viz.__main__:main'],
 }
 
 if os.path.isdir('bin'):
