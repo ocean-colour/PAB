@@ -702,6 +702,79 @@ Then I rebuild `report_site/` and check it renders.
 
 **Your answer:** A, use my workstation
 
+### Round 5 (Task 5, before any upload; 2026-11-19)
+
+The local half of Task 5 is done (see the log):
+- HOWTO §5c is rewritten, and `docs/reporting.rst` has a 2.1 bullet.
+- The four summary tables are exported from the live DB into
+  `$PAB_DATA_DIR/v2/s3_stage_v21_20261119/`. They are byte-reproducible and
+  all 2.1 (15,971 rows each).
+- The current `s3://pab/v2/` objects are snapshotted into
+  `v2/s3_prev_2026-11-19/`. All five match the 2026-10-20 sha256s.
+- The v1 sha is unchanged (`09de0a6d…`).
+
+Nothing has been uploaded. Each step below runs only on your answer.
+
+**T5-Q1: publish to S3 (Plan §6, V10 = in place)?**
+- **A (recommended).** In this order:
+  1. Copy the current public DB (`9503015b…`, the 2.0 + 2.0.1 file) to the
+     dated key **`s3://pab/v2/pab_2026-10-20.db`**, as 2.0.1 kept
+     `pab_2026-10-07.db`. The key is unused now (HTTP 403).
+  2. Replace `s3://pab/v2/pab.db` with the live
+     **`d0c286bf…8cc5`** (302,505,984 B; it grows from 220 MB).
+  3. Replace the four tables in place:
+
+     | file | bytes | sha256 |
+     |---|---:|---|
+     | `matchup_summary.csv` | 6,331,133 | `f8f918d6…5f4e` |
+     | `matchup_summary.parquet` | 2,742,023 | `9b8b724a…8672` |
+     | `nasa_giop_summary.csv` | 8,513,785 | `42fa754d…2a11` |
+     | `nasa_giop_summary.parquet` | 2,985,708 | `532c8ad0…2307` |
+
+  Each object is verified by a fresh download, and then the HOWTO §5b S3
+  table is updated.
+  - The public tables then carry 2.1 values only.
+  - The 2.0 / 2.0.1 values stay in the DB.
+- **B.** As A, without the dated key; the 2.0.1 DB stays only on AIOcean.
+
+Note: `fits.figure_path` of the 2.1 rows holds workstation paths
+(`/home/xavier/Oceanography/data/Color/PAB/v2/pipeline/figures/…`), as the
+51 2.0.1 rows already published on 2026-10-20 do. The 2.0 rows hold
+`/data/v2/…`. So publishing adds no new kind of path. Rewriting the 2.1
+paths to `/data/v2/…` first would be a further DB write; I have not
+proposed it.
+
+**Your answer:**
+
+**T5-Q2: AIOcean backup?** Plan §6 lists only the dated DB.
+- **A (recommended).** In addition to the DB, copy the 2.1 artifacts the way
+  2.0.1 was handled, verifying each with `rclone check --one-way`:
+  - the DB as `AIOcean:PAB/pab_v2_2026-11-19.db` (md5 verified);
+  - the 15,971 `_v2.1.npz` chains (**17.7 GiB**) into
+    `AIOcean:PAB/v2/fit_chains/`, which now holds the 16,022 2.0 + 2.0.1
+    chains;
+  - the 15,971 `_v2.1_fit.png` figures (**0.83 GiB**) into
+    `AIOcean:PAB/v2/figures/`.
+
+  Today the figures exist only on the workstation, and the chains only here
+  and on the PVC (which is not backed up).
+- **B.** The dated DB only.
+
+**Your answer:**
+
+**T5-Q3: the PVC DB.** `/data/v2/pab.db` is the Task 3 return
+(`aca3d69f…`), identical to the live DB except that its 2.1 `figure_path`
+is NULL.
+- **A (recommended).** Leave it, documented as stale in HOWTO §5c. No
+  further pod runs are planned.
+- **B.** Push the live `d0c286bf…` to the PVC (a short pod, gzip transfer,
+  sha both sides).
+
+**Your answer:**
+
+**RTD:** `report_site/` is regenerated and checked (Task 4). You commit and
+push it; RTD rebuilds on push.
+
 ## Logging
 
 Append an entry to the **Logs** section of this file using the format:
@@ -1347,3 +1420,55 @@ population and §6 the paper. The "refresh from 2.1 (Task 4)" note at line
 Nothing was published or uploaded, and no pod was used. Next is Task 5
 (publish, backup, close-out), and each outward step will be confirmed
 first.
+
+### 2026-11-19 (Prompt 6 of the list = Task 5 part 1: exports staged, S3 snapshot verified, HOWTO §5c and docs updated; stopped before any upload)
+
+With Claude Opus 5.5.
+
+**Read-only checks.**
+- `v1/pab.db` sha `09de0a6d…f978273`: unchanged and still `a-w`.
+- Live `v2/pab.db` sha `d0c286bf…8cc5`: unchanged through every step below.
+- The public `s3://pab/v2/{pab.db, matchup_summary.{csv,parquet},
+  nasa_giop_summary.{csv,parquet}}` were downloaded by public HTTPS into
+  `$PAB_DATA_DIR/v2/s3_prev_2026-11-19/`. All five match the sha256s HOWTO
+  §5b recorded on 2026-10-20, so no other machine has written the keys since
+  (the last-writer-wins lesson).
+- `s3://pab/v2/pab_2026-10-20.db` does not exist (403), so the key is free.
+- AIOcean: `PAB/` holds `pab_v2_2026-10-07.db` and `pab_v2_2026-10-18.db`,
+  and `PAB/v2/fit_chains` holds 16,022 files (18.39 GiB, 2.0 + 2.0.1). No
+  2.1 artifact is backed up yet.
+
+**Exports.** `publish.export_tables` was run on a scratch *copy* of the live
+DB, so the live file was never opened for writing. Output is in
+`$PAB_DATA_DIR/v2/s3_stage_v21_20261119/`.
+- `matchup_summary` and `nasa_giop_summary` have 15,971 rows each, all
+  `pab_version` 2.1, and `fit_id_superseded` is empty (2.1 has no patch).
+- A second export is byte-identical.
+- Sizes and sha256s are in Round 5 / T5-Q1.
+
+**Paths found.** The 2.1 `figure_path` values are workstation paths and the
+2.1 `chains_path` values are `/data/v2/fit_chains/…`. The 2.0.1 rows already
+published workstation paths on 2026-10-20, so this is noted in T5-Q1 rather
+than changed.
+
+**Docs.**
+- HOWTO §5c is rewritten from "in progress" into the record:
+  - custody checks;
+  - the Task 3 command, results and chain pull;
+  - the Task 4 render command and results;
+  - the live DB sha and size, with the PVC copy marked stale;
+  - the site;
+  - the publish staging.
+- `docs/reporting.rst` gains a bullet on 2.1 as a new base version:
+  `version_family`, `geometry_shift_summary`, the "What changed in 2.1"
+  sentence, and the computed narrative numbers via `ratio_level_bins`.
+  `docs/fitting.rst` and `docs/db_schema.rst` already covered
+  `geom_mode` / v6 from Task 1.
+- `sphinx -b html docs` into scratch shows no new warnings.
+
+**Stopped** for Round 5:
+- T5-Q1: the S3 publish, with a dated key for the 2.0.1 DB;
+- T5-Q2: the AIOcean backup of the DB, plus the 2.1 chains and figures;
+- T5-Q3: the stale PVC DB.
+
+The HOWTO §5b S3 table is updated after the upload.
