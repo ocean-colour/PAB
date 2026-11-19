@@ -130,7 +130,8 @@ def test_gapped_profile_is_despiked_sample_to_sample():
         _seed(store)
         view = ap.make_argo_pace(store, 7902226, 5, fetch=False, argo_profile=prof)
         assert view.fixed_line.data["x"] == [layers.mean, layers.mean]
-        assert "AP-Q16" in view.notes.text and "sample de-spike" in view.table.text
+        assert "sample de-spike" in view.table.text
+        assert "AP-Q16" not in view.notes.text            # GE-Q12: note removed
 
 
 def test_reproduces_tolerance():

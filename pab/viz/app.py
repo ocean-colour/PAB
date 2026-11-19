@@ -1,6 +1,8 @@
 """The ``pab-viz`` Bokeh server document: one tab per view (I-Q7).
 
-Tab 1 is the Argo + PACE view (:mod:`pab.viz.bokeh_argo_pace`). Slow work
+Tab 1 is the Argo + PACE view (:mod:`pab.viz.bokeh_argo_pace`); tab 2 the
+Global explorer (:mod:`pab.viz.global_explorer`), whose "Open in Argo + PACE"
+loads a matchup into tab 1 and switches to it (``?tab=global`` opens on it). Slow work
 (the Argo fetch, the fit reconstruction) runs in a thread pool and lands in
 the document through ``doc.add_next_tick_callback``, so the page stays live and
 shows "loading" while it runs. A token discards results that arrive after the
@@ -22,6 +24,7 @@ from pab.viz import argo as vargo
 from pab.viz import bokeh_argo_pace as ap
 from pab.viz import data
 from pab.viz import fits as vfits
+from pab.viz import global_explorer as gx
 
 log = logging.getLogger("pab.viz")
 
@@ -52,7 +55,7 @@ def _arg(doc, name: str):
 class ArgoPaceTab:
     """The controls + view of tab 1 and their callbacks, for one session."""
 
-    def __init__(self, doc, cfg: AppConfig):
+    def __init__(self, doc, cfg: AppConfig, *, autoload: bool = True):
         self.doc = doc
         self.cfg = cfg
         self.store = data.open_store(cfg.db_path)
@@ -60,6 +63,7 @@ class ArgoPaceTab:
         self.token = 0
         self.notes: list[str] = []
         self._pending: set[str] = set()
+        self._quiet = False
 
         self.wmos = [str(w) for w in data.wmos_with_matchups(self.store)]
         families = data.version_families(self.store)
@@ -86,13 +90,14 @@ class ArgoPaceTab:
             self._set_cycles(wmo, cycle)
 
         self.wmo.on_change("value", self._on_wmo)
-        self.cycle.on_change("value", lambda a, o, n: self.load())
-        self.version.on_change("value", lambda a, o, n: self.load())
+        self.cycle.on_change("value", lambda a, o, n: self._on_change())
+        self.version.on_change("value", lambda a, o, n: self._on_change())
         self.giop.on_change("active", lambda a, o, n: self.view.set_giop_visible(n))
 
         controls = row(self.wmo, self.cycle, self.version, self.giop)
         self.layout = column(controls, self.view.layout)
-        self.load()
+        if autoload:
+            self.load()
 
     # -- controls ------------------------------------------------------------
     def _set_cycles(self, wmo: str, cycle: str | None = None) -> None:
@@ -100,7 +105,26 @@ class ArgoPaceTab:
         self.cycle.options = cycles
         self.cycle.value = cycle if cycle in cycles else (cycles[0] if cycles else "")
 
+    def _on_change(self) -> None:
+        if not self._quiet:
+            self.load()
+
+    def show(self, wmo: int, cycle: int, family: str | None = None) -> None:
+        """Load ``(wmo, cycle)`` (from the Global tab), one load only."""
+        self._quiet = True
+        try:
+            if family in [o[0] for o in self.version.options]:
+                self.version.value = family
+            if str(wmo) in self.wmos:
+                self.wmo.value = str(wmo)
+                self._set_cycles(str(wmo), str(cycle))
+        finally:
+            self._quiet = False
+        self.load()
+
     def _on_wmo(self, attr, old, new) -> None:
+        if self._quiet:
+            return
         if new and new in self.wmos:
             before = self.cycle.value
             self._set_cycles(new)
@@ -191,7 +215,26 @@ class ArgoPaceTab:
 
 def make_document(doc, cfg: AppConfig) -> None:
     """Fill a new session's document (the server's ``FunctionHandler``)."""
-    tab = ArgoPaceTab(doc, cfg)
-    doc.add_root(Tabs(tabs=[TabPanel(child=tab.layout, title="Argo + PACE")]))
+    start_global = _arg(doc, "tab") == "global"
+    # opening on the Global tab: no fetch for tab 1 until a matchup is opened
+    tab = ArgoPaceTab(doc, cfg, autoload=not start_global or bool(_arg(doc, "wmo")))
+
+    def open_matchup(wmo: int, cycle: int, family: str | None) -> None:
+        tab.show(wmo, cycle, family)
+        tabs.active = 0
+
+    glob = gx.GlobalTab(tab.store, cfg.db_path, model_pair=cfg.model_pair,
+                        open_matchup=open_matchup)
+    tabs = Tabs(tabs=[TabPanel(child=tab.layout, title="Argo + PACE"),
+                      TabPanel(child=glob.layout, title="Global")])
+    if start_global:
+        tabs.active = 1
+
+    def on_tab(attr, old, new) -> None:  # tab 1 shown before anything was loaded
+        if new == 0 and tab.token == 0:
+            tab.load()
+
+    tabs.on_change("active", on_tab)
+    doc.add_root(tabs)
     doc.title = "PAB viz"
     doc.on_session_destroyed(lambda ctx: tab.store.close())

@@ -488,13 +488,6 @@ def profile_notes(sel: Selection, layers: vargo.BbpLayers | None, recomputed: di
         notes.append(f"No MLD for this profile: no ML mean; depth shown to {NO_MLD_DEPTH:.0f} m.")
     elif _finite(m.get("bbp700")) and not _finite(m.get("bbp700_std")):
         notes.append("The stored ML std is missing, so the Argo mean is drawn without a band.")
-    if layers is not None and layers.n and layers.ingest_differs:
-        notes.append(
-            f"The stored ML mean ({fmt(layers.ingest_mean)} m⁻¹, n={layers.ingest_n}) comes "
-            "from the ingest de-spike, which runs over every pressure level: with BBP700 on "
-            "only some levels it de-spikes nothing and copies samples into the empty levels. "
-            f"Over the {layers.n_samples_ml} BBP700 samples in the ML, de-spiked sample to "
-            f"sample, the mean is {fmt(layers.mean)} m⁻¹ (n={layers.n}, dotted line; AP-Q16).")
     if recomputed is not None:
         stored, new = m.get("bbp700"), recomputed.get("bbp700", np.nan)
         if not vargo.reproduces(stored, new):

@@ -500,14 +500,27 @@ when they run.
 An interactive Bokeh server for exploring the matchups
 (`claude_prompts/viz_tools.md`). It is **read-only**: the DB is opened with a
 `mode=ro` URI, chain NPZs are only read, and fetched Argo profiles are held
-in memory only. Tab 1, **Argo + PACE**, shows a float's `b_bp(700)` profile
-beside the PACE `Rrs` and its BING fit for one `wmo` + `cycle`.
+in memory only.
+
+- **Tab 1, Argo + PACE:** a float's `b_bp(700)` profile beside the PACE
+  `Rrs` and its BING fit, for one `wmo` + `cycle`.
+- **Tab 2, Global:** every matchup of a BING family on a world map, with:
+  - a colour variable: Argo / PACE `b_bp`, `dbbp`, log ratio, `Adg`,
+    `S_dg`, `β`, Chl;
+  - an editable colour range;
+  - a linked Argo vs PACE scatter and histogram;
+  - statistics over the selection or the visible region;
+  - filters.
+
+  Tap a matchup, then press **Open in Argo + PACE**. The basemap tiles
+  (Esri) need internet.
 
 ```bash
 # workstation or laptop, any shell (ocean14 env, after `pip install -e . --no-deps`)
 pab-viz --db "$PAB_DATA_DIR/v2/pab.db" --show            # or: python -m pab.viz …
 pab-viz --db …/pab.db --wmo 4902680 --cycle 6 --show    # open a profile directly
 # browser: http://localhost:5006/?wmo=4902680&cycle=6&version=2.1
+# browser: http://localhost:5006/?tab=global       # open on the Global tab
 ```
 
 | Flag | Meaning |

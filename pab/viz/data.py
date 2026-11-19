@@ -222,3 +222,53 @@ def giop_fit(store, matchup_id: str, pixel_id=None) -> dict[str, Any] | None:
         "bbp700": bbp700,
         "bbp700_unc": float(unc442 * factor) if np.isfinite(unc442) else np.nan,
     }
+
+
+# -- all matchups (Global explorer) ------------------------------------------
+#: ``fit_results`` quantities added to the explorer frame, by column name.
+EXPLORER_QUANTITIES = {"adg": "Adg", "sdg": "Sdg", "beta": "beta"}
+
+
+def explorer_frame(store, family: str | None = None, *,
+                   model_pair: str = DEFAULT_MODEL_PAIR) -> pd.DataFrame:
+    """One row per matchup of BING family ``family`` (patches overlaid).
+
+    :func:`compare.gather_matchups` (position, time, Argo and BING ``b_bp`` /
+    Chl, ``chisq``, ``bbp_bing_implausible``, …), **ungated**, plus the fit's
+    LM ``success``, the matchup's ``distance_km`` / ``dtime_hours`` and the
+    stored medians of ``Adg`` (at 400 nm), ``Sdg`` and ``beta``.
+    """
+    if family is None:
+        fams = version_families(store)
+        family = fams[0] if fams else None
+    if family is None:
+        return pd.DataFrame()
+    versions = family_members(store, family)
+    df = compare.gather_matchups(store, model_pair=model_pair, pab_version=versions)
+    if df.empty:
+        return df
+    clause, params = compare._version_clause("f.pab_version", versions)
+    pivots = ", ".join(
+        f"MAX(CASE WHEN r.quantity = '{_q(model_pair, q)}' THEN r.value END) AS {col}"
+        for col, q in EXPLORER_QUANTITIES.items()
+    )
+    rows = store.query(
+        f"""
+        SELECT f.fit_id, f.success, m.distance_km, m.dtime_hours, {pivots}
+        FROM fits f
+        JOIN matchups m ON m.matchup_id = f.matchup_id
+        LEFT JOIN fit_results r ON r.fit_id = f.fit_id
+        WHERE f.algorithm = 'BING' AND f.model_pair = ? {clause}
+        GROUP BY f.fit_id
+        """,
+        (model_pair, *params),
+    )
+    extra = pd.DataFrame([dict(r) for r in rows])
+    if extra.empty:
+        return df
+    return df.merge(extra, on="fit_id", how="left")
+
+
+def _q(model_pair: str, short: str) -> str:
+    """The ``fit_results.quantity`` name of a BING parameter."""
+    return f"BING_{model_pair}_{short}"

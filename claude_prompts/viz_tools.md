@@ -256,17 +256,23 @@ The views themselves come one prompt at a time (I-Q5).*
 
 ### Status (2026-11-19)
 
-**Built: the Argo + PACE tab** (Argo+PACE prompt 3). Modules:
+**Built:**
+- **the Argo + PACE tab** (Argo+PACE prompt 3);
+- **the Global tab** (Global explorer prompt 3).
+
+Modules:
 
 | File | What it holds |
 |---|---|
-| `pab/viz/data.py` | read-only `open_store`, `set_data_dir`, `has_chains`; families (`version_families`, `family_label`); `wmos_with_matchups`, `cycles_for_wmo`, `matchup_for`, `bing_fit` (overlaid, best rank), `giop_fit` |
+| `pab/viz/data.py` | read-only `open_store`, `set_data_dir`, `has_chains`; families (`version_families`, `family_label`); `wmos_with_matchups`, `cycles_for_wmo`, `matchup_for`, `bing_fit` (overlaid, best rank), `giop_fit`, `explorer_frame` (all matchups of a family + `success`, Δx/Δt, `Adg`/`Sdg`/`beta`) |
 | `pab/viz/fits.py` | `reconstruct(db_path, fit_id)` → `FitCurves` (LRU 64, own store per call), `observed_spectrum`, `adg_at` (`a_dg(440)` per sample) |
 | `pab/viz/argo.py` | `fetch_argo_profile` (LRU 128, ingest's src/mode), `despike_samples` (3-pt median over the BBP700 samples only, AP-Q16), `bbp_layers` (de-spike / in-ML / IQR-kept / dropped, plus the `ingest_*` statistics as stored), `recompute_summary`, `reproduces` |
 | `pab/viz/bokeh_argo_pace.py` | `ArgoPaceView` (figures, sources, `show_*`), `load_selection`, `profile_notes`, server-free `make_argo_pace` |
-| `pab/viz/app.py` | `ArgoPaceTab` (controls, URL args, background jobs with a stale-token guard), `make_document` |
+| `pab/viz/global_explorer.py` | `GlobalTab` (map, scatter, histogram, statistics, card, filters); pure helpers `derive`, `apply_filters`, `default_range`, `histogram`, `stats_rows`, `mercator`; `VARIABLES`; per-server frame cache. Named so because `global` is a Python keyword. |
+| `pab/viz/app.py` | `ArgoPaceTab` (controls, URL args, background jobs with a stale-token guard, `show()` for the Global tab), `make_document` (both tabs; `?tab=global`; tab 1 loads lazily) |
 | `pab/viz/__main__.py` | the `pab-viz` launcher and its capability report |
 | `pab/tests/test_viz_argo_pace.py` | 11 tests, no network |
+| `pab/tests/test_viz_global.py` | 5 tests, no network |
 
 `setup.py` registers `pab-viz`. Launch notes are in HOWTO §5d.
 
@@ -410,7 +416,319 @@ my answers to AP-Q16 and Q17 and respond accordingly.
 I will then test the new code further.
 Use Opus 5.5. Log your work.
 
+6. I am still confused about the IQR-rejected points.  Examining the output for
+1902368/25, there are 5 points marked as IQR-rejected.  I wouldn't expect them to 
+be part of the de-spiked profile.  Please explain further and point me to code 
+to inspect.
+Use Opus 5.5. Log your work.
+
+### Global explorer
+
+1. Now, I wish to have a tool that shows the results for all matchups across the ocean.
+It will be interactive and allow the user to select the variables to plot.  Start with 
+at least:  `bbp` from Argo and PACE (separately), and the fractional error between the two.
+`dbbp = (bbp_argo - bbp_pace) / bbp_pace`.
+I wish to be able to zoom in on regions and then select an individual matchup to
+launch the Argo+PACE tool.
+Before writing the code, please discuss this idea with me in the `Q&A/Global explorer` section.
+Use Opus 5.5. Log your work.
+
+2. I have answered the questions in the Q&A/Global explorer section.  Please review my answers 
+and continue the discussion.  Do not generate the code yet.
+Use Opus 5.5. Log your work.
+
+3. I have answered the next round of questions in the Q&A/Global explorer section.  
+Please review my answers and then proceed to write the Global explore tool in `pab/viz/global.py`.
+And make the (minor) edits to the Argo+PACE tool to remove the one-line note.
+Use Opus 5.5. Log your work.
+
+4. Here are a few edits for the two tools.
+
+   Global tool:
+
+   - Please swap the axes on the Argo vs. PACE scatter plot.  Put PACE on the y-axis
+
+   Argo+PACE tool:
+
+   - The reset button for the Rrs spectrum does not typically show the original view.  It is often 
+   significantly offset making the data hard to view.  Fix
+   - Include a way to toggle between linear and log10 scaling of the Rrs spectrum.
+   Keep the residuals in linear scale.
+
 ## Q&A
+
+### Global explorer
+
+*Round 1 (2026-11-19). Answer inline under each **Your answer:**. Where I
+have a recommendation it is marked. No code until you have answered.*
+
+**What the data look like** (live v2 DB, read-only, measured today):
+- **Rows.** `compare.gather_matchups` returns **15,971 matchups** for the
+  2.1 family in **0.4 s**, one row per matchup with the rank-1 pixel. The
+  columns:
+  - position and time, `wmo`, `cycle`;
+  - `bbp_argo`, `chla_argo`;
+  - `bbp_bing` and its 5–95 %, `chl_bing`, `chisq`;
+  - `n_neg_blue`, `bbp_bing_implausible`, `fit_id`, `pab_version`.
+- **Coverage.** 697 have no Argo `b_bp`, which leaves 15,274 with a `dbbp`.
+  86 of the 2.1 fits have LM `success = 0`. Latitudes run from 77.4°S to
+  78.8°N (1–99 %: 60°S–68°N). Dates span 2024-03 to 2026-08.
+- **`dbbp = (bbp_argo − bbp_pace)/bbp_pace` is very skewed:**
+  - 1 / 5 / 25 / 50 / 75 / 95 / 99 % = −0.80 / −0.71 / −0.50 / **−0.25** /
+    +0.12 / +2.3 / **+141**;
+  - 7.9 % of matchups have `dbbp` > 1;
+  - it is bounded below by −1 but unbounded above, because a small
+    `bbp_pace` in the denominator blows it up.
+
+  That drives GE-Q3.
+
+**My sketch** (each piece is open below): a **second tab, "Global"**, in the
+same `pab-viz` server, built from the frame above:
+- a **world map** of the matchups, coloured by the chosen variable;
+- linked to an **Argo vs PACE scatter** and a **histogram** of the
+  variable;
+- a **statistics box** for what is currently visible or selected;
+- **tap a matchup** → the Argo + PACE tab opens on that `wmo`/`cycle`.
+
+Everything stays read-only. No Argo re-fetch happens at this scale: the
+Argo values are the stored ML means.
+
+**GE-Q1. How does a picked matchup open the Argo + PACE tool?**
+
+- **A** *(recommended)*. In the same session: tap a point to select it (a
+  card shows its values), then press **"Open in Argo + PACE"**. That switches
+  to tab 1 with the `wmo`/`cycle` set, and the map keeps its zoom when you
+  come back. The card also has a link to open it in a new browser tab
+  (`/?wmo=…&cycle=…`).
+- **B**. Tap opens a new browser tab straight away. Simple, but a stray tap
+  spawns tabs.
+- **C**. Tap switches tabs immediately, with no confirm step.
+
+**Your answer:**  We will use your recommendation.
+
+**GE-Q2. The map.**
+
+- **A** *(recommended)*. Web-Mercator with a light tile basemap (CartoDB
+  Positron, which ships with Bokeh). The browser fetches the tiles, so this
+  needs internet, as the Argo fetch already does. Mercator stretches above
+  ~65°, but only ~1 % of the matchups are there.
+- **B**. Plain lon/lat (equirectangular) with Natural Earth coastlines drawn
+  as lines. Works offline and is undistorted in latitude, but there is no
+  bathymetry or labels, and it needs a coastline file in the repo or
+  `cartopy`.
+- **C**. A, with B as an automatic fallback when no tiles load.
+
+**Your answer:**  Let's try A
+
+**GE-Q3. Colouring `dbbp`, given its +141 tail.**
+
+- **A** *(recommended)*. Plot `dbbp` exactly as you defined it, on a
+  diverging palette centred at 0 and **clipped to [−1, +1]**, with the
+  colour bar marked "≥ +1". The exact value is in the hover and the card.
+  Also offer **`log10(bbp_argo / bbp_pace)`** as a symmetric alternative,
+  clipped to ±1 dex.
+- **B**. `dbbp` only, with a percentile-based colour range (e.g. 2–98 %).
+- **C**. Change the definition to `(argo − pace)/argo`, or to the log
+  ratio only.
+
+**Your answer:**  I like the recommendation.  I would also like to be able to
+modify the color range, if possible.
+
+**GE-Q4. The variable list (colour and histogram).** Your three, plus what
+the frame already has. Pick from these (my recommended starting set is
+marked ★):
+
+| variable | note |
+|---|---|
+| ★ `bbp_argo`, ★ `bbp_pace` | log colour scale |
+| ★ `dbbp`, ★ `log10(argo/pace)` | GE-Q3 |
+| ★ `chl_argo`, ★ `chl_pace`, and their log ratio | Argo Chl is uncorrected (×2 bias known) |
+| ★ `χ²_red`, ★ PACE 5–95 % width of `b_bp` (relative) | fit quality |
+| `β` (b_bp slope), `a_dg(440)` / `S_dg` | needs one extra `fit_results` join; `a_dg(440)` needs the chains, so it is **not** offered |
+| Δx (km), Δt (h), MLD | from `matchups` / `mld_summary` (one join) |
+| month / season, basin (`compare.add_strata`) | categorical colour |
+| NASA-GIOP `b_bp(700)` and its `dbbp` | from `gather_nasa_giop` |
+
+**Your answer:** Let's do:
+   - bbp_argo and bbp_pace
+   - dbbp
+   - log10(bbp_argo / bbp_pace)
+   - a_dg(440) 
+   - S_dg
+   - b_bp_slope
+   - All 3 Chl options (Chl_argo, Chl_pace, and their ratio)
+
+**GE-Q5. Which panels besides the map?**
+
+- **A** *(recommended)*. Map (large) + an **Argo vs PACE `b_bp` log-log
+  scatter** with the 1:1 line + a **histogram** of the colour variable,
+  all three **linked**: a box or lasso selection on any of them highlights
+  the same matchups in the others. Plus the **statistics box**: N, median
+  `dbbp`, median ratio, log-RMSE, r, computed over the selection, or over
+  what is visible on the map when nothing is selected.
+- **B**. Map + statistics box only. Lighter, but you lose the "where do the
+  outliers on the scatter sit?" question.
+- **C**. A, plus a time series of `dbbp` (date on x).
+
+**Your answer:**  Yes, let's do A
+
+**GE-Q6. Filters.**
+
+- **A** *(recommended)*:
+  - BING version family (as in tab 1);
+  - **hide implausible PACE `b_bp`** (`compare.gate_bbp`; on by default);
+  - **LM success only** (on by default);
+  - **χ²_red ≤ x** (slider);
+  - **date range**;
+  - **Δt ≤ x h**.
+
+  The statistics follow the filters.
+- **B**. No default-on filters: show everything, filters off.
+- **C**. A plus `n_neg_blue = 0` and a basin selector.
+
+**Your answer:**  I like the A filters.  Include them
+
+**GE-Q7. The stored Argo `b_bp` and the de-spike bug.** Until
+`de-spike-fix.md` runs, `bbp_argo` here is the stored (column-recipe)
+mean. The survey says that is a median 0.5 % effect, so it is negligible on
+a global map.
+
+- **A** *(recommended)*. Use the stored values. Put a one-line note under
+  the statistics box. When the fix lands (DS-Q1), switch to the corrected
+  values through `gather_matchups`, with no change to the explorer.
+- **B**. Wait for the de-spike fix before building this tab.
+
+**Your answer:**  Use the stored values and do not add the one-line note.
+Also, let's remove that one-line note from the Argo+PACE tool.
+
+**GE-Q8. Order of work.**
+
+- **A** *(recommended)*. Build GE in one go: the data frame, the map with
+  colour and filters, the linked scatter and histogram, statistics, and
+  open-in-tab-1. Then iterate on the layout with you, as with Argo + PACE.
+- **B**. First the map, the variable selector and open-in-tab-1 only; the
+  linked panels and statistics in a second prompt.
+
+Either way, the AP-Q18 display change (A or B) can ride along in the same
+prompt once you have answered it.
+
+**Your answer:** Go with A.
+
+#### Round 1 resolved (2026-11-19)
+
+| Q | Decision |
+|---|---|
+| GE-Q1 | A: tap → card → "Open in Argo + PACE" switches tabs in the same session; the card also links to a new browser tab |
+| GE-Q2 | A: Web-Mercator with the CartoDB Positron tiles |
+| GE-Q3 | A: `dbbp` on a diverging palette clipped to [−1, +1], plus `log10(argo/pace)`; **plus a user-editable colour range** (GE-Q10) |
+| GE-Q4 | `bbp_argo`, `bbp_pace`, `dbbp`, `log10(bbp_argo/bbp_pace)`, **`a_dg(440)`** (GE-Q9), `S_dg`, `β`, `chl_argo`, `chl_pace`, the Chl ratio (GE-Q11) |
+| GE-Q5 | A: map + linked Argo vs PACE scatter + histogram + statistics box |
+| GE-Q6 | A: version family, implausible-`b_bp` gate (on), LM success only (on), χ²_red ≤ x, date range, Δt ≤ x h |
+| GE-Q7 | Stored Argo values, **no note** here; and **remove the de-spike note from the Argo + PACE tool** (scope in GE-Q12) |
+| GE-Q8 | A: build it all in one go, then iterate |
+
+#### Round 2 (2026-11-19)
+
+**GE-Q9. `a_dg(440)` for 15,971 fits.** It is not stored. `fit_results`
+holds the medians and 5–95 % of `Adg` (at 400 nm) and `Sdg`, but not
+`a_dg(440)`. I measured both routes on 40 random 2.1 fits:
+
+- **Plug-in** `Adg_med · exp(−Sdg_med · 40)`, from the stored medians,
+  against the posterior median from the chains: the ratio is
+  **0.989 / 1.004 / 1.014** (5 / 50 / 95 %). That is at most ~1.4 %, far
+  below anything visible on a map.
+- **From the chains:** 0.02 s per fit, so ~5 min for all 15,971. All 15,971
+  chain files are present on the workstation (and the 2.1 chains are on the
+  laptop, I-Q10).
+
+Options:
+- **A** *(recommended)*. Plug-in from the stored medians: instant, no chain
+  I/O. The hover says "from median Adg, Sdg". The Argo + PACE card keeps the
+  exact posterior value.
+- **B**. Posterior medians from the chains, computed in a background thread
+  at server start (~5 min, memory only). The variable greys out until it is
+  ready.
+- **C**. A for the map; B on demand only for the selection.
+
+**Your answer:**  Sorry, just use Adg at 400nm.  Nevermind 440nm
+
+**GE-Q10. The editable colour range.**
+
+- **A** *(recommended)*:
+  - two number boxes (**low**, **high**) under the variable selector, plus
+    an **"auto"** button that restores the default;
+  - the default is 2–98 % of the filtered values, except [−1, +1] for
+    `dbbp` and ±1 dex for the log ratios;
+  - values are entered in the variable's own units, even for the log-coloured
+    ones (`b_bp`, Chl, `a_dg`);
+  - each variable remembers its own range for the session;
+  - the histogram uses the same range and marks the clipped tails.
+- **B**. A range slider. Quicker to drag, but awkward over 3 decades of
+  `b_bp`.
+
+**Your answer:** Yes, use your recommendation.
+
+**GE-Q11. Which Argo Chl?** `gather_matchups` gives `chla_argo` = the
+**raw** `mld_summary.chla` (15,410 of 15,971 matchups). `chla_adjusted`
+exists for only part of the fleet (often not yet delayed-mode).
+
+- **A** *(recommended)*. Raw `chla`, as in the report and the matchup
+  tables, and the ratio as `log10(chl_argo / chl_pace)`. The ×2
+  uncorrected-fluorometer bias is a known, documented effect.
+- **B**. `chla_adjusted` where present, else raw. That mixes two
+  calibrations on one map.
+- **C**. Both as separate variables (raw and adjusted, the adjusted one
+  sparser).
+
+**Your answer:** Let's do A.
+
+**GE-Q12. What exactly leaves the Argo + PACE tool (GE-Q7)?** The prompt-4
+de-spike display has three parts:
+1. the **note** above the panels ("The stored ML mean … AP-Q16");
+2. the **dotted** "ML mean, sample de-spike" line;
+3. the grey **second line** under the Argo `b_bp(700)` in the table.
+
+The black de-spiked line through the samples is not part of this: it is the
+sample-to-sample median and is correct either way.
+
+- **A** *(recommended)*. Remove the note (1) only. Keep 2 and 3: they are
+  quiet and show the size of the effect on each profile until the de-spike
+  fix lands.
+- **B**. Remove all three. The tool shows only the stored mean (and the
+  black de-spiked line).
+
+**Your answer:**  Correct, remove the note only.
+
+**GE-Q13. The statistics box.**
+
+- **A** *(recommended)*. Two rows, `b_bp(700)` and Chl, always shown,
+  whatever variable colours the map. Each row has the
+  `compare.log_comparison` set: N, median ratio Argo/PACE with its IQR,
+  Spearman r, log bias, log RMS, log MAD. The `b_bp` row also has the
+  median `dbbp`. Statistics cover the selection, or the visible map region
+  when nothing is selected, always after the filters.
+- **B**. One row for the colouring variable only (its N, median, IQR).
+
+**Your answer:**  Let's try the recommended.
+
+**Still open from Argo+PACE:** AP-Q18 (the IQR-rejected display, and an IQR
+floor as DS-Q8 in `de-spike-fix.md`) has no answer yet. If you answer it
+now, it rides along with the GE build (GE-Q8).
+
+#### Round 2 resolved (2026-11-19)
+
+| Q | Decision |
+|---|---|
+| GE-Q9 | Colour by **`Adg` (= `a_dg(400)`)**, the stored median, not `a_dg(440)` |
+| GE-Q10 | A: low / high boxes + "auto", remembered per variable |
+| GE-Q11 | A: raw Argo `chla`; the ratio is `log10(chl_argo/chl_pace)` |
+| GE-Q12 | Remove only the note from Argo + PACE; keep the dotted line and the grey table line |
+| GE-Q13 | A: `b_bp` and Chl rows of `log_comparison`, Argo over PACE |
+| AP-Q18 | Keep the recipe and the legend (C); no DS-Q8 |
+
+**Built 2026-11-19**, see Code / Status. The one deviation from GE-Q2: CARTO's
+Positron tiles now return "API KEY REQUIRED", so the map uses Esri's World
+Gray Canvas (key-free, same light look).
 
 ### Argo+PACE
 
@@ -754,6 +1072,75 @@ Options:
   the sample de-spike as the dotted line, a second table line and a note.
 - **AP-Q17 = A.** No change: the de-spiked line runs through the whole
   profile, and the log-IQR filter stays as it is.
+
+#### Round 4 (2026-11-19, from prompt 6)
+
+**AP-Q18. Why the IQR-rejected points sit on the de-spiked profile
+(1902368/25).**
+
+*Explanation.* The recipe has three steps, in this order:
+
+1. **De-spike the whole profile.** Take the 3-point moving median of
+   `BBP700`, sample to sample. The result is the black line: one de-spiked
+   value per sample.
+2. **Select the mixed layer.** Keep the de-spiked values at `PRES ≤ MLD`.
+3. **IQR-filter those de-spiked ML values** in `log10`: keep
+   `[Q1 − 1.5·IQR, Q3 + 1.5·IQR]`. The mean, std and n are taken over the
+   kept values only.
+
+So the IQR filter does not act on the raw samples. It acts on the
+**de-spiked** values, and it removes them from the **mean**, not from the
+profile. A rejected point is by construction a point of the de-spiked
+profile, and the red × is drawn at its de-spiked value (the hover also shows
+the raw value).
+
+*What happens on 1902368/25* (MLD 44.9 m, 22 samples in the ML):
+
+| depth (dbar) | raw | de-spiked | IQR |
+|---|---|---|---|
+| 5.8 | 0.001883 | 0.001852 | rejected (high) |
+| 7.8 | 0.001852 | 0.001852 | rejected (high) |
+| 21.7 | 0.001694 | 0.001800 | rejected (high) |
+| 39.9 | 0.001679 | 0.001608 | rejected (low) |
+| 43.9 | 0.001623 | 0.001604 | rejected (low) |
+
+- The ML is very homogeneous. In `log10` the quartiles are Q1 = −2.7759 and
+  Q3 = −2.7658, an IQR of only **0.010 dex (2.3 %)**.
+- The kept window is therefore 0.001618–0.001775 m⁻¹, only ±4.6 % around the
+  median. Five ordinary values, 3–9 % off the median, fall outside it.
+- These are **not spikes**. They are normal sensor scatter, and two of them
+  (39.9 and 43.9 dbar) are the slight decrease at the base of the ML.
+- The effect on the mean is small: kept 17 → 0.0016916 m⁻¹; all 22 →
+  0.0017033 m⁻¹ (+0.7 %). The std falls from 6.4e-5 to 2.9e-5. So the
+  strictness mostly makes the **std** look smaller than the real scatter.
+- The rejection rule is relative to the spread of the profile itself: a
+  tight profile gets a tight window. On a noisier profile (e.g. 4903848/69)
+  the same rule rejects only the real 2-sample spike.
+
+*Code to inspect:*
+
+| step | file:line |
+|---|---|
+| 3-pt median (the filter) | [summary.py:30](../pab/argo/summary.py#L30) `moving_median` |
+| log-IQR mask | [summary.py:66](../pab/argo/summary.py#L66) `iqr_inlier_mask` (k = 1.5; fewer than 4 points → keep all) |
+| ingest order: de-spike (column, the bug), ML, IQR, mean | [summary.py:100](../pab/argo/summary.py#L100) `mixed_layer_mean`, lines 137–145 |
+| viz order: de-spike (samples), ML, IQR, mean | [argo.py:117](../pab/viz/argo.py#L117) `bbp_layers`, lines 124–135 (`despike_samples` at line 102) |
+| where the × is drawn (at the de-spiked value) | [bokeh_argo_pace.py:402](../pab/viz/bokeh_argo_pace.py#L402) |
+
+*Options:*
+- **A**. Keep the recipe. Make the display say what it does: rename the
+  legend entry to "excluded from ML mean (log-IQR)", and add the kept
+  window as a light vertical band over 0→MLD, so you can see why each × is
+  out.
+- **B** *(recommended)*. A, **plus** add a floor on the IQR to
+  `de-spike-fix.md` as DS-Q8. Use
+  `max(IQR, 0.02 dex)` or `k = 3`, so that a homogeneous ML is not trimmed
+  of ordinary scatter. Bisson et al. meant the filter for outliers, not for
+  ±5 % noise. The change would be made and measured with the de-spike fix,
+  in the same refresh.
+- **C**. Leave it all as is (AP-Q17 = A stands).
+
+**Your answer:**  Keep the recipe.  No need to rename the Legend
 
 ### Init
 
@@ -1178,3 +1565,156 @@ Checked while writing it:
 
 No code was changed in this prompt and no DB was touched. The prompt-4 viz
 changes are what JXP will test next.
+
+### 2026-11-19 (Argo+PACE prompt 6: the IQR-rejected points on 1902368/25 explained; AP-Q18 posed)
+
+With Claude Opus 5.5. JXP asked why the 5 IQR-rejected points of 1902368/25
+are part of the de-spiked profile.
+
+**The answer.** The order is de-spike → ML → IQR on the de-spiked values →
+mean. Rejection removes values from the mean, not from the profile, so a
+rejected point is always on the de-spiked line.
+
+**Traced live on 1902368/25:**
+- 22 samples in the ML; log10 IQR = 0.010 dex (2.3 %); kept window
+  0.001618–0.001775 m⁻¹ (±4.6 %).
+- The 5 rejected values are ordinary scatter, 3–9 % from the median, not
+  spikes. Two of them are the decrease at the base of the ML.
+- Mean: 0.0016916 m⁻¹ kept vs 0.0017033 m⁻¹ for all 22 (+0.7 %). Std:
+  2.9e-5 vs 6.4e-5.
+
+All of this is in Q&A / AP-Q18, with file:line pointers to the code.
+AP-Q18 offers A (clarify the display), B (A, plus an IQR floor added to
+`de-spike-fix.md` as DS-Q8; recommended) or C (no change). No code was
+changed and no DB was touched.
+
+### 2026-11-19 (Global explorer prompt 1: the all-matchup explorer discussed; GE-Q1 to GE-Q8 posed; no code)
+
+With Claude Opus 5.5. JXP wants an interactive view of every matchup:
+- a variable selector, starting with Argo and PACE `b_bp` and
+  `dbbp = (bbp_argo − bbp_pace)/bbp_pace`;
+- zoom on a region, then pick a matchup to open it in the Argo + PACE tool.
+
+**Measured for the discussion** (live v2 DB, read-only):
+- `compare.gather_matchups` gives 15,971 rows for the 2.1 family in 0.4 s.
+  Of these, 15,274 have a `dbbp`, 697 lack an Argo `b_bp`, and 86 fits have
+  LM `success = 0`.
+- Latitude runs 77.4°S–78.8°N.
+- `dbbp` percentiles (1 / 25 / 50 / 75 / 99 %) are −0.80 / −0.50 /
+  **−0.25** / +0.12 / **+141**, with 7.9 % above +1. The heavy upper tail
+  comes from the `bbp_pace` denominator, which is why GE-Q3 recommends a
+  clipped colour bar plus a log-ratio alternative.
+
+**The proposed design**, all of it in Q&A / Global explorer Round 1:
+- a second "Global" tab in `pab-viz`;
+- a tiled Web-Mercator map;
+- a linked Argo vs PACE scatter and histogram;
+- a statistics box over the selection or the visible region;
+- filters, with the implausible-`b_bp` gate and LM success on by default;
+- "Open in Argo + PACE" switching tabs in the same session.
+
+The questions are GE-Q1 (pick → tool), GE-Q2 (map), GE-Q3 (`dbbp`
+colouring), GE-Q4 (variables), GE-Q5 (panels), GE-Q6 (filters), GE-Q7
+(stored Argo values vs the pending de-spike fix) and GE-Q8 (order of work).
+
+No code was written and no DB was touched.
+
+### 2026-11-19 (Global explorer prompt 2: round-1 answers reviewed; GE-Q9 to GE-Q13 posed; no code)
+
+With Claude Opus 5.5. JXP took the recommendation on every GE question,
+with three additions (recorded under "Round 1 resolved"):
+- a user-editable colour range;
+- `a_dg(440)`, `S_dg` and `β` in the variable list;
+- no de-spike note in the Global tab, and the note removed from the Argo +
+  PACE tool too.
+
+**Measured for round 2** (live v2 DB, read-only):
+- 2.1 `fit_results` holds `Adg`, `Sdg`, `beta`, `chl`, `bbp700`, `Bnw`,
+  `Aph`, `Bp`, `anw440/700`, `bbp440` and `n_neg_blue`. There is no
+  `a_dg(440)`.
+- **`a_dg(440)`:**
+  - the plug-in `Adg_med · exp(−40 Sdg_med)` matches the chain posterior
+    median to 0.989 / 1.004 / 1.014 (5 / 50 / 95 %, 40 random fits);
+  - chain loading costs 0.02 s per fit (~5 min for all), and all 15,971
+    chain files are present.
+- `chla_argo` (raw) is present for 15,410 matchups.
+- `compare.log_comparison` returns n, median_ratio, IQR, spearman,
+  log_bias, log_rms and log_mad.
+
+**Round 2 questions:**
+- GE-Q9: `a_dg(440)` plug-in vs chains;
+- GE-Q10: the colour-range control;
+- GE-Q11: which Argo Chl;
+- GE-Q12: which of the three prompt-4 de-spike display parts to remove
+  from Argo + PACE;
+- GE-Q13: the statistics box.
+
+AP-Q18 is still unanswered and flagged. No code was written and no DB was
+touched.
+
+### 2026-11-19 (Global explorer prompt 3: round-2 answers folded in; the Global tab built, tested and run; Argo + PACE note removed)
+
+With Claude Opus 5.5. Decisions are recorded under "Round 2 resolved"
+(Global explorer), including AP-Q18 = keep as is.
+
+**Code:**
+- **`pab/viz/global_explorer.py`** (new). JXP asked for `global.py`, but
+  `global` is a Python keyword, so `import pab.viz.global` would be a
+  syntax error.
+  - **Map:** Web-Mercator with WebGL points, coloured by one of 10 variables
+    (GE-Q4 with `Adg` per GE-Q9).
+  - **Colour:** a log mapper (Viridis) for `b_bp` / Chl / `Adg`, a linear
+    one for `S_dg` / `β`, and a diverging one (RdBu, blue = Argo < PACE)
+    clipped to ±1 for `dbbp` and the log ratios. low / high / auto are
+    remembered per variable, and invalid input shows a message. The colour
+    bar is under the map.
+  - **Linked panels:** the map and the log-log Argo vs PACE scatter share one
+    source, so selections are linked. Selecting histogram bars selects their
+    matchups, and the selected subset is overlaid in orange. The title counts
+    the values clipped below and above the range.
+  - **Statistics:** `log_comparison(argo, pace)` for `b_bp` (plus median
+    `dbbp`) and Chl, over the selection, else over the visible map region
+    (recomputed on pan/zoom), after the filters.
+  - **Filters:** version family; implausible PACE `b_bp` hidden by default
+    (`gate_bbp` semantics: the value goes NaN, the row and its Chl stay);
+    LM success only (on by default); χ²_red ≤ x; date range; Δt ≤ x h.
+  - **Card:** for one tapped matchup, with "Open in Argo + PACE" (switches
+    tab, one load only, via `ArgoPaceTab.show` with a quiet flag) and a
+    new-browser-tab link.
+- **`data.explorer_frame`:** `gather_matchups` (patches overlaid) plus one
+  pivot query for `success`, Δx/Δt and `Adg`/`Sdg`/`beta`. Live: 15,971 rows
+  in 0.7 s, cached per server.
+- **`app.py`:** a second tab; `?tab=global` opens on it. Tab 1 then skips its
+  start-up fetch and loads when first shown.
+- **Argo + PACE (GE-Q12):** the de-spike note is removed from
+  `profile_notes`. The dotted line and the grey table line stay.
+
+**Found while running it:**
+- **CARTO tiles need an API key now:** the screenshots showed "API KEY
+  REQUIRED". Switched to `Esri.WorldGrayCanvas` (constant `TILES`).
+- **The diverging palette was flipped at first:** Bokeh's `RdBu11` already
+  runs blue → red.
+- **The colour bar first sat right of the map.** Its label width changed
+  the map's visible extent, and with it the "visible" statistics, per
+  variable. Moved below the map.
+- **For JXP's attention:** the Argo vs PACE scatter shows a flat row of
+  Argo `b_bp` ≈ 0.05 m⁻¹. 86 matchups have Argo `b_bp` > 0.045, from 8
+  floats; 48 are from WMO 5907147, 18 from 4903784 and 14 from 5906885.
+  Probably sensor or float issues. Not acted on.
+
+**Verification:**
+- `pab/tests/test_viz_global.py`: 5 tests (frame from a seeded store;
+  derive / filters / gate; ranges and histogram; statistics direction; the
+  tab built headless, including the range validation, the card and
+  open-matchup). The Argo + PACE test asserts the note is gone.
+- Full suite **561 passed, 1 skipped**; `ruff` clean.
+- Live server (headless Chrome over CDP):
+  - the Global tab with `dbbp` (15,885 after the default filters; `b_bp`
+    N = 15,169, median ratio 0.747, median `dbbp` −0.25, Spearman 0.46);
+  - switched to PACE `b_bp` (log colours);
+  - selected 4902680/6 and pressed Open: tab 1 loaded it with one
+    reconstruction and one fetch, and no note;
+  - `?tab=global` triggered no tab-1 fetch until tab 1 was clicked.
+
+**Docs:** HOWTO §5d covers the Global tab and `?tab=global`. No DB or data
+file was written, and nothing was published.
