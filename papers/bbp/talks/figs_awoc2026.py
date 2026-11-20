@@ -9,6 +9,8 @@ PB24 cache (``$OS_COLOR/SD/derived/pb24_v1/``) through
 Usage:
     python papers/bbp/talks/figs_awoc2026.py                 # every figure
     python papers/bbp/talks/figs_awoc2026.py --which rrs_vs_x --wave 650
+    python papers/bbp/talks/figs_awoc2026.py --rrs             # sub-surface rrs, not Rrs
+    python papers/bbp/talks/figs_awoc2026.py --extra-bands 450 550   # 3-band panel (a)
     python papers/bbp/talks/figs_awoc2026.py --out-dir ~/Desktop/awoc/
 """
 from __future__ import annotations
@@ -17,6 +19,7 @@ import argparse
 from pathlib import Path
 
 import matplotlib as mpl
+import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
@@ -61,7 +64,9 @@ def load_pb24_band(wave: float = 650.0, theta_s: float = 0.0, theta_v: float = 0
     Returns:
         dict of float64 arrays, one value per realisation: ``a``, ``bbw``,
         ``bbp``, ``bb``, ``x`` = b_b/(a+b_b), ``bbp_frac`` = b_bp/b_b, ``Rrs``
-        (sr⁻¹, elastic only -- PB24 "no_R" has no Raman), ``C`` (mg m⁻³).
+        (above-water, sr⁻¹), ``rrs`` (just below the surface, sr⁻¹; Hydrolight's
+        own, not a Lee et al. 2002 inversion of ``Rrs``), ``C`` (mg m⁻³).
+        Both reflectances are elastic only (PB24 "no_R" has no Raman).
     """
     from robust.rt.data import pb24_cache
 
@@ -75,21 +80,33 @@ def load_pb24_band(wave: float = 650.0, theta_s: float = 0.0, theta_v: float = 0
     bbw = iop("bbw")
     bbp = iop("bbph") + iop("bbNAP")
     bb = bbw + bbp
-    rrs = cache.four_d_at("Rrs", theta_s=theta_s, theta=theta_v, phi=phi,
-                          wavelengths=wave)
+    def refl(name):
+        return np.asarray(cache.four_d_at(name, theta_s=theta_s, theta=theta_v,
+                                          phi=phi, wavelengths=wave),
+                          dtype=float).reshape(-1)
+
     return {
         "a": a, "bbw": bbw, "bbp": bbp, "bb": bb,
         "x": bb / (a + bb), "bbp_frac": bbp / bb,
-        "Rrs": np.asarray(rrs, dtype=float).reshape(-1),
+        "Rrs": refl("Rrs"), "rrs": refl("rrs"),
         "C": np.asarray(cache.table("C"), dtype=float),
     }
+
+
+#: Gordon et al. (1988) coefficients: rrs = G1 x + G2 x^2.
+GORDON_G1, GORDON_G2 = 0.0949, 0.0794
+
+
+def gordon_rrs(x):
+    """Sub-surface rrs from x = b_b/(a+b_b): Gordon et al. (1988)."""
+    x = np.asarray(x, dtype=float)
+    return GORDON_G1 * x + GORDON_G2 * x**2
 
 
 def gordon_Rrs(x):
     """Above-water Rrs from x = b_b/(a+b_b): Gordon et al. (1988) for the
     sub-surface rrs, then Lee et al. (2002) to cross the surface."""
-    x = np.asarray(x, dtype=float)
-    rrs = 0.0949 * x + 0.0794 * x**2
+    rrs = gordon_rrs(x)
     return 0.52 * rrs / (1.0 - 1.7 * rrs)
 
 
@@ -144,68 +161,120 @@ def _expit(z):
 #: Pooled bands for panel (b): 400-700 nm every 20 nm.
 POOL_WAVES = tuple(range(400, 701, 20))
 
+#: Extra panel-(a) bands next to ``wave`` (Q11). ``()`` -- the default since
+#: Q13 -- draws the single band coloured by b_bp/b_b; e.g. ``(450.0, 550.0)``
+#: gives the 3-band version.
+EXTRA_BANDS = ()
+
+#: Colour map for λ (Q9: spectral).
+CMAP_WAVE = "jet"
+
+#: Gordon et al. (1988) + Lee et al. (2002) G = Rrs/x in the limit x -> 0
+#: (0.52 * 0.0949 = 0.0493 sr^-1); the reference line in panel (b) (Q10).
+GORDON_G0 = 0.52 * GORDON_G1
+
+#: Per reflectance (prompt 5): the Gordon curve for panel (a), the x -> 0 G
+#: for panel (b), and the axis symbol.
+REFLECTANCE = {
+    "Rrs": (gordon_Rrs, GORDON_G0, r"R_{rs}", "Gordon (1988) + Lee (2002)"),
+    "rrs": (gordon_rrs, GORDON_G1, r"r_{rs}", "Gordon (1988)"),
+}
+
 
 def fig_rrs_vs_x(out=None, wave: float = 650.0, x_max: float = 0.05,
-                 pool_waves=POOL_WAVES, frac_lim=(0.02, 0.995),
-                 data: dict | None = None, pooled: dict | None = None):
+                 extra_bands=EXTRA_BANDS, pool_waves=POOL_WAVES,
+                 frac_lim=(0.02, 0.995), data: dict | None = None,
+                 use_log: bool = True, refl: str = "Rrs",
+                 pooled: dict | None = None):
     """Rrs vs b_b/(a+b_b) from PB24 Hydrolight, and what sets G = Rrs/x.
 
-    (a) Every realisation at ``wave`` with x ≤ ``x_max``: Rrs vs x (log–log),
-        coloured by b_bp/b_b on a **logit** colour scale (Q7), with the
-        Gordon (1988) + Lee (2002) curve.
+    ``refl="rrs"`` (prompt 5) uses Hydrolight's sub-surface rrs in place of the
+    above-water Rrs throughout, with the plain Gordon (1988) polynomial as the
+    reference (G -> 0.0949 sr⁻¹ as x -> 0) and no Lee et al. (2002) surface
+    term. Everything else, including the file name, is unchanged.
+
+    (a) Rrs vs x (log–log) for every realisation with x ≤ ``x_max``, with the
+        Gordon (1988) + Lee (2002) curve. With ``extra_bands`` (default
+        450, 550 nm; Q11) the bands ``wave`` + ``extra_bands`` are drawn in
+        their λ colours (the panel-(b) colour map) and labelled directly;
+        with ``extra_bands=()`` only ``wave`` is drawn, coloured by b_bp/b_b
+        on a **logit** colour scale (Q7).
     (b) Rrs/x vs b_bp/b_b, pooled over ``pool_waves`` (x ≤ ``x_max``),
-        coloured by λ, the median in b_bp/b_b bins over all bands and over
-        ``wave`` alone, and the (x-only) Gordon G as a shaded band (Q6 = b).
+        coloured by λ (``CMAP_WAVE``, Q9), the median in b_bp/b_b bins over
+        all bands and over ``wave`` alone, and the x → 0 Gordon G as a
+        dark-grey line (``GORDON_G0``, Q10).
 
     At one band x and b_bp/b_b are the same variable (a ≈ a_w, b_bw fixed);
     pooling bands decouples them and G collapses onto b_bp/b_b.
     """
-    d = data if data is not None else load_pb24_band(wave)
-    keep = d["x"] <= x_max
-    x, frac, rrs = d["x"][keep], d["bbp_frac"][keep], d["Rrs"][keep]
-    xx = np.logspace(np.log10(x.min()), np.log10(x_max), 200)
+    if refl not in REFLECTANCE:
+        raise ValueError(f"refl must be one of {list(REFLECTANCE)}, not {refl!r}")
+    gordon_curve, g0, sym, gordon_label = REFLECTANCE[refl]
+    bands_a = sorted({float(w) for w in extra_bands} | {float(wave)})
+    multi = len(bands_a) > 1
+    d = data if data is not None else load_pb24_bands(bands_a, x_max=x_max)
+    if "wave" not in d:                       # a single-band dict from load_pb24_band
+        k = d["x"] <= x_max
+        d = {key: val[k] for key, val in d.items()}
+        d["wave"] = np.full(d["x"].size, float(wave))
+    xx = np.logspace(np.log10(d["x"].min()), np.log10(x_max), 200)
 
-    pool_waves = sorted({float(w) for w in pool_waves} | {float(wave)})  # panel (a)'s band too
+    # panel (a)'s bands are always in the pool
+    pool_waves = sorted({float(w) for w in pool_waves} | set(bands_a))
     P = pooled if pooled is not None else load_pb24_bands(pool_waves, x_max=x_max)
-    pg = P["Rrs"] / P["x"]
+    pg = P[refl] / P["x"]
     pf = P["bbp_frac"]
+    wnorm = mpl.colors.Normalize(vmin=min(pool_waves), vmax=max(pool_waves))
+    wcmap = mpl.colormaps[CMAP_WAVE]
 
     with mpl.rc_context(RC):
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.8),
                                        constrained_layout=True)
 
-        # (a) whole population at one band, coloured by logit(b_bp/b_b)
-        lo, hi = frac_lim
-        norm = mpl.colors.FuncNorm((_logit, _expit), vmin=lo, vmax=hi)
-        order = np.argsort(frac)          # particle-rich points drawn on top
-        sc = ax1.scatter(x[order], rrs[order], c=np.clip(frac[order], lo, hi),
-                         cmap=CMAP_BBP_FRAC, norm=norm, s=9, linewidths=0,
-                         alpha=0.85, rasterized=True)
-        ax1.plot(xx, gordon_Rrs(xx), color=INK_2, lw=1.5, ls="--",
-                 label="Gordon (1988)")
-        cb = fig.colorbar(sc, ax=ax1, pad=0.02)
-        cb.set_ticks([t for t in (0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99)
-                      if lo <= t <= hi])
-        cb.ax.yaxis.set_major_formatter(mpl.ticker.FormatStrFormatter("%g"))
-        cb.ax.yaxis.set_minor_locator(mpl.ticker.NullLocator())
-        cb.set_label(r"$b_{bp}/b_b$ (logit scale)")
-        cb.outline.set_visible(False)
-        ax1.set_xscale("log")
-        ax1.set_yscale("log")
+        if multi:
+            # (a) several bands, each in its λ colour, drawn in one random
+            # order so no band hides another; identity via the legend
+            o = np.random.default_rng(1).permutation(d["x"].size)
+            ax1.scatter(d["x"][o], d[refl][o], c=wcmap(wnorm(d["wave"][o])), s=7,
+                        linewidths=0, alpha=0.6, rasterized=True)
+            for w in bands_a:
+                ax1.scatter([], [], color=wcmap(wnorm(w)), s=30,
+                            label=f"{w:.0f} nm (N = {(d['wave'] == w).sum():,})")
+            title_a = "/".join(f"{w:.0f}" for w in bands_a) + " nm"
+        else:
+            # (a) one band, coloured by logit(b_bp/b_b)
+            x, frac, rrs = d["x"], d["bbp_frac"], d[refl]
+            lo, hi = frac_lim
+            norm = mpl.colors.FuncNorm((_logit, _expit), vmin=lo, vmax=hi)
+            order = np.argsort(frac)          # particle-rich points drawn on top
+            sc = ax1.scatter(x[order], rrs[order], c=np.clip(frac[order], lo, hi),
+                             cmap=CMAP_BBP_FRAC, norm=norm, s=9, linewidths=0,
+                             alpha=0.85, rasterized=True)
+            cb = fig.colorbar(sc, ax=ax1, pad=0.02)
+            cb.set_ticks([t for t in (0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99)
+                          if lo <= t <= hi])
+            cb.ax.yaxis.set_major_formatter(mpl.ticker.FormatStrFormatter("%g"))
+            cb.ax.yaxis.set_minor_locator(mpl.ticker.NullLocator())
+            cb.set_label(r"$b_{bp}/b_b$ (logit scale)")
+            cb.outline.set_visible(False)
+            title_a = f"{wave:.0f} nm"
+        ax1.plot(xx, gordon_curve(xx), color=INK_2, lw=1.5, ls="--",
+                 label=gordon_label)
+        if use_log:
+            ax1.set_xscale("log")
+            ax1.set_yscale("log")
         ax1.set_xlabel(r"$b_b/(a+b_b)$")
-        ax1.set_ylabel(r"$R_{rs}$ (sr$^{-1}$)")
+        ax1.set_ylabel(rf"${sym}$ (sr$^{{-1}}$)")
         ax1.legend(loc="upper left", frameon=False)
-        ax1.set_title(f"(a) PB24 Hydrolight, {wave:.0f} nm  (N = {keep.sum():,})",
+        ax1.set_title(f"(a) PB24 Hydrolight, {title_a}  (N = {d['x'].size:,})",
                       loc="left", color=INK)
 
         # (b) G = Rrs/x vs b_bp/b_b, pooled over bands
-        g_lo, g_hi = gordon_Rrs(x.min()) / x.min(), gordon_Rrs(x_max) / x_max
-        ax2.axhspan(min(g_lo, g_hi), max(g_lo, g_hi), color=GRID, alpha=0.9,
-                    lw=0, zorder=0,
-                    label=f"Gordon (1988), $x \\leq {x_max:g}$")
+        ax2.axhline(g0, color=INK_2, lw=1.5, ls="--", zorder=3,
+                    label=gordon_label)
         rng = np.random.default_rng(0)    # random draw order: no band on top
         o = rng.permutation(pf.size)
-        sc2 = ax2.scatter(pf[o], pg[o], c=P["wave"][o], cmap="viridis", s=5,
+        sc2 = ax2.scatter(pf[o], pg[o], c=P["wave"][o], cmap=wcmap, norm=wnorm, s=5,
                           linewidths=0, alpha=0.5, rasterized=True)
         here = P["wave"] == wave
         edges = np.linspace(0.0, 1.0, 21)
@@ -221,15 +290,18 @@ def fig_rrs_vs_x(out=None, wave: float = 650.0, x_max: float = 0.05,
                  marker="o", ms=7, markeredgecolor="white", markeredgewidth=1.5,
                  label="median, all bands", zorder=4)
         if here.any():
-            ax2.plot(centres, binned_median(here), color=C_MOLECULAR, lw=2,
-                     label=f"median, {wave:.0f} nm only", zorder=5)
+            # white line with a dark outline: readable over every jet colour
+            ax2.plot(centres, binned_median(here), color="white", lw=2,
+                     label=f"median, {wave:.0f} nm only", zorder=5,
+                     path_effects=[pe.Stroke(linewidth=4, foreground=INK),
+                                   pe.Normal()])
         cb2 = fig.colorbar(sc2, ax=ax2, pad=0.02)
         cb2.set_label(r"$\lambda$ (nm)")
         cb2.outline.set_visible(False)
         cb2.solids.set_alpha(1)
         ax2.set_xlim(0, 1)
         ax2.set_xlabel(r"$b_{bp}/b_b$")
-        ax2.set_ylabel(r"$R_{rs}\,/\,[b_b/(a+b_b)]$ (sr$^{-1}$)")
+        ax2.set_ylabel(rf"${sym}\,/\,[b_b/(a+b_b)]$ (sr$^{{-1}}$)")
         ax2.legend(loc="upper right", frameon=False)
         ax2.set_title(f"(b) {min(pool_waves):.0f}–{max(pool_waves):.0f} nm pooled "
                       f"(N = {pf.size:,})", loc="left", color=INK)
@@ -244,7 +316,7 @@ def fig_rrs_vs_x(out=None, wave: float = 650.0, x_max: float = 0.05,
 
 
 FIGURES = {
-    "rrs_vs_x": (fig_rrs_vs_x, "pb24_rrs_vs_x_{wave:.0f}.png"),
+    "rrs_vs_x": (fig_rrs_vs_x, "pb24_rrs_vs_x_{bands}.png"),
 }
 
 
@@ -253,13 +325,21 @@ def main(argv=None):
     p.add_argument("--which", nargs="+", choices=list(FIGURES), default=list(FIGURES))
     p.add_argument("--wave", type=float, default=650.0, help="Wavelength (nm).")
     p.add_argument("--x-max", type=float, default=0.05, help="Clip x = b_b/(a+b_b).")
+    p.add_argument("--extra-bands", type=float, nargs="*", default=list(EXTRA_BANDS),
+                   help="Extra panel-(a) bands (nm); give the flag alone for "
+                        "--wave only (the default).")
+    p.add_argument("--rrs", action="store_true",
+                   help="Plot sub-surface rrs instead of above-water Rrs "
+                        "(same file name).")
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     args = p.parse_args(argv)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     for key in args.which:
         fn, fname = FIGURES[key]
-        out = args.out_dir / fname.format(wave=args.wave)
-        fn(out=out, wave=args.wave, x_max=args.x_max)
+        bands = sorted(set(args.extra_bands) | {args.wave})
+        out = args.out_dir / fname.format(bands="_".join(f"{w:.0f}" for w in bands))
+        fn(out=out, wave=args.wave, x_max=args.x_max, extra_bands=args.extra_bands,
+           refl="rrs" if args.rrs else "Rrs")
         print(f"✓ {out}")
 
 

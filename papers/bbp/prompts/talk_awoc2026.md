@@ -40,6 +40,19 @@ Then create a new draft of the figure.
 If you have any additional questions, put them in the "Q&A/RT+bbp/bb" section below.
 Use Opus 5.5.  Log your work.
 
+4. Read my last round of answers in the "Q&A/RT+bbp/bb" section below.
+Then create a new draft of the figure.
+If you have any additional questions, put them in the "Q&A/RT+bbp/bb" section below.
+Use Opus 5.5.  Log your work.
+
+5. Read my last round of answers in the "Q&A/RT+bbp/bb" section below.
+I think it may make more sense to use rrs instead of Rrs.  This is because the
+Gordon approximation is stricly a polynomial in rrs.
+Please provide an option to show rrs instead of Rrs.
+No need to have the filenames change, just the axes labels and data used.
+If you have any additional questions, put them in the "Q&A/RT+bbp/bb" section below.
+Use Opus 5.5.  Log your work.
+
 ## Q&A
 
 ### RT+bbp/bb
@@ -319,12 +332,12 @@ straight into b_bp(700).
    might read a spectral map ("Spectral_r" or "turbo", violet → red) more
    naturally. Keep viridis or switch?
 
-   **A:**
+   **A:** Use a spectral map, e.g. 'jet'
 10. **Q10: The Gordon reference.** In (b) it is a flat band because Gordon's
     G depends only on x. Keep it as a band, draw a single line at the
     small-x value (0.049), or drop it?
 
-    **A:**
+    **A:** Draw a single line at 0.049.  Use dark grey
 11. **Q11: Panel (a) is still visually flat.** Even on the logit scale, the
     650 nm points form a thin ribbon, because Rrs is almost a function of x
     there, and the colour mostly encodes x again. Would panel (a) work better
@@ -332,8 +345,144 @@ straight into b_bp(700).
     categorical colours), or is the single 650 nm ribbon what you want to
     open with?
 
-    **A:**
+    **A:**  Ok, let's add 2 more bands, but include it as an option so that I can
+    revert to only 650 nm as I wish.
 
+#### Prompt 4: third draft
+
+*Response to RT+bbp/bb prompt 4 (Claude Opus 5.5, 2026-11-20).*
+
+**The drafts.** There are now two files, one per panel-(a) option. Both come
+from `fig_rrs_vs_x()` in `papers/bbp/talks/figs_awoc2026.py`:
+- **`pb24_rrs_vs_x_450_550_650.png`** (the new default):
+  `python papers/bbp/talks/figs_awoc2026.py`.
+- **`pb24_rrs_vs_x_650.png`** (650 nm only, Q11 option):
+  `python papers/bbp/talks/figs_awoc2026.py --extra-bands`, i.e. the flag
+  with no values. In Python, use `fig_rrs_vs_x(extra_bands=())`.
+
+**Changes.**
+- **Q9.** λ is coloured with `jet`. The colour map is a constant,
+  `CMAP_WAVE`, so it is one edit to change.
+- **Q10.** Gordon is now a single dark-grey dashed line at
+  `GORDON_G0` = 0.52 × 0.0949 = **0.0493** sr⁻¹ (the x → 0 limit).
+- **Q11.** Panel (a) draws `wave` plus `EXTRA_BANDS` = (450, 550) nm, each
+  in its `jet` colour (the same mapping as panel (b)). The legend gives each
+  band's N, and the points are drawn in one random order so no band hides
+  another. With `extra_bands=()` panel (a) goes back to the single band
+  coloured by logit(b_bp/b_b), as in draft 2. Panel (a)'s bands are always
+  included in the panel-(b) pool.
+- **The 650 nm-only median in (b)** is now a white line with a dark outline.
+  An orange line would have vanished in `jet`.
+- The output file name now encodes the panel-(a) bands, so both versions can
+  coexist.
+
+**A caveat the 3-band panel exposed: x ≤ 0.05 is "oceanic" only in the
+red.** Pure seawater already has x ≈ 0.17 at 450 nm (a_w is small, b_bw is
+large), so the clip removes almost all clear water in the blue. It keeps
+only the strongly absorbing realisations:
+
+| λ (nm) | 400 | 450 | 500 | 550 | 600 | 650 | 700 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| kept by x ≤ 0.05 (of 5,000) | 409 | 321 | 288 | 2,581 | 3,680 | 3,922 | 4,136 |
+| median C kept (mg m⁻³) | 1.03 | 1.76 | 0.28 | 0.04 | 0.08 | 0.09 | 0.11 |
+
+So in panel (a) the 450 nm points (N = 321) are high-Chl/CDOM waters only,
+and the blue bands in panel (b) come from the same subset.
+- **What happens with a per-realisation clip.** I kept the realisations with
+  x(650) ≤ 0.05 at every band: 3,922 runs × 16 bands. The median trend in (b)
+  survives, with G going from 0.058 to 0.044 across b_bp/b_b. But the blue
+  bands then reach x ≈ 0.3, where G also *rises with x*. The collapse
+  loosens: log G has 8.5 % rms about a curve in b_bp/b_b alone, and 4.8 %
+  with x and b_bp/b_b together.
+- **Revised statement of the prompt 2 result.** For x ≤ 0.05, G is set by
+  b_bp/b_b (1.4 % rms). Over a wider x range, G depends on both b_bp/b_b and
+  x. The 25 % molecular-fraction effect holds in both cases.
+
+#### Questions for JXP (prompt 4)
+
+12. **Q12: How to clip.**
+    - (a) Keep the per-point x ≤ 0.05 clip (as now). It is clean, but the
+      blue bands then represent only absorbing water.
+    - (b) Clip per realisation, on x(650) ≤ 0.05 or b_bp(650) ≤ some value,
+      and keep those realisations at every band. That is closer to "oceanic
+      waters", but panel (b) gets more scatter, and panel (a)'s 450 nm
+      ribbon extends to x ≈ 0.3.
+    - (c) Keep (a) for panel (b) but use (b) for panel (a).
+
+    *(My recommendation: (a) for the talk. Its message is cleanest, and the
+    caption can say "x ≤ 0.05". I would mention (b) only if asked.)*
+
+    **A:** Agreed, stick with (a)
+13. **Q13: Is the 3-band panel (a) worth it?** Under the current clip the
+    three ribbons mostly overlap. Only 550 nm stands out a little, above the
+    others near x ≈ 0.015–0.05. Under clip (b) they would separate more.
+    Keep it as the default, or make 650-only the default again?
+
+    **A:** No, I am not going to show the 3-band figure, only the 1-band.
+
+
+#### Prompt 5: rrs option, 1-band default
+
+*Response to RT+bbp/bb prompt 5 (Claude Opus 5.5, 2026-11-20).*
+
+**Q12/Q13 applied.** The per-point x ≤ 0.05 clip stays. Panel (a) is again
+650 nm only by default (`EXTRA_BANDS = ()`). The 3-band version is still
+available with `--extra-bands 450 550`, or `fig_rrs_vs_x(extra_bands=(450, 550))`.
+
+**The rrs option.** Use `python papers/bbp/talks/figs_awoc2026.py --rrs`, or
+`fig_rrs_vs_x(refl="rrs")`. The file name is the same
+(`pb24_rrs_vs_x_650.png`), so the two versions overwrite each other. Use
+`--out-dir` to keep both. In the rrs version:
+- **The data are Hydrolight's own sub-surface rrs.** PB24 stores it next to
+  Rrs (`rrs.npy`, same 4-D geometry grid), so I read it at the same
+  θs = 0°, nadir geometry. It is not a Lee et al. (2002) inversion of Rrs.
+- **The reference is the plain Gordon (1988) polynomial.** Panel (a) uses
+  rrs = 0.0949x + 0.0794x², and panel (b) has a dashed line at its x → 0
+  limit, G = **0.0949** sr⁻¹. Both are labelled "Gordon (1988)". In the Rrs
+  version those two references are now labelled
+  "Gordon (1988) + Lee (2002)", which is what they are.
+- **The axis labels** become r_rs and r_rs/[b_b/(a+b_b)].
+
+**What changes physically: almost nothing.** The molecular-fraction effect
+is a sub-surface effect, so it carries over unchanged:
+
+| | G at b_bp/b_b < 0.2 | G at b_bp/b_b > 0.9 | fall | rms of log G about the b_bp/b_b median |
+|---|---:|---:|---:|---:|
+| Rrs/x | 0.0571 | 0.0431 | 24.4 % | 1.41 % |
+| rrs/x | 0.1085 | 0.0814 | 25.0 % | 1.35 % |
+
+(x ≤ 0.05, 400–700 nm every 20 nm.)
+
+**One small difference: Hydrolight's Rrs/rrs is not a constant 0.52.** At
+x ≤ 0.05 the median Rrs/rrs rises with λ:
+
+| λ (nm) | 400 | 450 | 500 | 550 | 600 | 650 | 700 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Hydrolight Rrs/rrs | 0.518 | 0.522 | 0.525 | 0.525 | 0.527 | 0.528 | 0.529 |
+| Hydrolight / Lee (2002) | 0.990 | 0.998 | 1.003 | 1.006 | 1.012 | 1.014 | 1.018 |
+
+That is a 2–3 % spread across the visible. It is probably the wavelength
+dependence of water's refractive index (the n² factor in the radiance
+transfer), but I have not checked Hydrolight's settings. You can see it in
+panel (b):
+- In the **Rrs** version the blue bands sit slightly *below* the median.
+- In the **rrs** version they sit on or above it.
+
+This supports your point. In rrs, the cross-band scatter in (b) comes only
+from the in-water physics, with no surface-transfer term mixed in.
+
+#### Questions for JXP (prompt 5)
+
+14. **Q14: Which reflectance is the talk default?** The code still defaults
+    to Rrs, so nothing changed unless you pass `--rrs`.
+    - rrs is cleaner for the argument, because Gordon is a polynomial in rrs.
+    - Rrs is what PACE delivers and what the audience knows.
+
+    *(My recommendation: show rrs, and say in one line that Rrs ≈ 0.52 rrs
+    up to a 2–3 % λ-dependent factor. If you agree, I will flip the default
+    to rrs.)*
+
+    **A:** Yes, we will make rrs the talk default.
 
 ## Logs
 
@@ -404,3 +553,55 @@ Rendered and inspected three iterations:
 
 Added Q9–Q11: the λ colour map, the Gordon reference style, and a possible
 multi-band panel (a).
+
+### 2026-11-20 (RT+bbp/bb prompt 4: third draft with jet λ colours, a Gordon line and an optional 3-band panel (a); the x-clip caveat)
+
+Applied the answers:
+- Q9: `CMAP_WAVE = "jet"`.
+- Q10: `GORDON_G0` = 0.0493, a dark-grey dashed line.
+- Q11: `EXTRA_BANDS = (450, 550)` with a revert path, `extra_bands=()` or a
+  bare `--extra-bands`. Panel (a) colours each band by λ, with a legend; the
+  single-band path keeps the logit(b_bp/b_b) colour bar.
+
+The 650 nm median in (b) is now a white line with a dark outline (path
+effects). Output names now encode the bands. Rendered and inspected both
+versions. The first 3-band render had colliding direct labels and 650 nm
+drawn on top, so I switched to a legend and a random draw order. Found that
+x ≤ 0.05 keeps only 6–8 % of realisations at 400–500 nm, the absorbing
+high-C ones, because pure-water x(450) ≈ 0.17. With a per-realisation
+x(650) ≤ 0.05 clip the median G trend holds, but its collapse onto b_bp/b_b
+loosens from 1.4 % to 8.5 % rms (4.8 % with x and b_bp/b_b together).
+Restated the prompt 2 result as holding for x ≤ 0.05. Added Q12 (clip
+definition) and Q13 (3-band default).
+
+Lessons: a clip in x defined at one band is not a water-type clip at other
+bands. To select water types across bands, clip per realisation.
+
+### 2026-11-20 (RT+bbp/bb prompt 5: an rrs option for the PB24 figure; 650 nm-only panel (a) is the default again)
+
+Applied the Q12/Q13 answers. The per-point x ≤ 0.05 clip stays, and
+`EXTRA_BANDS` now defaults to `()`, so panel (a) is 650 nm only. Use
+`--extra-bands 450 550` to get the 3-band version back.
+
+Added a reflectance option, `fig_rrs_vs_x(refl="rrs")` or CLI `--rrs`. File
+names are unchanged.
+- `load_pb24_band` now also returns Hydrolight's own sub-surface rrs. PB24
+  stores it next to Rrs in `rrs.npy`, on the same 4-D geometry grid.
+- New `gordon_rrs` function and `GORDON_G1`/`GORDON_G2` constants.
+- New `REFLECTANCE` table, keyed by `"Rrs"`/`"rrs"`. Each entry gives the
+  panel-(a) curve, the panel-(b) x → 0 G (0.0493 for Rrs, 0.0949 for rrs),
+  the axis symbol and the legend label.
+- In the Rrs version the Gordon label is now "Gordon (1988) + Lee (2002)".
+
+Results:
+- The molecular-fraction effect is unchanged in rrs. G falls by 25.0 %
+  across b_bp/b_b, with 1.35 % rms about the b_bp/b_b median. For Rrs the
+  figures are 24.4 % and 1.41 %.
+- Hydrolight's Rrs/rrs is not Lee's constant 0.52. It rises from 0.518 at
+  400 nm to 0.529 at 700 nm, i.e. 0.990 to 1.018 × Lee. This is probably
+  n(λ). It explains why the blue bands sit low in the Rrs version of panel
+  (b) but not in the rrs version.
+
+Rendered `papers/bbp/talks/pb24_rrs_vs_x_650.png` (Rrs, default) and an rrs
+copy in the session scratchpad, and inspected both. Added Q14 (make rrs the
+default?).
