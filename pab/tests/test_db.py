@@ -114,7 +114,7 @@ def test_migrations_add_figure_path_columns(tmp_path):
         "phi_c",
         "fit_bp",
     } <= fit_cols
-    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 5
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 6
 
 
 def test_v3_to_v4_migration_is_idempotent(tmp_path):
@@ -359,7 +359,7 @@ def _v4_shaped_db(path):
 def test_v4_to_v5_adds_geometry_and_rt_columns(tmp_path):
     conn = _v4_shaped_db(tmp_path / "v4.db")
     schema.migrate(conn)
-    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 5
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION == 6
     for table, expected in V5_COLUMNS.items():
         cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
         assert expected <= cols, table
@@ -390,7 +390,7 @@ def test_v4_to_v5_is_idempotent(tmp_path):
     conn = _v4_shaped_db(tmp_path / "v4.db")
     schema.migrate(conn)
     schema.migrate(conn)
-    assert schema.get_version(conn) == 5
+    assert schema.get_version(conn) == schema.SCHEMA_VERSION
     cols = [r[1] for r in conn.execute("PRAGMA table_info(matchup_pixels)")]
     assert cols.count("theta_s") == 1
     fit_cols = [r[1] for r in conn.execute("PRAGMA table_info(fits)")]

@@ -136,7 +136,7 @@ pab --db data/pab.db --download
 | `discover` | Find in-window PACE granules per profile (earthaccess; parallel via `--discover-jobs`). A profile is skipped only if the store already holds a granule **whose footprint covers that profile's own position** in its time window. | → `granules` |
 | `match` | Build PACE↔Argo matchups (Stage 4 spatial/temporal gate). Candidates come from an in-memory `GranuleIndex` (time window **+** footprint bounding box padded by `MatchupConfig.footprint_pad_deg`), so only granules that plausibly cover the float are opened. | → `matchups` |
 | `geometry` | Read each matchup pixel's solar/sensor geometry (`theta_s`, `theta_v`, `dphi`) from the co-temporal **PACE L1B** granule. Grouped **by granule** — 146,100 pixels sit on 11,494 granules, so it is one 1.8 GB lazy open per granule, not per pixel. Parallel via `--jobs`. | → `matchup_pixels.theta_s`/`theta_v`/`dphi`/`geom_source` |
-| `fit` | Run BING spectral fits per matchup (needs BING + emcee). **From 2.0 the defaults are the inelastic configuration** — `rt_backend='robust_hybrid'`, Raman + Chl fluorescence on, free `B_p` — which *requires* `geometry` to have run. A pixel with no geometry is recorded under `failed` and its granule is never opened. **From 2.0.1 the physical prior ceilings are the default** (`bbp600_max=0.1`, `adg_max=10`, `aph_max=10` m⁻¹; stamped in `fits.prior_set`; `FitConfig.v2_0()` is the unceilinged 2.0 configuration), every fit records the `n_neg_blue` QA quantity, and `--replay-chains DIR` re-fits from the 2.0 chain NPZ instead of the granule (§3). | → `fits`, `fit_results` |
+| `fit` | Run BING spectral fits per matchup (needs BING + emcee). **From 2.0 the defaults are the inelastic configuration** — `rt_backend='robust_hybrid'`, Raman + Chl fluorescence on, free `B_p` — which *requires* `geometry` to have run. A pixel with no geometry is recorded under `failed` and its granule is never opened. **From 2.0.1 the physical prior ceilings are the default** (`bbp600_max=0.1`, `adg_max=10`, `aph_max=10` m⁻¹; stamped in `fits.prior_set`; `FitConfig.v2_0()` is the unceilinged 2.0 configuration), every fit records the `n_neg_blue` QA quantity, and `--replay-chains DIR` re-fits from the 2.0 chain NPZ instead of the granule (§3). **From 2.1 the forward model runs at the normalized geometry (0, 0, 0)** (`FitConfig.geometry_mode='normalized'`, stamped in `fits.geom_mode`, schema v6), so a pixel without L1B angles is **no longer refused**; the R3 refusal applies only under `geometry_mode='observed'` (`FitConfig.v2_0_1()` / `.v2_0()`). | → `fits`, `fit_results` |
 | `figure` | Render per-matchup fit + scene figures (best-effort; needs Loisel data; parallel via `--jobs` — the costliest stage per matchup at ~42 s serial). | → `outdir/figures` |
 | `report` | Build the static site + a release manifest (Stage 7). | → `outdir/site`, `outdir/release` |
 
@@ -192,6 +192,17 @@ the three to `None` too). Same data, physics and matchups as 2.0: a *patch*,
 applied to the 51 runaways by replaying their 2.0 spectra (§5b), which the
 report overlays on the 2.0 rows by matchup and pixel. See `docs/fitting.rst`
 *Prior ceilings (2.0.1)*.
+
+**2.1 (the current default) changes the geometry and nothing else.** The PACE
+L2 AOP `Rrs` is normalized by l2gen (`brdf_opt = 7`) to a zenith sun and a
+nadir view, so `FitConfig()` now evaluates the `robust_hybrid` forward model —
+and the inelastic `Ed` — at (θ_s, θ_v, Δφ) = (0, 0, 0)
+(`geometry_mode='normalized'`) instead of the pixel's observed L1B angles.
+`FitConfig.v2_0_1()` is the frozen 2.0.1 configuration (ceilings + observed
+geometry). The choice is stamped per fit as `fits.geom_mode` (schema v6; NULL
+on older rows = observed), and the figure reconstruction reads it back, so a
+2.1 figure is drawn at (0, 0, 0). The L1B angles stay on `matchup_pixels` as QA
+metadata. 2.1 is a new **base** version, not a patch (§5c).
 
 **Chains do not follow `--db`.** `fits.chains_path` is
 `$PAB_DATA_DIR/fit_chains/<fit_id>.npz` — keyed off the **root** of
@@ -399,6 +410,141 @@ The NASA-GIOP rows are kept because they are the baseline the v2 comparison is
 measured against, and `matchups.scene_path` is kept so the v2 site reuses v1's
 14,586 PACE scene quick-looks instead of re-rendering them.
 
+
+## 5c. The 2.1 re-fit — normalized geometry
+
+`claude_prompts/v2/build_v2_1_rerun.md`; the science is
+`versions/v2.1/geometry_rerun.md`. Every 2.0 matchup is re-fitted with the
+forward model at (θs, θv, Δφ) = (0, 0, 0), the geometry the PACE L2 AOP `Rrs`
+is normalized to, replaying the 2.0 spectrum bit-identically from its chain
+NPZ (`--replay-chains`). The results are **new rows** in the live v2 DB
+(`fit_id …_v2.1`, `pab_version = '2.1'`, `geom_mode = 'normalized'`); the
+2.0, 2.0.1 and NASA-GIOP rows are untouched. 2.1 is a new **base** version:
+`version_family` returns `("2.1", [])`, so the report headline, the exported
+tables and `--compare-db` (1.0 vs 2.1) carry only 2.1 rows. The five matchups
+with no 2.0 fit are left out (15,976 matchups, 15,971 fits).
+
+Schema note: opening the v2 DB with 2.1 code (`Store.open`, default
+`create=True`) migrates it **v5 → v6** (adds the NULL `fits.geom_mode`
+column). Take the dated, sha-verified copy first.
+
+**Custody checks.** `versions/v2.1/preflight.py snapshot|verify` opens a DB
+read-only and digests every legacy row (`BING|2.0`, `BING|2.0.1`,
+`NASA_GIOP|1.1`, on the v5 columns), `matchups`, `matchup_pixels`, and the 2.1
+rows minus `figure_path`. `verify` against a snapshot proves a run wrote only
+what it should. Snapshots and verifies: `versions/v2.1/{preflight_snapshot,
+postrun_verify,prefigure_snapshot,postfigure_verify}.json`.
+
+**The full re-fit (Task 3, Nautilus, 2026-11-16/17).**
+`versions/v2.1/make_refit_all.py` → `versions/v2.1/refit_all.csv` (15,971
+rows, sha256 `a244835e…ebc62`), staged with the DB at `/data/v2/` and run by
+`nautilus/v21_fit_job.yaml` (job `pab-v21-fit`, 50 workers, DB-local, ~300
+s/fit per worker):
+
+```bash
+pab --db $LOCAL --outdir /data/v2/pipeline --stage fit --jobs 50 \
+    --matchups-csv /data/v2/v21/refit_all.csv --replay-chains /data/v2/fit_chains
+```
+
+- Result: 15,971 2.1 fits, all normalized, all replayed, 0 failures; LM
+  success 15,885.
+- The DB came back to the workstation (sha both sides). `postrun_verify.json`
+  reported no problems.
+- The 15,971 `_v2.1.npz` chains (17.7 GiB) were pulled to
+  `$PAB_DATA_DIR/v2/fit_chains/`, using batched tars of 1,000 files (a single
+  stream died at 3,727). Every file loads.
+- The DB the fit started from is kept as `v2/pab_pre_v21_20261116.db`
+  (`9503015b…cad92`, the 2.0.1 / S3 file).
+
+**The 2.1 fit figures (Task 4, workstation, 2026-11-18; T4-Q1 = A).** The
+render took ~6–8 s/figure, so it ran locally (`nautilus/v21_figure_job.yaml`
+was written but not used):
+
+```bash
+D=$PAB_DATA_DIR/v2; cd $D && PYTHONWARNINGS=ignore MPLBACKEND=Agg PAB_DATA_DIR=$D \
+  pab --db $D/pab.db --outdir $D/pipeline --stage figure --jobs 8 --figure-version 2.1
+```
+
+- 15,971 written, 0 failed, in 1.1 h. The figures (0.83 GiB) are
+  `$D/pipeline/figures/*_v2.1_fit.png`; `fits.figure_path` records those
+  workstation paths.
+- `postfigure_verify.json` reported no problems.
+- The dated copy taken before the render is `v2/pab_pre_v21fig_20261118.db`
+  (`aca3d69f…d4e2`).
+
+**The live v2 DB is now `d0c286bf992ebba35ad961afda2b8c62436a176b3448d50c39553899349c8cc5`
+(302,505,984 B, schema v6)**: 15,971 2.0 + 51 2.0.1 + 15,971 2.1 BING fits,
+plus 15,976 NASA-GIOP. `/data/v2/pab.db` on the PVC is the
+Task 3 return (`aca3d69f…`), which is identical except that its 2.1
+`figure_path` is NULL. It is **stale**; the workstation copy is the master.
+
+**Site.** `report_site/` is regenerated with the §7a command (unchanged; the
+new gallery picks' 4 scenes and 7 Argo plots were fetched read-only from
+AIOcean into `$PAB_DATA_DIR/gallery/`). The page shows:
+- the summary headline 2.1, with a "What changed in 2.1" sentence (median
+  `b_bp`(700) ×1.17 against 2.0, n = 15,971) and a link to
+  `geometry_rerun.md`;
+- the comparison as 1.0 vs 2.1;
+- Methods as "Retrieval configuration (2.1)".
+
+**Publish (Task 5).** The four summary tables are re-exported from the live
+DB into `$PAB_DATA_DIR/v2/s3_stage_v21_20261119/` (`publish.export_tables`,
+byte-reproducible). The objects currently on `s3://pab/v2/` were downloaded
+to `$PAB_DATA_DIR/v2/s3_prev_2026-11-19/`, and all five match the 2026-10-20
+sha256s in §5b. The upload, the AIOcean backup and the §5b table update wait
+for JXP's confirmation (Round 5 of the prompt doc); this section is updated
+when they run.
+
+## 5d. Viz tools (`pab-viz`)
+
+An interactive Bokeh server for exploring the matchups
+(`claude_prompts/viz_tools.md`). It is **read-only**: the DB is opened with a
+`mode=ro` URI, chain NPZs are only read, and fetched Argo profiles are held
+in memory only.
+
+- **Tab 1, Argo + PACE:** a float's `b_bp(700)` profile beside the PACE
+  `Rrs` and its BING fit (linear / log10 toggle; residuals stay linear) and
+  the fit's non-water IOPs (`a_nw`, `a_dg`, `a_ph`; `b_bp` on a second
+  axis), for one `wmo` + `cycle`. The layout is ~1500 px wide.
+- **Tab 2, Global:** every matchup of a BING family on a world map, with:
+  - a colour variable: Argo / PACE `b_bp`, `dbbp`, log ratio, `Adg`,
+    `S_dg`, `β`, Chl;
+  - an editable colour range;
+  - a linked PACE (y) vs Argo (x) scatter and histogram;
+  - statistics over the selection or the visible region;
+  - filters.
+
+  Tap a matchup, then press **Open in Argo + PACE**. The basemap tiles
+  (Esri) need internet.
+
+```bash
+# workstation or laptop, any shell (ocean14 env, after `pip install -e . --no-deps`)
+pab-viz --db "$PAB_DATA_DIR/v2/pab.db" --show            # or: python -m pab.viz …
+pab-viz --db …/pab.db --wmo 4902680 --cycle 6 --show    # open a profile directly
+# browser: http://localhost:5006/?wmo=4902680&cycle=6&version=2.1
+# browser: http://localhost:5006/?tab=global       # open on the Global tab
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--db` | The store, opened read-only. Default `$PAB_DATA_DIR/v2/pab.db`. |
+| `--data-dir` | The folder holding `fit_chains/`. Default: the `--db` folder. |
+| `--version` | The BING family shown first (default: the newest; `2.0` shows 2.0 with its 2.0.1 patch rows). |
+| `--wmo`, `--cycle` | The profile opened first. |
+| `--port` / `--host` | Default 5006 / `localhost`. Another host also needs `--allow-remote`. |
+| `--show` | Open a browser tab. |
+
+At start-up it prints what it can show: the DB and its version families, the
+chain counts per version under `--data-dir`, whether `bing`/`robust` import,
+and whether the Argo GDAC is reachable. A missing piece becomes a message in
+the page, not a crash. For example, without the 2.0 chains a 2.0 view shows
+the stored values and the observed `Rrs` but no model curve. Timing: an Argo
+fetch takes ~1–6 s, and a fit reconstruction ~5 s cold and ~1.5 s warm. Both
+run in the background while the page shows "…".
+
+From another machine without a local copy, run it on the workstation and
+tunnel: `ssh -N -L 5006:localhost:5006 <workstation>`, then open
+`http://localhost:5006/`.
 
 ## 6. Notes & gotchas
 

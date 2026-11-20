@@ -25,6 +25,8 @@ import numpy as np
 from pab.config import pab_version as _pab_version
 from pab.fit import artifacts as _artifacts
 from pab.fit.models import (
+    GEOM_NORMALIZED,
+    GEOM_OBSERVED,
     FitConfig,
     build_models,
     model_param_names,
@@ -200,13 +202,29 @@ def _is_log_param(models) -> list[bool]:
 
 
 def requires_geometry(config: FitConfig) -> bool:
-    """Whether ``config``'s RT backend needs per-pixel :class:`ObsGeometry`.
+    """Whether ``config``'s RT backend needs an :class:`ObsGeometry` at all.
 
-    Every backend except BING's own ``'gordon'`` does. ``theta_s`` is never
-    silently defaulted (R3), so a fit without geometry must be refused rather
-    than run on an assumed angle.
+    Every backend except BING's own ``'gordon'`` does. Whether that geometry
+    must come from the **pixel's** L1B angles is a separate question —
+    :func:`requires_pixel_angles`.
     """
     return config.rt_backend != "gordon"
+
+
+def requires_pixel_angles(config: FitConfig) -> bool:
+    """Whether a fit under ``config`` needs the pixel's stored L1B angles.
+
+    True only for a robust backend under ``geometry_mode = 'observed'`` (every
+    2.0 / 2.0.1 fit). There ``theta_s`` is never silently defaulted (R3), so a
+    pixel with no angles is refused rather than fitted on an assumed angle.
+    Under ``'normalized'`` (2.1) the geometry is fixed by NASA's product
+    definition — (0, 0, 0) — not assumed, so a pixel without L1B angles is
+    fitted like any other (V5); the ``geometry`` stage still fills the angles
+    as QA metadata.
+    """
+    return requires_geometry(config) and (
+        getattr(config, "geometry_mode", GEOM_OBSERVED) == GEOM_OBSERVED
+    )
 
 
 def obs_geometry(theta_s, theta_v, dphi):
@@ -229,6 +247,43 @@ def obs_geometry(theta_s, theta_v, dphi):
     if dphi is not None and np.isfinite(float(dphi)):
         kwargs["dphi"] = float(dphi)
     return ObsGeometry(**kwargs)
+
+
+def normalized_geometry():
+    """The ``ObsGeometry`` the PACE L2 AOP ``Rrs`` is normalized to:
+    (θ_s, θ_v, Δφ) = (0, 0, 0) — a zenith sun and a nadir view (l2gen
+    ``brdf_opt = 7``). It lies inside the hybrid emulator's trained domain
+    (``cos_theta_s`` ∈ [0.5, 1], ``cos_theta_v = cos_dphi = 1``), and θ_s = 0
+    is an anchor of the L23 ``Ed`` table, so :func:`set_inelastic_Ed` needs no
+    interpolation."""
+    from bing.rt.geometry import ObsGeometry
+
+    return ObsGeometry(theta_s=0.0, theta_v=0.0, dphi=0.0)
+
+
+def fit_geometry(config: FitConfig, theta_s, theta_v, dphi):
+    """**The one resolver** of the geometry a fit's forward model runs at.
+
+    * ``geometry_mode = 'normalized'`` (2.1) → :func:`normalized_geometry`,
+      whatever the pixel's angles are (they may be ``None``).
+    * ``geometry_mode = 'observed'`` (2.0, 2.0.1) → :func:`obs_geometry` of
+      the pixel's L1B angles, ``None`` when ``theta_s`` is absent.
+    * ``rt_backend = 'gordon'`` → ``None``: Gordon takes no geometry.
+
+    Every geometry consumer goes through here — the fit (LM, MCMC and the
+    χ²/AIC/BIC diagnostics), the inelastic ``Ed`` (which reads
+    ``geom.theta_s``), and the figure reconstruction
+    (:func:`pab.plotting.fit_fig._geometry_from_row`) — so they cannot
+    disagree about where a fit was evaluated.
+    """
+    if not requires_geometry(config):
+        return None
+    mode = getattr(config, "geometry_mode", GEOM_OBSERVED)
+    if mode == GEOM_NORMALIZED:
+        return normalized_geometry()
+    if mode == GEOM_OBSERVED:
+        return obs_geometry(theta_s, theta_v, dphi)
+    raise ValueError(f"unknown geometry_mode {mode!r}")
 
 
 def set_inelastic_Ed(models, geom, rt_dict) -> bool:
@@ -582,9 +637,14 @@ def fit_spectrum(
             posterior ``Aph`` (reported as the ``chl`` quantity; see
             :func:`chl_from_aph`).
         Y: Backscattering slope for models that need it (unused by ``Pow``).
-        geom: ``bing.rt.geometry.ObsGeometry`` for this pixel. **Required by
-            every backend except ``'gordon'``** — ``build_models`` raises if a
-            robust backend gets none, rather than assuming a solar angle (R3).
+        geom: ``bing.rt.geometry.ObsGeometry`` for this pixel. Under
+            ``geometry_mode = 'observed'`` it is **required by every backend
+            except ``'gordon'``** — ``build_models`` raises if a robust backend
+            gets none, rather than assuming a solar angle (R3). Under
+            ``'normalized'`` (the 2.1 default) ``None`` means (0, 0, 0)
+            (:func:`normalized_geometry`), and anything else must already be
+            (0, 0, 0) — a caller handing observed angles to a normalized fit
+            is refused rather than silently overridden.
         config: Fit configuration; defaults to :class:`FitConfig`.
 
     Returns:
@@ -601,6 +661,7 @@ def fit_spectrum(
     from bing.fitting import inference as bing_inf
     from bing.models import utils as model_utils
 
+    geom = _check_mode_geometry(config, geom)
     wave_w, Rrs_w, varRrs_w = prepare_spectrum(wave, Rrs, Rrs_unc, config=config)
     p, rt_dict, models = build_models(config, wave_w, geom=geom)
     fit_bp = bool(rt_dict.get("fit_Bp", False))
@@ -695,6 +756,30 @@ def fit_spectrum(
         Chl=float(chl_val) if chl_val is not None else float("nan"),
         chain_start=chain_start,
     )
+
+
+def _check_mode_geometry(config: FitConfig, geom):
+    """The geometry :func:`fit_spectrum` runs at, consistent with
+    ``config.geometry_mode``.
+
+    Under ``'normalized'`` a ``None`` becomes (0, 0, 0) and a non-zero
+    geometry raises; under ``'observed'`` (or Gordon) ``geom`` is returned
+    unchanged and ``build_models`` applies R3.
+    """
+    if not requires_geometry(config):
+        return geom
+    if getattr(config, "geometry_mode", GEOM_OBSERVED) != GEOM_NORMALIZED:
+        return geom
+    if geom is None:
+        return normalized_geometry()
+    angles = (float(geom.theta_s), float(geom.theta_v), float(geom.dphi))
+    if any(a != 0.0 for a in angles):
+        raise ValueError(
+            "geometry_mode='normalized' fits at (theta_s, theta_v, dphi) = "
+            f"(0, 0, 0), but a geometry {angles} was passed; resolve it with "
+            "fit_geometry(config, ...) or use geometry_mode='observed'"
+        )
+    return geom
 
 
 def _fit_diagnostics(models, chains, rt_dict, Rrs, varRrs, config, *, geom=None):
@@ -792,9 +877,11 @@ NO_GEOMETRY = (
 )
 
 
-def _geometry_or_none(inp):
-    """``ObsGeometry`` for a gathered input, or ``None`` if it has no angles."""
-    return obs_geometry(inp["theta_s"], inp["theta_v"], inp["dphi"])
+def _geometry_or_none(inp, config: FitConfig):
+    """The forward-model ``ObsGeometry`` for a gathered input under ``config``
+    (:func:`fit_geometry`): (0, 0, 0) under ``'normalized'``; the pixel's
+    angles, or ``None`` if it has none, under ``'observed'``."""
+    return fit_geometry(config, inp["theta_s"], inp["theta_v"], inp["dphi"])
 
 
 def _fit_only(wave, Rrs, Rrs_unc, chl, config: FitConfig, geom=None):
@@ -919,7 +1006,7 @@ def fit_matchup(
     if inp is None:
         raise ValueError(f"matchup {matchup_id!r} has no pixel with rank {rank}")
 
-    geom = _geometry_or_none(inp)
+    geom = _geometry_or_none(inp, config)
     if geom is None and requires_geometry(config):
         raise ValueError(
             f"{matchup_id!r}: " + NO_GEOMETRY.format(backend=config.rt_backend)
@@ -992,7 +1079,7 @@ def build_fits(
     if not replace:
         done_fits = {r["fit_id"] for r in store.query("SELECT fit_id FROM fits")}
 
-    need_geom = requires_geometry(config)
+    need_geom = requires_pixel_angles(config)
     inputs: list[dict] = []
     matchup_rows = store.query("SELECT matchup_id FROM matchups ORDER BY matchup_id")
     if selection is not None:
@@ -1006,8 +1093,10 @@ def build_fits(
         if inp["fit_id"] in done_fits:
             skipped.append(inp["fit_id"])
             continue
-        # R3: a pixel with no geometry is refused **here**, before any granule
-        # is opened — never fitted on an assumed solar angle.
+        # R3: under 'observed' a pixel with no geometry is refused **here**,
+        # before any granule is opened — never fitted on an assumed solar
+        # angle. Under 'normalized' the geometry is (0, 0, 0) by product
+        # definition, so the pixel's angles are not needed (V5).
         if need_geom and inp["theta_s"] is None:
             _log.warning(
                 "fit skipped for %s: %s",
@@ -1046,7 +1135,8 @@ def build_fits(
                 finally:
                     _close_quietly(ds)
             result = _fit_only(
-                wave, rrs, unc, inp["chl"], config, geom=_geometry_or_none(inp)
+                wave, rrs, unc, inp["chl"], config,
+                geom=_geometry_or_none(inp, config),
             )
             _persist_result(store, inp, result, config, created)
             written.append(inp["fit_id"])
@@ -1180,7 +1270,7 @@ def _build_fits_parallel(
                     unc,
                     inp["chl"],
                     config,
-                    _geometry_or_none(inp),
+                    _geometry_or_none(inp, config),
                 )
                 fut_inp[fut] = inp
                 fut_submitted[fut] = _time.monotonic()

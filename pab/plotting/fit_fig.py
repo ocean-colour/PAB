@@ -34,8 +34,12 @@ def _config_from_row(config_row):
     row["prior_set"]``. Reconstruction itself needs no priors (it evaluates
     the stored posterior), but the rebuilt config must not misdescribe the
     fit.
+
+    ``geometry_mode`` comes from the schema-v6 ``geom_mode`` column; NULL
+    (every row written before 2.1, and a row read from a v5 file) means
+    ``'observed'``, which is what those fits used.
     """
-    from pab.fit.models import FitConfig, ceilings_from_prior_set
+    from pab.fit.models import GEOM_OBSERVED, FitConfig, ceilings_from_prior_set
 
     def _flag(name, default=False):
         v = config_row[name] if name in config_row.keys() else None
@@ -44,6 +48,7 @@ def _config_from_row(config_row):
     backend = config_row["rt_backend"] if "rt_backend" in config_row.keys() else None
     phi_c = config_row["phi_c"] if "phi_c" in config_row.keys() else None
     prior_set = config_row["prior_set"] if "prior_set" in config_row.keys() else None
+    geom_mode = config_row["geom_mode"] if "geom_mode" in config_row.keys() else None
     return FitConfig.v1(
         model_pair=config_row["model_pair"],
         wave_min=float(config_row["wave_min"]),
@@ -55,30 +60,48 @@ def _config_from_row(config_row):
         include_CDOM_fl=_flag("include_cdom_fl"),
         fit_Bp=_flag("fit_bp"),
         phi_C=0.02 if phi_c is None else float(phi_c),
+        geometry_mode=geom_mode or GEOM_OBSERVED,
         **ceilings_from_prior_set(prior_set),
     )
 
 
-def _geometry_from_row(store, config_row):
-    """The fit's pixel geometry, read back from ``matchup_pixels``.
+def _geometry_from_row(store, config_row, config=None):
+    """The geometry the fit's forward model ran at.
 
-    Returns ``None`` when the pixel has none — ``build_models`` will then raise
-    for a robust backend, which is correct: a robust fit cannot be reconstructed
-    without the geometry it was fitted at.
+    Dispatches on the row's ``geom_mode`` through
+    :func:`pab.fit.run.fit_geometry` — the resolver the fit itself used — so a
+    2.1 (``'normalized'``) fit is redrawn at (0, 0, 0) and a 2.0 / 2.0.1
+    (``'observed'``, or NULL) fit at its pixel's angles, read back from
+    ``matchup_pixels``.
+
+    Returns ``None`` for an observed-mode fit whose pixel has no angles (and
+    for Gordon) — ``build_models`` will then raise for a robust backend, which
+    is correct: a robust fit cannot be reconstructed without the geometry it
+    was fitted at.
     """
     from pab.fit import run
 
+    config = config if config is not None else _config_from_row(config_row)
+    if not run.requires_pixel_angles(config):
+        return run.fit_geometry(config, None, None, None)
     px = store.query(
         "SELECT theta_s, theta_v, dphi FROM matchup_pixels WHERE pixel_id = ?",
         (config_row["pixel_id"],),
     )
     if not px:
         return None
-    return run.obs_geometry(px[0]["theta_s"], px[0]["theta_v"], px[0]["dphi"])
+    return run.fit_geometry(config, px[0]["theta_s"], px[0]["theta_v"], px[0]["dphi"])
 
 
-def reconstruct_fit(store, fit_id: str):
-    """Rebuild ``(wave, obs_Rrs, Rrs_med, Rrs_lo, Rrs_hi, bbp_med, bbp_lo, bbp_hi)``.
+def _band(samples):
+    """``(median, 5 %, 95 %)`` over the posterior samples (axis 0)."""
+    med = np.median(samples, axis=0)
+    lo, hi = np.percentile(samples, [5, 95], axis=0)
+    return med, lo, hi
+
+
+def reconstruct_posterior(store, fit_id: str, *, iops: bool = False) -> dict:
+    """Rebuild a stored fit's posterior on its own wavelength grid.
 
     Loads the fit's chains NPZ and ``fits`` row, rebuilds the BING models on the
     saved wavelength grid, and evaluates the posterior (``b_bp(λ)`` via the
@@ -86,11 +109,18 @@ def reconstruct_fit(store, fit_id: str):
     actually used**).
 
     The RT configuration is read back out of the ``fits`` row (schema v5) and
-    the viewing geometry out of the fit's ``matchup_pixels`` row, so a
+    the viewing geometry is resolved from its ``geom_mode`` (schema v6):
+    (0, 0, 0) for a 2.1 fit, the fit's ``matchup_pixels`` angles otherwise,
+    so a
     ``robust_*`` fit is reconstructed with ``calc_Rrs_from_models_robust`` and
     its free ``B_p``, not with the elastic Gordon relation. A legacy 1.0 row has
     ``rt_backend`` NULL and falls back to Gordon, which is what it was fitted
     with.
+
+    Returns a dict of arrays: ``wave``, ``obs``, and ``(median, 5 %, 95 %)``
+    triples ``rrs`` and ``bbp``. With ``iops`` it adds the non-water
+    absorption triples ``anw`` and, for a model with a separable CDOM +
+    detritus term, ``adg`` and ``aph`` (else ``None``).
     """
     import bing.evaluate as ev
     from bing.models import utils as model_utils
@@ -109,7 +139,7 @@ def reconstruct_fit(store, fit_id: str):
     chl = float(npz["Chl"]) if np.isfinite(npz["Chl"]) else None
 
     config = _config_from_row(row)
-    geom = _geometry_from_row(store, row) if run.requires_geometry(config) else None
+    geom = _geometry_from_row(store, row, config)
     _, rt_dict, models = build_models(config, wave, geom=geom)
     model_utils.init_other_bits(
         models, Chl=None if chl is None else np.array([chl]), Y=None, Rrs=obs
@@ -127,12 +157,31 @@ def reconstruct_fit(store, fit_id: str):
     rrs_samples = run.reconstruct_rrs(
         models, a_flat, bb_flat, rt_dict, geom=geom, Bp=bp_flat
     )
-    rrs_med = np.median(rrs_samples, axis=0)
-    rrs_lo, rrs_hi = np.percentile(rrs_samples, [5, 95], axis=0)
-    bbnw = models[1].eval_bbnw(bb_flat, wave=wave)
-    bbp_med = np.median(bbnw, axis=0)
-    bbp_lo, bbp_hi = np.percentile(bbnw, [5, 95], axis=0)
-    return wave, obs, rrs_med, rrs_lo, rrs_hi, bbp_med, bbp_lo, bbp_hi
+    out = {
+        "wave": wave,
+        "obs": obs,
+        "rrs": _band(rrs_samples),
+        "bbp": _band(models[1].eval_bbnw(bb_flat, wave=wave)),
+    }
+    if iops:
+        anw_model = models[0]
+        if getattr(anw_model, "has_a_dg", False):
+            a_dg, a_ph = anw_model.eval_anw(a_flat, retsub_comps=True, wave=wave)
+            out["adg"], out["aph"] = _band(a_dg), _band(a_ph)
+            out["anw"] = _band(a_dg + a_ph)
+        else:
+            out["adg"] = out["aph"] = None
+            out["anw"] = _band(anw_model.eval_anw(a_flat, wave=wave))
+    return out
+
+
+def reconstruct_fit(store, fit_id: str):
+    """Rebuild ``(wave, obs_Rrs, Rrs_med, Rrs_lo, Rrs_hi, bbp_med, bbp_lo, bbp_hi)``.
+
+    The tuple form of :func:`reconstruct_posterior` (which see).
+    """
+    post = reconstruct_posterior(store, fit_id)
+    return (post["wave"], post["obs"], *post["rrs"], *post["bbp"])
 
 
 def fit_figure(store, fit_id: str, *, outfile=None, dpi: int = 100):

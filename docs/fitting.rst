@@ -230,7 +230,15 @@ and the configuration (``anw_model``/``bbnw_model``/``prior_set``/``nsteps``/…
 Schema v5 adds the RT configuration itself — ``rt_backend``, ``include_raman``,
 ``include_chl_fl``, ``include_cdom_fl``, ``phi_c``, ``fit_bp`` — which is what
 distinguishes a 2.0 row from a 1.0 one, since ``model_pair`` is identical
-between them.
+between them. Schema v6 adds ``geom_mode`` (``FitConfig.geometry_mode``):
+``'normalized'`` for 2.1, which evaluates the robust forward model — and the
+inelastic ``Ed`` — at :math:`(\theta_s, \theta_v, \Delta\phi) = (0, 0, 0)`,
+the geometry NASA's l2gen (``brdf_opt = 7``) normalizes the AOP ``Rrs`` to;
+``'observed'`` (or NULL) for the 2.0 / 2.0.1 fits, which used the pixel's L1B
+angles. :func:`pab.fit.run.fit_geometry` is the one resolver; under
+``'normalized'`` a pixel without L1B angles is fitted (the R3 refusal applies
+to ``'observed'`` only). ``FitConfig.v2_0_1()``, ``.v2_0()`` and ``.v1()``
+are the frozen configurations of the earlier releases.
 
 ``pkg_versions`` also carries a ``git_sha`` map for ``PAB``, ``bing``, ``ocpy``,
 ``remote_sensing`` and ``retrieve-or-bust``. Four of those are editable installs

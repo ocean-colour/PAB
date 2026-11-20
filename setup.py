@@ -12,7 +12,7 @@ setup_keywords['author'] = 'J. Xavier Prochaska and Allie James'
 setup_keywords['author_email'] = 'jxp@ucsc.edu'
 setup_keywords['license'] = 'BSD'
 setup_keywords['url'] = 'https://github.com/ocean-colour/PAB'
-setup_keywords['version'] = '2.0.1'
+setup_keywords['version'] = '2.1.0'
 # Use README.md as long_description.
 setup_keywords['long_description'] = ''
 if os.path.exists('README.md'):
@@ -31,7 +31,7 @@ setup_keywords['zip_safe'] = False
 setup_keywords['packages'] = find_packages()
 # CLI entry point for the end-to-end pipeline (Stage 8).
 setup_keywords['entry_points'] = {
-    'console_scripts': ['pab = pab.pipeline:main'],
+    'console_scripts': ['pab = pab.pipeline:main', 'pab-viz = pab.viz.__main__:main'],
 }
 
 if os.path.isdir('bin'):

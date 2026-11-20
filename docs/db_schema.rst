@@ -134,6 +134,15 @@ Tables
     ``phi_c`` (chlorophyll-fluorescence quantum yield), and ``fit_bp`` (0/1 —
     whether :math:`B_p` was a free parameter). NULL on rows created before v5.
 
+    **v6** adds ``geom_mode`` — the geometry the forward model was evaluated
+    at: ``'observed'`` (the pixel's L1B :math:`\theta_s, \theta_v,
+    \Delta\phi` from ``matchup_pixels``; every 2.0 / 2.0.1 fit) or
+    ``'normalized'`` (:math:`(0, 0, 0)`, the geometry the PACE L2 AOP
+    ``Rrs`` is normalized to; 2.1 on). NULL on rows created before v6, which
+    **means observed** for a robust fit; no legacy row is rewritten. The
+    figure reconstruction (:func:`pab.plotting.fit_fig.reconstruct_fit`)
+    dispatches on it, so a 2.1 fit is redrawn at :math:`(0, 0, 0)`.
+
 ``fit_results``
     The scalar IOP results in **long format**. **PK** ``(fit_id, quantity)``;
     **FK** ``fit_id`` → ``fits``. Columns: ``quantity`` (the namespaced name,

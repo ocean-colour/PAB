@@ -41,6 +41,15 @@ CEILING_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("aph_max", "aph", "Aph"),
 )
 
+#: ``FitConfig.geometry_mode`` values (2.1). ``'observed'`` evaluates the
+#: forward model at the pixel's L1B angles (every 2.0 / 2.0.1 fit);
+#: ``'normalized'`` at (θ_s, θ_v, Δφ) = (0, 0, 0), the geometry the PACE L2 AOP
+#: ``Rrs`` is normalized to (l2gen ``brdf_opt = 7``). Stamped as
+#: ``fits.geom_mode`` (schema v6).
+GEOM_OBSERVED = "observed"
+GEOM_NORMALIZED = "normalized"
+GEOMETRY_MODES: tuple[str, ...] = (GEOM_OBSERVED, GEOM_NORMALIZED)
+
 #: ``log10`` upper bound of BING's standard log-uniform priors (10⁵ m⁻¹) —
 #: what a ``None`` ceiling leaves in place.
 BING_LOG_PMAX = 5.0
@@ -108,12 +117,24 @@ class FitConfig:
             the LM bounds and the MCMC ``log_prob`` see the same ceiling.
             Recorded on every fit as ``fits.prior_set``
             (:func:`prior_set_label`). Q&A/Outliers 2 = A.
+        geometry_mode: Where the forward model is evaluated (2.1).
+            ``'normalized'`` (the default) uses (θ_s, θ_v, Δφ) = (0, 0, 0) for
+            every pixel, with the inelastic ``Ed`` at θ_s = 0: NASA's l2gen
+            runs ``brdf_opt = 7`` (Morel f/Q + Fresnel), so the distributed
+            AOP ``Rrs`` is an exact-normalized reflectance for a zenith sun
+            and a nadir view, and fitting it at the pixel's observed angles
+            mis-states the physics by a median ~5–10 % in ``Rrs``
+            (``papers/bbp/prompts/analysis.md``, Q&A / Viewing angle).
+            ``'observed'`` uses the pixel's stored L1B angles — what every 2.0
+            and 2.0.1 fit did. Irrelevant to ``rt_backend='gordon'``, which has
+            no geometry input. Stamped as ``fits.geom_mode`` (schema v6); see
+            :func:`pab.fit.run.fit_geometry`.
 
-    The defaults are the **2.0.1** configuration — the 2.0 physics with the
-    ceilings. :meth:`v2_0` returns the frozen, unceilinged 2.0 configuration
-    and :meth:`v1` the frozen 1.0 one, so published results stay reproducible
-    and version comparisons are a one-line change rather than remembered
-    keywords.
+    The defaults are the **2.1** configuration — the 2.0.1 physics and priors
+    at the normalized geometry. :meth:`v2_0_1`, :meth:`v2_0` and :meth:`v1`
+    return the frozen configurations of the earlier releases, so published
+    results stay reproducible and version comparisons are a one-line change
+    rather than remembered keywords.
     """
 
     model_pair: str = "ExpBPow"
@@ -137,6 +158,15 @@ class FitConfig:
     bbp600_max: float | None = 0.1
     adg_max: float | None = 10.0
     aph_max: float | None = 10.0
+    # --- forward-model geometry (2.1) ---
+    geometry_mode: str = GEOM_NORMALIZED
+
+    def __post_init__(self):
+        if self.geometry_mode not in GEOMETRY_MODES:
+            raise ValueError(
+                f"FitConfig.geometry_mode must be one of {GEOMETRY_MODES}, "
+                f"got {self.geometry_mode!r}"
+            )
 
     #: The three ceiling fields set to ``None`` — BING's own priors, verbatim.
     _NO_CEILINGS = {"bbp600_max": None, "adg_max": None, "aph_max": None}
@@ -159,8 +189,10 @@ class FitConfig:
         Returns:
             A :class:`FitConfig` with ``rt_backend='gordon'``,
             ``include_Raman=False``, ``include_Chl_fl=False``,
-            ``include_CDOM_fl=False``, ``fit_Bp=False``, ``wave_max=700.0``
-            and no prior ceilings.
+            ``include_CDOM_fl=False``, ``fit_Bp=False``, ``wave_max=700.0``,
+            no prior ceilings and ``geometry_mode='observed'`` (moot under
+            Gordon, which takes no geometry; pinned so the row's stamp is the
+            historical one).
         """
         v1 = {
             # Same as the 2.0 default since Q2 moved 2.0 back to 700; kept
@@ -171,15 +203,32 @@ class FitConfig:
             "include_Chl_fl": False,
             "include_CDOM_fl": False,
             "fit_Bp": False,
+            "geometry_mode": GEOM_OBSERVED,
             **cls._NO_CEILINGS,
         }
         return cls(**{**v1, **overrides})
 
     @classmethod
+    def v2_0_1(cls, **overrides) -> FitConfig:
+        """The frozen **2.0.1** configuration: the 2.0 physics with the prior
+        ceilings (0.1 / 10 / 10 m⁻¹), evaluated at the pixel's **observed**
+        L1B geometry.
+
+        This is what produced the 51 2.0.1 re-fits in ``$PAB_DATA_DIR/v2/pab.db``.
+        It differs from the 2.1 default only in ``geometry_mode``, which is
+        what makes it the control arm of the 2.0.1 → 2.1 comparison.
+
+        Args:
+            **overrides: Any field to change; overriding ``geometry_mode``
+                defeats it.
+        """
+        return cls(**{"geometry_mode": GEOM_OBSERVED, **overrides})
+
+    @classmethod
     def v2_0(cls, **overrides) -> FitConfig:
-        """The frozen **2.0** configuration: the 2.0.1 defaults *without* the
-        prior ceilings (BING's log-uniform [10⁻⁶, 10⁵] on ``Adg``, ``Aph``,
-        ``Bnw``).
+        """The frozen **2.0** configuration: the 2.0.1 configuration *without*
+        the prior ceilings (BING's log-uniform [10⁻⁶, 10⁵] on ``Adg``, ``Aph``,
+        ``Bnw``), at the observed geometry.
 
         This is what produced the 15,971 2.0 fits in ``$PAB_DATA_DIR/v2/pab.db``
         (``prior_set = 'bing_standard'``). Kept as a named constructor for the
@@ -187,9 +236,12 @@ class FitConfig:
         comparison must be able to name the old priors exactly.
 
         Args:
-            **overrides: Any field to change; overriding a ceiling defeats it.
+            **overrides: Any field to change; overriding a ceiling or the
+                geometry mode defeats it.
         """
-        return cls(**{**cls._NO_CEILINGS, **overrides})
+        return cls(
+            **{"geometry_mode": GEOM_OBSERVED, **cls._NO_CEILINGS, **overrides}
+        )
 
 
 def prior_ceilings(config) -> dict[str, float | None]:

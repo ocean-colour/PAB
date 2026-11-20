@@ -135,6 +135,23 @@ report_improvements.md``, Q&A/Outliers 1 = B then C):
   :func:`~pab.metrics.compare.patch_refit_summary`, and an explicit
   ``pab_version`` (``--figure-version 2.0``) means exactly that version, with
   no overlay.
+* **A new base version (2.1).** 2.1 re-fits every 2.0 spectrum with the
+  forward model evaluated at the normalized geometry (``fits.geom_mode =
+  'normalized'``, see :doc:`fitting`). It is a re-analysis, not a patch: with
+  2.1 rows present :func:`~pab.metrics.compare.version_family` returns
+  ``("2.1", [])``, so the headline, the exported tables and the 1.0-vs-2.1
+  comparison carry only 2.1 rows (``fit_id_superseded`` is empty), and the
+  2.0 / 2.0.1 rows stay in the database untouched.
+  :func:`~pab.metrics.compare.geometry_shift_summary` pairs the newest family
+  with the previous one (its patches overlaid) on matchup and pixel and
+  returns the median ``b_bp`` (700 nm) ratio. It returns ``None`` unless every
+  shown fit is normalized, so a 2.0 store renders as before. From it the
+  summary page prints a one-sentence "What changed in 2.1" with a link to
+  ``versions/v2.1/geometry_rerun.md``, and Comparisons and Methods repeat it
+  in full. The narrative numbers in the 1.0-vs-2.x section (terciles, the
+  clear-water extreme, the ratio curve's ends) are computed from the build,
+  the curve's ends through the same
+  :func:`pab.plotting.population.ratio_level_bins` the figure plots.
 
 Beyond the interactive plots, :mod:`pab.report.rst` surfaces the quality-assurance
 imagery and provenance the pipeline now records:

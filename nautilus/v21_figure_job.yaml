@@ -1,0 +1,110 @@
+# v2.1 Task 4 — the 2.1 fit figures (V9), in-pod.
+# claude_prompts/v2/build_v2_1_rerun.md Plan §5.
+#
+# Renders one fit figure per 2.1 fit (15,971) from its chain in
+# /data/v2/fit_chains, at the fit's own geometry (fits.geom_mode =
+# 'normalized' -> (0,0,0); pab/plotting/fit_fig.py dispatches on it). Writes
+# /data/v2/pipeline/figures/<fit_id>_fit.png and fits.figure_path, and nothing
+# else: no scene is rendered (every matchup already has one; the pre-flight
+# aborts otherwise, and the pod mounts no Earthdata credentials).
+#
+# STAGING: /data/v2/pab.db must be the live DB returned by Task 3,
+# sha aca3d69f…d4e2 (it still is: the workstation copy was swapped in from
+# it). A fresh run (no 2.1 figure_path yet) refuses any other sha.
+#
+# COST: 3 figures took 7.7 s on 3 local processes (startup included), i.e.
+# ~6–8 s/figure: 15,971 × 7 s / 32 ≈ 1 h, plus startup.
+#
+# *** DB-LOCAL *** as every PAB job: copy to emptyDir, checkpoint back every
+# 2 min via local sqlite3.backup() + file copy; never backup() onto CephFS.
+#
+# CUSTODY: while this runs the PVC DB is the master again; no writes to the
+# workstation v2 DB until it is pulled back and checked with
+#   python versions/v2.1/preflight.py verify --db <returned> \
+#       --snapshot versions/v2.1/prefigure_snapshot.json
+# (every row identical except the 2.1 figure_path).
+#
+# Usage (after JXP confirms):
+#   kubectl -n sea-meets-the-stars delete job pab-v21-figure --ignore-not-found
+#   kubectl apply -f nautilus/v21_figure_job.yaml
+#   kubectl -n sea-meets-the-stars logs -f job/pab-v21-figure
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pab-v21-figure
+  namespace: sea-meets-the-stars
+spec:
+  backoffLimit: 4                # idempotent by figure_path; a resume skips finished renders
+  activeDeadlineSeconds: 28800   # 8 h against a ~1 h expectation
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pab
+        image: gitlab-registry.nrp-nautilus.io/profx/pab:2.1.0
+        imagePullPolicy: Always
+        env:
+        - {name: HOME, value: /root}
+        - {name: PAB_DATA_DIR, value: /data/v2}
+        - {name: RUN, value: /data/v2}
+        - {name: DB_SHA, value: aca3d69fc2fb0af95495ab8b4a37931dcfb8df9d0bf84e6669c95a891b04d4e2}
+        - {name: PYTHONWARNINGS, value: "ignore"}
+        - {name: MPLBACKEND, value: "Agg"}
+        - {name: MALLOC_ARENA_MAX, value: "2"}
+        command: ["/bin/bash", "-lc"]
+        args:
+          - |
+            set -o pipefail
+            ulimit -n 65536 2>/dev/null || true
+            mkdir -p $RUN/v21
+            LOG=$RUN/v21/figure_v21.log
+            log() { echo "=== $1 $(date -Is) ===" | tee -a $LOG; }
+            LOCAL=/scratch/pab.db
+            BKUP="import sqlite3,os,shutil; s=sqlite3.connect('/scratch/pab.db'); d=sqlite3.connect('/scratch/pab.bak'); s.backup(d); d.close(); s.close(); shutil.copy('/scratch/pab.bak','/data/v2/pab.db.tmp'); os.replace('/data/v2/pab.db.tmp','/data/v2/pab.db')"
+            Q() { python -c "import sqlite3; c=sqlite3.connect('file:$1?mode=ro', uri=True); print(c.execute(\"$2\").fetchone()[0])"; }
+            log "PROVENANCE (attempt on $(hostname))"
+            python -c "import json; from pab.config import package_versions, pab_version; pv=package_versions(); print('pab_version', pab_version, 'pkg', pv['pab']); print('git_sha', json.dumps(pv['git_sha']))" 2>&1 | tee -a $LOG
+            python -c "import inspect; from pab.plotting import fit_fig; ok='fit_geometry' in inspect.getsource(fit_fig); print('fit_fig dispatches on geom_mode:', ok); raise SystemExit(0 if ok else 1)" 2>&1 | tee -a $LOG || { log "ABORT: image lacks the geom_mode figure dispatch"; exit 2; }
+
+            log "PRE-FLIGHT"
+            SHA=$(sha256sum $RUN/pab.db | cut -d' ' -f1); echo "PVC pab.db sha $SHA" | tee -a $LOG
+            N21=$(Q $RUN/pab.db "SELECT COUNT(*) FROM fits WHERE pab_version='2.1'")
+            NFIG=$(Q $RUN/pab.db "SELECT COUNT(figure_path) FROM fits WHERE pab_version='2.1'")
+            NNORM=$(Q $RUN/pab.db "SELECT COUNT(*) FROM fits WHERE pab_version='2.1' AND geom_mode='normalized'")
+            NSCENE=$(Q $RUN/pab.db "SELECT COUNT(*) FROM matchups WHERE scene_path IS NULL")
+            NNPZ=$(ls $RUN/fit_chains | grep -c '_v2.1.npz$')
+            echo "2.1 fits $N21 (normalized $NNORM), with figure $NFIG, scenes missing $NSCENE, 2.1 NPZ $NNPZ" | tee -a $LOG
+            [ "$N21" = 15971 ] && [ "$NNORM" = 15971 ] && [ "$NNPZ" = 15971 ] || { log "ABORT: unexpected 2.1 counts"; exit 2; }
+            [ "$NSCENE" = 0 ] || { log "ABORT: $NSCENE matchups would need a scene (granule reads); not in scope"; exit 2; }
+            if [ "$NFIG" = 0 ] && [ "$SHA" != "$DB_SHA" ]; then log "ABORT: fresh run on a DB that is not the Task 3 return"; exit 2; fi
+
+            log "DB-local: copy $RUN/pab.db -> $LOCAL"
+            cp $RUN/pab.db $LOCAL
+            ( while true; do sleep 120; python -c "$BKUP" 2>>$LOG && echo "=== DB backup $(date -Is) ===" >>$LOG || true; done ) &
+            BGPID=$!
+            log "FIGURE start (--jobs 32, --figure-version 2.1)"
+            T0=$(date +%s)
+            if ! pab --db $LOCAL --outdir $RUN/pipeline --stage figure --jobs 32 --figure-version 2.1 2>&1 \
+                  | grep --line-buffered -v "^  figure: {" | tee -a $LOG; then
+              log "FIGURE FAILED — final DB sync + stopping (re-apply to resume)"
+              python -c "$BKUP" 2>>$LOG || true
+              kill $BGPID 2>/dev/null || true
+              exit 1
+            fi
+            log "FIGURE end — elapsed $(( $(date +%s) - T0 )) s"
+            kill $BGPID 2>/dev/null || true
+            python -c "$BKUP" 2>>$LOG || true
+            log "CLOSE-OUT GATES"
+            python -c "import sqlite3; c=sqlite3.connect('$LOCAL'); q=lambda s: c.execute(s).fetchone()[0]; print('integrity:', q('PRAGMA integrity_check')); print('2.1 figure_path set:', q(\"SELECT COUNT(figure_path) FROM fits WHERE pab_version='2.1'\"), '/ 15971'); print('scene_path NULL:', q('SELECT COUNT(*) FROM matchups WHERE scene_path IS NULL'), '(must be 0)'); print('NASA rows with a figure (must be 0):', q(\"SELECT COUNT(*) FROM fits WHERE algorithm='NASA_GIOP' AND figure_path IS NOT NULL\"))" 2>&1 | tee -a $LOG
+            echo "2.1 fit PNGs: $(ls $RUN/pipeline/figures | grep -c '_v2.1_fit.png$')" | tee -a $LOG
+            sha256sum $RUN/pab.db | tee -a $LOG
+            log "V21_FIGURE_DONE"
+        resources:
+          requests: {cpu: "32", memory: "64Gi", ephemeral-storage: "10Gi"}
+          limits: {cpu: "32", memory: "64Gi", ephemeral-storage: "20Gi"}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: scratch, mountPath: /scratch}
+      volumes:
+      - {name: data, persistentVolumeClaim: {claimName: pab-data}}
+      - {name: scratch, emptyDir: {sizeLimit: 5Gi}}
