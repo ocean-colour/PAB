@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 
 from pab.config import DATA_DIR
 
-PAB_DB_DEFAULT = Path(DATA_DIR) / "pab.db"
+PAB_DB_DEFAULT = Path(DATA_DIR) / "v2" / "pab.db"  # the v2.1 release
 
 
 def _parse_args(argv=None):

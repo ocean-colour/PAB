@@ -4,14 +4,15 @@ Generate the paper figures for the PACE–Argo bbp700 matchup paper.
 ``--db`` is the release switch: every figure is built from that database and
 from the ``matchup_summary.parquet`` that sits next to it (both are published
 together under ``s3://pab/<version>/``). Re-rendering for a new release is a
-matter of pointing ``--db`` at the new file. The default is the v2.0.1 release,
-``$PAB_DATA_DIR/v2/pab.db``.
+matter of pointing ``--db`` at the new file. The default is the v2.1 release,
+``$PAB_DATA_DIR/v2/pab.db`` (it also holds the superseded 2.0 / 2.0.1 rows; the
+gatherers report the newest version family, 2.1).
 
 Usage:
     python papers/bbp/make_paper_figures.py
     python papers/bbp/make_paper_figures.py --which scatter histogram seasonal
     python papers/bbp/make_paper_figures.py --skip maps
-    python papers/bbp/make_paper_figures.py --db $PAB_DATA_DIR/v2.1/pab.db
+    python papers/bbp/make_paper_figures.py --db /path/to/other_release/pab.db
     python papers/bbp/make_paper_figures.py --out-dir ~/Desktop/paper_figs/
 
 Available figure groups (inputs in brackets):
@@ -37,7 +38,8 @@ from pathlib import Path
 
 from pab.config import DATA_DIR
 
-#: Default database: the v2.0.1 release (s3://pab/v2/pab.db).
+#: Default database: the v2.1 release (s3://pab/v2/pab.db; 2.1 published in place
+#: under v2/, build_v2_1_rerun.md V1 = A, V10).
 DEFAULT_DB = Path(DATA_DIR) / "v2" / "pab.db"
 PARQUET_NAME = "matchup_summary.parquet"
 

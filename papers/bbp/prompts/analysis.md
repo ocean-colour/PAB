@@ -29,8 +29,123 @@ If you have questions, put them in that prompt document and I will
 answer them there.
 Use Opus 5.5.  Log your work.
 
+### Version
+
+1. We have the v2.1 rerun completed and the v2.1 DB is now available.  Please
+check that the defaults are all pointed to 2.1 and no longer 2.0.1
+If you have questions, put them in that prompt document and I will
+answer them there.
+Use Opus 5.5.  Log your work.
 
 ## Q&A
+
+### Version
+
+*Response to Version prompt 1 (Claude Opus 5.5, 2026-11-20).*
+
+**Short answer: the package defaults were already on 2.1. The stale
+defaults were in the paper-figure code, which I have fixed. The public S3
+copy is still 2.0 + 2.0.1.**
+
+#### Already on 2.1 (checked, no change)
+
+- `pab.config.pab_version = "2.1"`, `setup.py` `2.1.0`,
+  `report_site/conf.py` `release = "2.1"`.
+- The Dockerfile asserts `pab 2.1.0`, `geometry_mode == 'normalized'` and
+  schema v6. The v2.1 Nautilus jobs use image `pab:2.1.0`.
+- `FitConfig()` defaults to the 2.1 configuration. `FitConfig.v2_0_1()` and
+  `.v2_0()` are frozen classmethods for the old versions.
+- **Version selection is automatic.** `gather_matchups`, `version_family`
+  and the report and viz selectors all default to the store's *newest* BING
+  family. They are not pinned to a version string. On the live DB
+  (`$PAB_DATA_DIR/v2/pab.db`), `version_family` returns `('2.1', [])` and
+  `gather_matchups` returns 15,971 rows, all 2.1. The DB holds BING 2.0
+  (15,971), 2.0.1 (51), 2.1 (15,971, `geom_mode='normalized'`) and NASA_GIOP
+  1.1 (15,976).
+- Some `"2.0"` strings are deliberate and stay:
+  - `fit/replay.py` `REPLAY_VERSION = "2.0"`: 2.1 replays the 2.0 chain
+    spectra.
+  - `fit/rrs_qa_backfill.py` `--pab-version 2.0`: a one-off backfill of the
+    2.0 rows.
+  - `report/rst.py`: the `"2.0"` fallback for frames without a `geom_mode`
+    column.
+  - The old `nautilus/v2_*` job images.
+
+#### Fixed
+
+1. **`papers/bbp/make_paper_figures.py`.** `DEFAULT_DB` was already
+   `$PAB_DATA_DIR/v2/pab.db`, the DB that holds 2.1 (V1 = A). I changed the
+   docstring and comment from "v2.0.1 release" to "v2.1 release". I also
+   replaced the example `--db $PAB_DATA_DIR/v2.1/pab.db` with a generic path,
+   because that file never existed.
+2. **The standalone figure modules defaulted to v1-era paths that no longer
+   exist**: `$PAB_DATA_DIR/pab.db`, `pab_full.db` and
+   `$PAB_DATA_DIR/matchup_summary.parquet`. Each one now defaults to
+   `$PAB_DATA_DIR/v2/pab.db` and `$PAB_DATA_DIR/v2/matchup_summary.parquet`:
+   - `pab/matchup/`: `make_analysis_figures`, `plot_rrs700_vs_delta`,
+     `plot_bing_giop_comparison`, `plot_outlier_cases`, `plot_delta_vs_bbp`,
+     `chl/data`, `plot_bbp700_vs_temp`, `plot_bbp_matchup_map`,
+     `plot_bbp_matchup_map_clean`;
+   - `papers/bbp/plot_global_maps.py`, which also stops guessing `../data/PAB`
+     and uses `pab.config.DATA_DIR`.
+3. **`plot_rrs700_vs_delta.load_data` mixed versions.** It took
+   `MAX(...) GROUP BY matchup_id` over *all* BING fits, so each matchup's 2.0
+   and 2.1 values (plus 2.0.1 where it exists) were combined. It now keys on
+   `fit_id` and joins to the parquet's `fit_id`, which is the fit the release
+   reports. It also used `fr.median` and the quantity names
+   `anw700`/`bbp700`, which do not exist. They are now `fr.value` and
+   `BING_ExpBPow_anw700`/`_bbp700`. In `plot_bing_giop_comparison`,
+   `fr.median` is now `fr.value`. **This is the fix proposed in `figures.md`
+   Q5, which had no answer.** I applied it because the version mixing affects
+   2.1 directly. It is easy to revert if you want to handle Q5 separately.
+   - **Check.** Against the live DB and the staged 2.1 parquet: `rrs700`
+     returns 14,338 rows, all 2.1, and its `bbp700_fit` equals the parquet's
+     `bbp_bing` exactly. `giop` returns 15,267 rows, all 2.1. The analysis
+     loader returns 14,338 rows and the chl loader 15,971, all 2.1.
+   - **Tests.** The full test suite passes: 563 passed, 1 skipped (live L1B).
+
+#### Not 2.1 yet (needs you)
+
+- **Public S3.** `s3://pab/v2/pab.db` (220,819,456 B) and
+  `v2/matchup_summary.parquet` (2,745,255 B) are still the 2026-10-20 objects,
+  with Last-Modified 2026-10-20. That is the 2.0 + 2.0.1 release.
+  `v2/pab_2026-10-20.db` returns 403. T5-Q1/Q2/Q3 in
+  `claude_prompts/v2/build_v2_1_rerun.md` (Round 5) have no answer. The 2.1
+  tables are staged in `$PAB_DATA_DIR/v2/s3_stage_v21_20261119/`.
+- **No local `v2/matchup_summary.parquet`.** `make_paper_figures.py` reads
+  the parquet next to `--db`. Without it, the parquet groups (`delta_bbp`,
+  `rrs700`, `giop`, `outliers`, `maps`) stop with a missing-input error
+  unless you pass `--parquet`.
+
+#### Questions for JXP
+
+1. **Q1: S3 publish.** Shall I go ahead with T5-Q1 = A in
+   `build_v2_1_rerun.md`? That means: dated key for the 2.0.1 DB, replace
+   `v2/pab.db` and the four tables, verify by re-download. Or will you
+   answer it there first?
+   *(My recommendation: answer T5-Q1–Q3 in that doc; I run them as its next
+   prompt.)*
+
+   **A:**
+2. **Q2: local parquet.** Shall I copy the staged 2.1
+   `matchup_summary.parquet` (and `.csv`, plus `nasa_giop_summary.*`) into
+   `$PAB_DATA_DIR/v2/`, so `make_paper_figures.py` runs with no flags? They
+   are byte-identical to what will go to S3.
+   *(Recommended: yes.)*
+
+   **A:**
+3. **Q3: `pab` CLI `--db` default.** `pab/pipeline.py` still defaults `--db`
+   to `$PAB_DATA_DIR/pab.db`, which does not exist. The pipeline **creates**
+   the store if it is absent, so a run without `--db` silently builds an
+   empty DB. I left it alone because pointing a *writer* at the live 2.1 DB by
+   default is risky. Options:
+   - (a) leave it;
+   - (b) point it at `v2/pab.db`;
+   - (c) make `--db` required.
+
+   *(Recommended: c, in line with the "always pass `--db`" lesson.)*
+
+   **A:**
 
 ### Raman correction
 
@@ -400,3 +515,32 @@ anchor; `fit_fig` reconstructs geometry from the pixel angles and must learn
 the fit's mode; `2.1` becomes the report headline through
 `compare.version_family` with no new code. Expected effect from the RT
 prompt 1 test: `bbp700` up about 5–10 % on median. No code or DB changes.
+
+### 2026-11-20 (Version prompt 1: defaults checked against 2.1; stale paper-figure defaults fixed)
+
+Checked every version default against the v2.1 release. The package was
+already on 2.1: `pab_version`, `setup.py`, the Dockerfile asserts, the
+`FitConfig()` defaults and `report_site`. Report and figure version
+selection is not pinned. `gather_matchups` and `version_family` resolve the
+store's newest BING family, which on the live `v2/pab.db` is `('2.1', [])`
+with 15,971 rows. Fixed the stale defaults:
+- `make_paper_figures.py` text said "v2.0.1 release" and gave a
+  `v2.1/pab.db` example that does not exist;
+- ten figure modules defaulted to v1-era `pab.db`, `pab_full.db` and
+  parquet paths, now `$PAB_DATA_DIR/v2/…`;
+- `plot_rrs700_vs_delta` grouped over all BING versions by `matchup_id`. It
+  now joins on the parquet's `fit_id`. It and `plot_bing_giop_comparison` also
+  queried a non-existent `fr.median` column. This is `figures.md` Q5's
+  proposed fix.
+
+Verified that every loader returns 2.1 rows only, and the full test suite
+passes (563 passed). Found that public `s3://pab/v2/` is still the 2026-10-20
+2.0 + 2.0.1 release: T5-Q1 of `build_v2_1_rerun.md` has no answer. There is
+also no local `v2/matchup_summary.parquet` (the 2.1 copy is staged), and the
+`pab` CLI `--db` default points to a non-existent file. These are three
+questions in Q&A / Version. No DB or S3 changes.
+
+Lessons: `fit_results` stores the posterior median as `value`, not `median`,
+with quantities prefixed `BING_<model_pair>_`. Check the public S3 state
+with `curl -sI https://s3-west.nrp-nautilus.io/pab/v2/<file>` (size and
+Last-Modified) before assuming a release is published.

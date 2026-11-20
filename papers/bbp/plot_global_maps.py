@@ -12,7 +12,7 @@ Requires cartopy — run locally (not in sandbox).
 Usage:
     python plot_global_maps.py
     python plot_global_maps.py --which bing giop
-    python plot_global_maps.py --db /path/to/pab_full.db --out-dir /path/to/output/
+    python plot_global_maps.py --db /path/to/pab.db --out-dir /path/to/output/
 """
 import argparse
 import sqlite3
@@ -31,14 +31,12 @@ except ImportError:
     raise ImportError("cartopy is required: conda install cartopy")
 
 # ── Default paths ─────────────────────────────────────────────────────────────
-_THIS = Path(__file__).resolve()
-_REPO = _THIS.parent.parent.parent          # PAB/
-_DATA = _REPO.parent / "data" / "PAB"       # ../data/PAB/
-if not _DATA.exists():
-    _DATA = _REPO / "data"
+from pab.config import DATA_DIR
+
+_DATA = Path(DATA_DIR) / "v2"               # the v2.1 release ($PAB_DATA_DIR/v2/)
 
 DEFAULT_PARQUET = _DATA / "matchup_summary.parquet"
-DEFAULT_DB      = _DATA / "pab_full.db"
+DEFAULT_DB      = _DATA / "pab.db"
 DEFAULT_OUT     = _DATA
 
 

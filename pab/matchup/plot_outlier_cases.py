@@ -9,7 +9,7 @@ and produces a three-panel figure:
 
 Usage:
     python plot_outlier_cases.py
-    python plot_outlier_cases.py --db /path/to/pab_full.db --out /path/to/out.png
+    python plot_outlier_cases.py --db /path/to/pab.db --out /path/to/out.png
 """
 import argparse
 import sqlite3
@@ -22,8 +22,8 @@ import pandas as pd
 
 from pab.config import DATA_DIR
 
-DEFAULT_DB = Path(DATA_DIR) / "pab_full.db"
-DEFAULT_PARQUET = Path(DATA_DIR) / "matchup_summary.parquet"
+DEFAULT_DB = Path(DATA_DIR) / "v2" / "pab.db"  # the v2.1 release
+DEFAULT_PARQUET = Path(DATA_DIR) / "v2" / "matchup_summary.parquet"
 DEFAULT_OUT = Path(DATA_DIR) / "fig17_outlier_cases.png"
 N_CASES = 8
 RATIO_THRESHOLD = 0.1  # PACE/Argo ratio below which a matchup is an outlier

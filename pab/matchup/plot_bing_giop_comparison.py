@@ -11,7 +11,7 @@ GIOP bbp700 is extrapolated from fit_results (NASA_GIOP algorithm):
 
 Usage:
     python plot_bing_giop_comparison.py
-    python plot_bing_giop_comparison.py --db /path/to/pab_full.db --out /path/to/out.png
+    python plot_bing_giop_comparison.py --db /path/to/pab.db --out /path/to/out.png
 """
 import argparse
 import sqlite3
@@ -25,8 +25,8 @@ from scipy import stats
 
 from pab.config import DATA_DIR
 
-DEFAULT_DB = Path(DATA_DIR) / "pab_full.db"
-DEFAULT_PARQUET = Path(DATA_DIR) / "matchup_summary.parquet"
+DEFAULT_DB = Path(DATA_DIR) / "v2" / "pab.db"  # the v2.1 release
+DEFAULT_PARQUET = Path(DATA_DIR) / "v2" / "matchup_summary.parquet"
 DEFAULT_OUT = Path(DATA_DIR) / "fig16_bing_giop_comparison.png"
 
 
@@ -38,8 +38,8 @@ def load_data(db=None, parquet=None):
     con = sqlite3.connect(db_path)
     giop = pd.read_sql(
         """SELECT f.matchup_id,
-                  MAX(CASE WHEN fr.quantity='NASA_GIOP_bbp_442' THEN fr.median END) AS giop_bbp442,
-                  MAX(CASE WHEN fr.quantity='NASA_GIOP_bbp_s'   THEN fr.median END) AS giop_bbp_s
+                  MAX(CASE WHEN fr.quantity='NASA_GIOP_bbp_442' THEN fr.value END) AS giop_bbp442,
+                  MAX(CASE WHEN fr.quantity='NASA_GIOP_bbp_s'   THEN fr.value END) AS giop_bbp_s
            FROM fits f
            JOIN fit_results fr ON fr.fit_id = f.fit_id
            WHERE f.algorithm = 'NASA_GIOP'

@@ -22,7 +22,7 @@ from scipy import stats
 
 from pab.config import DATA_DIR
 
-DEFAULT_PARQUET = Path(DATA_DIR) / "matchup_summary.parquet"
+DEFAULT_PARQUET = Path(DATA_DIR) / "v2" / "matchup_summary.parquet"  # the v2.1 release
 DEFAULT_OUT = Path(DATA_DIR)
 
 

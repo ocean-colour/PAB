@@ -25,7 +25,7 @@ from pab.metrics.compare import add_strata, gather_matchups
 
 #: Default local DB path (``$PAB_DATA_DIR/pab.db``), replacing the
 #: hardcoded ``/Users/alliejames/...`` paths in the original scripts.
-DEFAULT_DB = DATA_DIR / "pab.db"
+DEFAULT_DB = DATA_DIR / "v2" / "pab.db"  # the v2.1 release
 
 MODEL_PAIR = "ExpBPow"
 ADG_QUANTITY = f"BING_{MODEL_PAIR}_Adg"

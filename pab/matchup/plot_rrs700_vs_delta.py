@@ -8,7 +8,7 @@ using the Gordon et al. (1988) radiative transfer approximation:
 
 Usage:
     python plot_rrs700_vs_delta.py
-    python plot_rrs700_vs_delta.py --db /path/to/pab_full.db --out /path/to/out.png
+    python plot_rrs700_vs_delta.py --db /path/to/pab.db --out /path/to/out.png
 """
 import argparse
 import sqlite3
@@ -22,8 +22,8 @@ import pandas as pd
 
 from pab.config import DATA_DIR
 
-DEFAULT_DB = Path(DATA_DIR) / "pab_full.db"
-DEFAULT_PARQUET = Path(DATA_DIR) / "matchup_summary.parquet"
+DEFAULT_DB = Path(DATA_DIR) / "v2" / "pab.db"  # the v2.1 release
+DEFAULT_PARQUET = Path(DATA_DIR) / "v2" / "matchup_summary.parquet"
 DEFAULT_OUT = Path(DATA_DIR) / "fig10_rrs700_vs_delta.png"
 BBW_700 = 0.0026  # pure water backscattering at 700 nm (m⁻¹)
 
@@ -32,16 +32,18 @@ def load_data(db=None, parquet=None):
     db_path = db or DEFAULT_DB
     par_path = parquet or DEFAULT_PARQUET
 
-    # Get anw700 from fit_results
+    # anw700 / bbp700 posterior medians per BING fit. Keyed by fit_id, not
+    # matchup_id: the v2 DB holds a 2.0, a 2.0.1 and a 2.1 fit for the same
+    # matchup, and the parquet's fit_id names the one the release reports.
     con = sqlite3.connect(db_path)
     anw = pd.read_sql(
-        """SELECT f.matchup_id,
-                  MAX(CASE WHEN fr.quantity='anw700' THEN fr.median END) AS anw700,
-                  MAX(CASE WHEN fr.quantity='bbp700' THEN fr.median END) AS bbp700_fit
+        """SELECT f.fit_id,
+                  MAX(CASE WHEN fr.quantity='BING_ExpBPow_anw700' THEN fr.value END) AS anw700,
+                  MAX(CASE WHEN fr.quantity='BING_ExpBPow_bbp700' THEN fr.value END) AS bbp700_fit
            FROM fits f
            JOIN fit_results fr ON fr.fit_id = f.fit_id
            WHERE f.algorithm = 'BING'
-           GROUP BY f.matchup_id""",
+           GROUP BY f.fit_id""",
         con,
     )
     con.close()
@@ -53,7 +55,7 @@ def load_data(db=None, parquet=None):
     par = par[par["delta"].between(-1.5, 1.0)]
     par["time"] = pd.to_datetime(par["time"])
 
-    df = par.merge(anw, on="matchup_id", how="inner")
+    df = par.merge(anw, on="fit_id", how="inner")
     df = df.dropna(subset=["anw700", "bbp700_fit"])
 
     # Compute BING-predicted Rrs(700)

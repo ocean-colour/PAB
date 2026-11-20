@@ -37,7 +37,7 @@ from pab.metrics.compare import gather_matchups
 mpl.use("Agg")
 
 # ── defaults ──────────────────────────────────────────────────────────────────
-DEFAULT_DB = Path(DATA_DIR) / "pab.db"
+DEFAULT_DB = Path(DATA_DIR) / "v2" / "pab.db"  # the v2.1 release
 DEFAULT_OUT = Path(DATA_DIR)
 
 # Relative difference: (PACE − Argo) / PACE
