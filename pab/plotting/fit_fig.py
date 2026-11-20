@@ -93,8 +93,15 @@ def _geometry_from_row(store, config_row, config=None):
     return run.fit_geometry(config, px[0]["theta_s"], px[0]["theta_v"], px[0]["dphi"])
 
 
-def reconstruct_fit(store, fit_id: str):
-    """Rebuild ``(wave, obs_Rrs, Rrs_med, Rrs_lo, Rrs_hi, bbp_med, bbp_lo, bbp_hi)``.
+def _band(samples):
+    """``(median, 5 %, 95 %)`` over the posterior samples (axis 0)."""
+    med = np.median(samples, axis=0)
+    lo, hi = np.percentile(samples, [5, 95], axis=0)
+    return med, lo, hi
+
+
+def reconstruct_posterior(store, fit_id: str, *, iops: bool = False) -> dict:
+    """Rebuild a stored fit's posterior on its own wavelength grid.
 
     Loads the fit's chains NPZ and ``fits`` row, rebuilds the BING models on the
     saved wavelength grid, and evaluates the posterior (``b_bp(λ)`` via the
@@ -109,6 +116,11 @@ def reconstruct_fit(store, fit_id: str):
     its free ``B_p``, not with the elastic Gordon relation. A legacy 1.0 row has
     ``rt_backend`` NULL and falls back to Gordon, which is what it was fitted
     with.
+
+    Returns a dict of arrays: ``wave``, ``obs``, and ``(median, 5 %, 95 %)``
+    triples ``rrs`` and ``bbp``. With ``iops`` it adds the non-water
+    absorption triples ``anw`` and, for a model with a separable CDOM +
+    detritus term, ``adg`` and ``aph`` (else ``None``).
     """
     import bing.evaluate as ev
     from bing.models import utils as model_utils
@@ -145,12 +157,31 @@ def reconstruct_fit(store, fit_id: str):
     rrs_samples = run.reconstruct_rrs(
         models, a_flat, bb_flat, rt_dict, geom=geom, Bp=bp_flat
     )
-    rrs_med = np.median(rrs_samples, axis=0)
-    rrs_lo, rrs_hi = np.percentile(rrs_samples, [5, 95], axis=0)
-    bbnw = models[1].eval_bbnw(bb_flat, wave=wave)
-    bbp_med = np.median(bbnw, axis=0)
-    bbp_lo, bbp_hi = np.percentile(bbnw, [5, 95], axis=0)
-    return wave, obs, rrs_med, rrs_lo, rrs_hi, bbp_med, bbp_lo, bbp_hi
+    out = {
+        "wave": wave,
+        "obs": obs,
+        "rrs": _band(rrs_samples),
+        "bbp": _band(models[1].eval_bbnw(bb_flat, wave=wave)),
+    }
+    if iops:
+        anw_model = models[0]
+        if getattr(anw_model, "has_a_dg", False):
+            a_dg, a_ph = anw_model.eval_anw(a_flat, retsub_comps=True, wave=wave)
+            out["adg"], out["aph"] = _band(a_dg), _band(a_ph)
+            out["anw"] = _band(a_dg + a_ph)
+        else:
+            out["adg"] = out["aph"] = None
+            out["anw"] = _band(anw_model.eval_anw(a_flat, wave=wave))
+    return out
+
+
+def reconstruct_fit(store, fit_id: str):
+    """Rebuild ``(wave, obs_Rrs, Rrs_med, Rrs_lo, Rrs_hi, bbp_med, bbp_lo, bbp_hi)``.
+
+    The tuple form of :func:`reconstruct_posterior` (which see).
+    """
+    post = reconstruct_posterior(store, fit_id)
+    return (post["wave"], post["obs"], *post["rrs"], *post["bbp"])
 
 
 def fit_figure(store, fit_id: str, *, outfile=None, dpi: int = 100):

@@ -8,7 +8,7 @@ Design (GE-Q1 to GE-Q13):
 * a **Web-Mercator map** on Esri World Gray Canvas tiles (:data:`TILES`), coloured by the chosen
   variable, with an **editable colour range** (low / high / auto, remembered
   per variable) and a colour bar;
-* a linked **Argo vs PACE ``b_bp(700)``** log-log scatter (1:1 line) and a
+* a linked **PACE (y) vs Argo (x) ``b_bp(700)``** log-log scatter (1:1 line, box zoom) and a
   **histogram** of the colour variable. Map and scatter share one source, so a
   selection on either shows on both; selecting histogram bars selects their
   matchups;
@@ -354,12 +354,12 @@ class GlobalTab:
 
         # -- scatter -----------------------------------------------------------
         s = figure(width=400, height=400, x_axis_type="log", y_axis_type="log",
-                   x_axis_label="PACE b_bp(700) (m⁻¹)", y_axis_label="Argo b_bp(700) (m⁻¹)",
-                   tools="pan,wheel_zoom,box_select,lasso_select,tap,reset,save",
-                   output_backend="webgl", title="Argo vs PACE b_bp(700)",
+                   x_axis_label="Argo b_bp(700) (m⁻¹)", y_axis_label="PACE b_bp(700) (m⁻¹)",
+                   tools="pan,wheel_zoom,box_zoom,box_select,lasso_select,tap,reset,save",
+                   output_backend="webgl", title="PACE vs Argo b_bp(700)",
                    x_range=Range1d(1e-4, 1e-1), y_range=Range1d(1e-4, 1e-1))
         s.line([1e-6, 1.0], [1e-6, 1.0], color="black", line_dash="dashed")
-        s.scatter("bbp_pace", "bbp_argo", source=self.src, size=4, line_color=None,
+        s.scatter("bbp_argo", "bbp_pace", source=self.src, size=4, line_color=None,
                   fill_color={"field": "c", "transform": self.lin_mapper}, fill_alpha=0.7,
                   nonselection_fill_alpha=0.08)
         self.scatter = s

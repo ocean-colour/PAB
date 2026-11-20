@@ -62,7 +62,10 @@ def _curves(fit_id):
     rrs = np.linspace(4e-3, 1e-4, 7)
     return vfits.FitCurves(fit_id=fit_id, wave=wave, rrs_obs=rrs, sigma=0.02 * rrs,
                            rrs_med=rrs * 1.01, rrs_lo=rrs * 0.95, rrs_hi=rrs * 1.05,
-                           adg440=(0.05, 0.04, 0.06))
+                           adg440=(0.05, 0.04, 0.06),
+                           iops={"anw": (0.2 * wave / wave, 0.1 * wave / wave, 0.3 * wave / wave),
+                                 "bbp": (2e-3 * wave / wave, 1e-3 * wave / wave,
+                                         3e-3 * wave / wave)})
 
 
 def test_open_store_is_read_only(tmp_path):
@@ -174,6 +177,44 @@ def test_make_argo_pace_builds_both_panels():
         view.set_giop_visible(False)
         assert "NASA-GIOP" not in view.table.text
         assert not any(r.visible for r in view.giop_renderers)
+
+
+def test_edits_1_reset_targets_log_toggle_and_iop_panel():
+    """Edits #1: reset returns to the data view; linear/log10 Rrs; the IOP panel."""
+    with Store.open(":memory:") as store:
+        *_, f21 = _seed(store)
+        view = ap.make_argo_pace(store, 7902226, 5, fetch=False,
+                                 argo_profile=_profile(), curves=_curves(f21))
+        for rng in (view.rrs_fig.y_range, view.rrs_log_fig.y_range, view.argo_fig.x_range,
+                    view.argo_fig.y_range, view.iop_fig.y_range,
+                    view.iop_fig.extra_y_ranges["bbp"]):
+            assert (rng.reset_start, rng.reset_end) == (rng.start, rng.end)
+        assert view.rrs_fig.y_range.end == pytest.approx(4e-3 * 1.05 * 1.05, rel=0.02)
+        lo, hi = view.rrs_log_fig.y_range.start, view.rrs_log_fig.y_range.end
+        assert 0 < lo < 0.95e-4 and hi > 4.2e-3
+        assert view.rrs_fig.visible and not view.rrs_log_fig.visible
+        view.rrs_scale.active = 1                       # the toggle drives it
+        assert view.rrs_log_fig.visible and not view.rrs_fig.visible
+        assert view.resid_fig.yaxis[0].__class__.__name__ == "LinearAxis"
+        view.set_rrs_scale(False)
+        assert view.rrs_fig.visible and view.rrs_scale.active == 0
+        assert view.rrs_log_fig.x_range is view.rrs_fig.x_range is view.iop_fig.x_range
+        d = view.iop_src.data
+        assert np.allclose(d["anw"], 0.2) and np.allclose(d["bbp_hi"], 3e-3)
+        assert np.isnan(d["adg"]).all()                 # not in the curves: blank
+        assert view.iop_fig.y_range.end == pytest.approx(0.3 * 1.05)
+        assert view.iop_fig.extra_y_ranges["bbp"].end == pytest.approx(3e-3 * 1.05)
+        assert view.rrs_log_fig.y_range.start > 0
+        view.show_selection(view._sel)                  # a new selection clears it
+        assert len(view.iop_src.data["wave"]) == 0
+
+
+def test_range_helpers():
+    assert ap.lin_limits([[1.0, 2.0], [np.nan]]) == pytest.approx((0.0, 2.1))
+    assert ap.lin_limits([[-1.0, 1.0]]) == pytest.approx((-1.1, 1.1))
+    assert ap.lin_limits([[np.nan]]) is None
+    assert ap.log_limits([[-1.0, 1e-3], [1e-2]]) == pytest.approx((1e-3 / 1.4, 1.4e-2))
+    assert ap.log_limits([[0.0, -2.0]]) is None
 
 
 def test_failure_cases_are_messages_not_crashes():

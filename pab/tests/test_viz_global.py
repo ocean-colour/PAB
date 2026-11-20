@@ -85,6 +85,11 @@ def test_global_tab_builds_and_opens_a_matchup():
         _seed(store)
         tab = gx.GlobalTab(store, ":memory:", open_matchup=lambda *a: opened.append(a))
         assert len(tab.src.data["x"]) == 1
+        # Edits #1: PACE on y, Argo on x; box zoom on the scatter
+        glyph = tab.scatter.renderers[1].glyph
+        assert (glyph.x, glyph.y) == ("bbp_argo", "bbp_pace")
+        assert tab.scatter.yaxis[0].axis_label.startswith("PACE")
+        assert any(t.__class__.__name__ == "BoxZoomTool" for t in tab.scatter.tools)
         tab.variable.value = "bbp_pace"                # log colour, auto range
         assert tab.color_bar.color_mapper is tab.log_mapper
         tab.low.value, tab.high.value = "1e-4", "1e-2"

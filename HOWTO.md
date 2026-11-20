@@ -503,12 +503,14 @@ An interactive Bokeh server for exploring the matchups
 in memory only.
 
 - **Tab 1, Argo + PACE:** a float's `b_bp(700)` profile beside the PACE
-  `Rrs` and its BING fit, for one `wmo` + `cycle`.
+  `Rrs` and its BING fit (linear / log10 toggle; residuals stay linear) and
+  the fit's non-water IOPs (`a_nw`, `a_dg`, `a_ph`; `b_bp` on a second
+  axis), for one `wmo` + `cycle`. The layout is ~1500 px wide.
 - **Tab 2, Global:** every matchup of a BING family on a world map, with:
   - a colour variable: Argo / PACE `b_bp`, `dbbp`, log ratio, `Adg`,
     `S_dg`, `β`, Chl;
   - an editable colour range;
-  - a linked Argo vs PACE scatter and histogram;
+  - a linked PACE (y) vs Argo (x) scatter and histogram;
   - statistics over the selection or the visible region;
   - filters.
 

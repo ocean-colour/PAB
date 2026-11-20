@@ -8,9 +8,17 @@ Design: ``claude_prompts/viz_tools.md``, Q&A / Argo+PACE (AP-Q1 to AP-Q15).
   AP-Q16), the MLD (dashed), the stored ML mean ± std over
   0 → MLD, and the PACE ``b_bp(700)`` (median, 5–95 %) over the same span.
   NASA-GIOP ``b_bp(700)`` is a toggle (dashed).
-* **PACE panel** (right): observed ``Rrs`` ± σ, the BING model median and
-  5–95 % band (y from 0 or below, dashed zero line), a residual strip in σ units with a linked x-axis, and the
-  table of retrieved values with the Argo counterparts.
+* **PACE panel** (middle): observed ``Rrs`` ± σ, the BING model median and
+  5–95 % band (linear y from 0 or below with a dashed zero line, or log10 y;
+  a toggle swaps between two figures, since a Bokeh axis type is fixed), a
+  linear residual strip in σ units with a linked x-axis, and the table of
+  retrieved values with the Argo counterparts.
+* **IOP panel** (right, Edits #1): the best-fit non-water absorption
+  ``a_nw`` and its ``a_dg`` / ``a_ph`` parts (left axis) and ``b_bp`` (right
+  axis, dashed), each median with its 5–95 % band, on the same x-axis.
+
+Every autoranged ``Range1d`` also sets its ``reset_start`` / ``reset_end``, so
+the reset tool returns to the data view rather than the figure's initial range.
 
 :class:`ArgoPaceView` owns the figures and data sources and has one
 ``show_*`` method per piece, so the server app can fill it piece by piece as
@@ -31,6 +39,8 @@ from bokeh.models import (
     ColumnDataSource,
     Div,
     HoverTool,
+    LinearAxis,
+    RadioButtonGroup,
     Range1d,
     Span,
 )
@@ -46,6 +56,21 @@ GIOP_COLOR = "#1b9e77"
 RAW_COLOR = "#9e9e9e"
 ZERO_COLOR = "#444444"
 DROP_COLOR = "#c62828"
+ANW_COLOR = "#252525"
+ADG_COLOR = "#a6611a"
+APH_COLOR = "#33a02c"
+BBP_COLOR = "#7b3294"
+
+#: Floor (sr⁻¹) for the lower error bounds drawn on the log10 Rrs figure.
+RRS_LOG_FLOOR = 1e-7
+
+#: Labels of the Rrs y-scale toggle.
+RRS_SCALES = ("linear", "log10")
+
+#: Columns of the IOP source: each of ``anw``, ``adg``, ``aph`` and ``bbp``
+#: with ``_lo`` / ``_hi`` (5 / 95 %).
+IOP_KEYS = ("anw", "adg", "aph", "bbp")
+_IOP_COLS = ("wave", *(f"{k}{s}" for k in IOP_KEYS for s in ("", "_lo", "_hi")))
 
 #: y-extent of the Argo panel when the profile has no MLD (m).
 NO_MLD_DEPTH = 200.0
@@ -79,6 +104,39 @@ def fmt_ci(triple) -> str:
 
 def _finite(x) -> bool:
     return x is not None and np.isfinite(float(x))
+
+
+def set_range(rng, start: float, end: float) -> None:
+    """Set a ``Range1d`` **and** its reset target, so the reset tool returns
+    here rather than to the range the figure was built with (Edits #1)."""
+    rng.start, rng.end = float(start), float(end)
+    rng.reset_start, rng.reset_end = float(start), float(end)
+
+
+def _values(*arrays) -> np.ndarray:
+    """The finite values of ``arrays``, flattened."""
+    out = [np.asarray(a, dtype=float).ravel() for a in arrays if a is not None]
+    v = np.concatenate(out) if out else np.empty(0)
+    return v[np.isfinite(v)]
+
+
+def log_limits(vals) -> tuple[float, float] | None:
+    """Log-axis limits for the positive ``vals`` (a factor 1.4 of padding)."""
+    v = _values(*vals)
+    v = v[v > 0]
+    if not v.size:
+        return None
+    return float(v.min()) / 1.4, float(v.max()) * 1.4
+
+
+def lin_limits(vals) -> tuple[float, float] | None:
+    """Linear limits from min(0, data) to the data maximum, 5 % padding."""
+    v = _values(*vals)
+    if not v.size:
+        return None
+    lo, hi = min(0.0, float(v.min())), max(0.0, float(v.max()))
+    pad = 0.05 * (hi - lo) if hi > lo else 1e-4
+    return (lo - pad if lo < 0 else 0.0), hi + pad
 
 
 @dataclass
@@ -126,9 +184,10 @@ def load_selection(store, wmo: int, cycle: int, family: str | None = None, *,
 class ArgoPaceView:
     """Figures, sources and text of the Argo + PACE view."""
 
-    def __init__(self, *, width: int = 1150):
+    def __init__(self, *, width: int = 1500):
         argo_w = 380
-        pace_w = width - argo_w - 20
+        iop_w = 430
+        pace_w = width - argo_w - iop_w - 30
         self.header = Div(text="", sizing_mode="stretch_width")
         self.notes = Div(text="", sizing_mode="stretch_width")
         self.table = Div(text="", width=pace_w)
@@ -196,8 +255,10 @@ class ArgoPaceView:
 
         # -- PACE panel ----------------------------------------------------
         self.obs_src = ColumnDataSource(
-            {"wave": [], "rrs": [], "lo": [], "hi": [], "sigma": [], "model": []})
-        self.model_src = ColumnDataSource({"wave": [], "med": [], "lo": [], "hi": []})
+            {"wave": [], "rrs": [], "lo": [], "hi": [], "lo_log": [], "sigma": [],
+             "model": []})
+        self.model_src = ColumnDataSource(
+            {"wave": [], "med": [], "lo": [], "hi": [], "lo_log": []})
         self.resid_src = ColumnDataSource(
             {"wave": [], "rs": [], "r": [], "pct": []})
 
@@ -208,21 +269,23 @@ class ArgoPaceView:
         )
         q.add_layout(Span(location=0, dimension="width", line_dash="dashed",
                           line_color=ZERO_COLOR, line_width=1.5))
-        q.varea(x="wave", y1="lo", y2="hi", source=self.model_src, fill_color=PACE_COLOR,
-                fill_alpha=0.25, legend_label="BING 5–95 %")
-        q.line("wave", "med", source=self.model_src, color=PACE_COLOR, line_width=2,
-               legend_label="BING median")
-        q.segment(x0="wave", y0="lo", x1="wave", y1="hi", source=self.obs_src,
-                  color="black", alpha=0.5)
-        obs = q.scatter("wave", "rrs", source=self.obs_src, size=4, color="black",
-                        legend_label="PACE Rrs ± σ")
-        q.add_tools(HoverTool(renderers=[obs], tooltips=[
-            ("λ", "@wave{0} nm"), ("Rrs", "@rrs{0.000000}"), ("σ", "@sigma{0.000000}"),
-            ("model", "@model{0.000000}")]))
+        self._rrs_glyphs(q, "lo")
         q.yaxis.formatter = BasicTickFormatter(precision=1, power_limit_low=-2)
-        q.legend.location = "top_right"
-        q.legend.click_policy = "hide"
         self.rrs_fig = q
+
+        # The same glyphs on a log10 y-axis (an axis type cannot change once
+        # drawn); lower bounds ≤ 0 are floored at RRS_LOG_FLOOR.
+        ql = figure(
+            width=pace_w, height=420, title="PACE Rrs and the BING fit (log10)",
+            x_axis_label=None, y_axis_label="Rrs (sr⁻¹)", y_axis_type="log",
+            x_range=q.x_range, y_range=Range1d(1e-4, 1e-2), visible=False,
+            tools="pan,wheel_zoom,box_zoom,reset,save",
+        )
+        self._rrs_glyphs(ql, "lo_log")
+        self.rrs_log_fig = ql
+        self.rrs_scale = RadioButtonGroup(labels=list(RRS_SCALES), active=0,
+                                          name="rrs_scale")
+        self.rrs_scale.on_change("active", lambda a, o, n: self.set_rrs_scale(n == 1))
 
         r = figure(
             width=pace_w, height=170, x_range=q.x_range,
@@ -238,11 +301,75 @@ class ArgoPaceView:
             ("resid", "@pct{0.0} %")]))
         self.resid_fig = r
 
+        # -- IOP panel -------------------------------------------------------
+        self.iop_src = ColumnDataSource({k: [] for k in _IOP_COLS})
+        t = figure(
+            width=iop_w, height=420, title="BING IOPs (non-water), 5–95 %",
+            x_range=q.x_range, y_range=Range1d(0, 0.1),
+            x_axis_label="wavelength (nm)", y_axis_label="a (m⁻¹)",
+            tools="pan,wheel_zoom,box_zoom,reset,save",
+        )
+        t.extra_y_ranges = {"bbp": Range1d(0, 0.01)}
+        bb_axis = LinearAxis(y_range_name="bbp", axis_label="b_bp (m⁻¹)",
+                             axis_label_text_color=BBP_COLOR,
+                             major_label_text_color=BBP_COLOR,
+                             formatter=BasicTickFormatter(precision=1, power_limit_low=-2))
+        t.add_layout(bb_axis, "right")
+        t.yaxis[0].formatter = BasicTickFormatter(precision=1, power_limit_low=-2)
+        lines = {}
+        for key, label, color, dash, yname in (
+            ("anw", "a_nw", ANW_COLOR, "solid", "default"),
+            ("adg", "a_dg", ADG_COLOR, "solid", "default"),
+            ("aph", "a_ph", APH_COLOR, "solid", "default"),
+            ("bbp", "b_bp (right axis)", BBP_COLOR, "dashed", "bbp"),
+        ):
+            t.varea(x="wave", y1=f"{key}_lo", y2=f"{key}_hi", source=self.iop_src,
+                    fill_color=color, fill_alpha=0.15, y_range_name=yname,
+                    legend_label=label)
+            lines[key] = t.line("wave", key, source=self.iop_src, color=color,
+                                line_width=2, line_dash=dash, y_range_name=yname,
+                                legend_label=label)
+        t.add_tools(HoverTool(renderers=[lines["anw"]], mode="vline", tooltips=[
+            ("λ", "@wave{0} nm"), ("a_nw", "@anw{0.00000}"), ("a_dg", "@adg{0.00000}"),
+            ("a_ph", "@aph{0.00000}"), ("b_bp", "@bbp{0.000000}")]))
+        t.legend.location = "top_right"
+        t.legend.click_policy = "hide"
+        t.legend.label_text_font_size = "8pt"
+        self.iop_fig = t
+
         self.layout = column(
             self.header,
             self.notes,
-            row(self.argo_fig, column(self.rrs_fig, self.resid_fig, self.table)),
+            row(self.argo_fig,
+                column(row(column(self.rrs_scale, self.rrs_fig, self.rrs_log_fig,
+                                  self.resid_fig),
+                           column(Div(text="", height=31), self.iop_fig)),
+                       self.table)),
         )
+
+    def _rrs_glyphs(self, fig, lo_key: str) -> None:
+        """Model band and median, observed Rrs ± σ, hover and legend on ``fig``."""
+        fig.varea(x="wave", y1=lo_key, y2="hi", source=self.model_src,
+                  fill_color=PACE_COLOR, fill_alpha=0.25, legend_label="BING 5–95 %")
+        fig.line("wave", "med", source=self.model_src, color=PACE_COLOR, line_width=2,
+                 legend_label="BING median")
+        fig.segment(x0="wave", y0=lo_key, x1="wave", y1="hi", source=self.obs_src,
+                    color="black", alpha=0.5)
+        obs = fig.scatter("wave", "rrs", source=self.obs_src, size=4, color="black",
+                          legend_label="PACE Rrs ± σ")
+        fig.add_tools(HoverTool(renderers=[obs], tooltips=[
+            ("λ", "@wave{0} nm"), ("Rrs", "@rrs{0.000000}"), ("σ", "@sigma{0.000000}"),
+            ("model", "@model{0.000000}")]))
+        fig.legend.location = "top_right"
+        fig.legend.click_policy = "hide"
+
+    def set_rrs_scale(self, log: bool) -> None:
+        """Show the log10 (``True``) or the linear Rrs figure; residuals stay linear."""
+        self.rrs_fig.visible = not log
+        self.rrs_log_fig.visible = bool(log)
+        want = 1 if log else 0
+        if self.rrs_scale.active != want:
+            self.rrs_scale.active = want
 
     # -- text ----------------------------------------------------------------
     def set_notes(self, messages) -> None:
@@ -353,8 +480,7 @@ class ArgoPaceView:
         self.show_header(sel)
         m = sel.matchup or {}
         top = sel.ml_span
-        self.argo_fig.y_range.start = sel.y_max
-        self.argo_fig.y_range.end = 0.0
+        set_range(self.argo_fig.y_range, sel.y_max, 0.0)
         self.mld_span.visible = np.isfinite(sel.mld)
         if np.isfinite(sel.mld):
             self.mld_span.location = sel.mld
@@ -379,7 +505,7 @@ class ArgoPaceView:
             src.data = {k: [] for k in src.data}
         self.desp_src.data = dict(_EMPTY_LINE)
         self.fixed_line.data = dict(_EMPTY_LINE)
-        for src in (self.obs_src, self.model_src, self.resid_src):
+        for src in (self.obs_src, self.model_src, self.resid_src, self.iop_src):
             src.data = {k: [] for k in src.data}
         self._autorange_x()
         self.show_table()
@@ -436,39 +562,56 @@ class ArgoPaceView:
             return
         lo, hi = float(vals.min()), float(vals.max())
         pad = 0.08 * (hi - lo) if hi > lo else 0.1 * abs(hi) or 1e-4
-        self.argo_fig.x_range.start = max(lo - pad, 0.0) if lo >= 0 else lo - pad
-        self.argo_fig.x_range.end = hi + pad
+        set_range(self.argo_fig.x_range, max(lo - pad, 0.0) if lo >= 0 else lo - pad, hi + pad)
 
     # -- PACE panel ------------------------------------------------------------
     def _autorange_rrs(self) -> None:
-        """y from min(0, data) to the top of the data: 0 is always in view."""
-        vals = []
-        for src, keys in ((self.obs_src, ("lo", "hi")), (self.model_src, ("lo", "hi", "med"))):
-            for k in keys:
-                vals.extend(np.asarray(src.data[k], dtype=float).ravel().tolist())
-        vals = np.asarray([v for v in vals if np.isfinite(v)], dtype=float)
-        if not vals.size:
-            return
-        lo, hi = min(0.0, float(vals.min())), max(0.0, float(vals.max()))
-        pad = 0.05 * (hi - lo) if hi > lo else 1e-4
-        self.rrs_fig.y_range.start = lo - pad if lo < 0 else 0.0
-        self.rrs_fig.y_range.end = hi + pad
+        """Linear y from min(0, data) (0 always in view); log y over the positive
+        data. Both also become the reset targets."""
+        o, m = self.obs_src.data, self.model_src.data
+        lin = lin_limits([o["lo"], o["hi"], m["lo"], m["hi"], m["med"]])
+        if lin is not None:
+            set_range(self.rrs_fig.y_range, *lin)
+        lg = log_limits([o["rrs"], o["hi"], m["lo"], m["hi"], m["med"]])
+        if lg is not None:
+            set_range(self.rrs_log_fig.y_range, *lg)
+
+    def _autorange_iops(self) -> None:
+        d = self.iop_src.data
+        a = lin_limits([d[f"{k}{s}"] for k in ("anw", "adg", "aph") for s in ("", "_lo", "_hi")])
+        if a is not None:
+            set_range(self.iop_fig.y_range, *a)
+        b = lin_limits([d["bbp"], d["bbp_lo"], d["bbp_hi"]])
+        if b is not None:
+            set_range(self.iop_fig.extra_y_ranges["bbp"], *b)
 
     def show_observed(self, wave, rrs, sigma) -> None:
         """Observed ``Rrs`` ± σ before the model is ready."""
         self.obs_src.data = {"wave": wave, "rrs": rrs, "lo": rrs - sigma, "hi": rrs + sigma,
+                             "lo_log": np.maximum(rrs - sigma, RRS_LOG_FLOOR),
                              "sigma": sigma, "model": np.full_like(rrs, np.nan)}
         self._autorange_rrs()
 
     def show_curves(self, c: vfits.FitCurves) -> None:
-        """The reconstructed model, the residuals and ``a_dg(440)``."""
-        self.obs_src.data = {"wave": c.wave, "rrs": c.rrs_obs, "lo": c.rrs_obs - c.sigma,
-                             "hi": c.rrs_obs + c.sigma, "sigma": c.sigma, "model": c.rrs_med}
+        """The reconstructed model, the residuals, the IOPs and ``a_dg(440)``."""
+        lo = c.rrs_obs - c.sigma
+        self.obs_src.data = {"wave": c.wave, "rrs": c.rrs_obs, "lo": lo,
+                             "hi": c.rrs_obs + c.sigma,
+                             "lo_log": np.maximum(lo, RRS_LOG_FLOOR),
+                             "sigma": c.sigma, "model": c.rrs_med}
         self.model_src.data = {"wave": c.wave, "med": c.rrs_med, "lo": c.rrs_lo,
-                               "hi": c.rrs_hi}
+                               "hi": c.rrs_hi,
+                               "lo_log": np.maximum(c.rrs_lo, RRS_LOG_FLOOR)}
         self.resid_src.data = {"wave": c.wave, "rs": c.resid_sigma, "r": c.resid,
                                "pct": c.resid_pct}
         self._autorange_rrs()
+        iop = {"wave": c.wave}
+        nan = np.full_like(c.wave, np.nan, dtype=float)
+        for k in IOP_KEYS:
+            med, lo_, hi = c.iops.get(k, (nan, nan, nan))
+            iop[k], iop[f"{k}_lo"], iop[f"{k}_hi"] = med, lo_, hi
+        self.iop_src.data = iop
+        self._autorange_iops()
         self._adg440 = c.adg440
         self.show_table()
 

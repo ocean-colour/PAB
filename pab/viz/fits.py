@@ -1,9 +1,10 @@
 """Fit-level computations for the viz tools (no plotting, no DB writes).
 
-Wraps :func:`pab.plotting.fit_fig.reconstruct_fit`, which rebuilds a stored
-BING fit from its chain NPZ at the fit's own geometry, and adds what a viewer
-needs beyond it: the per-band measurement σ, residuals, and posterior
-quantities that are not stored (``a_dg(440)``).
+Wraps :func:`pab.plotting.fit_fig.reconstruct_posterior`, which rebuilds a
+stored BING fit from its chain NPZ at the fit's own geometry, and adds what a
+viewer needs beyond it: the per-band measurement σ, residuals, the non-water
+IOP spectra (``a_nw``, ``a_dg``, ``a_ph``, ``b_bp``) with their 5–95 % bands,
+and posterior quantities that are not stored (``a_dg(440)``).
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import threading
 import warnings
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import bing.evaluate as ev
 import bing.fitting.chisq_fit  # noqa: F401 - see below
@@ -23,7 +24,7 @@ import bing.rt.geometry  # noqa: F401
 import numpy as np
 import robust.rt.ed  # noqa: F401
 
-# Imported here, on the main thread, because reconstruct_fit imports them
+# Imported here, on the main thread, because reconstruct_posterior imports them
 # lazily and two worker threads importing the same module at once deadlock
 # (_ModuleLock; seen with argopy on the first pab-viz run).
 import pab.fit.models  # noqa: F401
@@ -51,6 +52,10 @@ class FitCurves:
     rrs_lo: np.ndarray
     rrs_hi: np.ndarray
     adg440: tuple[float, float, float]
+    #: ``{name: (median, 5 %, 95 %)}`` per band for ``anw``, ``adg``, ``aph``
+    #: and ``bbp`` (m⁻¹); a model without a separable ``a_dg`` lacks
+    #: ``adg``/``aph``. Empty when not reconstructed.
+    iops: dict = field(default_factory=dict)
 
     @property
     def resid(self) -> np.ndarray:
@@ -113,20 +118,23 @@ def reconstruct(db_path, fit_id: str) -> FitCurves:
         with warnings.catch_warnings():
             # robust's DomainWarning fires on the B_p breach for most fits.
             warnings.simplefilter("ignore")
-            wave, obs, med, lo, hi, *_ = fit_fig.reconstruct_fit(store, fit_id)
+            post = fit_fig.reconstruct_posterior(store, fit_id, iops=True)
         npz = artifacts.load_chains(fit_id)
         adg440 = _posterior_adg440(store, fit_id, npz)
     finally:
         store.close()
+    med, lo, hi = post["rrs"]
     curves = FitCurves(
         fit_id=fit_id,
-        wave=np.asarray(wave, dtype=float),
-        rrs_obs=np.asarray(obs, dtype=float),
+        wave=np.asarray(post["wave"], dtype=float),
+        rrs_obs=np.asarray(post["obs"], dtype=float),
         sigma=np.sqrt(np.asarray(npz["varRrs"], dtype=float)),
         rrs_med=np.asarray(med, dtype=float),
         rrs_lo=np.asarray(lo, dtype=float),
         rrs_hi=np.asarray(hi, dtype=float),
         adg440=adg440,
+        iops={k: tuple(np.asarray(a, dtype=float).ravel() for a in post[k])
+              for k in ("anw", "adg", "aph", "bbp") if post.get(k) is not None},
     )
     with _lock:
         _cache[fit_id] = curves

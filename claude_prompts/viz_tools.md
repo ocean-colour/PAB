@@ -258,20 +258,21 @@ The views themselves come one prompt at a time (I-Q5).*
 
 **Built:**
 - **the Argo + PACE tab** (Argo+PACE prompt 3);
-- **the Global tab** (Global explorer prompt 3).
+- **the Global tab** (Global explorer prompt 3);
+- **Edits #1** (2026-11-19): Global scatter axes swapped + box zoom; Argo + PACE reset fix, Rrs linear/log10 toggle, IOP panel.
 
 Modules:
 
 | File | What it holds |
 |---|---|
 | `pab/viz/data.py` | read-only `open_store`, `set_data_dir`, `has_chains`; families (`version_families`, `family_label`); `wmos_with_matchups`, `cycles_for_wmo`, `matchup_for`, `bing_fit` (overlaid, best rank), `giop_fit`, `explorer_frame` (all matchups of a family + `success`, Δx/Δt, `Adg`/`Sdg`/`beta`) |
-| `pab/viz/fits.py` | `reconstruct(db_path, fit_id)` → `FitCurves` (LRU 64, own store per call), `observed_spectrum`, `adg_at` (`a_dg(440)` per sample) |
+| `pab/viz/fits.py` | `reconstruct(db_path, fit_id)` → `FitCurves` (LRU 64, own store per call; `iops` holds the `a_nw`/`a_dg`/`a_ph`/`b_bp` 5–95 % bands, from `fit_fig.reconstruct_posterior(iops=True)`), `observed_spectrum`, `adg_at` (`a_dg(440)` per sample) |
 | `pab/viz/argo.py` | `fetch_argo_profile` (LRU 128, ingest's src/mode), `despike_samples` (3-pt median over the BBP700 samples only, AP-Q16), `bbp_layers` (de-spike / in-ML / IQR-kept / dropped, plus the `ingest_*` statistics as stored), `recompute_summary`, `reproduces` |
-| `pab/viz/bokeh_argo_pace.py` | `ArgoPaceView` (figures, sources, `show_*`), `load_selection`, `profile_notes`, server-free `make_argo_pace` |
+| `pab/viz/bokeh_argo_pace.py` | `ArgoPaceView` (Argo / Rrs (linear + log10 twin, `set_rrs_scale`) / residual / IOP figures, sources, `show_*`), `set_range` (range + reset target), `lin_limits` / `log_limits`, `load_selection`, `profile_notes`, server-free `make_argo_pace` |
 | `pab/viz/global_explorer.py` | `GlobalTab` (map, scatter, histogram, statistics, card, filters); pure helpers `derive`, `apply_filters`, `default_range`, `histogram`, `stats_rows`, `mercator`; `VARIABLES`; per-server frame cache. Named so because `global` is a Python keyword. |
 | `pab/viz/app.py` | `ArgoPaceTab` (controls, URL args, background jobs with a stale-token guard, `show()` for the Global tab), `make_document` (both tabs; `?tab=global`; tab 1 loads lazily) |
 | `pab/viz/__main__.py` | the `pab-viz` launcher and its capability report |
-| `pab/tests/test_viz_argo_pace.py` | 11 tests, no network |
+| `pab/tests/test_viz_argo_pace.py` | 13 tests, no network |
 | `pab/tests/test_viz_global.py` | 5 tests, no network |
 
 `setup.py` registers `pab-viz`. Launch notes are in HOWTO §5d.
@@ -442,11 +443,14 @@ Please review my answers and then proceed to write the Global explore tool in `p
 And make the (minor) edits to the Argo+PACE tool to remove the one-line note.
 Use Opus 5.5. Log your work.
 
-4. Here are a few edits for the two tools.
+### Edits
+
+1. Here are a few edits for the two tools.
 
    Global tool:
 
    - Please swap the axes on the Argo vs. PACE scatter plot.  Put PACE on the y-axis
+   - Add a box zoom to the scatter plot.
 
    Argo+PACE tool:
 
@@ -454,8 +458,67 @@ Use Opus 5.5. Log your work.
    significantly offset making the data hard to view.  Fix
    - Include a way to toggle between linear and log10 scaling of the Rrs spectrum.
    Keep the residuals in linear scale.
+   - I'd like to add another panel so that I can view the absorption and scattering coefficients
+   for the best fit model.  And their uncertainties.  Because bbp is generally much smaller
+   than the other coefficients, we may need to use two y-axes.
+   Put this 3rd panel to the right of the Rrs spectrum panel.
+
+   If you have an questions, put them under the `Q&A/Edits` section.
+   Use Opus 5.5. Log your work.
 
 ## Q&A
+
+### Edits
+
+*Round 1 (2026-11-19, from Edits prompt 1). All four edits are built (see
+the log); these are follow-ups on choices I made. Answer inline under each
+**Your answer:**. Where I have a recommendation it is marked.*
+
+**E-Q1. What goes in the IOP panel?** Now: the **non-water** terms only,
+from the posterior samples: `a_nw` and its parts `a_dg` and `a_ph` on the
+left axis, `b_bp` (dashed, purple) on the right axis, each median with its
+5–95 % band. A hover reads all four at one wavelength. Options:
+
+- **A.** Keep it as is. *(recommended: these are what BING retrieves; the
+  water terms are fixed and would set the y-scale)*
+- **B.** Add the water terms `a_w` and `b_bw` (and so the totals `a`, `b_b`)
+  as thin grey lines, hidden by default (legend click).
+
+**Your answer:**
+
+**E-Q2. Log scale for the IOP panel?** The IOP axes are linear. In
+CDOM-rich water `a_dg` dominates the blue: on 1902368/25, `a_dg(400)` ≈ 1.2
+m⁻¹ while `a_ph` stays below 3×10⁻⁴ m⁻¹, so `a_ph` is a flat line on the
+axis (the hover still reads it). Options:
+
+- **A.** Its own linear / log10 toggle on the IOP panel (both axes go log).
+  *(recommended)*
+- **B.** One toggle that drives both the Rrs and the IOP panels.
+- **C.** Leave it linear.
+
+**Your answer:**
+
+**E-Q3. Layout width.** With the third panel to the right of the Rrs
+panel, the Argo + PACE tab is ~1500 px wide (Argo 380, Rrs 660, IOP 430), so
+it needs a ~1600 px browser window; narrower windows scroll sideways. The
+Global tab stays 1150 px. Options:
+
+- **A.** Keep 1500 px. *(recommended, if your screens are ≥ 1600 px)*
+- **B.** Shrink to ~1250 px (Rrs ≈ 520, IOP ≈ 340).
+- **C.** Let the figures stretch with the window (`sizing_mode`), which is
+  more Bokeh work and makes the screenshot checks less repeatable.
+
+**Your answer:**
+
+**E-Q4. Argo `b_bp(700)` on the IOP panel?** The panel could mark the Argo
+ML mean ± std as a point with an error bar at 700 nm on the `b_bp` axis,
+next to the PACE `b_bp(λ)` band. That makes the matchup comparison visible
+in spectral context.
+
+- **A.** Yes. *(recommended)*
+- **B.** No; the Argo panel already shows it.
+
+**Your answer:**
 
 ### Global explorer
 
@@ -1718,3 +1781,56 @@ With Claude Opus 5.5. Decisions are recorded under "Round 2 resolved"
 
 **Docs:** HOWTO §5d covers the Global tab and `?tab=global`. No DB or data
 file was written, and nothing was published.
+
+### 2026-11-19 (Edits prompt 1: Global scatter axes swapped + box zoom; Argo + PACE reset fix, Rrs log toggle, IOP panel; E-Q1 to E-Q4 posed)
+
+With Claude Opus 5.5. All four edits are built. Four follow-up questions
+(E-Q1 to E-Q4) are in Q&A / Edits.
+
+**Global tab:**
+- The scatter now has **PACE on y** and Argo on x (title "PACE vs Argo
+  b_bp(700)"), and a **box zoom** tool.
+
+**Argo + PACE tab:**
+- **Reset fix.** Cause: Bokeh's reset tool restores a `Range1d` to its
+  `reset_start` / `reset_end`, which default to the range the figure was
+  built with (Rrs 0–0.01, before any data). The server's autorange moved
+  `start`/`end` only. New helper `set_range` sets both the range and its
+  reset target, and every autorange (Rrs linear and log, Argo x and y, IOP
+  left and right) uses it. Checked live: every `Range1d` thrown off and then
+  reset returned exactly to the data view.
+- **Linear / log10 Rrs toggle** (a `RadioButtonGroup` above the Rrs panel).
+  A Bokeh axis type cannot change once drawn, so there are two Rrs figures
+  sharing the sources and the x-range, and the toggle swaps which one is
+  visible (`set_rrs_scale`). Lower error bounds ≤ 0 are floored at
+  `RRS_LOG_FLOOR` = 10⁻⁷ sr⁻¹ on the log figure; the log y-range spans the
+  positive data with a factor 1.4 of padding. The residual strip stays
+  linear.
+- **IOP panel** to the right of the Rrs panel, on the same x-range:
+  - `a_nw`, `a_dg`, `a_ph` (left axis) and `b_bp` (right axis, dashed),
+    each median with its 5–95 % band, and a hover that reads all four.
+  - The view is now 1500 px wide (E-Q3).
+  - The spectra come from the same reconstruction as the Rrs model, so
+    opening a matchup costs no extra time. **`fit_fig.reconstruct_fit`** is
+    split: the work now sits in a new **`reconstruct_posterior(store,
+    fit_id, iops=False)`**, which returns a dict and, with `iops=True`, adds
+    the `a_nw` / `a_dg` / `a_ph` bands (`eval_anw(retsub_comps=True)` when
+    the model has a separable `a_dg`). `reconstruct_fit` keeps its 8-tuple
+    and calls it. `FitCurves` gains an `iops` dict (default empty, so
+    injected test curves still work).
+  - Live check on 4902680/6 and 1902368/25: the bands are ordered,
+    `a_nw` = `a_dg` + `a_ph`, and `b_bp(700)` equals the stored BING value.
+    Reconstruction times are unchanged (6.5 s cold / 2.5 s).
+
+**Verification:**
+- 2 new tests (`test_edits_1_reset_targets_log_toggle_and_iop_panel`,
+  `test_range_helpers`); the Global tab test checks the swapped axes and
+  box zoom.
+- Full suite **563 passed, 1 skipped**; `ruff` clean on `pab/`.
+- Live server screenshots (headless Chrome, 1600 px window): 1902368/25
+  linear, 4902680/6 log10 after the reset test, and the Global tab. On the
+  swapped scatter the Argo ≈ 0.05 m⁻¹ floats now form a vertical column on
+  the right.
+
+**Docs:** HOWTO §5d and Code/Status are updated. No DB or data file was
+written, and nothing was published.
