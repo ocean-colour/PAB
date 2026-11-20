@@ -1,8 +1,8 @@
-# Talk for AWOC 2026
+# Create the rrs figure for AWOC 2026
 
 ## Goals
 
-Create figures for my talk at AWOC 2026.
+Create one or more figures for my talk at AWOC 2026.
 Possibly a slide or two too.
 
 ## Context
@@ -52,6 +52,11 @@ Please provide an option to show rrs instead of Rrs.
 No need to have the filenames change, just the axes labels and data used.
 If you have any additional questions, put them in the "Q&A/RT+bbp/bb" section below.
 Use Opus 5.5.  Log your work.
+
+5. Read my last round of answers in the "Q&A/RT+bbp/bb" section below.
+I have renamed and moved this doc and the script to generate the figure.
+Things appear to be fine and I think we are done (I'll make any
+additional edits as needed).  Use Opus 5.5.  Log your work.
 
 ## Q&A
 
@@ -605,3 +610,23 @@ Results:
 Rendered `papers/bbp/talks/pb24_rrs_vs_x_650.png` (Rrs, default) and an rrs
 copy in the session scratchpad, and inspected both. Added Q14 (make rrs the
 default?).
+
+### 2026-11-20 (RT+bbp/bb prompt 5b: rrs is now the default; wrap-up after the move to talks/AWOC2026/)
+
+The doc moved from `prompts/talk_awoc2026.md` to
+`prompts/talks/aw2026_rrs_bbp.md`. The script moved from
+`talks/figs_awoc2026.py` to `talks/AWOC2026/fig_rrs_bbp.py`.
+
+Changes to `fig_rrs_bbp.py`, applying the Q14 answer ("make rrs the talk
+default"):
+- `fig_rrs_vs_x(refl=...)` now defaults to `"rrs"`. Its docstring describes
+  both options.
+- The CLI flag is now `--Rrs`, which selects the above-water version. It
+  replaces `--rrs`.
+- The module docstring now points at the new doc and script paths.
+
+Re-rendered `talks/AWOC2026/pb24_rrs_vs_x_650.png` (rrs, 650 nm-only panel
+(a)) and inspected it. JXP considers the figure done.
+
+The untracked `talks/AWOC2026/pb24_rrs_vs_x_450_550_650.png` is a leftover
+from draft 3. It is no longer the default output and can be deleted.

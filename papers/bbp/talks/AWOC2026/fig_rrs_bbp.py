@@ -1,5 +1,5 @@
 """
-Figures for the AWOC 2026 talk (``papers/bbp/prompts/talk_awoc2026.md``).
+Figures for the AWOC 2026 talk (``papers/bbp/prompts/talks/aw2026_rrs_bbp.md``).
 
 Each figure is one function. The PB24 Hydrolight figures read the consolidated
 PB24 cache (``$OS_COLOR/SD/derived/pb24_v1/``) through
@@ -7,11 +7,11 @@ PB24 cache (``$OS_COLOR/SD/derived/pb24_v1/``) through
 (installed in ocean14).
 
 Usage:
-    python papers/bbp/talks/figs_awoc2026.py                 # every figure
-    python papers/bbp/talks/figs_awoc2026.py --which rrs_vs_x --wave 650
-    python papers/bbp/talks/figs_awoc2026.py --rrs             # sub-surface rrs, not Rrs
-    python papers/bbp/talks/figs_awoc2026.py --extra-bands 450 550   # 3-band panel (a)
-    python papers/bbp/talks/figs_awoc2026.py --out-dir ~/Desktop/awoc/
+    python papers/bbp/talks/AWOC2026/fig_rrs_bbp.py                 # every figure (rrs)
+    python papers/bbp/talks/AWOC2026/fig_rrs_bbp.py --which rrs_vs_x --wave 650
+    python papers/bbp/talks/AWOC2026/fig_rrs_bbp.py --Rrs             # above-water Rrs, not rrs
+    python papers/bbp/talks/AWOC2026/fig_rrs_bbp.py --extra-bands 450 550   # 3-band panel (a)
+    python papers/bbp/talks/AWOC2026/fig_rrs_bbp.py --out-dir ~/Desktop/awoc/
 """
 from __future__ import annotations
 
@@ -184,14 +184,15 @@ REFLECTANCE = {
 def fig_rrs_vs_x(out=None, wave: float = 650.0, x_max: float = 0.05,
                  extra_bands=EXTRA_BANDS, pool_waves=POOL_WAVES,
                  frac_lim=(0.02, 0.995), data: dict | None = None,
-                 use_log: bool = True, refl: str = "Rrs",
+                 use_log: bool = True, refl: str = "rrs",
                  pooled: dict | None = None):
     """Rrs vs b_b/(a+b_b) from PB24 Hydrolight, and what sets G = Rrs/x.
 
-    ``refl="rrs"`` (prompt 5) uses Hydrolight's sub-surface rrs in place of the
-    above-water Rrs throughout, with the plain Gordon (1988) polynomial as the
-    reference (G -> 0.0949 sr⁻¹ as x -> 0) and no Lee et al. (2002) surface
-    term. Everything else, including the file name, is unchanged.
+    ``refl="rrs"`` (the default since Q14) uses Hydrolight's sub-surface rrs,
+    with the plain Gordon (1988) polynomial as the reference (G -> 0.0949 sr⁻¹
+    as x -> 0). ``refl="Rrs"`` uses the above-water Rrs with the Gordon (1988)
+    + Lee (2002) reference (G -> 0.0493 sr⁻¹). The description below is
+    written for Rrs; for rrs read rrs throughout. The file name is the same.
 
     (a) Rrs vs x (log–log) for every realisation with x ≤ ``x_max``, with the
         Gordon (1988) + Lee (2002) curve. With ``extra_bands`` (default
@@ -328,9 +329,9 @@ def main(argv=None):
     p.add_argument("--extra-bands", type=float, nargs="*", default=list(EXTRA_BANDS),
                    help="Extra panel-(a) bands (nm); give the flag alone for "
                         "--wave only (the default).")
-    p.add_argument("--rrs", action="store_true",
-                   help="Plot sub-surface rrs instead of above-water Rrs "
-                        "(same file name).")
+    p.add_argument("--Rrs", action="store_true",
+                   help="Plot above-water Rrs instead of the default sub-surface "
+                        "rrs (same file name).")
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     args = p.parse_args(argv)
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -339,7 +340,7 @@ def main(argv=None):
         bands = sorted(set(args.extra_bands) | {args.wave})
         out = args.out_dir / fname.format(bands="_".join(f"{w:.0f}" for w in bands))
         fn(out=out, wave=args.wave, x_max=args.x_max, extra_bands=args.extra_bands,
-           refl="rrs" if args.rrs else "Rrs")
+           refl="Rrs" if args.Rrs else "rrs")
         print(f"✓ {out}")
 
 
