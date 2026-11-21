@@ -744,7 +744,7 @@ Note: `fits.figure_path` of the 2.1 rows holds workstation paths
 paths to `/data/v2/…` first would be a further DB write; I have not
 proposed it.
 
-**Your answer:**
+**Your answer:**  Yes, proceed with A.
 
 **T5-Q2: AIOcean backup?** Plan §6 lists only the dated DB.
 - **A (recommended).** In addition to the DB, copy the 2.1 artifacts the way
@@ -760,7 +760,7 @@ proposed it.
   and on the PVC (which is not backed up).
 - **B.** The dated DB only.
 
-**Your answer:**
+**Your answer:**  Yes, proceed with A.
 
 **T5-Q3: the PVC DB.** `/data/v2/pab.db` is the Task 3 return
 (`aca3d69f…`), identical to the live DB except that its 2.1 `figure_path`
@@ -770,7 +770,7 @@ is NULL.
 - **B.** Push the live `d0c286bf…` to the PVC (a short pod, gzip transfer,
   sha both sides).
 
-**Your answer:**
+**Your answer:** A is fine.
 
 **RTD:** `report_site/` is regenerated and checked (Task 4). You commit and
 push it; RTD rebuilds on push.
