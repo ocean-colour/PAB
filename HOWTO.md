@@ -369,8 +369,8 @@ v1, attach v1 read-only rather than copying rows into it.
 | --- | --- | --- |
 | workstation | `$PAB_DATA_DIR/v1/pab.db` — the old `full/pab.db`, renamed. `$PAB_DATA_DIR/full` is now a **symlink to `v1`**, so existing commands and docs that say `full/pab.db` keep working. | `$PAB_DATA_DIR/v2/pab.db`, `$PAB_DATA_DIR/v2/fit_chains/` |
 | PVC (Nautilus) | `/data/v1/` — the 1.0 run's outputs, re-laid out 2026-09-17. **`/data/v1/pab.db` does not exist**: the database that was at `/data/full/pab.db` is the *stale* pre-`cdom_chl`, pre-NASA-GIOP one (138,854,400 B), so it was renamed `/data/v1/pab_stale_2026-08-20.db` rather than left at a path the sha256 above defines. The 14,633 chain files under `/data/v1/fit_chains/` **are** the genuine 1.0 chains — but `fits.chains_path` in the v1 database still records the old `/data/fit_chains/...` paths, deliberately not rewritten because v1 is frozen; prepend `/data/v1` when resolving them. | `/data/v2/pab.db`, `/data/v2/fit_chains/`, `/data/v2/pipeline/` — set `PAB_DATA_DIR=/data/v2` so chains key there |
-| S3 | `s3://pab/v1/pab.db` (public, immutable). The **`s3://pab/full/` objects stay put** — the live site's download links point at them, and `full/pab.db` is byte-identical to `v1/pab.db`. | As of 2026-10-20 (O9): `s3://pab/v2/pab.db` 220,819,456 B sha256 `9503015bf3d5427ff119cb621e9ecf9b0a41cf2f39b7325529e390428bfcad92`; `v2/pab_2026-10-07.db` 217,325,568 B `1e69f6eef09b85add89b04ac45d423d9d981fbd81b097d0856dab59687d8a3f8` (the previous public DB, kept); `v2/matchup_summary.csv` 6,337,830 B `4b387e5dc9c9a8c96eb7a6d30547156b02e5f8ee9124138bc51a7f7aa9730013`; `v2/matchup_summary.parquet` 2,745,255 B `cda3bc42aad7adfee59080aad71c129144dbc15888a33ad38b9c014437225a03`; `v2/nasa_giop_summary.csv` 8,516,595 B `b4044d227776c7e14a2318ed195aaaec108e8c7e3a130e896bdd266e7bd26e11`; `v2/nasa_giop_summary.parquet` 2,986,102 B `7caa35fcdb872a4b2016e7341be6b47e4b881cff6350ec4c631578ab99b885f1`. All re-exportable from the live DB with `publish.export_tables` (byte-identical) and each verified by re-download. Previous values (2026-10-07 / E6 2026-10-18): `matchup_summary.csv` 6,102,869 B `6622a78c…0f74`, `.parquet` 2,645,441 B `4754e237…c627c`, `nasa_giop_summary.csv` 8,350,324 B `21b4b6ce…f60a`, `.parquet` 2,891,643 B `66f6cb27…91e2` — those files are kept locally in `$PAB_DATA_DIR/v2/s3_prev_2026-10-20/`. |
-| backup | `AIOcean:PAB/` | `AIOcean:PAB/pab_v2_<date>.db` (dated copies: `2026-10-07`, `2026-10-18` = the live `9503015b…`; not a sync); workstation dated copies `v2/pab_pre_{nasagiop_20261003,negblue_20261018,v201_20261018}.db`; the pre-O9 S3 objects in `v2/s3_prev_2026-10-20/` |
+| S3 | `s3://pab/v1/pab.db` (public, immutable). The **`s3://pab/full/` objects stay put** — the live site's download links point at them, and `full/pab.db` is byte-identical to `v1/pab.db`. | As of **2026-11-21 (v2.1 Task 5)**: `s3://pab/v2/pab.db` 302,505,984 B sha256 `d0c286bf992ebba35ad961afda2b8c62436a176b3448d50c39553899349c8cc5` (2.0 + 2.0.1 + 2.1 BING, NASA-GIOP; schema v6); `v2/pab_2026-10-20.db` 220,819,456 B `9503015bf3d5427ff119cb621e9ecf9b0a41cf2f39b7325529e390428bfcad92` (the 2.0.1 public DB, kept); `v2/matchup_summary.csv` 6,331,133 B `f8f918d60748d8884b69f12d9dc146fc805a3a57e35269f1a786d56ed7645f4e`; `v2/matchup_summary.parquet` 2,742,023 B `9b8b724acf409c358fe1b558f4060d527bd0489729ee5e2fdb9a0282c9cb8672`; `v2/nasa_giop_summary.csv` 8,513,785 B `42fa754d6336869d6ce46700c6c2aea98d9f480c6548668301b2eb04edf52a11`; `v2/nasa_giop_summary.parquet` 2,985,708 B `532c8ad0ccda2bf811d54855d904b7775bf06f167f2d3ffc6f84066b9adc2307` (all 2.1 rows). Each was verified by re-download; the replaced 2026-10-20 objects are kept locally in `$PAB_DATA_DIR/v2/s3_prev_2026-11-19/`. Previous values (2026-10-20, O9): `s3://pab/v2/pab.db` 220,819,456 B sha256 `9503015b…cad92`; `v2/pab_2026-10-07.db` 217,325,568 B `1e69f6eef09b85add89b04ac45d423d9d981fbd81b097d0856dab59687d8a3f8` (the previous public DB, kept); `v2/matchup_summary.csv` 6,337,830 B `4b387e5dc9c9a8c96eb7a6d30547156b02e5f8ee9124138bc51a7f7aa9730013`; `v2/matchup_summary.parquet` 2,745,255 B `cda3bc42aad7adfee59080aad71c129144dbc15888a33ad38b9c014437225a03`; `v2/nasa_giop_summary.csv` 8,516,595 B `b4044d227776c7e14a2318ed195aaaec108e8c7e3a130e896bdd266e7bd26e11`; `v2/nasa_giop_summary.parquet` 2,986,102 B `7caa35fcdb872a4b2016e7341be6b47e4b881cff6350ec4c631578ab99b885f1`. All re-exportable from the live DB with `publish.export_tables` (byte-identical) and each verified by re-download. Previous values (2026-10-07 / E6 2026-10-18): `matchup_summary.csv` 6,102,869 B `6622a78c…0f74`, `.parquet` 2,645,441 B `4754e237…c627c`, `nasa_giop_summary.csv` 8,350,324 B `21b4b6ce…f60a`, `.parquet` 2,891,643 B `66f6cb27…91e2` — those files are kept locally in `$PAB_DATA_DIR/v2/s3_prev_2026-10-20/`. |
+| backup | `AIOcean:PAB/` | `AIOcean:PAB/pab_v2_<date>.db` (dated copies: `2026-10-07`, `2026-10-18` = `9503015b…`, `2026-11-19` = the live 2.1 `d0c286bf…`; not a sync); 2.1 chains and figures in `AIOcean:PAB/v2/{fit_chains,figures}/` (§5c); workstation dated copies `v2/pab_pre_{nasagiop_20261003,negblue_20261018,v201_20261018}.db`; the pre-O9 S3 objects in `v2/s3_prev_2026-10-20/` |
 
 Public URLs are `https://s3-west.nrp-nautilus.io/pab/<key>`; the bucket policy
 is public-read on `arn:aws:s3:::pab/*`, so a new prefix needs no ACL work.
@@ -411,7 +411,7 @@ measured against, and `matchups.scene_path` is kept so the v2 site reuses v1's
 14,586 PACE scene quick-looks instead of re-rendering them.
 
 
-## 5c. The 2.1 re-fit — normalized geometry
+## 5c. The 2.1 re-fit — normalized geometry (done 2026-11-21)
 
 `claude_prompts/v2/build_v2_1_rerun.md`; the science is
 `versions/v2.1/geometry_rerun.md`. Every 2.0 matchup is re-fitted with the
@@ -487,64 +487,25 @@ AIOcean into `$PAB_DATA_DIR/gallery/`). The page shows:
 - the comparison as 1.0 vs 2.1;
 - Methods as "Retrieval configuration (2.1)".
 
-**Publish (Task 5).** The four summary tables are re-exported from the live
-DB into `$PAB_DATA_DIR/v2/s3_stage_v21_20261119/` (`publish.export_tables`,
-byte-reproducible). The objects currently on `s3://pab/v2/` were downloaded
-to `$PAB_DATA_DIR/v2/s3_prev_2026-11-19/`, and all five match the 2026-10-20
-sha256s in §5b. The upload, the AIOcean backup and the §5b table update wait
-for JXP's confirmation (Round 5 of the prompt doc); this section is updated
-when they run.
+**Publish (Task 5, 2026-11-21; Round 5 = A, A, A).**
+- **S3.** The four summary tables were re-exported from the live DB into
+  `$PAB_DATA_DIR/v2/s3_stage_v21_20261119/` (`publish.export_tables`,
+  byte-reproducible, all 2.1 rows). The objects on `s3://pab/v2/` were first
+  downloaded to `$PAB_DATA_DIR/v2/s3_prev_2026-11-19/` and matched the
+  2026-10-20 sha256s, twice (2026-11-19 and just before the upload). Then,
+  through `NautilusS3Backend(bucket="pab", prefix="v2")`:
+  1. the old public DB went to `v2/pab_2026-10-20.db`;
+  2. the live DB replaced `v2/pab.db`;
+  3. the four tables were replaced.
 
-## 5d. Viz tools (`pab-viz`)
-
-An interactive Bokeh server for exploring the matchups
-(`claude_prompts/viz_tools.md`). It is **read-only**: the DB is opened with a
-`mode=ro` URI, chain NPZs are only read, and fetched Argo profiles are held
-in memory only.
-
-- **Tab 1, Argo + PACE:** a float's `b_bp(700)` profile beside the PACE
-  `Rrs` and its BING fit (linear / log10 toggle; residuals stay linear) and
-  the fit's non-water IOPs (`a_nw`, `a_dg`, `a_ph`; `b_bp` on a second
-  axis), for one `wmo` + `cycle`. The layout is ~1500 px wide.
-- **Tab 2, Global:** every matchup of a BING family on a world map, with:
-  - a colour variable: Argo / PACE `b_bp`, `dbbp`, log ratio, `Adg`,
-    `S_dg`, `β`, Chl;
-  - an editable colour range;
-  - a linked PACE (y) vs Argo (x) scatter and histogram;
-  - statistics over the selection or the visible region;
-  - filters.
-
-  Tap a matchup, then press **Open in Argo + PACE**. The basemap tiles
-  (Esri) need internet.
-
-```bash
-# workstation or laptop, any shell (ocean14 env, after `pip install -e . --no-deps`)
-pab-viz --db "$PAB_DATA_DIR/v2/pab.db" --show            # or: python -m pab.viz …
-pab-viz --db …/pab.db --wmo 4902680 --cycle 6 --show    # open a profile directly
-# browser: http://localhost:5006/?wmo=4902680&cycle=6&version=2.1
-# browser: http://localhost:5006/?tab=global       # open on the Global tab
-```
-
-| Flag | Meaning |
-| --- | --- |
-| `--db` | The store, opened read-only. Default `$PAB_DATA_DIR/v2/pab.db`. |
-| `--data-dir` | The folder holding `fit_chains/`. Default: the `--db` folder. |
-| `--version` | The BING family shown first (default: the newest; `2.0` shows 2.0 with its 2.0.1 patch rows). |
-| `--wmo`, `--cycle` | The profile opened first. |
-| `--port` / `--host` | Default 5006 / `localhost`. Another host also needs `--allow-remote`. |
-| `--show` | Open a browser tab. |
-
-At start-up it prints what it can show: the DB and its version families, the
-chain counts per version under `--data-dir`, whether `bing`/`robust` import,
-and whether the Argo GDAC is reachable. A missing piece becomes a message in
-the page, not a crash. For example, without the 2.0 chains a 2.0 view shows
-the stored values and the observed `Rrs` but no model curve. Timing: an Argo
-fetch takes ~1–6 s, and a fit reconstruction ~5 s cold and ~1.5 s warm. Both
-run in the background while the page shows "…".
-
-From another machine without a local copy, run it on the workstation and
-tunnel: `ssh -N -L 5006:localhost:5006 <workstation>`, then open
-`http://localhost:5006/`.
+  Each was verified by re-download. Sizes and sha256s are in the §5b table.
+- **AIOcean.** The live DB is at `AIOcean:PAB/pab_v2_2026-11-19.db` (md5
+  `0948dfd0…fadfe` verified). The 15,971 2.1 figures and 15,971 2.1 chains
+  are at `AIOcean:PAB/v2/{figures,fit_chains}/` (`rclone copy --include`,
+  then `rclone check --one-way`); the log is
+  `v2/logs/v21_aiocean_backup_20261121.log`.
+- **PVC.** `/data/v2/pab.db` is left as the stale Task 3 return (T5-Q3 = A).
+- **Site.** JXP commits and pushes `report_site/`; RTD rebuilds on push.
 
 ## 6. Notes & gotchas
 
