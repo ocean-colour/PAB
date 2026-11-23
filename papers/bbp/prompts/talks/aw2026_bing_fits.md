@@ -60,7 +60,156 @@ Use Opus 5.5.  Log your work.
     Note that I made a few edits in the file myself.
     Use Opus 5.5.  Log your work.
 
+### Bad
+
+1. The good figure is in good shape.  Let's now find an example to show as a "bad" fit.
+This should have a high PACE bbp value relative to Argo, from our matchups.
+It should also have a modeled Rrs at 700nm that is significantly below the observed values.
+It should otherwise be a good fit.  It is likely the reduced chi^2 will be 1 or less.
+Please search for examples like this and provide a list in the `Q&A/Bad` section below.
+If you have any questions along the way, please ask in the `Q&A/Bad` section.
+Use Opus 5.5.  Log your work.
+
+2. Ok, I am ready to create the "bad" figure.  Let us use 2902882/96 for this.
+Proceed to modify the code in the file `talks/AWOC2026/fig_bing.py` to create the "bad" figure.
+Have it be named `fig_bing_bad_2902882_96.png`.
+Use Opus 5.5.  Log your work.
+
+### Ugly
+
+One example of very high bbp from Argo but low PACE is 4903660/130.
+
 ## Q&A
+
+### Bad
+
+*Response to Bad prompt 1 (Claude Opus 5.5, 2026-11-23). No figure code yet.*
+
+#### How I searched
+
+1. **Matchups:** v2.1 BING fits (rank-1 pixel, LM+MCMC success) with
+   dx < 10 km and dt < 3 h, and Argo mixed-layer b_bp(700) > 0. This gives
+   3,450 fits.
+2. **High PACE b_bp:** BING b_bp(700) more than 2× Argo, with χ²_ν ≤ 1.2.
+   This leaves 629 fits. In every one, BING's 5th percentile is above the
+   Argo mean + std.
+3. **Red deficit:** I reconstructed all 629 posteriors with
+   `pab.viz.fits.reconstruct`. The DB does not store model Rrs. For each I
+   measured:
+   - `r_700`, the mean (obs − model)/σ over 690–699 nm;
+   - the fractional deficit (obs − model)/obs over the same bands;
+   - the blue–green residuals (400–590 nm), to check the rest of the fit.
+4. **Shortlist:** χ²_ν ≤ 1, `r_700` ≥ 1.5, observed Rrs above the model's
+   95th percentile at every band from 690 to 699 nm, a blue–green median
+   |r/σ| < 0.5 and max < 1.6, and Chl > 0. 25 fits pass. I ranked them by
+   `r_700` plus a small bonus for a larger BING/Argo ratio.
+
+#### The red deficit goes with high PACE b_bp (control test)
+
+I ran the same measurement on random samples of 200 fits from two other
+groups (χ²_ν ≤ 1.2 for all):
+
+| Group (BING/Argo b_bp(700)) | N | median r_700 | median deficit at 690–699 | r_700 > 1 | r_700 > 1.5 | median χ²_ν |
+|---|---:|---:|---:|---:|---:|---:|
+| agree (0.8–1.25) | 200 | 0.11 | 5 % | 7 % | 2 % | 0.26 |
+| low (< 0.5) | 200 | 0.06 | 11 % | 10 % | 3 % | 0.29 |
+| **high (> 2)** | 629 | **0.70** | **25 %** | **30 %** | **10 %** | 0.62 |
+
+The "bad" pattern is not a quirk of one profile. When PACE is high
+relative to Argo, BING tends to under-predict the red Rrs. The posterior
+b_bp is already inflated, which suggests extra red reflectance in the
+PACE spectrum that the model cannot fit with any IOP set.
+
+#### Candidates (best first)
+
+Previews of the top 6, drawn with the current `fig_bing_fit`, are in
+`talks/AWOC2026/bad_candidates.png` (a 2 × 3 grid in the table's order;
+delete it once you have chosen). Units: dx in km, dt in h, b_bp in m⁻¹,
+Chl in mg m⁻³, Rrs in sr⁻¹. "deficit" is (obs − model)/obs at 690–699 nm.
+
+| # | wmo | cycle | where | date | dx | dt | χ²_ν | Argo b_bp | BING b_bp [5–95 %] | ratio | Chl | r_700 | deficit | Rrs(699) obs / model |
+|---|---|---:|---|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---|
+| 1 | 2903941 | 35 | S. Atlantic gyre (15.2°S, 21.6°W) | 2026-02-18 | 0.85 | 2.1 | 0.92 | 3.9e-4 | 1.35e-3 [1.24–1.44] | 3.5 | 0.03 | 2.35 | 56 % | 3.1e-4 / 1.4e-4 |
+| 2 | 2902882 | 121 | NW Pacific (23°N, 146°E) | 2024-04-18 | 4.2 | 0.85 | 0.80 | 2.4e-4 | 1.19e-3 [1.09–1.27] | **4.9** | 0.01 | 1.65 | 54 % | 2.7e-4 / 1.3e-4 |
+| 3 | 7901133 | 78 | NE Atlantic, off Morocco (33.2°N) | 2026-06-23 | 3.8 | 1.6 | 0.99 | 5.7e-4 | 1.40e-3 [1.28–1.50] | 2.4 | 0.06 | 2.29 | 53 % | 3.1e-4 / 1.5e-4 |
+| 4 | 5907146 | 74 | NW Mediterranean (Gulf of Lion) | 2026-07-02 | 0.41 | 1.0 | 0.90 | 9.4e-4 | 2.00e-3 [1.77–2.15] | 2.1 | 0.04 | 2.36 | 55 % | 3.8e-4 / 1.8e-4 |
+| 5 | 2902882 | 96 | NW Pacific (24°N, 147°E) | 2024-03-24 | 0.76 | 0.84 | 0.91 | 2.7e-4 | 1.19e-3 [1.10–1.25] | 4.4 | 0.03 | 1.53 | 44 % | 2.5e-4 / 1.3e-4 |
+| 6 | 2902913 | 125 | W. Pacific (16.7°N, 155°E) | 2026-03-17 | 2.5 | 1.0 | 0.92 | 3.3e-4 | 8.8e-4 [0.79–0.95] | 2.7 | 0.03 | 2.03 | 58 % | 2.7e-4 / 1.1e-4 |
+| 7 | 1902380 | 131 | tropical N Atlantic (18.6°N) | 2025-08-11 | 1.2 | 0.24 | 0.68 | 4.8e-4 | 1.52e-3 [1.36–1.63] | 3.2 | 0.04 | 1.70 | 52 % | 3.0e-4 / 1.5e-4 |
+| 8 | 3902342 | 204 | N Pacific, near Hawaii (22.4°N, 174°W) | 2025-05-15 | 3.8 | 0.32 | 0.65 | 3.6e-4 | 8.4e-4 [0.68–0.92] | 2.3 | 0.03 | 1.88 | 60 % | 2.7e-4 / 1.0e-4 |
+| 9 | 1902347 | 65 | equatorial Pacific (0°, 178°W) | 2025-02-26 | 3.4 | 1.9 | 0.73 | 6.6e-4 | 1.41e-3 [1.32–1.51] | 2.1 | 0.51 | 1.87 | 48 % | 3.3e-4 / 1.7e-4 |
+| 10 | 6990687 | 47 | NW Atlantic, off Carolinas (32.1°N) | 2026-06-05 | 0.64 | 2.8 | 0.60 | 6.7e-4 | 1.51e-3 [1.37–1.63] | 2.3 | 0.04 | 1.83 | 49 % | 3.0e-4 / 1.5e-4 |
+
+Notes on the previews:
+- **#1 (2903941/35) is my pick.**
+  - The 400–590 nm fit is clean.
+  - The residual strip climbs steadily from about 0 at 610 nm to +2.5σ at
+    700 nm, and the inset shows the gap clearly.
+  - BING b_bp is 3.5× Argo, and the Argo ML std is tiny (1.1e-5), so the
+    Argo value is solid.
+  - It is close in space (0.85 km) but has the largest dt on this list
+    (2.1 h).
+- **#2 (2902882/121) has the largest b_bp ratio (4.9×)** and an equally
+  clear inset, but dx = 4.2 km. Its sibling, **#5 (2902882/96)**, has
+  dx = 0.8 km and dt = 0.8 h, and a 4.4× ratio, with a smaller red residual
+  (+1.5σ).
+- **#4 (5907146/74), Gulf of Lion, is not a good choice.**
+  - The blue Rrs is noisy and turns down below 430 nm.
+  - a_ph collapses to nearly 0, with a_dg doing all the work.
+  - It looks "bad" for more than one reason.
+  - It is the same float as the "good" candidate 5907146/66 from Good
+    prompt 1, which might make a nice contrast, but it muddies the message.
+- **A feature shared by all six:** the residuals sit about −1σ at
+  520–580 nm and +1 to +2.5σ from 610 to 700 nm. The model's whole red
+  side is low, not just 700 nm, and the fit compensates in the green. This
+  is the same pattern, much stronger, as the weak red structure in the
+  "good" 7902116/30.
+
+#### Questions for JXP (Bad prompt 1)
+
+1. **Q1: Which profile?** Pick from the table. *(My recommendation:
+   #1, 2903941/35. Use #5, 2902882/96, if you want the largest b_bp gap
+   with a close matchup.)*
+
+   **A:**
+
+2. **Q2: Show the Argo value?** On this slide the point is the b_bp
+   excess. Should panel (b) show the Argo b_bp(700) as a purple star with
+   ±std on the b_bp axis? Otherwise the excess lives only in your talk.
+   The "good" figure would stay unchanged; I can add it there too for
+   consistency.
+
+   **A:**
+
+3. **Q3: The inset and the residual strip.** The deficit is already
+   obvious in both, so I would keep the layout identical to "good" so the
+   two slides compare one-to-one. OK?
+
+   **A:**
+
+4. **Q4: The control result.** Is the table above (a red deficit in 30 %
+   of high-b_bp fits vs 7 % of agreeing fits) worth a one-line callout
+   on the slide or in the notes? I can also make a small histogram of
+   r_700 by group.
+
+   **A:**
+
+#### Bad prompt 2: the "bad" figure
+
+*Response to Bad prompt 2 (Claude Opus 5.5, 2026-11-23).*
+
+- `python fig_bing.py 2` writes `fig_bing_bad_2902882_96.png`, at the same
+  10 × 4.6 in and 300 dpi as "good", with an identical layout (so I
+  assumed Q3 = yes). No Argo star is drawn, since Q2 is unanswered;
+  Q1–Q4 above are now moot or optional.
+- **What the slide shows:**
+  - The fit is excellent at 400–520 nm, sits about −1σ at 530–580 nm, then
+    runs +1 to +2σ from 610 to 700 nm.
+  - The inset shows the model below every point from 610 to 700 nm.
+  - Panel (b): b_bp is 1.2e-3 m⁻¹ (5–95 %: 1.10–1.25e-3), 4.4× Argo's
+    2.7e-4.
+  - χ²_ν = 0.91, so by χ² alone the fit would pass.
+- `bad_candidates.png` (the preview grid) can be deleted.
 
 ### Good
 
@@ -242,13 +391,13 @@ km, dt in h, b_bp in m⁻¹, Chl in mg m⁻³.
 6. **Q6: The χ² label.** The box says χ²_ν (the usual symbol for reduced
    χ²). Do you prefer "χ²_red", as in the viewer?
 
-   **A:**
+   **A:** χ²_ν is fine; I will leave it as is.
 
 7. **Q7: The inset.** Should it also show the 5–95 % band more strongly?
    At this scale it is hidden behind the error bars. Or should it show
    residuals instead?
 
-   **A:**
+   **A:**  The model fit looks fine.
 
 ## Logs
 
@@ -325,3 +474,62 @@ higher (y = 0.99). I updated the module docstring to say `GOOD` is set in
 
 Re-rendered `fig_bing_good_7902116_30.png` and inspected it. Q6 (the χ²
 symbol) and Q7 (the inset band) are still open.
+
+### 2026-11-23 (Bad prompt 1: search for "bad" fits with high PACE b_bp and a red Rrs deficit)
+
+Searched the v2.1 matchups (dx < 10 km, dt < 3 h, rank-1 pixel, success)
+for fits with BING b_bp(700) more than 2× Argo and χ²_ν ≤ 1.2. 629 fits
+pass.
+
+The DB stores no model Rrs, so I reconstructed all 629 posteriors in a
+16-process pool with `pab.viz.fits.reconstruct` (about 3.5 min). For each I
+measured:
+- the mean (obs − model)/σ at 690–699 nm (`r_700`);
+- the fractional deficit at 690–699 nm;
+- the 400–590 nm residuals.
+
+A control test reconstructed 200 random fits where BING agrees with Argo
+(ratio 0.8–1.25) and 200 where it is low (ratio < 0.5):
+- **agree:** median r_700 = 0.11; 7 % have r_700 > 1;
+- **low:** median r_700 = 0.06; 10 % have r_700 > 1;
+- **high:** median r_700 = 0.70; 30 % have r_700 > 1.
+
+The red-end deficit is therefore tied to high PACE b_bp.
+
+After a quality shortlist (χ²_ν ≤ 1, r_700 ≥ 1.5, clean blue–green, Chl > 0),
+25 fits remain. I listed the top 10 in Q&A/Bad and rendered previews of the
+top 6 with `fig_bing_fit`, in `talks/AWOC2026/bad_candidates.png`, which can
+be deleted.
+
+All six have the same residual shape: −1σ at 520–580 nm and +1 to +2.5σ
+at 610–700 nm.
+
+- **Recommended:** 2903941/35 (S. Atlantic gyre; b_bp 3.5× Argo; deficit
+  56 % at 699 nm; χ²_ν = 0.92).
+- **Rejected:** 5907146/74, whose blue Rrs is noisy and whose a_ph
+  collapses.
+
+Asked Q1–Q4 (the profile, an Argo star on panel (b), keeping the layout
+identical to "good", and a control-test callout).
+
+Scratch tables are in the session scratchpad (not kept). `fig_bing.py` is
+unchanged.
+
+### 2026-11-23 (Bad prompt 2: "bad" figure for 2902882/96)
+
+Extended `talks/AWOC2026/fig_bing.py`:
+- `main(2)` sets `BAD = (2902882, 96)` and calls the unchanged
+  `fig_bing_fit`, writing `fig_bing_bad_2902882_96.png`.
+- `main` now shares the output and save code between flags 1 and 2, which
+  differ only in the profile and the tag (`good`/`bad`).
+- Updated the `FIGURES` table and the module docstring (usage, "BAD").
+
+Rendered and inspected flag 2, and re-ran flag 1 to confirm "good" is
+unchanged. The layout carries over without collisions: the legend clears
+the zero line, and the inset sits below the info box.
+
+The figure shows the red-side shortfall (+1 to +2σ at 610–700 nm,
+−1σ at 530–580 nm) with χ²_ν = 0.91, and b_bp 4.4× Argo.
+
+Left the open Bad-prompt-1 questions as they are and assumed an identical
+layout with no Argo marker.

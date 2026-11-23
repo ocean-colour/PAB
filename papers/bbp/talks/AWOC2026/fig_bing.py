@@ -7,6 +7,9 @@ is sized 10 x 4.6 in to sit under it):
        (a) PACE Rrs with the BING median and 5-95 % band, a 600-700 nm inset,
            and the residuals in units of sigma;
        (b) the non-water IOPs a_dg, a_ph (left axis) and b_bp (right axis).
+    2  fig_bing_bad_<wmo>_<cycle>.png -- a "bad" BING fit, same layout: PACE
+       b_bp well above Argo and the model Rrs falling short of the data
+       at 610-700 nm, otherwise a good fit (chi^2_nu < 1).
 
 "Good" / "bad" / "very bad" refer to the quality of the spectral fit (Q1).
 
@@ -16,8 +19,9 @@ The fit is rebuilt from its v2.1 chain NPZ with :func:`pab.viz.fits.reconstruct`
 
 Usage:
     python papers/bbp/talks/AWOC2026/fig_bing.py 1     # the "good" fit
+    python papers/bbp/talks/AWOC2026/fig_bing.py 2     # the "bad" fit
 
-Change the profile by editing ``GOOD`` in :func:`main` or by calling
+Change the profiles by editing ``GOOD`` / ``BAD`` in :func:`main` or by calling
 ``fig_bing_fit(wmo, cycle, out=...)`` from Python.
 """
 from __future__ import annotations
@@ -244,25 +248,34 @@ def fig_bing_fit(wmo: int, cycle: int, out=None, db=None,
 #: Figures by number: ``python fig_bing.py <n>``.
 FIGURES = {
     1: "a good BING fit (fig_bing_good_<wmo>_<cycle>.png)",
+    2: "a bad BING fit (fig_bing_bad_<wmo>_<cycle>.png)",
 }
 
 
 def main(flg: int):
     """Make figure ``flg`` with the module defaults (see :data:`FIGURES`).
 
-    1: :func:`fig_bing_fit` for :data:`GOOD`, written to :data:`DEFAULT_OUT_DIR`.
+    1: :func:`fig_bing_fit` for ``GOOD``, written to :data:`DEFAULT_OUT_DIR`.
+    2: :func:`fig_bing_fit` for ``BAD``, same layout, same directory.
     """
     if flg == 1:
-        #: The "good" fit (prompt 2): wmo, cycle.
+        #: The "good" fit (Good prompt 2): wmo, cycle.
         GOOD = (7902116, 30)
-
         wmo, cycle = GOOD
-        out = DEFAULT_OUT_DIR / f"fig_bing_good_{wmo}_{cycle}.png"
-        fig = fig_bing_fit(wmo, cycle, out=out)
-        plt.close(fig)
-        print(f"✓ {out}")
+        tag = "good"
+    elif flg == 2:
+        #: The "bad" fit (Bad prompt 2): PACE b_bp(700) 4.4x Argo, and the model
+        #: Rrs ~44 % (+1.5 sigma) below the data at 690-699 nm; chi^2_nu = 0.91.
+        BAD = (2902882, 96)
+        wmo, cycle = BAD
+        tag = "bad"
     else:
         raise ValueError(f"Unknown figure {flg}; choose from {FIGURES}")
+
+    out = DEFAULT_OUT_DIR / f"fig_bing_{tag}_{wmo}_{cycle}.png"
+    fig = fig_bing_fit(wmo, cycle, out=out)
+    plt.close(fig)
+    print(f"✓ {out}")
 
 
 if __name__ == "__main__":
