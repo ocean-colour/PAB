@@ -11,16 +11,19 @@ Design: ``claude_prompts/viz/viz_bing_fit.md``, Q&A / Design (BF-Q1 to BF-Q17).
   5–95 % band) and the modified IOPs in the same colours, dotted (``b_bp``
   dot-dash). The Argo ML ``b_bp(700)`` ± std is marked at 700 nm, and
   NASA-GIOP's ``b_bp(700)`` is available from the legend (hidden at start).
-* **Controls**: one row per free parameter in fit space (log10 where the
-  prior is log-uniform). Each row has a slider spanning the posterior
-  5–95 % widened ×3 (at least ±0.5 dex for a log parameter) and clipped to the
-  prior, a number box that takes any value inside the prior, a "↺" button
-  and the physical value. "Reset to fit" restores every parameter.
+* **Controls** (BF-Q2 to BF-Q4 as answered): one row per free parameter in
+  fit space (log10 where the prior is log-uniform). Each row has a number box
+  (the model updates on Enter), "−10 %" / "+10 %" buttons that scale the
+  **physical** value of the parameter by 0.9 / 1.1 (for a log parameter,
+  −0.046 / +0.041 dex in fit space), a "↺" button and the physical value.
+  Any finite value is accepted, inside the prior or not (BF-I9); a value
+  outside the prior gets a note, not a refusal. "Reset to fit" restores
+  every parameter.
+  There are no sliders: they were too coarse for this.
 * The modified model starts at the **posterior median of each parameter**
   (BF-Q1); its χ² must then equal the stored ``fits.chisq``, and a note says
-  so when it does not. After the first edit the posterior bands are hidden
-  (BF-Q5). They return on reset, and the "show fit bands" box shows them on
-  demand.
+  so when it does not. The fit's posterior bands stay visible throughout
+  (BF-Q5 = B); only the modified model is drawn without a band.
 * A derived-quantity table compares the fit (stored medians [5–95 %]), the
   modified model (computed by :func:`pab.fit.run.extract_quantities`) and
   Argo (secondary, greyed). Emulator out-of-domain warnings are shown as an
@@ -58,7 +61,6 @@ from bokeh.models import (
     ColumnDataSource,
     Div,
     HoverTool,
-    Slider,
     TextInput,
 )
 
@@ -71,17 +73,9 @@ log = logging.getLogger("pab.viz")
 #: The modified model (left panel).
 MOD_COLOR = "#2166ac"
 
-#: Widened half-span of a slider, in units of the posterior half-width (BF-Q3).
-SLIDER_WIDEN = 3.0
-
-#: Minimum half-span (dex) of a log-parameter slider.
-SLIDER_MIN_DEX = 0.5
-
-#: Minimum half-span of a linear-parameter slider, as a fraction of its prior.
-SLIDER_MIN_FRAC = 0.05
-
-#: Slider steps across its range.
-SLIDER_STEPS = 400
+#: The "−10 %" / "+10 %" buttons scale a parameter's physical value by
+#: ``1 ∓ STEP_FRACTION`` (BF-Q2 as answered).
+STEP_FRACTION = 0.10
 
 #: Relative tolerance of the start-curve χ² against the stored ``fits.chisq``.
 CHISQ_RTOL = 1e-4
@@ -115,15 +109,14 @@ _POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pab-bing-fit")
 _NOTE_STYLE = "color:#8a5a00;font-size:90%"
 
 
-def slider_range(spec: vfits.ParamSpec) -> tuple[float, float]:
-    """The slider span of ``spec`` (BF-Q3), clipped to its prior."""
-    med, lo, hi = spec.median, spec.lo, spec.hi
-    down = SLIDER_WIDEN * max(med - lo, 0.0)
-    up = SLIDER_WIDEN * max(hi - med, 0.0)
-    floor = SLIDER_MIN_DEX if spec.is_log else SLIDER_MIN_FRAC * (spec.prior_hi - spec.prior_lo)
-    start = max(med - max(down, floor), spec.prior_lo)
-    end = min(med + max(up, floor), spec.prior_hi)
-    return float(start), float(end)
+def step_value(spec: vfits.ParamSpec, value: float, direction: int) -> float:
+    """``value`` (fit space) after a "±10 %" step: the **physical** value is
+    scaled by ``1 + direction · STEP_FRACTION`` (a log parameter moves by
+    ``log10(1 ± 0.1)`` dex; BF-I8). Not clipped to the prior (BF-I9). A linear
+    parameter at exactly 0 stays at 0 (a percentage of zero); type a value
+    instead."""
+    factor = 1.0 + direction * STEP_FRACTION
+    return float(value + np.log10(factor) if spec.is_log else value * factor)
 
 
 def domain_feature(line: str) -> str:
@@ -137,7 +130,7 @@ def param_label(name: str) -> tuple[str, str, str]:
 
 
 def plain_label(name: str) -> str:
-    """The fit-space label without HTML (slider titles are plain text)."""
+    """The fit-space label without HTML (``log10 A_dg``)."""
     lab = param_label(name)[0]
     for tag in ("<sub>", "</sub>"):
         lab = lab.replace(tag, "" if tag == "</sub>" else "_")
@@ -162,6 +155,8 @@ class BingFitView:
         self._messages: list[str] = []
         #: Out-of-domain lines of the start (posterior-median) evaluation.
         self._start_domain: tuple[str, ...] = ()
+        #: The last evaluation failure; cleared by the next success.
+        self._error: str | None = None
         left_w = int(width * 0.55)
         right_w = width - left_w - 20
 
@@ -183,7 +178,7 @@ class BingFitView:
         self.rrs_fig, self.rrs_log_fig = q, ql
         self.rrs_scale.on_change("active", lambda a, o, n: ap.set_rrs_scale(
             self.rrs_fig, self.rrs_log_fig, self.rrs_scale, n == 1))
-        self.rrs_bands = [rr["lin"]["band"], rr["log"]["band"]]
+        self.rrs_bands = [rr["lin"]["band"], rr["log"]["band"]]  # always shown (BF-Q5 = B)
         for fig in (q, ql):
             mod = fig.line("wave", "rrs", source=self.mod_src, color=MOD_COLOR,
                            line_width=2, legend_label="modified")
@@ -200,7 +195,7 @@ class BingFitView:
         t, ir = ap.iop_figure(right_w, q.x_range, self.iop_src,
                               title="BING IOPs (non-water): fit and modified")
         self.iop_fig = t
-        self.iop_bands = list(ir["bands"].values())
+        self.iop_bands = list(ir["bands"].values())  # always shown (BF-Q5 = B)
         for key, _label, color, _dash, yname in ap.IOP_STYLES:
             t.line("wave", key, source=self.mod_iop_src, color=color, line_width=2,
                    line_dash="dotdash" if key == "bbp" else "dotted",
@@ -226,31 +221,33 @@ class BingFitView:
             r.visible = False
 
         # -- controls -------------------------------------------------------
-        self.sliders: list[Slider] = []
         self.boxes: list[TextInput] = []
+        self.downs: list[Button] = []
+        self.ups: list[Button] = []
         self.resets: list[Button] = []
         self.infos: list[Div] = []
         rows = []
+        pct = f"{100 * STEP_FRACTION:g} %"
         for i, spec in enumerate(self.specs):
-            start, end = slider_range(spec)
-            s = Slider(start=start, end=end, value=spec.median,
-                       step=(end - start) / SLIDER_STEPS, title=plain_label(spec.name),
-                       format="0[.]0000", width=300)
-            s.on_change("value_throttled", functools.partial(self._on_slider, i))
-            b = TextInput(value=f"{spec.median:.6g}", width=110, margin=(20, 5, 5, 5))
+            name = Div(text=param_label(spec.name)[0], width=110, margin=(10, 5, 5, 5))
+            down = Button(label=f"−{pct}", width=62)
+            down.on_click(functools.partial(self.step_param, i, -1))
+            b = TextInput(value=f"{spec.median:.6g}", width=120)
             b.on_change("value", functools.partial(self._on_box, i))
-            r = Button(label="↺", width=36, margin=(20, 5, 5, 5))
+            up = Button(label=f"+{pct}", width=62)
+            up.on_click(functools.partial(self.step_param, i, +1))
+            r = Button(label="↺", width=36)
             r.on_click(functools.partial(self.reset_param, i))
-            info = Div(text="", width=330, margin=(20, 5, 5, 5))
-            self.sliders.append(s)
+            info = Div(text="", width=330)
             self.boxes.append(b)
+            self.downs.append(down)
+            self.ups.append(up)
             self.resets.append(r)
             self.infos.append(info)
-            rows.append(row(s, b, r, info))
+            rows.append(row(name, down, b, up, r, info))
         self.reset_all = Button(label="Reset to fit", button_type="primary", width=140)
-        self.reset_all.on_click(lambda: self.reset())
-        self.show_bands = Checkbox(label="show fit bands", active=False)
-        self.show_bands.on_change("active", lambda a, o, n: self._update_bands())
+        self.reset_all.on_click(self.reset)
+        self.auto_range = Checkbox(label="auto-range on edit", active=True)
         self.table = Div(text="")
         self.param_text = Div(text="")
 
@@ -260,8 +257,9 @@ class BingFitView:
             self.settings,
             row(column(self.rrs_scale, self.rrs_fig, self.rrs_log_fig, self.resid_fig),
                 column(Div(text="", height=31), self.iop_fig)),
-            row(column(Div(text="<b>Parameters</b> (fit space; physical value at right)"),
-                       *rows, row(self.reset_all, self.show_bands)),
+            row(column(Div(text="<b>Parameters</b> (fit space; type a value and press "
+                           f"Enter, or step the physical value by ±{pct})"),
+                       *rows, row(self.reset_all, self.auto_range)),
                 column(self.table, self.param_text)),
         )
 
@@ -300,6 +298,10 @@ class BingFitView:
         trained ``B_p`` range) are a grey standing line; only a feature an edit
         newly pushes out of range is the amber warning."""
         msgs = list(self._messages)
+        if self._error:
+            msgs.append(f"<b>{html.escape(self._error)}</b> The plot shows the last "
+                        "successful evaluation.")
+        msgs.extend(self._prior_notes())
         ev = self.evaluation
         known = {domain_feature(d) for d in self._start_domain}
         new = [d for d in (ev.domain if ev is not None else ()) if domain_feature(d) not in known]
@@ -313,6 +315,17 @@ class BingFitView:
                         + "; ".join(html.escape(d) for d in self._start_domain) + "</span>")
         self.notes.text = (f"<div style='{_NOTE_STYLE}'>" + "<br>".join(msgs) + "</div>"
                            if msgs else "")
+
+    def _prior_notes(self) -> list[str]:
+        """One note per parameter now outside its prior: allowed (BF-I9), but
+        the fit never sampled there."""
+        out = []
+        for spec, v in zip(self.specs, self.params, strict=True):
+            if not spec.in_prior(v):
+                out.append(f"{html.escape(spec.name)} = {v:.6g} is outside its prior "
+                           f"[{spec.prior_lo:g}, {spec.prior_hi:g}] (allowed; the fit "
+                           "never sampled there).")
+        return out
 
     def _fit_value(self, key: str):
         """The fit column of the table: stored ``(median, lo, hi)``."""
@@ -380,12 +393,6 @@ class BingFitView:
     def edited(self) -> bool:
         return bool(np.any(self.params != np.asarray(self.fm.start, dtype=float)))
 
-    def _update_bands(self) -> None:
-        """Bands only before the first edit, or on demand (BF-Q5)."""
-        visible = (not self.edited) or bool(self.show_bands.active)
-        for r in (*self.rrs_bands, *self.iop_bands):
-            r.visible = visible
-
     def show_fit(self) -> None:
         """The stored fit: observed spectrum, posterior model and IOPs, marks."""
         c = self.curves
@@ -433,9 +440,8 @@ class BingFitView:
         nan = np.full_like(wave, np.nan, dtype=float)
         self.mod_iop_src.data = {"wave": wave, **{k: ev.iops.get(k, nan) for k in
                                                   ("anw", "adg", "aph", "bbp")}}
-        if autorange:
+        if autorange or self.auto_range.active:
             self.autorange()
-        self._update_bands()
         self._show_header()
         self._show_notes()
         self._show_table()
@@ -443,7 +449,9 @@ class BingFitView:
 
     def autorange(self) -> None:
         """Fit the axes to the data, the posterior and the modified model; the
-        reset tool returns here. Edits do not re-range (a zoom is kept)."""
+        reset tool returns here. Runs on load, on reset and, while "auto-range
+        on edit" is ticked (the default), on every edit; untick it to keep a
+        zoom while editing."""
         o, m, d = self.obs_src.data, self.model_src.data, self.mod_src.data
         ap.autorange_rrs(self.rrs_fig, self.rrs_log_fig,
                          [o["lo"], o["hi"], m["lo"], m["hi"], m["med"], d["rrs"]],
@@ -462,7 +470,8 @@ class BingFitView:
         self.token += 1
         params = self.params.copy()
         if self.doc is None:
-            self.show_evaluation(self.fm.evaluate(params), autorange=autorange)
+            ev, error = self._evaluate(params)
+            self._done(self.token, ev, error, autorange)
             return
         token = self.token
         self._show_header_pending()
@@ -472,42 +481,49 @@ class BingFitView:
         self.header.text = ap.header_html(
             self.sel, [f"<span style='color:{MOD_COLOR}'><i>evaluating…</i></span>"])
 
-    def _job(self, token: int, params, autorange: bool) -> None:
+    def _evaluate(self, params):
+        """``(Evaluation, None)``, or ``(None, message)`` when the forward model
+        fails (e.g. a non-physical value; any value may be typed, BF-I9)."""
         t0 = time.monotonic()
         try:
-            result = (self.fm.evaluate(params), None)
+            return self.fm.evaluate(params), None
         except Exception as exc:  # noqa: BLE001 - shown in the page
-            result = (None, f"Evaluation failed ({type(exc).__name__}: {exc}).")
-        log.debug("evaluate in %.3f s", time.monotonic() - t0)
+            return None, f"Evaluation failed ({type(exc).__name__}: {exc})."
+        finally:
+            log.debug("evaluate in %.3f s", time.monotonic() - t0)
+
+    def _job(self, token: int, params, autorange: bool) -> None:
+        result = self._evaluate(params)
         self.doc.add_next_tick_callback(functools.partial(self._done, token, *result,
                                                           autorange))
 
     def _done(self, token: int, ev, error, autorange: bool) -> None:
         if token != self.token:
             return
+        self._error = error
         if ev is None:
-            self._messages.append(error)
             self._show_header()
             self._show_notes()
+            self._show_params()
             return
         self.show_evaluation(ev, autorange=autorange)
 
     # -- callbacks -----------------------------------------------------------
     def set_param(self, i: int, value: float) -> bool:
-        """Set parameter ``i`` (fit space) and re-evaluate. A value outside the
-        prior is refused with a note; one outside the slider widens it."""
+        """Set parameter ``i`` (fit space) and re-evaluate. Any finite value is
+        taken (BF-I9): outside the prior it is noted, not refused. NaN / inf
+        are refused."""
         spec = self.specs[i]
         value = float(value)
         self._messages = [m for m in self._messages if not m.startswith("Refused")]
-        if not spec.in_prior(value):
-            self._messages.append(
-                f"Refused {html.escape(spec.name)} = {value:.6g}: outside the prior "
-                f"[{spec.prior_lo:g}, {spec.prior_hi:g}].")
+        if not np.isfinite(value):
+            self._messages.append(f"Refused {html.escape(spec.name)} = {value}: not finite.")
             self._sync_widgets(i)
             self._show_notes()
             return False
         if value == self.params[i]:
             self._sync_widgets(i)
+            self._show_notes()  # a cleared "Refused" note must go too
             return False
         self.params[i] = value
         self._sync_widgets(i)
@@ -515,24 +531,17 @@ class BingFitView:
         return True
 
     def _sync_widgets(self, i: int) -> None:
-        """Slider and number box ``i`` to the current value (no callbacks)."""
-        v = float(self.params[i])
-        s, b = self.sliders[i], self.boxes[i]
+        """Number box ``i`` to the current value (no callback)."""
         self._quiet = True
         try:
-            if v < s.start:
-                s.start = v
-            if v > s.end:
-                s.end = v
-            s.step = (s.end - s.start) / SLIDER_STEPS
-            s.value = v
-            b.value = f"{v:.6g}"
+            self.boxes[i].value = f"{float(self.params[i]):.6g}"
         finally:
             self._quiet = False
 
-    def _on_slider(self, i: int, attr, old, new) -> None:
-        if not self._quiet and new is not None:
-            self.set_param(i, new)
+    def step_param(self, i: int, direction: int) -> bool:
+        """The "±10 %" buttons: scale the physical value of parameter ``i``
+        (:func:`step_value`; no clipping, BF-I9)."""
+        return self.set_param(i, step_value(self.specs[i], float(self.params[i]), direction))
 
     def _on_box(self, i: int, attr, old, new) -> None:
         if self._quiet:
@@ -552,7 +561,7 @@ class BingFitView:
         self.set_param(i, self.specs[i].median)
 
     def reset(self) -> None:
-        """Every parameter back to the posterior median; bands return."""
+        """Every parameter back to the posterior median."""
         self.params = np.asarray(self.fm.start, dtype=float).copy()
         self._messages = [m for m in self._messages if not m.startswith("Refused")]
         for i in range(len(self.specs)):

@@ -34,7 +34,9 @@ PRIOR_SET_CEILING_PREFIX = PRIOR_SET_STANDARD + "+ceiling:"
 #: Order fixed: it is the order the tokens appear in the ``prior_set`` string.
 #: ``Bnw`` is the Pow model's log10 amplitude **at its 600 nm pivot**
 #: (``bing/models/bbnw.py``: ``bb_nw = 10**Bnw * (600/wave)**beta``), hence
-#: ``bbp600``; ``Adg``/``Aph`` are ExpBricaud's log10 amplitudes at 440 nm.
+#: ``bbp600``; ``Adg``/``Aph`` are ExpBricaud's log10 amplitudes, ``Adg`` at its
+#: 400 nm pivot (``a_dg = 10**Adg * exp(-Sdg (wave - 400))``) and ``Aph`` at
+#: 440 nm (the Bricaud ``a*_ph`` normalisation), per ``bing/models/anw.py``.
 CEILING_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("bbp600_max", "bbp600", "Bnw"),
     ("adg_max", "adg", "Adg"),
@@ -105,7 +107,7 @@ class FitConfig:
         perc: Lower/upper percentiles for the stored credible interval.
         bbp600_max, adg_max, aph_max: **Physical prior ceilings** (m⁻¹) on
             the Pow amplitude ``Bnw`` (= ``b_bp`` at the 600 nm pivot) and
-            the ExpBricaud amplitudes ``Adg``/``Aph`` (at 440 nm). BING's
+            the ExpBricaud amplitudes ``Adg`` (at 400 nm) / ``Aph`` (at 440 nm). BING's
             ``expb_pow`` puts log-uniform [10⁻⁶, 10⁵] priors on all three;
             ``None`` keeps that 10⁵. The 2.0.1 defaults (0.1, 10, 10) exist
             because 51 of the 15,971 2.0 fits ran away to the 10⁵ wall

@@ -109,10 +109,12 @@ def cycles_for_wmo(store, wmo: int) -> list[int]:
     return [int(r["cycle"]) for r in rows]
 
 
-def matchup_for(store, wmo: int, cycle: int) -> dict[str, Any] | None:
+def matchup_for(store, wmo: int, cycle: int, *,
+                matchup_id: str | None = None) -> dict[str, Any] | None:
     """The matchup of profile ``(wmo, cycle)`` with its profile and ML summary.
 
-    Returns ``None`` when the profile has no matchup. Keys include
+    The first matchup (by ``matchup_id``), or exactly ``matchup_id`` when
+    given. Returns ``None`` when the profile has no (such) matchup. Keys include
     ``matchup_id``, ``profile_id``, ``latitude``, ``longitude``, ``time``,
     ``distance_km``, ``dtime_hours`` and the ``mld_summary`` columns
     (``mld``, ``bbp700``, ``bbp700_std``, ``n_points``, ``chla``,
@@ -127,12 +129,23 @@ def matchup_for(store, wmo: int, cycle: int) -> dict[str, Any] | None:
         FROM matchups m
         JOIN profiles p ON p.profile_id = m.profile_id
         LEFT JOIN mld_summary s ON s.profile_id = p.profile_id
-        WHERE p.wmo = ? AND p.cycle = ?
+        WHERE p.wmo = ? AND p.cycle = ? AND (? IS NULL OR m.matchup_id = ?)
         ORDER BY m.matchup_id
         """,
-        (int(wmo), int(cycle)),
+        (int(wmo), int(cycle), matchup_id, matchup_id),
     )
     return rows[0] if rows else None
+
+
+def matchup_ids_for(store, wmo: int, cycle: int) -> list[str]:
+    """Every matchup id of profile ``(wmo, cycle)``, in :func:`matchup_for` order."""
+    rows = store.query(
+        "SELECT m.matchup_id FROM matchups m "
+        "JOIN profiles p ON p.profile_id = m.profile_id "
+        "WHERE p.wmo = ? AND p.cycle = ? ORDER BY m.matchup_id",
+        (int(wmo), int(cycle)),
+    )
+    return [r["matchup_id"] for r in rows]
 
 
 def _results(store, fit_id: str) -> dict[str, tuple[float, float, float]]:

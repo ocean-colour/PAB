@@ -283,8 +283,18 @@ Use Opus 5.5.  Log your work.
 
 ### Implement
 
-3. I have answered the next round of questions in the `Q&A/Design` section.  Please review my answers
+1. I have answered the next round of questions in the `Q&A/Design` section.  Please review my answers
 and proceed to write the code.
+If any issues come up, discuss them with me in the `Q&A/Implement` section below.
+Use Opus 5.5.  Log your work.
+
+2. Please read my answers in the `Q&A/Implement` section below
+and make the necessary changes.
+If any issues come up, discuss them with me in the `Q&A/Implement` section below.
+Use Opus 5.5.  Log your work.
+
+3. I have answered questions BF-I8 and BF-I9 in the `Q&A/Implement` section.  Please review my answers
+and edit the code accordingly.  
 If any issues come up, discuss them with me in the `Q&A/Implement` section below.
 Use Opus 5.5.  Log your work.
 
@@ -292,6 +302,230 @@ Use Opus 5.5.  Log your work.
 ## Q&A
 
 ### Implement
+
+*Round 1 (2026-11-23), from Implement prompt #1. The tool is built and
+tested. Below: how to run it, what was built, and the issues that came up.
+Each issue has my recommendation. The code already follows it, so answer
+only if you want a change.*
+
+#### Run it
+
+```bash
+export PAB_DATA_DIR=/home/xavier/Oceanography/data/Color/PAB
+/home/xavier/miniconda3/envs/ocean14/bin/python -m pab.viz.bing_fit --wmo 2902882 --cycle 96 --show
+#   [--version 2.0] [--matchup-id …] [--db …] [--data-dir …] [--port 5007]
+# or, after `pip install -e . --no-deps` (BF-I6; done in ocean14 on the workstation):
+pab-bing-fit --wmo 2902882 --cycle 96 --show
+```
+
+Start-up selects the fit, builds the models, reconstructs the posterior and
+warms the JIT. This takes ~8–10 s on the workstation, and then the server
+binds to `localhost:5007`. One fit per server; restart for another (BF-Q15).
+A missing matchup, fit or chain file is reported and the tool exits with
+code 2 (BF-Q17).
+
+#### What was built
+
+| File | What |
+|---|---|
+| `pab/viz/bing_fit.py` (new) | `BingFitView` (the figures, sources, widgets and callbacks), `select_fit`, a server-free `make_bing_fit`, `prepare` (builds the fit's models once per server), `make_document`, `main` |
+| `pab/viz/fits.py` | `ForwardModel` (models built once; `evaluate(params)` → `Evaluation`: `Rrs`, IOPs, χ², derived quantities, emulator out-of-domain lines), `ParamSpec`, `domain_messages` |
+| `pab/viz/bokeh_argo_pace.py` | Panel builders moved out of `ArgoPaceView` (BF-Q9): `rrs_figures`, `rrs_glyphs`, `set_rrs_scale`, `resid_figure`, `iop_figure` (+ `IOP_STYLES`), `autorange_rrs`, `autorange_iops`, `table_html`, `header_html`; `load_selection(matchup_id=)`. No visual change; its tests pass unchanged |
+| `pab/viz/data.py` | `matchup_for(matchup_id=)`, `matchup_ids_for` |
+| `pab/viz/server.py` (new) | Launch helpers shared with `pab-viz` (`--db`, `--data-dir`, localhost / `--allow-remote`, logging, `serve`) |
+| `pab/viz/__main__.py` | Now uses `server.py`; same options and messages |
+| `pab/tests/test_viz_bing_fit.py` (new) | 12 tests: slider ranges, start state, bands after edit / reset / on demand, auto-range, widgets (slider, number box: widen, out-of-prior, non-number), domain notes, self-check, async stale-result drop, lookup errors, CLI, and a **real-data** test (skipped without the v2 DB) |
+
+Every model computation reuses pipeline code. The forward model is
+`run.reconstruct_rrs`. The derived quantities come from
+`run.extract_quantities`, given the single vector as a 2-step, 1-walker
+chain. χ² uses the `run._fit_diagnostics` formula. Checks: on a real 2.1
+fit, χ² at the posterior medians equals `fits.chisq` (to 1e-7), and `Adg`,
+`Aph`, `B_p`, Chl equal `fit_results`. All 575 tests pass, `ruff` is clean,
+and a live server session on `7902116_30` rendered correctly.
+
+#### Issues
+
+**BF-I1: Most fits are already outside the emulator's `B_p` domain.** I
+used `bing.evaluate.robust_domain_check` to surface the emulator's
+`DomainWarning` (BF-Q14), because the jitted forward model never emits it
+(the check skips traced inputs). The emulator is trained on **`B_p` ∈
+[0.01026, 0.018]**, while the fit prior is [0.004, 0.05]. Of the 15,971
+2.1 fits, the posterior-median `B_p` is **below that range for 4,248 and
+above it for 7,435 (73 % in all)**. Example: `2902882_96`, median `B_p`
+0.032. A warning shown for every fit would be noise, so:
+- **Done (recommended).** Features already out of range at the posterior
+  medians get a **grey standing line** ("The fit itself (posterior
+  medians) is outside the emulator's training range: …"). The **amber
+  warning** appears only when an edit pushes a *new* feature out of range
+  (e.g. `eta_bb` after raising `B_p`).
+- This is the "robust `DomainWarning` on the `B_p` breach for most fits" in
+  the Working agreements, now with a number. It probably matters beyond this
+  tool (2.1 `b_bp` is retrieved where the emulator is extrapolating in
+  `B_p`), and may deserve a line in the 2.1 write-up.
+
+>A. Ok, your change is fine.
+
+**BF-I2: Auto-range on edit (a change from the design).** In Design I said
+edits would not re-range, to keep a zoom. In the first render, raising
+`Bnw` by 0.3 dex pushed the blue `Rrs` and the dotted `b_bp` off the axes,
+which hid the curve being adjusted. **Done:** an "auto-range on edit"
+checkbox, **on** by default. Untick it to keep a zoom while editing; load
+and "Reset to fit" always re-range.
+
+>A. This is good
+
+**BF-I3: "modified" vs "fit" at the start.** The fit column shows the
+stored **posterior medians of each quantity**. The modified column shows
+each quantity computed **at the median parameter vector**. They agree
+exactly for the parameters (`Adg`, `Sdg`, `Aph`, `β`, `B_p`, Chl). For
+derived spectral values they differ slightly, e.g. `b_bp(440)` 1.21e-3 vs
+1.22e-3 on `2902882_96`. This is the BF-Q1 caveat, and is expected.
+Nothing to do unless you want a footnote under the table.
+
+>A. This is fine; no footnote
+
+**BF-I4: A doc comment in `pab/fit/models.py`** (near the top, on
+`CEILING_FIELDS`) says `Adg`/`Aph` are "log10 amplitudes at 440 nm". In
+BING's `ExpBricaud`, `Adg` is the amplitude at **400 nm** (`a_dg(λ) = Adg
+exp(−Sdg(λ − 400))`); `Aph` is at 440 nm. The editor labels them
+`a_dg(400)` and `a_ph(440)`. I did not touch `pab/fit` (outside the viz
+layer). Fix the comment?
+
+>A. Yes, fix the comment
+
+**BF-I5: Commit `db84de4` is partial.** You committed while I was working
+(12:25). The commit contains `bing_fit.py`, `server.py`, `__main__.py` and
+the test file, but **not** the `bokeh_argo_pace.py`, `data.py` and
+`fits.py` changes they import (`header_html`, `ForwardModel`,
+`matchup_ids_for`, …). On its own, `db84de4` does not import. The working
+tree is complete and green. The five files in `git status` (`M`) are the
+rest.
+
+>A. I will handle the git commands
+
+**BF-I6: A console script?** `pab-viz` is in `setup.py`
+(`console_scripts`). Add `pab-bing-fit = pab.viz.bing_fit:main`
+(recommended; needs `pip install -e .` again on both machines)? I left
+`setup.py` alone.
+
+>A. Yes, add the console script
+
+**BF-I7: Notes on the design as built** (no answer needed):
+- Thread safety: one `ForwardModel` is shared by every browser session,
+  with a lock around `evaluate`. The lock also covers
+  `warnings.catch_warnings`, which is process-global. Each session opens its
+  own read-only store.
+- The first JAX evaluation compiles (~5 s); `prepare` does it before
+  serving. After that an evaluation takes ~35 ms, including the un-jitted
+  domain check.
+- The NASA-GIOP mark on the IOP panel is hidden at start; click its legend
+  entry to show it.
+
+>A. Ok, good.
+
+#### Actions on the round-1 answers (2026-11-23)
+
+- **BF-I1, BF-I2, BF-I3, BF-I7:** accepted as built; no change (no
+  footnote, per BF-I3).
+- **BF-I4:** fixed in both places in `pab/fit/models.py`: the
+  `CEILING_FIELDS` comment and the `FitConfig` docstring (`bbp600_max,
+  adg_max, aph_max`). Both now say `Adg` is the amplitude at the **400 nm**
+  pivot and `Aph` at 440 nm, citing `bing/models/anw.py`. This changes
+  comments only; no other code in `pab/` made the 440 nm claim.
+- **BF-I5:** git left to JXP. The uncommitted set is now
+  `claude_prompts/viz/viz_bing_fit.md`, `pab/fit/models.py`,
+  `pab/tests/test_viz_bing_fit.py`, `pab/viz/{bing_fit,bokeh_argo_pace,data,fits}.py`
+  and `setup.py`.
+- **BF-I6:** `pab-bing-fit = pab.viz.bing_fit:main` is added to
+  `setup.py`'s `console_scripts`. I reinstalled `ocean14` on the
+  workstation with `pip install -e . --no-deps`, and `pab-bing-fit --help`
+  works. **The laptop needs the same reinstall** after you pull.
+
+#### Round 2 (2026-11-23), from Implement prompt #2
+
+Your revised Design answers are now in the code:
+
+| Q | Revised answer | Change |
+|---|---|---|
+| BF-Q2 / BF-Q3 | Fit space; no sliders (too coarse); a number box and ±10 % of the current value | Sliders removed. Each row is now **[label] [−10 %] [box] [+10 %] [↺] [physical value]** |
+| BF-Q4 | Update on Enter in a box or on a ±10 % click | As built: the box's `value` callback fires on Enter (and on leaving the box), and each button click re-evaluates |
+| BF-Q5 | **B**: keep the original bands | The orange `Rrs` band and the IOP bands **stay visible throughout**; only the modified model has no band. The "show fit bands" checkbox and the legend workaround (BF-I2) are gone, since nothing hides any more |
+
+Checked: 30 viz tests pass (12 in `test_viz_bing_fit.py`, rewritten for
+the buttons) and `ruff` is clean. Real `ButtonClick` events on `7902116_30`
+gave exactly ×1.331 on `Bnw` after three "+10 %" clicks and ×0.9 on `β`
+after one "−10 %"; ↺ restored the value. A headless-Chrome render shows
+the bands kept under the edited curves.
+
+**BF-I8: What "±10 % of the current value" means for a log10 parameter.**
+For `Adg`, `Aph` and `Bnw` the box holds log10 of the value. Taking 10 % of
+*that number* would be meaningless: for log10 `Adg` = −2.0, "+10 %" would
+give −2.2, a **37 % decrease** in `Adg`, and the step would grow with
+|log10|. So I scale the **physical** value:
+- **Done (recommended).** "+10 %" multiplies the physical value by 1.1
+  (+0.041 dex in fit space); "−10 %" multiplies it by 0.9 (−0.046 dex). For
+  the linear parameters (`Sdg`, `β`, `B_p`) this is simply ×1.1 / ×0.9.
+- **B.** Step the fit-space number itself by ±10 % (not recommended, as above).
+- A different step size is one constant (`STEP_FRACTION`); a per-row step
+  box would also be easy if you want one.
+
+>A. Agreed, scale the physical value not the log10
+
+**BF-I9: Edge cases of the steps** (no answer needed unless you disagree):
+- A step that would leave the prior is **clipped to the bound**. Another
+  step at the bound is refused with a note. `B_p` near its 0.004 floor is
+  the likely case.
+- A linear parameter at exactly 0 cannot be stepped by a percentage (`β`'s
+  prior starts at 0). Type a value instead. No 2.1 posterior median is
+  exactly 0, so this only arises if 0 is typed.
+
+>A. No, do not clip to the bound.  The user can adopt any value.
+
+#### Round 3 (2026-11-23), from Implement prompt #3
+
+| Q | Answer | Change |
+|---|---|---|
+| BF-I8 | Scale the physical value, not the log10 | Kept as built (`step_value`: ×1.1 / ×0.9 of the physical value) |
+| BF-I9 | No clipping; the user can adopt any value | Steps are **not clipped**, and the number box **accepts any finite value**. I applied "any value" to the box as well as the buttons; before, it refused values outside the prior. A value outside the prior gets a **note** ("`Adg` = 3 is outside its prior [−6, 1] (allowed; the fit never sampled there)"), not a refusal, and the note clears when the value is back inside. Only non-numbers and NaN/inf are refused. |
+
+Also fixed while here:
+- Because any value can now be typed, the forward model might fail. A
+  failed evaluation now gives a note ("Evaluation failed (…). The plot shows
+  the last successful evaluation."), and the next good evaluation clears it.
+  Before, the note stayed for the rest of the session, and the synchronous
+  (no-server) path raised instead.
+- A "Refused …" note now clears as soon as a valid entry is made, even one
+  that does not change the value.
+
+Checked: 32 viz tests pass (two new: values outside the prior are accepted
+with a note, and a failed evaluation gives a note that clears), and `ruff`
+is clean. On the real fit `7902116_30` I evaluated five out-of-prior
+values. All gave finite `Rrs`; the prior note fired every time, and the
+emulator-domain note fired where it applies:
+
+| edit | χ²<sub>red</sub> | emulator note |
+|---|---:|---|
+| `B_p` = 0.002 (prior floor 0.004) | 572 | `B_p` out of range |
+| `B_p` = −0.01 | 28 | `B_p` out of range |
+| log10 `Bnw` = −0.5 (ceiling −1) | 2.6e5 | `log10_u`, `eta_bb` out of range |
+| log10 `Adg` = 1.5 (ceiling 1) | 244 | none |
+| `β` = −0.5 (floor 0) | 1.85 | none |
+
+**BF-I10: Physically impossible values still plot.** A negative `B_p` (or
+a negative `Sdg`, or `β` < 0) is not just outside the prior: it has no
+physical meaning. Yet the forward model returns a finite curve, e.g.
+`B_p` = −0.01 gives χ² = 28, *better* than the legal `B_p` = 0.002. The
+current notes say "outside its prior" and, for `B_p`, "outside the
+emulator's training range", but do not say "non-physical". Options:
+- **A (recommended).** Keep accepting any value (your BF-I9), but word the
+  note more strongly for a **negative linear parameter** (`Sdg`, `β`,
+  `B_p`): "non-physical: `B_p` < 0", in the amber warning style.
+- **B.** Refuse negative linear parameters (a narrow exception to BF-I9).
+- **C.** Leave as is.
+
+**Your answers:**
+
 
 ### Design
 
@@ -664,3 +898,111 @@ Posed BF-Q12 (a fit / modified / Argo table), BF-Q13 (Argo and GIOP
 BF-Q15 (no in-page selectors), BF-Q16 (no coupled-parameter re-fit yet) and
 BF-Q17 (port 5007, environment, missing chains = exit). I added a 4-step
 build plan. No code written.
+
+### 2026-11-23 (Implement prompt 1: BING-fit editor built, tested and run; BF-I1 to BF-I7 posed)
+
+Round-2 answers were all "A" (with "Argo is secondary": the Argo column is
+last and greyed, and the Argo mark is a single point at 700 nm). Built:
+- **Refactor (BF-Q9).** `bokeh_argo_pace.py`'s Rrs / residual / IOP panels,
+  autoranges, table and header became module-level builders. Its 18
+  existing tests pass unchanged. A first refactor script failed safely: an
+  end marker also matched an indented comment, so the slice was empty and
+  nothing was written. The fix was to anchor the markers on line starts.
+- **`fits.ForwardModel`.** Models are built once (~3 s); `evaluate` takes
+  ~35 ms (the first call compiles, ~5 s). It reuses
+  `run.reconstruct_rrs`, the `_fit_diagnostics` χ², and
+  `run.extract_quantities` on a 2-step × 1-walker chain, so the modified
+  quantities are computed by pipeline code.
+- **`bing_fit.py`** (view, server-free builder, CLI/server on 5007) and
+  **`server.py`** (launch helpers now shared with `pab-viz`).
+- 12 new tests. The full suite passes: 575 passed, 1 skipped (the real-data
+  test, when `PAB_DATA_DIR` is unset; it passes when set). `ruff` is clean.
+
+Learned:
+- The jitted robust forward model **never** raises `DomainWarning` (the
+  check skips JAX tracers). `bing.evaluate.robust_domain_check` is the
+  un-jitted complement, and it is what surfaces the warning.
+- The hybrid emulator's trained `B_p` range is [0.01026, 0.018] against a
+  prior of [0.004, 0.05]. **73 % of 2.1 fits (4,248 below, 7,435 above)**
+  sit outside it at their posterior median. Hence the grey (fit itself) vs
+  amber (new, from an edit) split of the domain notes (BF-I1).
+- Not re-ranging on edits (Design) hid the edited curves, so I added an
+  "auto-range on edit" checkbox, on by default (BF-I2).
+- Visual check: headless Chrome screenshots of a static export (no
+  selenium in `ocean14`) after a +0.3 dex `Bnw` edit on `7902116_30`. They
+  showed the off-axis curves and a greyed IOP legend (the hidden bands were
+  attached to the fit's legend items). Both are fixed and re-checked. A
+  live `bokeh.client` session against the server built the full document.
+- `db84de4` (JXP, mid-session) is a partial snapshot of this work (BF-I5).
+- `pab/fit/models.py` describes `Adg` as an amplitude at 440 nm; BING's
+  pivot is 400 nm (BF-I4, not changed).
+
+### 2026-11-23 (Implement prompt 2: sliders replaced by number boxes + ±10 % buttons; fit bands kept; BF-I8, BF-I9 posed)
+
+JXP revised the Design answers: BF-Q2 / BF-Q3 (no sliders; a number box and
+±10 % of the current value), BF-Q4 (update on Enter or a ±10 % click), and
+BF-Q5 = **B** (keep the original bands). BF-I7 was acknowledged; BF-I1 to
+BF-I6 have no answers yet.
+
+Changes in `pab/viz/bing_fit.py`:
+- The `Slider` widgets and `slider_range` are gone. Each parameter row is now
+  label / "−10 %" / number box / "+10 %" / ↺ / physical value.
+  `step_value` scales the **physical** value by 1 ± `STEP_FRACTION` (0.1),
+  which is ±log10(1 ± 0.1) dex for a log parameter, clipped to the prior.
+  `step_param` adds a note when a step is refused at a bound.
+- The fit's bands are always visible. The `show fit bands` checkbox,
+  `_update_bands` and the IOP-legend band stripping are removed.
+- Module docstring updated.
+
+Tests: `test_viz_bing_fit.py` rewritten for the buttons (step arithmetic,
+clipping, zero, bound note, bands kept through edits). 30 viz tests pass and
+`ruff` is clean. A real-fit check (`7902116_30`) fired Bokeh `ButtonClick`
+events on the buttons: three "+10 %" on `Bnw` gave ×1.331 exactly, "−10 %"
+on `β` gave ×0.9, and ↺ restored the value. A headless-Chrome render
+confirmed the layout and that the bands are kept.
+
+Learned: "±10 % of the current value" is ambiguous for a parameter held as
+log10. Stepping the log10 number itself would invert the direction for
+negative logs and make the step depend on magnitude, so the step acts on the
+physical value (BF-I8, open for JXP to confirm).
+
+### 2026-11-23 (Round-1 Implement answers acted on: models.py comment fixed, `pab-bing-fit` console script added)
+
+JXP answered BF-I1 to BF-I7. BF-I1 to BF-I3 and BF-I7 were accepted as built,
+and BF-I5 (git) stays with JXP. Acted on:
+- BF-I4: `pab/fit/models.py` had "`Adg`/`Aph` at 440 nm" twice (the
+  `CEILING_FIELDS` comment and the `FitConfig` docstring). Both now give
+  `Adg` at its 400 nm pivot and `Aph` at 440 nm. Comments only; `ruff`
+  is clean.
+- BF-I6: `pab-bing-fit` is in `setup.py` `console_scripts`. I reinstalled
+  `ocean14` on the workstation (`pip install -e . --no-deps`, so nothing
+  else changed), and `pab-bing-fit --help` runs. The laptop needs the same
+  reinstall.
+BF-I8 (±10 % acts on the physical value) and BF-I9 (step edge cases), from
+Implement round 2, are still open.
+
+### 2026-11-23 (Implement prompt 3: BF-I8 confirmed; BF-I9 = no clipping, any value accepted; BF-I10 posed)
+
+JXP confirmed BF-I8 (±10 % scales the physical value), and for BF-I9 said
+not to clip: the user can adopt any value. Changes in `pab/viz/bing_fit.py`:
+- `step_value` no longer clips to the prior. `set_param` accepts any
+  finite value, from the box or the buttons; only non-numbers and NaN/inf
+  are refused.
+- `_prior_notes` gives one note per parameter currently outside its prior.
+  The notes are derived from the parameters, so they clear on their own.
+- Evaluation is shared by the server and no-server paths (`_evaluate`). A
+  failure becomes a transient note (`_error`) that the next success clears,
+  and the plot keeps the last good curve. Before, the failure note stayed
+  for the session, and the no-server path raised.
+- A "Refused" note clears on any valid entry, even an unchanged one.
+
+Tests: `test_viz_bing_fit.py` was updated (no clipping, inf refused) and
+gained two tests (values outside the prior accepted with a note; a failed
+evaluation gives a note that clears). 32 viz tests pass; `ruff` is clean.
+
+Learned (real fit `7902116_30`): the forward model returns finite `Rrs`
+for every out-of-prior value tried, including the impossible `B_p` = −0.01,
+which scores χ² = 28 against 572 for the legal `B_p` = 0.002. Nothing
+crashes, but non-physical inputs look valid on the plot. This is BF-I10,
+recommending a stronger amber "non-physical" note rather than a refusal,
+which keeps BF-I9.

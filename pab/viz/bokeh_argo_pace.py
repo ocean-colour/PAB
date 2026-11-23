@@ -139,6 +139,160 @@ def lin_limits(vals) -> tuple[float, float] | None:
     return (lo - pad if lo < 0 else 0.0), hi + pad
 
 
+# -- panel builders (shared with :mod:`pab.viz.bing_fit`, BF-Q9) ---------------
+def rrs_glyphs(fig, lo_key: str, model_src, obs_src) -> dict:
+    """Model band and median, observed Rrs ± σ, hover and legend on ``fig``.
+
+    Returns the renderers ``{"band", "median", "obs"}``.
+    """
+    band = fig.varea(x="wave", y1=lo_key, y2="hi", source=model_src,
+                     fill_color=PACE_COLOR, fill_alpha=0.25, legend_label="BING 5–95 %")
+    med = fig.line("wave", "med", source=model_src, color=PACE_COLOR, line_width=2,
+                   legend_label="BING median")
+    fig.segment(x0="wave", y0=lo_key, x1="wave", y1="hi", source=obs_src,
+                color="black", alpha=0.5)
+    obs = fig.scatter("wave", "rrs", source=obs_src, size=4, color="black",
+                      legend_label="PACE Rrs ± σ")
+    fig.add_tools(HoverTool(renderers=[obs], tooltips=[
+        ("λ", "@wave{0} nm"), ("Rrs", "@rrs{0.000000}"), ("σ", "@sigma{0.000000}"),
+        ("model", "@model{0.000000}")]))
+    fig.legend.location = "top_right"
+    fig.legend.click_policy = "hide"
+    return {"band": band, "median": med, "obs": obs}
+
+
+def rrs_figures(width: int, model_src, obs_src, *, height: int = 420):
+    """The linear and the log10 ``Rrs`` figures (shared x-range) and the
+    linear/log10 toggle that swaps them (an axis type cannot change once
+    drawn; lower bounds ≤ 0 are floored at :data:`RRS_LOG_FLOOR` on the log
+    figure). Returns ``(lin_fig, log_fig, toggle, {"lin": renderers, "log": renderers})``.
+    """
+    q = figure(
+        width=width, height=height, title="PACE Rrs and the BING fit",
+        x_axis_label=None, y_axis_label="Rrs (sr⁻¹)", y_range=Range1d(0, 0.01),
+        tools="pan,wheel_zoom,box_zoom,reset,save",
+    )
+    q.add_layout(Span(location=0, dimension="width", line_dash="dashed",
+                      line_color=ZERO_COLOR, line_width=1.5))
+    lin = rrs_glyphs(q, "lo", model_src, obs_src)
+    q.yaxis.formatter = BasicTickFormatter(precision=1, power_limit_low=-2)
+    ql = figure(
+        width=width, height=height, title="PACE Rrs and the BING fit (log10)",
+        x_axis_label=None, y_axis_label="Rrs (sr⁻¹)", y_axis_type="log",
+        x_range=q.x_range, y_range=Range1d(1e-4, 1e-2), visible=False,
+        tools="pan,wheel_zoom,box_zoom,reset,save",
+    )
+    log = rrs_glyphs(ql, "lo_log", model_src, obs_src)
+    toggle = RadioButtonGroup(labels=list(RRS_SCALES), active=0, name="rrs_scale")
+    return q, ql, toggle, {"lin": lin, "log": log}
+
+
+def set_rrs_scale(lin_fig, log_fig, toggle, log: bool) -> None:
+    """Show the log10 (``True``) or the linear Rrs figure."""
+    lin_fig.visible = not log
+    log_fig.visible = bool(log)
+    want = 1 if log else 0
+    if toggle.active != want:
+        toggle.active = want
+
+
+def resid_figure(width: int, x_range, resid_src, *, height: int = 170):
+    """The linear residual strip in σ units (``rs`` column), ±1 σ dashed.
+    Returns ``(fig, renderer)``."""
+    r = figure(
+        width=width, height=height, x_range=x_range,
+        x_axis_label="wavelength (nm)", y_axis_label="(obs − model)/σ",
+        tools="pan,wheel_zoom,box_zoom,reset,save",
+    )
+    for loc, dash in ((0, "solid"), (1, "dashed"), (-1, "dashed")):
+        r.add_layout(Span(location=loc, dimension="width", line_color="gray",
+                          line_dash=dash))
+    res = r.scatter("wave", "rs", source=resid_src, size=4, color=PACE_COLOR)
+    r.add_tools(HoverTool(renderers=[res], tooltips=[
+        ("λ", "@wave{0} nm"), ("resid/σ", "@rs{0.00}"), ("resid", "@r{0.0000000} sr⁻¹"),
+        ("resid", "@pct{0.0} %")]))
+    return r, res
+
+
+#: ``(key, legend label, colour, dash, y-range name)`` of the IOP curves.
+IOP_STYLES = (
+    ("anw", "a_nw", ANW_COLOR, "solid", "default"),
+    ("adg", "a_dg", ADG_COLOR, "solid", "default"),
+    ("aph", "a_ph", APH_COLOR, "solid", "default"),
+    ("bbp", "b_bp (right axis)", BBP_COLOR, "dashed", "bbp"),
+)
+
+
+def iop_figure(width: int, x_range, iop_src, *, height: int = 420,
+               title: str = "BING IOPs (non-water), 5–95 %"):
+    """``a_nw``/``a_dg``/``a_ph`` (left axis) and ``b_bp`` (right axis, dashed),
+    each median with its 5–95 % band, from ``iop_src`` (:data:`_IOP_COLS`).
+
+    Returns ``(fig, {"bands": {key: renderer}, "lines": {key: renderer}})``.
+    """
+    t = figure(
+        width=width, height=height, title=title,
+        x_range=x_range, y_range=Range1d(0, 0.1),
+        x_axis_label="wavelength (nm)", y_axis_label="a (m⁻¹)",
+        tools="pan,wheel_zoom,box_zoom,reset,save",
+    )
+    t.extra_y_ranges = {"bbp": Range1d(0, 0.01)}
+    bb_axis = LinearAxis(y_range_name="bbp", axis_label="b_bp (m⁻¹)",
+                         axis_label_text_color=BBP_COLOR,
+                         major_label_text_color=BBP_COLOR,
+                         formatter=BasicTickFormatter(precision=1, power_limit_low=-2))
+    t.add_layout(bb_axis, "right")
+    t.yaxis[0].formatter = BasicTickFormatter(precision=1, power_limit_low=-2)
+    bands, lines = {}, {}
+    for key, label, color, dash, yname in IOP_STYLES:
+        bands[key] = t.varea(x="wave", y1=f"{key}_lo", y2=f"{key}_hi", source=iop_src,
+                             fill_color=color, fill_alpha=0.15, y_range_name=yname,
+                             legend_label=label)
+        lines[key] = t.line("wave", key, source=iop_src, color=color,
+                            line_width=2, line_dash=dash, y_range_name=yname,
+                            legend_label=label)
+    t.add_tools(HoverTool(renderers=[lines["anw"]], mode="vline", tooltips=[
+        ("λ", "@wave{0} nm"), ("a_nw", "@anw{0.00000}"), ("a_dg", "@adg{0.00000}"),
+        ("a_ph", "@aph{0.00000}"), ("b_bp", "@bbp{0.000000}")]))
+    t.legend.location = "top_right"
+    t.legend.click_policy = "hide"
+    t.legend.label_text_font_size = "8pt"
+    return t, {"bands": bands, "lines": lines}
+
+
+def autorange_rrs(lin_fig, log_fig, lin_vals, log_vals) -> None:
+    """Linear y from min(0, data) (0 always in view); log y over the positive
+    data. Both also become the reset targets."""
+    lin = lin_limits(lin_vals)
+    if lin is not None:
+        set_range(lin_fig.y_range, *lin)
+    lg = log_limits(log_vals)
+    if lg is not None:
+        set_range(log_fig.y_range, *lg)
+
+
+def autorange_iops(fig, a_vals, bbp_vals) -> None:
+    """Absorption (left) and ``b_bp`` (right) axes from their values."""
+    a = lin_limits(a_vals)
+    if a is not None:
+        set_range(fig.y_range, *a)
+    b = lin_limits(bbp_vals)
+    if b is not None:
+        set_range(fig.extra_y_ranges["bbp"], *b)
+
+
+def table_html(headers, rows) -> str:
+    """The viz tables: ``headers`` and ``rows`` are sequences of HTML cells."""
+    th = "style='text-align:left;padding:2px 10px;border-bottom:1px solid #999'"
+    td = "style='padding:2px 10px'"
+    head = "".join(f"<th {th}>{h}</th>" for h in headers)
+    body = "".join(
+        "<tr>" + "".join(f"<td {td}>{c}</td>" for c in r) + "</tr>" for r in rows
+    )
+    return (f"<table style='border-collapse:collapse;font-size:90%'>"
+            f"<tr>{head}</tr>{body}</table>")
+
+
 @dataclass
 class Selection:
     """The fast (DB-only) part of one view: matchup, fit and GIOP rows."""
@@ -167,18 +321,51 @@ class Selection:
 
 
 def load_selection(store, wmo: int, cycle: int, family: str | None = None, *,
-                   model_pair: str = data.DEFAULT_MODEL_PAIR) -> Selection:
-    """Everything the view needs from the DB for profile ``(wmo, cycle)``."""
+                   model_pair: str = data.DEFAULT_MODEL_PAIR,
+                   matchup_id: str | None = None) -> Selection:
+    """Everything the view needs from the DB for profile ``(wmo, cycle)``
+    (its first matchup, or ``matchup_id`` when given)."""
     families = data.version_families(store)
     if family is None and families:
         family = families[0]
-    m = data.matchup_for(store, wmo, cycle)
+    m = data.matchup_for(store, wmo, cycle, matchup_id=matchup_id)
     fit = giop = None
     if m is not None and family is not None:
         fit = data.bing_fit(store, m["matchup_id"], family, model_pair=model_pair)
         giop = data.giop_fit(store, m["matchup_id"], fit["pixel_id"] if fit else None)
     label = data.family_label(store, family) if family else "—"
     return Selection(int(wmo), int(cycle), family, label, m, fit, giop)
+
+
+def header_html(sel: Selection, extra=()) -> str:
+    """The view header: profile, matchup and fit summary (``extra`` cells appended)."""
+    m, f = sel.matchup, sel.fit
+    if m is None:
+        return (f"<b>WMO {sel.wmo} · cycle {sel.cycle}</b> — "
+                "no matchup for this profile")
+    lat, lon = m.get("latitude"), m.get("longitude")
+    pos = (f"{abs(lat):.3f}°{'N' if lat >= 0 else 'S'}, "
+           f"{abs(lon):.3f}°{'E' if lon >= 0 else 'W'}") if _finite(lat) and _finite(lon) else "—"
+    parts = [
+        f"<b>WMO {sel.wmo} · cycle {sel.cycle}</b>",
+        html.escape(str(m.get("time") or "—")).replace("T", " ")[:16],
+        pos,
+        f"Δx {fmt(m.get('distance_km'))} km",
+        f"Δt {fmt(m.get('dtime_hours'))} h",
+    ]
+    if f is None:
+        parts.append(f"BING {html.escape(sel.family_label)}: <i>no fit</i>")
+    else:
+        ver = html.escape(str(f["pab_version"]))
+        parts.append(f"BING {ver}" + (" (patch)" if f.get("patched") else ""))
+        if f.get("success") == 0:
+            parts.append("<span style='background:#c62828;color:white;padding:0 4px;"
+                         "border-radius:3px'>LM success = 0</span>")
+        else:
+            parts.append("LM success ✓")
+        parts.append(f"χ²<sub>red</sub> {fmt(f.get('chisq'))}")
+    parts.extend(extra)
+    return "<div style='font-size:110%'>" + " · ".join(parts) + "</div>"
 
 
 class ArgoPaceView:
@@ -262,79 +449,14 @@ class ArgoPaceView:
         self.resid_src = ColumnDataSource(
             {"wave": [], "rs": [], "r": [], "pct": []})
 
-        q = figure(
-            width=pace_w, height=420, title="PACE Rrs and the BING fit",
-            x_axis_label=None, y_axis_label="Rrs (sr⁻¹)", y_range=Range1d(0, 0.01),
-            tools="pan,wheel_zoom,box_zoom,reset,save",
-        )
-        q.add_layout(Span(location=0, dimension="width", line_dash="dashed",
-                          line_color=ZERO_COLOR, line_width=1.5))
-        self._rrs_glyphs(q, "lo")
-        q.yaxis.formatter = BasicTickFormatter(precision=1, power_limit_low=-2)
-        self.rrs_fig = q
-
-        # The same glyphs on a log10 y-axis (an axis type cannot change once
-        # drawn); lower bounds ≤ 0 are floored at RRS_LOG_FLOOR.
-        ql = figure(
-            width=pace_w, height=420, title="PACE Rrs and the BING fit (log10)",
-            x_axis_label=None, y_axis_label="Rrs (sr⁻¹)", y_axis_type="log",
-            x_range=q.x_range, y_range=Range1d(1e-4, 1e-2), visible=False,
-            tools="pan,wheel_zoom,box_zoom,reset,save",
-        )
-        self._rrs_glyphs(ql, "lo_log")
-        self.rrs_log_fig = ql
-        self.rrs_scale = RadioButtonGroup(labels=list(RRS_SCALES), active=0,
-                                          name="rrs_scale")
+        q, ql, self.rrs_scale, _ = rrs_figures(pace_w, self.model_src, self.obs_src)
+        self.rrs_fig, self.rrs_log_fig = q, ql
         self.rrs_scale.on_change("active", lambda a, o, n: self.set_rrs_scale(n == 1))
-
-        r = figure(
-            width=pace_w, height=170, x_range=q.x_range,
-            x_axis_label="wavelength (nm)", y_axis_label="(obs − model)/σ",
-            tools="pan,wheel_zoom,box_zoom,reset,save",
-        )
-        for loc, dash in ((0, "solid"), (1, "dashed"), (-1, "dashed")):
-            r.add_layout(Span(location=loc, dimension="width", line_color="gray",
-                              line_dash=dash))
-        res = r.scatter("wave", "rs", source=self.resid_src, size=4, color=PACE_COLOR)
-        r.add_tools(HoverTool(renderers=[res], tooltips=[
-            ("λ", "@wave{0} nm"), ("resid/σ", "@rs{0.00}"), ("resid", "@r{0.0000000} sr⁻¹"),
-            ("resid", "@pct{0.0} %")]))
-        self.resid_fig = r
+        self.resid_fig, _ = resid_figure(pace_w, q.x_range, self.resid_src)
 
         # -- IOP panel -------------------------------------------------------
         self.iop_src = ColumnDataSource({k: [] for k in _IOP_COLS})
-        t = figure(
-            width=iop_w, height=420, title="BING IOPs (non-water), 5–95 %",
-            x_range=q.x_range, y_range=Range1d(0, 0.1),
-            x_axis_label="wavelength (nm)", y_axis_label="a (m⁻¹)",
-            tools="pan,wheel_zoom,box_zoom,reset,save",
-        )
-        t.extra_y_ranges = {"bbp": Range1d(0, 0.01)}
-        bb_axis = LinearAxis(y_range_name="bbp", axis_label="b_bp (m⁻¹)",
-                             axis_label_text_color=BBP_COLOR,
-                             major_label_text_color=BBP_COLOR,
-                             formatter=BasicTickFormatter(precision=1, power_limit_low=-2))
-        t.add_layout(bb_axis, "right")
-        t.yaxis[0].formatter = BasicTickFormatter(precision=1, power_limit_low=-2)
-        lines = {}
-        for key, label, color, dash, yname in (
-            ("anw", "a_nw", ANW_COLOR, "solid", "default"),
-            ("adg", "a_dg", ADG_COLOR, "solid", "default"),
-            ("aph", "a_ph", APH_COLOR, "solid", "default"),
-            ("bbp", "b_bp (right axis)", BBP_COLOR, "dashed", "bbp"),
-        ):
-            t.varea(x="wave", y1=f"{key}_lo", y2=f"{key}_hi", source=self.iop_src,
-                    fill_color=color, fill_alpha=0.15, y_range_name=yname,
-                    legend_label=label)
-            lines[key] = t.line("wave", key, source=self.iop_src, color=color,
-                                line_width=2, line_dash=dash, y_range_name=yname,
-                                legend_label=label)
-        t.add_tools(HoverTool(renderers=[lines["anw"]], mode="vline", tooltips=[
-            ("λ", "@wave{0} nm"), ("a_nw", "@anw{0.00000}"), ("a_dg", "@adg{0.00000}"),
-            ("a_ph", "@aph{0.00000}"), ("b_bp", "@bbp{0.000000}")]))
-        t.legend.location = "top_right"
-        t.legend.click_policy = "hide"
-        t.legend.label_text_font_size = "8pt"
+        t, _ = iop_figure(iop_w, q.x_range, self.iop_src)
         self.iop_fig = t
 
         self.layout = column(
@@ -347,29 +469,9 @@ class ArgoPaceView:
                        self.table)),
         )
 
-    def _rrs_glyphs(self, fig, lo_key: str) -> None:
-        """Model band and median, observed Rrs ± σ, hover and legend on ``fig``."""
-        fig.varea(x="wave", y1=lo_key, y2="hi", source=self.model_src,
-                  fill_color=PACE_COLOR, fill_alpha=0.25, legend_label="BING 5–95 %")
-        fig.line("wave", "med", source=self.model_src, color=PACE_COLOR, line_width=2,
-                 legend_label="BING median")
-        fig.segment(x0="wave", y0=lo_key, x1="wave", y1="hi", source=self.obs_src,
-                    color="black", alpha=0.5)
-        obs = fig.scatter("wave", "rrs", source=self.obs_src, size=4, color="black",
-                          legend_label="PACE Rrs ± σ")
-        fig.add_tools(HoverTool(renderers=[obs], tooltips=[
-            ("λ", "@wave{0} nm"), ("Rrs", "@rrs{0.000000}"), ("σ", "@sigma{0.000000}"),
-            ("model", "@model{0.000000}")]))
-        fig.legend.location = "top_right"
-        fig.legend.click_policy = "hide"
-
     def set_rrs_scale(self, log: bool) -> None:
         """Show the log10 (``True``) or the linear Rrs figure; residuals stay linear."""
-        self.rrs_fig.visible = not log
-        self.rrs_log_fig.visible = bool(log)
-        want = 1 if log else 0
-        if self.rrs_scale.active != want:
-            self.rrs_scale.active = want
+        set_rrs_scale(self.rrs_fig, self.rrs_log_fig, self.rrs_scale, log)
 
     # -- text ----------------------------------------------------------------
     def set_notes(self, messages) -> None:
@@ -381,33 +483,7 @@ class ArgoPaceView:
         )
 
     def show_header(self, sel: Selection) -> None:
-        m, f = sel.matchup, sel.fit
-        if m is None:
-            self.header.text = (f"<b>WMO {sel.wmo} · cycle {sel.cycle}</b> — "
-                                "no matchup for this profile")
-            return
-        lat, lon = m.get("latitude"), m.get("longitude")
-        pos = (f"{abs(lat):.3f}°{'N' if lat >= 0 else 'S'}, "
-               f"{abs(lon):.3f}°{'E' if lon >= 0 else 'W'}") if _finite(lat) and _finite(lon) else "—"
-        parts = [
-            f"<b>WMO {sel.wmo} · cycle {sel.cycle}</b>",
-            html.escape(str(m.get("time") or "—")).replace("T", " ")[:16],
-            pos,
-            f"Δx {fmt(m.get('distance_km'))} km",
-            f"Δt {fmt(m.get('dtime_hours'))} h",
-        ]
-        if f is None:
-            parts.append(f"BING {html.escape(sel.family_label)}: <i>no fit</i>")
-        else:
-            ver = html.escape(str(f["pab_version"]))
-            parts.append(f"BING {ver}" + (" (patch)" if f.get("patched") else ""))
-            if f.get("success") == 0:
-                parts.append("<span style='background:#c62828;color:white;padding:0 4px;"
-                             "border-radius:3px'>LM success = 0</span>")
-            else:
-                parts.append("LM success ✓")
-            parts.append(f"χ²<sub>red</sub> {fmt(f.get('chisq'))}")
-        self.header.text = "<div style='font-size:110%'>" + " · ".join(parts) + "</div>"
+        self.header.text = header_html(sel)
 
     def show_table(self) -> None:
         sel = self._sel
@@ -450,16 +526,8 @@ class ArgoPaceView:
             if _finite(g["bbp700_unc"]):
                 txt += f" ± {fmt(g['bbp700_unc'])}"
             rows.append(("NASA-GIOP b<sub>bp</sub>(700) (m⁻¹)", txt, "—"))
-        th = "style='text-align:left;padding:2px 10px;border-bottom:1px solid #999'"
-        td = "style='padding:2px 10px'"
-        body = "".join(
-            f"<tr><td {td}>{a}</td><td {td}>{b}</td><td {td}>{c}</td></tr>" for a, b, c in rows
-        )
-        self.table.text = (
-            "<table style='border-collapse:collapse;font-size:90%'>"
-            f"<tr><th {th}>quantity</th><th {th}>PACE (BING {ver}) median [5–95 %]</th>"
-            f"<th {th}>Argo (ML mean)</th></tr>{body}</table>"
-        )
+        self.table.text = table_html(
+            ("quantity", f"PACE (BING {ver}) median [5–95 %]", "Argo (ML mean)"), rows)
 
     # -- Argo panel -----------------------------------------------------------
     def _vband(self, src_band, src_line, value, lo, hi, top) -> None:
@@ -566,24 +634,16 @@ class ArgoPaceView:
 
     # -- PACE panel ------------------------------------------------------------
     def _autorange_rrs(self) -> None:
-        """Linear y from min(0, data) (0 always in view); log y over the positive
-        data. Both also become the reset targets."""
         o, m = self.obs_src.data, self.model_src.data
-        lin = lin_limits([o["lo"], o["hi"], m["lo"], m["hi"], m["med"]])
-        if lin is not None:
-            set_range(self.rrs_fig.y_range, *lin)
-        lg = log_limits([o["rrs"], o["hi"], m["lo"], m["hi"], m["med"]])
-        if lg is not None:
-            set_range(self.rrs_log_fig.y_range, *lg)
+        autorange_rrs(self.rrs_fig, self.rrs_log_fig,
+                      [o["lo"], o["hi"], m["lo"], m["hi"], m["med"]],
+                      [o["rrs"], o["hi"], m["lo"], m["hi"], m["med"]])
 
     def _autorange_iops(self) -> None:
         d = self.iop_src.data
-        a = lin_limits([d[f"{k}{s}"] for k in ("anw", "adg", "aph") for s in ("", "_lo", "_hi")])
-        if a is not None:
-            set_range(self.iop_fig.y_range, *a)
-        b = lin_limits([d["bbp"], d["bbp_lo"], d["bbp_hi"]])
-        if b is not None:
-            set_range(self.iop_fig.extra_y_ranges["bbp"], *b)
+        autorange_iops(self.iop_fig,
+                       [d[f"{k}{s}"] for k in ("anw", "adg", "aph") for s in ("", "_lo", "_hi")],
+                       [d["bbp"], d["bbp_lo"], d["bbp_hi"]])
 
     def show_observed(self, wave, rrs, sigma) -> None:
         """Observed ``Rrs`` ± σ before the model is ready."""

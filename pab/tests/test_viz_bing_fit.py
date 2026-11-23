@@ -64,6 +64,8 @@ class FakeForward:
     def evaluate(self, params):
         self.calls += 1
         p = np.asarray(params, dtype=float)
+        if p[1] < 0:
+            raise ValueError("negative B_p")
         rrs = RRS * (1.0 + 10.0 * (p[0] + 2.0)) + 1e-5
         chisq = float(np.sum((rrs - RRS) ** 2 / self.var) / (RRS.size - 2))
         one = np.ones_like(WAVE)
@@ -92,13 +94,17 @@ def _bands(view):
     return {r.visible for r in (*view.rrs_bands, *view.iop_bands)}
 
 
-def test_slider_range_widens_and_clips():
+def test_step_value_scales_the_physical_value():
+    """BF-I8: ±10 % of the physical value; BF-I9: never clipped to the prior."""
     log = vfits.ParamSpec("Adg", True, -6.0, 1.0, -2.0, -2.1, -1.9)
-    assert bf.slider_range(log) == pytest.approx((-2.5, -1.5))  # ±0.5 dex floor
-    wide = vfits.ParamSpec("Aph", True, -6.0, 1.0, -2.0, -2.5, -1.0)
-    assert bf.slider_range(wide) == pytest.approx((-3.5, 1.0))  # ×3, clipped at prior
+    assert 10 ** bf.step_value(log, -2.0, +1) == pytest.approx(1.1e-2)
+    assert 10 ** bf.step_value(log, -2.0, -1) == pytest.approx(0.9e-2)
+    assert bf.step_value(log, 0.99, +1) == pytest.approx(0.99 + np.log10(1.1))  # past 1.0
     lin = vfits.ParamSpec("Bp", False, 0.004, 0.05, 0.01, 0.008, 0.02)
-    assert bf.slider_range(lin) == pytest.approx((0.004, 0.04))  # +3 × 0.01
+    assert bf.step_value(lin, 0.01, +1) == pytest.approx(0.011)
+    assert bf.step_value(lin, 0.0042, -1) == pytest.approx(0.00378)  # below 0.004
+    beta = vfits.ParamSpec("beta", False, 0.0, 2.0, 0.5, 0.1, 1.0)
+    assert bf.step_value(beta, 0.0, +1) == 0.0                    # % of zero
     assert bf.plain_label("Adg") == "log10 A_dg"
 
 
@@ -123,49 +129,88 @@ def test_start_state():
         assert "Chl = 0.2" in view.settings.text
         assert "vector:" in view.param_text.text
         assert view.notes.text == ""                             # self-check passed
-        assert [s.value for s in view.sliders] == [-2.0, 0.01]
+        assert [b.value for b in view.boxes] == ["-2", "0.01"]
+        assert [b.label for b in (view.downs[0], view.ups[0])] == ["−10 %", "+10 %"]
         assert view.rrs_fig.y_range.reset_start == view.rrs_fig.y_range.start
 
 
-def test_edit_hides_bands_reset_restores():
-    """BF-Q5: bands go after the first edit, return on reset or on demand."""
+def test_edit_keeps_bands_and_reset_restores():
+    """BF-Q5 = B: the fit's bands stay through edits; reset restores the start."""
     with Store.open(":memory:") as store:
         view = _view(store)
         assert view.set_param(0, -1.9)
-        assert view.edited and _bands(view) == {False}
+        assert view.edited and _bands(view) == {True}
         assert np.allclose(view.mod_src.data["rrs"], RRS * 2.0 + 1e-5)
-        assert view.boxes[0].value == "-1.9" and view.sliders[0].value == -1.9
+        assert view.boxes[0].value == "-1.9"
+        assert view.rrs_fig.y_range.end > 2.0 * 4e-3          # auto-range on edit
+        view.auto_range.active = False
+        top = view.rrs_fig.y_range.end
+        view.set_param(0, -1.8)
+        assert view.rrs_fig.y_range.end == top                 # a zoom is kept
+        view.set_param(0, -1.9)
         assert "(edited)" in view.infos[0].text
-        view.show_bands.active = True
-        assert _bands(view) == {True}
-        view.show_bands.active = False
-        assert _bands(view) == {False}
         view.reset_param(0)
         assert not view.edited and _bands(view) == {True}
         view.set_param(1, 0.02)
         view.reset()
-        assert not view.edited and view.sliders[1].value == 0.01
+        assert not view.edited and view.boxes[1].value == "0.01"
         assert np.allclose(view.mod_src.data["rrs"], RRS + 1e-5)
 
 
 def test_widgets_drive_the_model():
+    """BF-Q4 as answered: Enter in a number box, or a ±10 % click."""
     with Store.open(":memory:") as store:
         view = _view(store)
         fm = view.fm
         n = fm.calls
-        view._on_slider(1, "value_throttled", None, 0.02)
-        assert view.params[1] == 0.02 and fm.calls == n + 1
-        view._on_box(0, "value", "", "-0.5")                 # beyond the slider: widen
-        assert view.params[0] == -0.5 and view.sliders[0].end == -0.5
-        view._on_box(0, "value", "", "3")                    # outside the prior: refused
-        assert view.params[0] == -0.5 and "Refused Adg" in view.notes.text
-        assert view.boxes[0].value == "-0.5"
-        view._on_box(0, "value", "", "abc")
-        assert "not a number" in view.notes.text
-        view._on_box(0, "value", "", "-0.5")                 # no change: no evaluation
-        n = fm.calls
+        assert view.step_param(1, +1)                         # +10 %: 0.01 → 0.011
+        assert view.params[1] == pytest.approx(0.011) and fm.calls == n + 1
+        assert view.boxes[1].value == "0.011"
+        view.step_param(0, -1)                                # log: −0.046 dex
+        assert view.params[0] == pytest.approx(-2.0 + np.log10(0.9))
         view._on_box(0, "value", "", "-0.5")
+        assert view.params[0] == -0.5
+        view._on_box(0, "value", "", "abc")
+        assert "not a number" in view.notes.text and view.params[0] == -0.5
+        view._on_box(0, "value", "", "inf")
+        assert "not finite" in view.notes.text and view.params[0] == -0.5
+        assert view.boxes[0].value == "-0.5"
+        n = fm.calls
+        view._on_box(0, "value", "", "-0.5")                 # no change: no evaluation
         assert fm.calls == n
+        assert "Refused" not in view.notes.text               # a good entry clears it
+
+
+def test_any_value_is_accepted_outside_the_prior():
+    """BF-I9: no clipping and no refusal at the prior; a note says so, and
+    clears once the value is back inside."""
+    with Store.open(":memory:") as store:
+        view = _view(store)
+        view._on_box(0, "value", "", "3")                    # Adg prior is [-6, 1]
+        assert view.params[0] == 3.0
+        assert "Adg = 3 is outside its prior" in view.notes.text
+        view.set_param(0, -2.0)
+        assert "outside its prior" not in view.notes.text
+        view.set_param(1, 0.0455)
+        view.step_param(1, +1)                                # 0.05005 > 0.05
+        assert view.params[1] == pytest.approx(0.05005)
+        view.step_param(1, +1)                                # and on past the ceiling
+        assert view.params[1] == pytest.approx(0.055055)
+        assert "Bp = 0.055055 is outside its prior" in view.notes.text
+
+
+def test_failed_evaluation_is_a_note_that_clears():
+    """Any value may be typed, so the forward model may fail: shown, not raised;
+    the last good curve stays; the next good evaluation clears the note."""
+    with Store.open(":memory:") as store:
+        view = _view(store)
+        before = np.array(view.mod_src.data["rrs"])
+        assert view.set_param(1, -0.01)
+        assert "Evaluation failed (ValueError: negative B_p)" in view.notes.text
+        assert np.array_equal(view.mod_src.data["rrs"], before)
+        assert view.params[1] == -0.01 and view.boxes[1].value == "-0.01"
+        view.set_param(1, 0.02)
+        assert "Evaluation failed" not in view.notes.text
 
 
 def test_domain_warning_note():
