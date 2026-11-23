@@ -11,7 +11,11 @@ legend (upper left) and statistics (lower right) inside the axes; prompt 4):
     2  fig_bbp_h2h_cells_dots.png -- the same, plus the matchups in the
        sparser cells as grey dots.
     3  fig_bbp_h2h_dots.png -- every matchup as a dot, coloured by the
-       BING (PACE) Chl, log scale (prompt 4).
+       BING (PACE) Chl, log scale (prompt 4); with dotted 2:1 and 1:2
+       lines (prompt 5).
+    4  fig_bbp_differential_adg.png -- the relative difference
+       delta = (PACE - Argo) / PACE vs Argo b_bp(700), every matchup a dot
+       coloured by the BING (PACE) A_dg, log scale (Prompts/Differential 1).
 
 Choices (Q&A/Head-to-head):
     * matchups: dx < 10 km, dt < 3 h, successful v2.1 BING fit (rank-1 pixel),
@@ -32,6 +36,7 @@ Usage:
     python papers/bbp/talks/AWOC2026/fig_bbp_h2h.py 1     # cells only
     python papers/bbp/talks/AWOC2026/fig_bbp_h2h.py 2     # cells + sparse dots
     python papers/bbp/talks/AWOC2026/fig_bbp_h2h.py 3     # all dots, by PACE Chl
+    python papers/bbp/talks/AWOC2026/fig_bbp_h2h.py 4     # delta vs Argo, by PACE A_dg
 """
 from __future__ import annotations
 
@@ -67,6 +72,8 @@ DT_MAX_H = 3.0
 PAB_VERSION = "2.1"
 BBP_QUANTITY = "BING_ExpBPow_bbp700"
 CHL_QUANTITY = "BING_ExpBPow_chl"
+#: a_dg amplitude at the ExpBricaud pivot, 400 nm: a_dg(l) = Adg exp(-Sdg (l - 400)).
+ADG_QUANTITY = "BING_ExpBPow_Adg"
 
 #: Floats masked from the figure and the statistics (Q9): 5907147 reports
 #: mixed-layer b_bp ~3e-2 m^-1 (capped at 0.05) at Chl ~0.1 mg m^-3.
@@ -88,6 +95,20 @@ DOT_COLOR = "#7f7f7f"
 #: the same as the global-matchup map (fig_global.py), so the slides agree.
 CHL_LIM = (0.01, 3.0)       # mg m^-3
 CMAP_CHL = cmocean.cm.algae
+
+#: The 2:1 and 1:2 lines of figure 3 (Head-to-head prompt 5): dark grey, dotted.
+FAC2_COLOR = "#404040"
+
+#: PACE A_dg colour scale for figure 4: log10, clipped, cmocean "turbid"
+#: (browns, the a_dg hue of the BING-fit slides). 0.005-0.3 m^-1 spans the
+#: 1-99 % of A_dg(400) in the matchups (~0.004-0.7) with the tails clipped.
+ADG_LIM = (0.005, 0.3)      # m^-1
+CMAP_ADG = cmocean.cm.turbid
+
+#: y range of the delta figure, as the paper's Fig 7
+#: (pab/matchup/plot_delta_vs_bbp.py): delta <= 1 by construction; below
+#: -1.5 (PACE < Argo / 2.5) is off-scale.
+DELTA_LIM = (-1.7, 3.0)
 
 RC = {
     "font.size": 14, "axes.labelsize": 16, "xtick.labelsize": 13,
@@ -120,14 +141,15 @@ def load_matchups(db=None, dx_max: float = DX_MAX_KM, dt_max: float = DT_MAX_H,
         One row per matchup with a successful v2.1 BING fit on the rank-1
         pixel and b_bp > 0 on both sides: ``wmo``, ``cycle``,
         ``bbp_argo`` (de-spiked mixed-layer mean), ``bbp_pace`` (posterior
-        median), both m^-1, and ``chl_pace`` (BING posterior-median Chl,
-        mg m^-3).
+        median), both m^-1, ``chl_pace`` (BING posterior-median Chl,
+        mg m^-3) and ``adg_pace`` (BING posterior-median A_dg, i.e.
+        a_dg(400), m^-1).
     """
     con = sqlite3.connect(db or DEFAULT_DB)
     df = pd.read_sql(
         """SELECT p.wmo, p.cycle, mp.rank, m.matchup_id,
                   s.bbp700 AS bbp_argo, r.value AS bbp_pace,
-                  rc.value AS chl_pace
+                  rc.value AS chl_pace, ra.value AS adg_pace
            FROM matchups m
            JOIN profiles p USING (profile_id)
            JOIN mld_summary s USING (profile_id)
@@ -135,9 +157,10 @@ def load_matchups(db=None, dx_max: float = DX_MAX_KM, dt_max: float = DT_MAX_H,
            LEFT JOIN matchup_pixels mp ON mp.pixel_id = f.pixel_id
            JOIN fit_results r ON r.fit_id = f.fit_id AND r.quantity = ?
            LEFT JOIN fit_results rc ON rc.fit_id = f.fit_id AND rc.quantity = ?
+           LEFT JOIN fit_results ra ON ra.fit_id = f.fit_id AND ra.quantity = ?
            WHERE m.distance_km < ? AND m.dtime_hours < ?
              AND f.algorithm = 'BING' AND f.pab_version = ? AND f.success = 1""",
-        con, params=(BBP_QUANTITY, CHL_QUANTITY, dx_max, dt_max, PAB_VERSION),
+        con, params=(BBP_QUANTITY, CHL_QUANTITY, ADG_QUANTITY, dx_max, dt_max, PAB_VERSION),
     )
     con.close()
     # one fit per matchup: the best-ranked pixel (production fits only rank 1)
@@ -312,9 +335,96 @@ def fig_bbp_h2h_chl(df: pd.DataFrame, out=None, lim=LIM, chl_lim=CHL_LIM,
         cb.set_label(r"PACE Chl (mg m$^{-3}$)")
         cb.ax.yaxis.set_major_formatter(mpl.ticker.FormatStrFormatter("%g"))
 
+        # factor-of-2 lines either side of 1:1 (Head-to-head prompt 5):
+        # PACE = 2 x Argo above, PACE = Argo / 2 below
+        xx = np.asarray(lim)
+        for f in (2.0, 0.5):
+            ax.plot(xx, f * xx, ls=":", color=FAC2_COLOR, lw=1.6, zorder=4)
+
         handles = [Line2D([], [], ls="none", marker="o", ms=5, mec="none",
-                          color=CMAP_CHL(0.6), label="matchup")]
+                          color=CMAP_CHL(0.6), label="matchup"),
+                   Line2D([], [], ls=":", color=FAC2_COLOR, lw=1.6,
+                          label="2:1, 1:2")]
         _finish(ax, df, handles, lim)
+
+    if out is not None:
+        fig.savefig(out, dpi=300)
+    return fig
+
+
+def delta(df: pd.DataFrame) -> pd.Series:
+    """Relative difference delta = (PACE - Argo) / Argo (the paper's Fig 7)."""
+    return (df["bbp_pace"] - df["bbp_argo"]) / df["bbp_argo"]
+
+
+def fig_bbp_differential_adg(df: pd.DataFrame, out=None, xlim=LIM,
+                             ylim=DELTA_LIM, adg_lim=ADG_LIM, seed: int = 1):
+    """delta = (PACE - Argo) / PACE vs Argo b_bp(700), coloured by PACE A_dg.
+
+    Every matchup with Argo b_bp inside ``xlim`` and delta inside ``ylim`` is
+    a dot (the others are not drawn, as in the head-to-head figures), in a
+    seeded random order. delta > 0: PACE above Argo; delta = 0.5: PACE 2x
+    Argo; delta = -1: PACE Argo/2. The statistics (N, median delta and its
+    interquartile range) use every unmasked matchup, on- or off-scale.
+
+    Args:
+        df: Output of :func:`load_matchups`.
+        out: Path to save the PNG; nothing is saved if ``None``.
+        xlim: Argo b_bp(700) range (m^-1), log axis.
+        ylim: delta range.
+        adg_lim: (min, max) of the A_dg colour scale (m^-1), log.
+        seed: Seed of the drawing order.
+
+    Returns:
+        The matplotlib Figure.
+    """
+    dl = delta(df)
+    show = (df["bbp_argo"].between(*xlim) & dl.between(*ylim)).to_numpy()
+    d = df[show].assign(delta=dl[show])
+    d = d.sample(frac=1.0, random_state=seed)                # drawing order
+
+    with mpl.rc_context(RC):
+        fig = plt.figure(figsize=(FIG_W, FIG_H))
+        ax, cax = _axes(fig)
+
+        sc = ax.scatter(d["bbp_argo"], 100 * d["delta"],
+                        c=d["adg_pace"].clip(*adg_lim), cmap=CMAP_ADG,
+                        norm=LogNorm(*adg_lim), s=9, linewidths=0.2,
+                        edgecolors="#33333355", rasterized=True, zorder=3)
+        ax.axhline(0.0, color="k", lw=1.5, zorder=4)         # PACE = Argo
+
+        ax.set_xscale("log")
+        ax.set_xlim(xlim)
+        ylim = (ylim[0] * 100, ylim[1] * 100)
+        ax.set_ylim(ylim)
+        ax.set_xlabel(r"Argo $b_{bp}(700)$ (m$^{-1}$)")
+        ax.set_ylabel(r"$\delta$ = 100 (PACE $-$ Argo) / Argo")
+        ax.grid(alpha=0.3, zorder=0)
+
+        cb = fig.colorbar(sc, cax=cax, extend="both")
+        cb.set_label(r"PACE $A_{dg}$ (m$^{-1}$)")
+        cb.set_ticks([t for t in (0.005, 0.01, 0.03, 0.1, 0.3)
+                      if adg_lim[0] <= t <= adg_lim[1]])
+        cb.ax.yaxis.set_major_formatter(mpl.ticker.FormatStrFormatter("%g"))
+        cb.ax.yaxis.set_minor_formatter(mpl.ticker.NullFormatter())
+
+        # statistics on every unmasked matchup (as Q10)
+        q25, q50, q75 = np.percentile(dl, [25, 50, 75])
+        txt = "\n".join([f"N = {len(df):,}",
+                         rf"median $\delta$ = {q50:.2f}",
+                         f"IQR = [{q25:.2f}, {q75:.2f}]"])
+        # lower left: low Argo b_bp with PACE well below it is nearly empty
+        ax.text(0.03, 0.03, txt, transform=ax.transAxes, ha="left",
+                va="bottom", fontsize=12, linespacing=1.45, zorder=6)
+        handles = [Line2D([], [], ls="none", marker="o", ms=5, mec="none",
+                          color=CMAP_ADG(0.6), label="matchup"),
+                   Line2D([], [], color="k", lw=1.5, label=r"$\delta$ = 0")]
+        show_legend = False
+        if show_legend:
+            leg = ax.legend(handles=handles, loc="upper right", frameon=True,
+                        framealpha=0.75, edgecolor="none", handlelength=1.2,
+                        borderaxespad=0.3)
+            leg.set_zorder(6)
 
     if out is not None:
         fig.savefig(out, dpi=300)
@@ -328,6 +438,7 @@ FIGURES = {
     1: "cells only (fig_bbp_h2h_raw.png)",
     2: "cells + sparse dots (fig_bbp_h2h_cells_dots.png)",
     3: "all matchups as dots, coloured by PACE Chl (fig_bbp_h2h_dots.png)",
+    4: "delta vs Argo b_bp, coloured by PACE A_dg (fig_bbp_differential_adg.png)",
 }
 
 
@@ -346,6 +457,9 @@ def main(flg: int):
     elif flg == 3:
         out = DEFAULT_OUT_DIR / "fig_bbp_h2h_dots.png"
         fig = fig_bbp_h2h_chl(df, out=out)
+    elif flg == 4:
+        out = DEFAULT_OUT_DIR / "fig_bbp_differential_adg.png"
+        fig = fig_bbp_differential_adg(df, out=out)
     plt.close(fig)
     print(f"✓ {out}  (N = {len(df):,}, {df['wmo'].nunique()} floats, "
           f"{in_range(df).sum():,} on-scale; masked {MASK_WMO})")

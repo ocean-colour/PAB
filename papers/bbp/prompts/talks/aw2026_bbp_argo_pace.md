@@ -61,19 +61,118 @@ Please review my answers.  Then let's make the following edits:
     If any issues come up, discuss them with me in the `Q&A/Head-to-head` section below.
     Use Opus 5.5.  Log your work.
 
+5. Let's make a few additional changes to the `fig_bbp_h2h_dots.png` figure:
+    - Do add a 2:1 line to the figure.  Make it dark gray and dotted
+    - Also add the equivalent below the 1:1 line.  Also dark gray and dotted.
+
+    Use Opus 5.5.  Log your work.
+
 ### Differential
 
 1. Let us now generate a scatter plot like `fig_bbp_h2h_dots.png` but with the Argo bbp values on 
-the x-axis and $\delta$ = (PACE - Argo)/PACE on the y-axis.
+the x-axis and $\delta$ = (PACE - Argo)/Argo on the y-axis.
 This time, let us color by the PACE A_dg value, although we may revert to PACE Chl later.
 Name the new figure `fig_bbp_differential_adg.png`.
 Have it be a new method in the `fig_bbp_h2h.py` module.
 If any issues come up, discuss them with me in the `Q&A/Differential` section below.
 Use Opus 5.5.  Log your work.
 
+## Examples to hold on to
+
+- PACE/Argo = 2x
+    - 5906209/224
+
+
+
 ## Q&A
 
 ### Differential
+
+*Response to Differential prompt 1 (Claude Opus 5.5, 2026-11-23).*
+
+**New figure:** `fig_bbp_differential_adg.png`, from
+`python fig_bbp_h2h.py 4`, via a new function `fig_bbp_differential_adg()`
+in `fig_bbp_h2h.py`.
+- **Axes:** x is Argo b_bp(700), log, 1e-4 to 1e-2 m⁻¹ as before. y is
+  δ = (PACE − Argo)/PACE, from −1.5 to 1.
+  - This is the paper's Fig 7 definition and y range
+    (`pab/matchup/plot_delta_vs_bbp.py`).
+  - δ = 0.5 means PACE is 2× Argo; δ = −1 means PACE is ½ Argo.
+  - There is a solid line at δ = 0.
+- **Colour:** the BING posterior-median **A_dg** (`BING_ExpBPow_Adg`).
+  This is the a_dg amplitude at the ExpBricaud pivot, so
+  A_dg = a_dg(400 nm), in m⁻¹.
+  - Scale: log, 0.005–0.3 m⁻¹ (the 1–99 % range is about 0.004–0.7),
+    clipped, with arrows on the colour bar.
+  - Colormap: cmocean `turbid`, browns to match the a_dg colour of the
+    BING-fit slides.
+- **Same as the head-to-head figures:** 6.2 × 4.6 in, same layout, float
+  5907147 masked, off-scale points not drawn, seeded random drawing
+  order, legend inside at the upper right.
+- **Stats** (lower left), on all 3,180 matchups: N, median δ = 0.24, and
+  IQR [−0.13, 0.49].
+- `load_matchups()` now also returns `adg_pace`.
+
+**What it shows.** δ falls with Argo b_bp: PACE is high where Argo b_bp is
+low. The colour sorts the points, with pale (low A_dg) at the top left and
+dark (high A_dg) near or below δ = 0 at higher Argo b_bp.
+
+**Caveat (Q1 below).** Argo b_bp is on the x axis *and* inside δ, so some
+of the falling trend is built in. PACE b_bp spans a narrower range than
+Argo, so δ = 1 − Argo/PACE must fall as Argo rises.
+
+**The A_dg signal is not just that.** At fixed Argo b_bp, A_dg still
+separates δ (median δ; matchup counts in parentheses):
+
+| Argo b_bp (m⁻¹) | A_dg < 0.01 | 0.01–0.03 | 0.03–0.1 | > 0.1 |
+|---|---:|---:|---:|---:|
+| 1–4e-4 | 0.54 (151) | 0.57 (83) | 0.63 (10) | 0.62 (5) |
+| 4–6e-4 | **0.50** (343) | 0.37 (495) | **−0.08** (57) | −0.22 (6) |
+| 0.6–1e-3 | **0.57** (65) | 0.29 (676) | **−0.04** (307) | −0.50 (31) |
+| 1–2e-3 | 0.41 (22) | 0.21 (214) | 0.00 (289) | −0.13 (47) |
+| 2–10e-3 | 0.26 (22) | −0.02 (51) | −0.06 (122) | 0.03 (128) |
+
+- In the clear-water bins (Argo 4e-4–1e-3), PACE runs about 1.6–2.3× Argo
+  when A_dg < 0.01, but matches Argo when A_dg > 0.03.
+- A_dg tracks Argo b_bp (ρ = 0.64) far better than it tracks PACE b_bp
+  (ρ = 0.14).
+- So PACE b_bp is too high where BING puts little CDOM/detritus. That
+  fits the "bad" fit, which has a low a_dg and a red excess.
+
+#### Questions for JXP (Differential)
+
+1. **Q1: The built-in trend.** Plotting δ against Argo makes a falling
+   trend partly built in (see the caveat above). Do you want to:
+   - keep Argo on x, as asked; or
+   - switch to PACE b_bp on x (the left panel of the paper's Fig 7), which
+     has the opposite built-in trend; or
+   - use the mean of the two?
+
+   *(My recommendation: keep Argo on x, since it is the independent
+   measurement, and say a word about it in the talk.)*
+
+   **A:**
+
+2. **Q2: Statistics.** I show N, median δ and the δ interquartile range.
+   Do you prefer the four head-to-head statistics (N, median PACE/Argo,
+   ρ, log RMS)? Or nothing?
+
+   **A:**
+
+3. **Q3: Off-scale.** 2,984 of the 3,180 matchups are drawn:
+   - 140 have δ < −1.5 (PACE < Argo/2.5) within the x range;
+   - 56 are off the x range.
+
+   Following Q12, they are neither drawn nor noted. OK?
+
+   **A:**
+
+4. **Q4: The stats text** sits at the lower left without a box. It
+   overlaps a handful of sparse points near Argo 5e-4–1e-3, δ ≈ −1.2.
+   Acceptable? Or should it move outside the axes, e.g. above the colour
+   bar?
+
+   **A:**
 
 ### Head-to-head
 
@@ -437,12 +536,12 @@ The excess sits in the low-to-moderate Chl water:
     (raw CHLA, as on the global map) be better? It is independent of the
     fit being judged.
 
-    **A:**
+    **A:** Stick with PACE
 
 15. **Q15: The Chl-bin table.** Is it worth a figure or a callout? For
     example, a small second panel with the median PACE/Argo vs Chl.
 
-    **A:**
+    **A:** No, it is not worth a figure or a callout.
 
 ## Logs
 
@@ -553,3 +652,46 @@ Found that PACE/Argo depends on Chl:
 
 Asked Q14 (BING vs Argo Chl for the colour) and Q15 (whether the Chl-bin
 result deserves a panel).
+
+### 2026-11-23 (Differential prompt 1: delta vs Argo b_bp, coloured by PACE A_dg)
+
+Added `fig_bbp_differential_adg()` and the helper `delta()` to
+`talks/AWOC2026/fig_bbp_h2h.py`.
+- Flag 4 writes `fig_bbp_differential_adg.png`.
+- `load_matchups()` also returns `adg_pace` (`BING_ExpBPow_Adg`, which is
+  a_dg(400)).
+- The y axis is δ = (PACE − Argo)/PACE from −1.5 to 1, as the paper's
+  Fig 7. The x axis is log Argo b_bp from 1e-4 to 1e-2.
+- The colour is A_dg on a log 0.005–0.3 m⁻¹ scale, using cmocean `turbid`.
+- It uses the same 6.2 × 4.6 in layout and mask as the head-to-head
+  figures, with a δ = 0 line.
+- Stats (N, median δ = 0.24, IQR [−0.13, 0.49]) at the lower left, legend
+  at the upper right.
+
+Rendered and inspected it. Moved the stats from the lower right, where
+they overlapped dots, to the lower left. Added intermediate colour-bar
+ticks.
+
+Checked that the A_dg colouring is more than the built-in δ-vs-Argo trend.
+At fixed Argo b_bp of 4e-4–1e-3, median δ is about 0.5 for A_dg < 0.01 and
+about 0 for A_dg of 0.03–0.1. A_dg correlates with Argo b_bp (ρ = 0.64),
+not with PACE b_bp (0.14).
+
+Asked Q1–Q4 in Q&A/Differential: the built-in trend, the stats set,
+off-scale points, and the stats placement.
+
+### 2026-11-23 (Head-to-head prompt 5: 2:1 and 1:2 lines on fig_bbp_h2h_dots.png)
+
+Added dotted, dark-grey (`FAC2_COLOR = "#404040"`) lines for PACE = 2 × Argo
+and PACE = Argo/2 to `fig_bbp_h2h_chl()` (flag 3, `fig_bbp_h2h_dots.png`)
+only. They have one legend entry, "2:1, 1:2", between "matchup" and "1:1".
+The other figures are unchanged.
+
+Kept JXP's own edits in the file (the stats label now reads "PACE/Argo").
+Re-rendered and inspected the figure: the lines clear the legend and the
+stats text.
+
+For reference, of the 3,180 matchups (off-scale ones included):
+- 68 % have PACE within a factor of 2 of Argo;
+- 24 % have PACE more than 2× Argo;
+- 8 % have PACE less than half of Argo.
