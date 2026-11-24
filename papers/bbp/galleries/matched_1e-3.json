@@ -1,0 +1,24 @@
+{
+  "name": "matched_1e-3",
+  "description": "Matched 1e-3 gallery: Argo bbp(700) ~ 1e-3 m^-1, PACE/Argo ~ 1, |dt| <= 3 h, no granule cloud cut, one matchup per float, top 36 by score on 3 pages of 12.",
+  "criteria": {
+    "argo_target": 1.0e-3,
+    "ratio_target": 1.0,
+    "dtime_max": 3.0,
+    "cloud_max": null,
+    "one_per_float": true
+  },
+  "selection": {"n": 36, "n_per_page": 12},
+  "plot": {
+    "wave": 650.0,
+    "half_width_km": 100.0,
+    "pace_circle_km": [30.0],
+    "argo_circle_km": [20.0],
+    "scale_km": 50.0,
+    "ncols": 4,
+    "nrows": 3,
+    "figsize": [16, 9],
+    "dpi": 300
+  },
+  "out": "figs/l1b_gallery_matched_1e-3.png"
+}

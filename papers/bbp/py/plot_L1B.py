@@ -110,10 +110,12 @@ def find_matchup(wmo: int, cycle: int, db=None) -> dict:
     }
 
 
-def l1b_path(wmo: int, cycle: int, m: dict, download: bool = True) -> Path:
+def l1b_path(wmo: int, cycle: int, m: dict, download: bool = True,
+             l1b_dir=None) -> Path:
     """The local L1B file of this matchup, downloaded first if it is absent.
 
-    The file lives in ``SCRUTINIZE_DIR/<wmo>_<cycle>/l1b/``. When it is not
+    The file lives in ``l1b_dir``, by default ``SCRUTINIZE_DIR/<wmo>_<cycle>/l1b/``
+    (the galleries pass the shared cache ``$PAB_DATA_DIR/L1B/``). When it is not
     there and ``download`` is true, the L1B URL is resolved from the matchup's
     AOP granule through CMR (:func:`pab.pace.l1b.l1b_source_for_aop`) and the
     granule is fetched with :func:`pab.pace.cloud.download_granule`
@@ -123,12 +125,15 @@ def l1b_path(wmo: int, cycle: int, m: dict, download: bool = True) -> Path:
         wmo, cycle: The float profile.
         m: The :func:`find_matchup` dict (``granule_id``, ``l1b_name``).
         download: Fetch a missing file; if false, a missing file raises.
+        l1b_dir: Directory holding the L1B file; default
+            ``SCRUTINIZE_DIR/<wmo>_<cycle>/l1b/``.
 
     Raises:
         FileNotFoundError: the file is absent and ``download`` is false, or
             the download did not produce it.
     """
-    l1b_dir = SCRUTINIZE_DIR / f"{wmo}_{cycle}" / "l1b"
+    l1b_dir = Path(l1b_dir) if l1b_dir is not None else (
+        SCRUTINIZE_DIR / f"{wmo}_{cycle}" / "l1b")
     path = l1b_dir / m["l1b_name"]
     if path.exists():
         return path

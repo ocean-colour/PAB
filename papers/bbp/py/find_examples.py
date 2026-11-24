@@ -99,7 +99,7 @@ def load_matchups(db=None) -> pd.DataFrame:
 
 def find_examples(db=None, n: int = N_TOP, argo_target: float = ARGO_BBP_TARGET,
                   ratio_target: float = RATIO_TARGET,
-                  cloud_max: float = CLOUD_MAX, dtime_max: float = DTIME_MAX,
+                  cloud_max: float | None = CLOUD_MAX, dtime_max: float = DTIME_MAX,
                   one_per_float: bool = True) -> pd.DataFrame:
     """The ``n`` matchups closest to the targets that pass the hard cuts.
 
@@ -107,7 +107,8 @@ def find_examples(db=None, n: int = N_TOP, argo_target: float = ARGO_BBP_TARGET,
         db: Path to ``pab.db``; default :data:`DEFAULT_DB`.
         n: Number of rows to return.
         argo_target, ratio_target: The targets of the score.
-        cloud_max: Keep granules with cloud cover below this (percent).
+        cloud_max: Keep granules with cloud cover below this (percent);
+            ``None`` applies no cloud cut.
         dtime_max: Keep matchups with ``|dtime_hours|`` at or below this.
         one_per_float: Keep only each float's best-scoring matchup.
 
@@ -119,7 +120,8 @@ def find_examples(db=None, n: int = N_TOP, argo_target: float = ARGO_BBP_TARGET,
     """
     df = load_matchups(db)
     n_all = len(df)
-    df = df[df["cloud_cover"] < cloud_max]
+    if cloud_max is not None:
+        df = df[df["cloud_cover"] < cloud_max]
     n_cloud = len(df)
     df = df[df["dtime_hours"].abs() <= dtime_max].copy()
     n_dtime = len(df)
