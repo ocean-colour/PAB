@@ -89,7 +89,190 @@ Read those and then create the code and figure as we have discussed.
 If you have any additional questions or concerns, discuss them with me in the `Q&A/Plot L1B` section below.
 Use Fable.  Log your work.
 
+### Find examples
+
+1. My first matchup scrutinized (`wmo=5906209` and `cycle_ID=224`) was likely 
+an issue related to cloud coverage.  Let us look for other examples.
+Create a module named `py/find_examples.py` that finds other matchups with
+these approximate conditions:
+    - The Argo bbp(700) is approximately 1.0e-3 m-1
+    - The PACE/Argo bbp(700) ratio is approximately 2
+    - The cloud coverage in the granule is <50%
+    - The time difference between the PACE and Argo measurements is <=3 hours
+
+    Have the script print a list of the top 20 matchups given these criteria with the following information:
+    - The matchup location (lat/lon)
+    - The cloud coverage in the granule
+    - The Argo bbp(700)
+    - The PACE bbp(700)
+
+    If you have any additional questions or concerns, discuss them with me in the `Q&A/Find Examples` section below.
+    Use Fable.  Log your work.
+
+2. Ok, thanks for the iteration.  I have answered your questions and concerns
+and ask that you update the script accordingly.  I will then run it, examine
+several of the options and return to L1B inspection.
+If you have any additional questions or concerns, discuss them with me in the `Q&A/Find Examples` section below.
+Use Fable.  Log your work.
+
+#### Examples
+
+- 5907088_41 is the first, very clear granule outside the Mediterranean
+   - It's BING fit, however, is not optimal, e.g. high chi^2
+
+### Plot L1B
+
+1. Modify the `py/plot_L1B.py` module to download the L1B data for the input
+`wmo` and `cycle` if the file is not already present in the `SCRUTINIZE_DIR`.
+I will then run it on a new matchup. 
+If you have any questions or concerns, discuss them with me in the `Q&A/Plot L1B` section below.
+Use Fable.  Log your work.
+
 ## Q&A
+
+### Find examples
+
+#### 1. Matchups like 5906209 / 224 under clearer skies (2026-11-24)
+
+Module: `papers/bbp/py/find_examples.py`. Run it with
+`python papers/bbp/py/find_examples.py [n]`; it prints the top `n` (default 20).
+
+**How I made "approximately" concrete.** Cloud cover < 50 % is a hard cut. The
+other two criteria are ranked by one score, the distance from the targets in
+log space: `score = sqrt(ln(argo/1e-3)² + ln(ratio/2)²)`. A given fractional
+miss in Argo bbp or in the ratio costs the same. PACE bbp(700) is the v2.1
+BING posterior median; Argo is the mixed-layer mean; only successful fits are
+used.
+
+**The top 20** (3066 of 15,189 usable v2.1 matchups pass the cloud cut):
+
+| # | wmo | cycle | date | lat | lon | cloud % | Argo bbp | PACE bbp | ratio | Δx km | Δt h | χ²_ν |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 2903797 | 160 | 2026-02-27 | 36.80 | 17.13 | 42.4 | 1.01e-3 | 1.99e-3 | 1.98 | 0.4 | 1.1 | 0.80 |
+| 2 | 5907088 | 106 | 2025-04-27 | 38.00 | 17.09 | 42.9 | 9.78e-4 | 1.96e-3 | 2.00 | 0.4 | 7.1 | 0.74 |
+| 3 | 6990588 | 15 | 2024-08-04 | −36.97 | 120.40 | 26.4 | 9.73e-4 | 1.99e-3 | 2.04 | 2.2 | 23.1 | 0.41 |
+| 4 | 5906473 | 89 | 2024-05-31 | −0.63 | −147.41 | 41.1 | 9.70e-4 | 1.90e-3 | 1.96 | 1.7 | 1.0 | 0.47 |
+| 5 | 5906574 | 74 | 2025-01-16 | −13.06 | −103.38 | 47.7 | 1.02e-3 | 2.12e-3 | 2.08 | 0.5 | 8.3 | 1.14 |
+| 6 | 5906238 | 172 | 2024-12-13 | −0.90 | 169.44 | 48.6 | 1.01e-3 | 1.93e-3 | 1.91 | 4.1 | 9.9 | 0.44 |
+| 7 | 5906486 | 147 | 2026-03-04 | 12.50 | −91.77 | 44.8 | 9.92e-4 | 1.89e-3 | 1.90 | 0.3 | 1.7 | 0.40 |
+| 8 | 2903969 | 5 | 2026-01-09 | −38.81 | 160.43 | 41.7 | 1.05e-3 | 2.15e-3 | 2.04 | 2.8 | 0.5 | 0.51 |
+| 9 | 5907088 | 113 | 2025-06-01 | 37.98 | 17.00 | 30.6 | 1.02e-3 | 2.19e-3 | 2.14 | 0.4 | 18.5 | 1.17 |
+| 10 | 6990528 | 183 | 2026-05-29 | 42.38 | 6.74 | 35.2 | 9.31e-4 | 1.83e-3 | 1.96 | 0.6 | 5.6 | 0.71 |
+| 11 | 6990686 | 118 | 2026-07-06 | 40.67 | 3.12 | 25.2 | 9.35e-4 | 1.80e-3 | 1.93 | 0.6 | 1.7 | 0.61 |
+| 12 | 1902347 | 382 | 2025-08-05 | −0.26 | −179.51 | 48.3 | 9.44e-4 | 1.99e-3 | 2.11 | 0.9 | 10.1 | 2.04 |
+| 13 | 1902347 | 73 | 2025-03-02 | −0.17 | −177.53 | 35.6 | 9.24e-4 | 1.78e-3 | 1.92 | 0.2 | 21.8 | 0.62 |
+| 14 | 7901109 | 34 | 2026-02-15 | 12.60 | −91.29 | 28.1 | 9.45e-4 | 1.76e-3 | 1.86 | 0.8 | 4.1 | 0.46 |
+| 15 | 5906473 | 145 | 2025-12-30 | 0.13 | −136.79 | 42.5 | 9.46e-4 | 1.76e-3 | 1.86 | 2.9 | 14.7 | 1.43 |
+| 16 | 7902124 | 42 | 2026-01-08 | −35.87 | 25.02 | 48.0 | 1.06e-3 | 1.96e-3 | 1.86 | 0.3 | 5.0 | 0.16 |
+| 17 | 2903797 | 159 | 2026-02-22 | 36.76 | 17.20 | 43.4 | 1.04e-3 | 1.91e-3 | 1.84 | 1.0 | 1.5 | 0.55 |
+| 18 | 2903854 | 38 | 2024-08-06 | −30.99 | 113.80 | 33.3 | 1.04e-3 | 1.90e-3 | 1.83 | 3.2 | 9.0 | 0.94 |
+| 19 | 5907146 | 74 | 2026-07-02 | 42.38 | 3.75 | 36.8 | 9.35e-4 | 2.00e-3 | 2.14 | 0.4 | 1.0 | 0.90 |
+| 20 | 2904029 | 14 | 2026-03-30 | 9.91 | −89.96 | 46.6 | 1.10e-3 | 2.12e-3 | 1.94 | 0.5 | 23.4 | 0.35 |
+
+bbp in m⁻¹; lat/lon are the fitted PACE pixel. The script also prints the
+score and marks flagged pixels (none of these 20 is flagged).
+
+**What stands out:**
+
+- **Close matches are easy to find.** All 20 are within 10 % of both targets.
+  The condition is not rare under clearer skies.
+- **The cloud cut does not change the bias.** The median PACE/Argo ratio is
+  1.33 for granules under 50 % cloud and 1.34 for all matchups. Among
+  low-cloud matchups with Argo bbp(700) between 0.8e-3 and 1.25e-3 m⁻¹, 124 of
+  559 (22 %) have a ratio between 1.6 and 2.5.
+- That weighs against granule-level cloud cover as the explanation of a
+  factor-of-two excess. It does not rule out cloud near the pixel, which the
+  granule number does not measure.
+- **The list clusters by region.** Seven of the 20 are in the Mediterranean
+  (Ionian Sea and the north-west basin), five are in the equatorial Pacific,
+  one is in the tropical South Pacific, three are off Central America, and
+  four are at 31–39° S. Several floats
+  appear twice (2903797, 5907088, 5906473, 1902347).
+- **Few granules are really clear.** The lowest cloud cover in the list is
+  25 %, and half the list is above 42 %. Only 5 % of all matchup granules are
+  below 38 % cloud.
+
+**Concerns and questions:**
+
+- C1. Granule cloud cover is a blunt measure. A granule that is 30 % cloud can
+  still have cloud beside the pixel, and one that is 80 % cloud can have a
+  wide clear region. For the question you are asking, a local measure (from
+  the L1B reflectance around the pixel, as in `plot_L1B.py`, or from the L2
+  flags) would be more telling, at the cost of downloading each granule.
+>A. Agreed, but we will start with the granule cloud cover for now.
+- C2. Repeat floats and regional clusters may point to a float-side cause
+  (a sensor offset on one float) or a regional water type, not the
+  atmosphere. I have not separated these.
+>A. Also agreed, but this should be a small issue overall
+- Q1. Do you want the ranking to prefer matchups that are close in space and
+  time (e.g. Δt < 3 h), or to drop poor fits (χ²_ν > 1)? Neither is applied
+  now; rows 3, 13 and 20 are about a day apart.
+>A. Yes, I have added a close in time criterion, Dt <= 3 hours
+- Q2. Should the list be limited to one matchup per float, to spread the
+  examples?
+>A. Yes, limit to one matchup per float
+- Q3. Which of these should I take forward to the L1B plot? My suggestion is
+  three with small Δt from different regions: #1 (2903797 / 160, Ionian Sea),
+  #4 (5906473 / 89, equatorial Pacific) and #8 (2903969 / 5, Tasman Sea).
+  Each needs a 1.9 GB L1B download.
+>A. I am still exploring and will soon decide.
+
+#### 2. Script updated: Δt ≤ 3 h and one matchup per float (2026-11-24)
+
+`papers/bbp/py/find_examples.py` now applies your two answers:
+
+- **Time cut:** `|Δt| ≤ 3 h` is a hard cut, like the cloud cut. It is a
+  module constant (`DTIME_MAX`) and an argument of `find_examples()`.
+- **One per float:** each float contributes only its best-scoring matchup
+  (`one_per_float=True`, the default).
+
+The score is unchanged. Run it as before:
+`python papers/bbp/py/find_examples.py [n]`.
+
+**Counts:** 15,189 usable v2.1 matchups → 3066 under 50 % cloud → 894 within
+3 h, from 238 floats.
+
+**The new top 20:**
+
+| # | wmo | cycle | date | lat | lon | cloud % | Argo bbp | PACE bbp | ratio | Δx km | Δt h | χ²_ν |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 2903797 | 160 | 2026-02-27 | 36.80 | 17.13 | 42.4 | 1.01e-3 | 1.99e-3 | 1.98 | 0.4 | 1.1 | 0.80 |
+| 2 | 5906473 | 89 | 2024-05-31 | −0.63 | −147.41 | 41.1 | 9.70e-4 | 1.90e-3 | 1.96 | 1.7 | 1.0 | 0.47 |
+| 3 | 5906486 | 147 | 2026-03-04 | 12.50 | −91.77 | 44.8 | 9.92e-4 | 1.89e-3 | 1.90 | 0.3 | 1.7 | 0.40 |
+| 4 | 2903969 | 5 | 2026-01-09 | −38.81 | 160.43 | 41.7 | 1.05e-3 | 2.15e-3 | 2.04 | 2.8 | 0.5 | 0.51 |
+| 5 | 6990686 | 118 | 2026-07-06 | 40.67 | 3.12 | 25.2 | 9.35e-4 | 1.80e-3 | 1.93 | 0.6 | 1.7 | 0.61 |
+| 6 | 5907146 | 74 | 2026-07-02 | 42.38 | 3.75 | 36.8 | 9.35e-4 | 2.00e-3 | 2.14 | 0.4 | 1.0 | 0.90 |
+| 7 | 3901578 | 116 | 2025-02-02 | 10.44 | −19.62 | 46.9 | 9.41e-4 | 2.08e-3 | 2.21 | 0.7 | 1.8 | 1.91 |
+| 8 | 5907088 | 41 | 2024-06-06 | 37.51 | 16.78 | 36.0 | 9.68e-4 | 2.18e-3 | 2.25 | 0.2 | 0.2 | 1.87 |
+| 9 | 4903660 | 89 | 2025-03-15 | 15.43 | 59.54 | 47.3 | 1.12e-3 | 2.15e-3 | 1.92 | 0.5 | 1.8 | 0.64 |
+| 10 | 5906990 | 106 | 2025-05-24 | 38.17 | 2.06 | 47.6 | 8.98e-4 | 1.67e-3 | 1.86 | 0.6 | 1.7 | 0.47 |
+| 11 | 2902936 | 35 | 2026-02-16 | 16.05 | 64.24 | 46.1 | 9.37e-4 | 1.66e-3 | 1.77 | 0.4 | 0.2 | 0.27 |
+| 12 | 2902273 | 212 | 2025-02-12 | 17.43 | 68.37 | 48.6 | 9.31e-4 | 2.12e-3 | 2.28 | 0.6 | 0.1 | 1.49 |
+| 13 | 5906303 | 162 | 2025-02-16 | 2.36 | −173.61 | 43.9 | 8.54e-4 | 1.71e-3 | 2.01 | 4.8 | 0.8 | 0.50 |
+| 14 | 4903848 | 51 | 2026-02-22 | 36.32 | 16.97 | 43.4 | 1.09e-3 | 1.90e-3 | 1.74 | 1.4 | 1.2 | 0.64 |
+| 15 | 1902605 | 231 | 2025-03-06 | 43.01 | 7.18 | 38.0 | 8.45e-4 | 1.60e-3 | 1.90 | 0.1 | 0.4 | 0.45 |
+| 16 | 6990528 | 114 | 2024-07-08 | 42.74 | 8.33 | 47.4 | 1.13e-3 | 1.99e-3 | 1.76 | 0.7 | 1.5 | 0.54 |
+| 17 | 6903825 | 167 | 2025-03-08 | 42.15 | 17.39 | 36.8 | 1.01e-3 | 2.45e-3 | 2.43 | 1.0 | 0.3 | 1.01 |
+| 18 | 5907147 | 29 | 2025-08-15 | 41.15 | 7.72 | 34.0 | 8.25e-4 | 1.57e-3 | 1.91 | 0.4 | 1.0 | 0.88 |
+| 19 | 4903564 | 26 | 2025-10-22 | 24.28 | −28.16 | 49.1 | 8.11e-4 | 1.72e-3 | 2.12 | 0.4 | 0.5 | 0.35 |
+| 20 | 4903487 | 66 | 2025-01-05 | 26.68 | −23.71 | 39.1 | 8.05e-4 | 1.64e-3 | 2.04 | 0.3 | 3.0 | 1.43 |
+
+**Notes on the new list:**
+
+- The first four rows are close to both targets (within 5 %). The match
+  loosens down the list: by row 20 the Argo bbp is 20 % below target and the
+  ratios run from 1.74 to 2.43.
+- Half the list (10 of 20) is in the Mediterranean, even with one matchup per
+  float. The rest: three in the Arabian Sea, three in the north-east Atlantic
+  off West Africa, two in the equatorial Pacific, one off Central America and
+  one in the Tasman Sea.
+- Five rows have χ²_ν above 1 (7, 8, 12, 17, 20); no pixel is flagged.
+- The three I suggested earlier are rows 1, 2 and 4 here.
+
+No new questions. One reminder for when you return to the L1B inspection:
+`plot_L1B.py` looks for the granule under
+`$PAB_DATA_DIR/scrutinize/<wmo>_<cycle>/l1b/`, and each new example needs its
+own 1.9 GB download first.
 
 ### Plot L1B
 
@@ -234,6 +417,46 @@ on the ground; a pixel is therefore drawn wider than it is tall.
   I make that figure, and at what size?
 - Q2. Would a third panel help, showing the brightest reflectance within some
   radius of each pixel, as a simple proxy for cloud-adjacency risk?
+
+#### 3. `plot_L1B.py` now downloads a missing L1B (2026-11-24)
+
+`python papers/bbp/py/plot_L1B.py <wmo> <cycle> [half_width_km]` now fetches
+the L1B granule itself when it is not on disk, then makes the figure.
+
+**How it works:**
+
+- It looks for the file in `$PAB_DATA_DIR/scrutinize/<wmo>_<cycle>/l1b/`.
+- If it is absent, it resolves the L1B address from the matchup's granule
+  through NASA's catalogue and downloads it with your Earthdata login
+  (`~/.netrc`). Expect about 1.9 GB and a few minutes; a line is printed when
+  a download starts.
+- A file already on disk is reused. `plot_l1b(..., download=False)` forbids
+  the download and raises if the file is missing.
+
+**What I tested, and what I did not:**
+
+- Tested: the existing granule (5906209 / 224) is found and plotted without a
+  download; for a new matchup (2903797 / 160) the pixel, the L1B name
+  (`PACE_OCI.20260227T113237.L1B.V3.nc`) and its download address all resolve;
+  `download=False` raises as intended.
+- Not tested: an actual download through the new code path. I did not want to
+  pull 1.9 GB for a matchup you have not chosen. It calls the same helper
+  that downloaded the first granule, so I expect it to work; your first run
+  on a new matchup is the real test.
+
+**Concerns and questions:**
+
+- C1. **Where the data goes.** You wrote "if the file is not already present
+  in the `DEFAULT_OUT_DIR`". In the script that name is the *figure* folder
+  (`papers/bbp/py/`, inside the git repository). I kept the L1B files in
+  `$PAB_DATA_DIR/scrutinize/<wmo>_<cycle>/l1b/`, the location you chose
+  earlier, so that 1.9 GB files stay out of the repository. Say if you meant
+  something else.
+- C2. **Disk use.** Each matchup adds 1.9 GB. The 20 examples would be about
+  39 GB; there is 1.2 TB free.
+- Q1. I see the two figures now live in `papers/bbp/figs/`. The scripts still
+  write new figures to `papers/bbp/py/`. Shall I point `DEFAULT_OUT_DIR` in
+  `plot_L1B.py` and `explore_cdom.py` at `papers/bbp/figs/`? I recommend yes.
 
 ### Atmospheric Corrections
 
@@ -762,3 +985,71 @@ Wrote `papers/bbp/py/plot_L1B.py` and produced
   `ρt` ≈ 0.3 is within a few pixels, which the L1B flags do not capture.
 - **Open:** whether to make a tighter zoom, and whether to add a
   cloud-adjacency proxy panel.
+
+### 2026-11-24 (Find examples prompt 1: matchups like 5906209/224 with less cloud)
+
+Wrote `papers/bbp/py/find_examples.py`; table and discussion in
+Q&A/Find examples 1. Read-only on pab.db.
+
+- **Method:** joins `fits` (BING, v2.1, success), `fit_results`
+  (`BING_ExpBPow_bbp700`), `matchups`, `matchup_pixels`, `profiles`,
+  `mld_summary` and `granules`. Hard cut `cloud_cover < 50`; rank by
+  `sqrt(ln(argo/1e-3)² + ln(ratio/2)²)`. Prints wmo, cycle, date, pixel
+  lat/lon, cloud %, Argo and PACE bbp(700), ratio, Δx, Δt, χ²_ν, score.
+- **Numbers:** 15,189 v2.1 matchups have finite positive Argo and PACE
+  bbp(700); 3066 pass the cloud cut. The top 20 are all within 10 % of both
+  targets.
+- **Learned:** granule cloud cover does not separate the bias. Median
+  PACE/Argo is 1.33 below 50 % cloud and 1.34 overall; 22 % of low-cloud
+  matchups with Argo bbp near 1e-3 have a ratio of 1.6–2.5. Truly clear
+  granules are scarce (5th percentile of cloud cover is 38 %).
+- **Noticed:** the top 20 cluster in the Mediterranean, the equatorial
+  Pacific and off Central America, with several floats repeated.
+- **Open:** whether to add Δt / χ² / one-per-float filters, and which
+  examples to carry to the L1B plot.
+
+### 2026-11-24 (Find examples prompt 2: Δt ≤ 3 h and one matchup per float)
+
+Updated `papers/bbp/py/find_examples.py` per the user's answers; new table in
+Q&A/Find examples 2.
+
+- **Changes:** hard cut `|dtime_hours| <= 3` (`DTIME_MAX`, argument
+  `dtime_max`); after sorting by score, `drop_duplicates("wmo")` keeps each
+  float's best matchup (`one_per_float=True`). The header line now prints the
+  count after each cut.
+- **Numbers:** 15,189 → 3066 (cloud < 50 %) → 894 (|Δt| ≤ 3 h), 238 floats.
+  `dtime_hours` is stored as a non-negative value (0.001–24 h), so the
+  absolute value in the cut is a safeguard only.
+- **Learned:** with one per float the list still leans on the Mediterranean
+  (10 of 20); the rest are the Arabian Sea (3), the north-east Atlantic off
+  West Africa (3), the equatorial Pacific (2), Central America (1) and the
+  Tasman Sea (1). The top four are within 5 % of both targets; by row 20 the
+  match is within ~20 %.
+
+### 2026-11-24 (Plot L1B prompt 1: download a missing L1B)
+
+Modified `papers/bbp/py/plot_L1B.py`; discussion in Q&A/Plot L1B 3.
+
+- **Change:** `l1b_path(wmo, cycle, m, download=True)` now returns the local
+  file if present and otherwise resolves the URL with
+  `pab.pace.l1b.l1b_source_for_aop(granule_id)` and fetches it with
+  `pab.pace.cloud.download_granule` into
+  `$PAB_DATA_DIR/scrutinize/<wmo>_<cycle>/l1b/`. `plot_l1b` gained a
+  `download` argument.
+- **Tested:** existing granule reused; URL and pixel resolve for
+  2903797 / 160 (scan 334, pixel 831); `download=False` raises. **Not
+  tested:** a real download through the new path (avoided an unrequested
+  1.9 GB fetch).
+- **Decision to confirm:** the prompt said "`DEFAULT_OUT_DIR`", which in the
+  script is the figure folder inside the repo. Kept the data under
+  `$PAB_DATA_DIR/scrutinize/` and flagged it (C1).
+- **Noticed:** the user moved the figures to `papers/bbp/figs/`; the scripts
+  still write to `papers/bbp/py/`. Asked whether to repoint them (Q1).
+
+### 2026-11-24 (Figures now written to `papers/bbp/figs/`)
+
+At the user's request, `DEFAULT_OUT_DIR` in `papers/bbp/py/plot_L1B.py` and
+`papers/bbp/py/explore_cdom.py` now points to `papers/bbp/figs/` (created if
+absent) instead of the script folder. Both scripts were rerun and rewrote
+`fig_L1B_5906209_224.png` and `fig_explore_cdom_5906209_224.png` there. The
+L1B data location (`$PAB_DATA_DIR/scrutinize/<wmo>_<cycle>/l1b/`) is unchanged.

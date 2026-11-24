@@ -14,7 +14,7 @@ forward model twice:
 The "CDOM on" curve is therefore *not* a fit: it shows what the term adds to the
 model at parameters that were tuned without it.
 
-Figure (``fig_explore_cdom_<wmo>_<cycle>.png``, next to this script):
+Figure (``fig_explore_cdom_<wmo>_<cycle>.png``, in ``papers/bbp/figs/``):
     top     PACE Rrs +/- sigma, the BING median (+ 5-95 % band) as is, and the
             median with CDOM fluorescence on; inset at 610-700 nm;
     bottom  (obs - model) / sigma for both models.
@@ -51,8 +51,8 @@ V2_DIR = Path(DATA_DIR) / "v2"
 DEFAULT_DB = V2_DIR / "pab.db"
 PAB_VERSION = "2.1"
 
-#: Output directory: next to this script.
-DEFAULT_OUT_DIR = Path(__file__).resolve().parent
+#: Output directory for figures: ``papers/bbp/figs/``.
+DEFAULT_OUT_DIR = Path(__file__).resolve().parent.parent / "figs"
 
 #: The matchup of Prompts/CDOM 1.
 DEFAULT_PROFILE = (5906209, 224)
@@ -279,6 +279,7 @@ def summarize(d: dict) -> None:
 
 def main(wmo: int, cycle: int):
     """Make the figure for ``(wmo, cycle)`` and print the term's size."""
+    DEFAULT_OUT_DIR.mkdir(exist_ok=True)
     out = DEFAULT_OUT_DIR / f"fig_explore_cdom_{wmo}_{cycle}.png"
     fig, d = fig_explore_cdom(wmo, cycle, out=out)
     plt.close(fig)

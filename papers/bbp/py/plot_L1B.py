@@ -8,7 +8,7 @@ pixels: OCI pixels grow away from nadir (here ~2.1 km across-track against
 size. The panels are drawn with the pixel aspect ratio that makes the box
 roughly square on the ground.
 
-Figure (``fig_L1B_<wmo>_<cycle>.png``, next to this script), on pixel/scan axes:
+Figure (``fig_L1B_<wmo>_<cycle>.png``, in ``papers/bbp/figs/``), on pixel/scan axes:
     left    TOA reflectance ``rhot`` at ~650 nm (red CCD), log colour scale;
     right   the L1B flags set in the same box: per-band saturation in the red
             CCD and in the SWIR (yes/no over all bands of each), and land.
@@ -19,8 +19,9 @@ profile. The L1B carries no cloud / glint / stray-light flags (those are L2
 geolocation-quality and scan-quality flags, which are reported in the printed
 summary but not drawn (they are rarely set).
 
-The L1B granule must already be on disk, in
-``$PAB_DATA_DIR/scrutinize/<wmo>_<cycle>/l1b/``.
+The L1B granule is looked for in ``$PAB_DATA_DIR/scrutinize/<wmo>_<cycle>/l1b/``
+and **downloaded there if it is absent** (~1.9 GB, a few minutes, needs the
+Earthdata login in ``~/.netrc``). Pass ``download=False`` to forbid that.
 
 Usage:
     python papers/bbp/py/plot_L1B.py                       # 5906209 / 224, 400 km box
@@ -39,6 +40,7 @@ from matplotlib.colors import BoundaryNorm, ListedColormap, LogNorm
 from matplotlib.patches import Patch
 
 from pab.config import DATA_DIR
+from pab.pace import cloud as pcloud
 from pab.pace import l1b as pl1b
 from pab.viz import data as vdata
 
@@ -46,7 +48,7 @@ from pab.viz import data as vdata
 
 DEFAULT_DB = Path(DATA_DIR) / "v2" / "pab.db"
 SCRUTINIZE_DIR = Path(DATA_DIR) / "scrutinize"
-DEFAULT_OUT_DIR = Path(__file__).resolve().parent
+DEFAULT_OUT_DIR = Path(__file__).resolve().parent.parent / "figs"
 
 #: The matchup of the scrutinize prompts.
 DEFAULT_PROFILE = (5906209, 224)
@@ -108,12 +110,36 @@ def find_matchup(wmo: int, cycle: int, db=None) -> dict:
     }
 
 
-def l1b_path(wmo: int, cycle: int, l1b_name: str) -> Path:
-    """Where the downloaded L1B of this matchup lives."""
-    path = SCRUTINIZE_DIR / f"{wmo}_{cycle}" / "l1b" / l1b_name
-    if not path.exists():
-        raise FileNotFoundError(f"{path} is missing: download the L1B first")
-    return path
+def l1b_path(wmo: int, cycle: int, m: dict, download: bool = True) -> Path:
+    """The local L1B file of this matchup, downloaded first if it is absent.
+
+    The file lives in ``SCRUTINIZE_DIR/<wmo>_<cycle>/l1b/``. When it is not
+    there and ``download`` is true, the L1B URL is resolved from the matchup's
+    AOP granule through CMR (:func:`pab.pace.l1b.l1b_source_for_aop`) and the
+    granule is fetched with :func:`pab.pace.cloud.download_granule`
+    (``earthaccess``, Earthdata login from ``~/.netrc``).
+
+    Args:
+        wmo, cycle: The float profile.
+        m: The :func:`find_matchup` dict (``granule_id``, ``l1b_name``).
+        download: Fetch a missing file; if false, a missing file raises.
+
+    Raises:
+        FileNotFoundError: the file is absent and ``download`` is false, or
+            the download did not produce it.
+    """
+    l1b_dir = SCRUTINIZE_DIR / f"{wmo}_{cycle}" / "l1b"
+    path = l1b_dir / m["l1b_name"]
+    if path.exists():
+        return path
+    if not download:
+        raise FileNotFoundError(f"{path} is missing (download=False)")
+    print(f"L1B not on disk; downloading {m['l1b_name']} (~1.9 GB) to {l1b_dir}")
+    url = pl1b.l1b_source_for_aop(m["granule_id"])
+    got = pcloud.download_granule(url, l1b_dir)
+    if not Path(got).exists():
+        raise FileNotFoundError(f"download of {url} did not produce {path}")
+    return Path(got)
 
 
 def _great_circle_km(lat1, lon1, lat2, lon2):
@@ -204,7 +230,7 @@ def _mark(ax, m, box, argo_sp):
 
 
 def plot_l1b(wmo: int, cycle: int, half_width: float = HALF_WIDTH, out=None,
-             db=None, wave: float = WAVE):
+             db=None, wave: float = WAVE, download: bool = True):
     """Two-panel L1B figure for one matchup: reflectance at ~650 nm, and flags.
 
     Args:
@@ -213,12 +239,13 @@ def plot_l1b(wmo: int, cycle: int, half_width: float = HALF_WIDTH, out=None,
         out: Path to save the PNG; nothing is saved if ``None``.
         db: Path to ``pab.db``; default :data:`DEFAULT_DB`.
         wave: Wavelength of the left panel (nm).
+        download: Download the L1B granule if it is not on disk.
 
     Returns:
         ``(fig, m, box)``: the Figure, the matchup dict and the data box.
     """
     m = find_matchup(wmo, cycle, db)
-    box = load_l1b_box(l1b_path(wmo, cycle, m["l1b_name"]), m["scan"], m["pixel"],
+    box = load_l1b_box(l1b_path(wmo, cycle, m, download), m["scan"], m["pixel"],
                        half_width, wave)
     extent = (box["p0"] - 0.5, box["p1"] - 0.5, box["s1"] - 0.5, box["s0"] - 0.5)
 
@@ -308,6 +335,7 @@ def summarize(m: dict, box: dict) -> None:
 
 def main(wmo: int, cycle: int, half_width: float = HALF_WIDTH):
     """Make the figure for ``(wmo, cycle)`` and print the summary."""
+    DEFAULT_OUT_DIR.mkdir(exist_ok=True)
     out = DEFAULT_OUT_DIR / f"fig_L1B_{wmo}_{cycle}.png"
     fig, m, box = plot_l1b(wmo, cycle, half_width, out=out)
     plt.close(fig)
