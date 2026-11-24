@@ -77,7 +77,7 @@ Have it be a new method in the `fig_bbp_h2h.py` module.
 If any issues come up, discuss them with me in the `Q&A/Differential` section below.
 Use Opus 5.5.  Log your work.
 
-## Examples to hold on to
+## Examples to explore
 
 - PACE/Argo = 2x
     - 5906209/224
