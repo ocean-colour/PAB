@@ -103,9 +103,149 @@ Before creating the figure, generate the JSON file and name it `papers/bbp/galle
 If you have any questions,  discuss them with me in the `Q&A/Matched 1e-3` section below.
 Use Opus 5.5.  Log your work.
 
+### Low 1e-3 gallery
+
+1. Now, we wish to show the 36 matchups where the PACE/Argo bbp(700) ratio is approximately 0.5.
+Before creating the figure, generate the JSON file and name it `papers/bbp/galleries/low_1e-3.json`.
+Do not download or run the code yet.
+If you have any questions,  discuss them with me in the `Q&A/Low 1e-3` section below.
+Use Opus 5.5.  Log your work.
+
+2. I have checked the JSON file and it looks good.  Now, run the code to build the gallery
+after reading my answer in the `Q&A/Low 1e-3` section below.
+Use Opus 5.5.  Log your work.
+
 ## Q&A
 
+### Low 1e-3 gallery
+
+#### 1. JSON created; not run (2026-11-24)
+
+**JSON:** `galleries/low_1e-3.json` is `high_1e-3.json` with `ratio_target`
+2.0 → **0.5**. Name, description and `out`
+(`figs/l1b_gallery_low_1e-3.png` → `_1`, `_2`, `_3`) change; nothing else
+does. It is registered as figure 4 in `py/l1b_gallery.py`, so
+`python papers/bbp/py/l1b_gallery.py 4` will build it. **Nothing has been
+downloaded or plotted.** The only thing I ran was the read-only database
+selection (`find_examples`), to size the sample.
+
+**The sample is thinner than the other two galleries.** Matchups within a
+given score of the targets (Argo 1e-3; no cloud cut, |Δt| ≤ 3 h, one per
+float):
+
+| ratio target | score < 0.15 (~±15 %) | score < 0.3 (~±30 %) | score of rank 36 |
+|---|---|---|---|
+| 2 (high) | 48 | 134 | 0.130 |
+| 1 (matched) | 47 | 155 | 0.120 |
+| **0.5 (low)** | **16** | **57** | **0.228** |
+
+For the low gallery's top 36, PACE/Argo runs **0.41–0.63** and Argo
+bbp(700) runs 8.6e-4 to 1.2e-3. Ranks 1–12 are within ~13 % of both targets.
+Rank 36 (1902605/311) has a ratio of 0.63, about a quarter of the way in log
+space from 0.5 towards 1. The panels are still clearly "low", but the tail is
+looser than in the other two galleries. 11 of its floats also appear in the
+high gallery and 13 in the matched gallery, with different cycles. The run
+will need up to 36 L1B downloads (~25 min, ~68 GB) unless some granules are
+already cached.
+
+**Question**
+
+1. **Keep 36, or tighten?**
+   - (a) Run as is: 36 panels, the looser tail labelled by rank only.
+   - (b) Cut to 24 panels (2 pages). Rank 24 has score 0.17 and ratio 0.59.
+   - (c) Keep 36 but add a cap such as `"score_max": 0.2` to the JSON. That
+     would need a small change to `find_examples`, and would leave ~30
+     panels.
+
+   I lean towards **(a)**, so that the three galleries have the same size and
+   can be compared like for like. The ratio is printed in every panel anyway
+   (Argo and PACE values).
+
+>A. Keep it at 36
+
+#### 2. Gallery built (2026-11-24)
+
+**Output:** `figs/l1b_gallery_low_1e-3_1.png`, `_2.png` and `_3.png`, from
+`galleries/low_1e-3.json` unchanged (36 panels, per A1). Build them with
+`python papers/bbp/py/l1b_gallery.py 4`.
+
+- **Downloads:** 35 new L1B granules; one was already cached from an earlier
+  gallery. The cache now holds 107 granules, 190 GB.
+- **Edges:** 2 panels are padded at a granule edge (1902347/213 and
+  7901086/8, both on page 3).
+
+**One code change: retries on NASA CMR errors.** The run failed twice
+part-way through, at different granules, because the CMR granule search
+behind the download returned **HTTP 500 "An Internal Error has occurred"**.
+That is a server-side problem, not ours. I added `fetch_l1b()` to
+`l1b_gallery.py`: up to 4 attempts with a wait of 30 s, then 60 s, then
+120 s. The third run hit the error once more, and the retry recovered it
+within 30 s. Because cached granules are reused, the failed runs cost only
+time.
+
 ### Matched 1e-3
+
+#### 1. JSON and gallery built; one issue: OCI tilt change (2026-11-24)
+
+**JSON:** `galleries/matched_1e-3.json` is `high_1e-3.json` with
+`ratio_target` 2.0 → **1.0**: name, description and `out` change, nothing
+else. Argo bbp(700) ≈ 1e-3, |Δt| ≤ 3 h, no cloud cut, one per float, top 36,
+12 per page.
+
+**Figures:** `figs/l1b_gallery_matched_1e-3_{1,2,3}.png`. Build them with
+`python papers/bbp/py/l1b_gallery.py 3`. Ranks 1–36 have score ≤ 0.120:
+ratios 0.91–1.12, Argo bbp(700) 8.9e-4 to 1.1e-3. 8 of the 36 floats also
+appear in the high gallery, with different cycles. All 36 granules were new
+downloads (~25 min); the L1B cache is now 72 granules, 128 GB.
+
+**Issue: OCI tilt change.** The last panel, **1902347 / 131** (page 3), is
+distorted: the circles are flattened ellipses and the pixel sits near the
+bottom of the frame.
+- **Cause:** its PACE pixel (scan 1132, 0.13° S) lies inside scans
+  1114–1309, which the L1B `scan_quality_flags` marks **`tilt_change`**.
+  OCI flips its tilt near the sub-solar latitude. During the flip,
+  successive scans are stretched on the ground: along this pixel's column,
+  the step grows from ~1.2 km per scan to ~4 km per scan within ~20 scans.
+  The panel's single mean scale cannot represent that, so it is drawn
+  wrong.
+- **The same problem elsewhere:** I checked all 72 gallery matchups against
+  the flag.
+  - **5906574 / 66** (high gallery, rank 20) is also inside the tilt-change
+    scans (scan 1212; flagged 1116–1310). My earlier "swath edge"
+    explanation for its blockiness was wrong, and I have corrected it in
+    High 1e-3 1.
+  - **1902601 / 80** (matched, rank 35) is 77 scans from the flagged block.
+    Its pixel is fine, but the lower edge of its box comes close to the
+    flagged scans.
+- **Why it matters beyond the figure:** the rhot of a tilt-change pixel
+  averages over a stretched footprint, and its geometry is changing during
+  the scan. Both the L2 Rrs we fitted and the 10 km matchup distance are
+  suspect there. As far as I know, PAB does not currently test this flag:
+  it is in the L1B, not the L2 AOP files we use.
+
+**Questions**
+
+1. **Galleries:** should I (a) leave the tilt-change matchups in and label
+   the panel "tilt change", or (b) drop them and promote the next-ranked
+   matchup? I lean towards **(a)** for these galleries, so that they stay a
+   faithful view of the top-36 matchups, plus (c) below.
+>A. Leave them in; I can still see the clouds.  
+2. **Analysis:** do you want a check of how many v2.1 matchups fall in
+   tilt-change scans? It needs only the L1B `scan_quality_flags` (a small
+   read per granule) or the scan time of the flip, not the full 1.9 GB
+   files. If the fraction is non-trivial, it is a candidate quality cut for
+   the matchup database.
+>A. No, I do not want to do this.  
+
+**First read of the images** (not a measurement): the matched gallery has
+more panels clear within 30 km of the pixel than the high gallery does. The
+median granule cloud cover of its 36 is also lower (64 % against 74 %). That
+fits the idea that the PACE > Argo excess is partly cloud-related, but both
+numbers are coarse. A per-panel tally (clear / cloud within 30 km / cloud at
+the pixel) for both galleries would test it properly. Should I set that up,
+for example as a CSV you fill in by eye?
+
+>A. No, do not set that up.  We don't have a way to reliably identify clouds.
 
 ### High 1e-3
 
@@ -143,6 +283,9 @@ change):
    2903464/51 and 5905505/217. 1902647/49 is clipped by only a sliver.
    5906574/66 and 1902647/49 are also near the swath edge, so their pixels
    are coarse and blocky.
+   **Correction (Matched 1e-3 1):** 5906574/66 is blocky because its
+   pixel is inside the OCI **tilt-change** scans, not because of the swath
+   edge.
 
 ### Test gallery
 
@@ -507,4 +650,62 @@ with `n = 36` and `n_per_page = 12`. Added it as figure 2 in
   - L1B reflectance alone cannot separate sun glint (4903660/89) or dust
     (3901578/116) from cloud. An L2 `l2_flags` overlay is the natural next
     step if that matters.
+
+### 2026-11-24 (Matched 1e-3 gallery prompt 1: PACE/Argo ~ 1, 36 matchups; tilt-change issue)
+
+Created `papers/bbp/galleries/matched_1e-3.json` (`ratio_target` = 1.0,
+otherwise as `high_1e-3.json`). Added it as figure 3 in `py/l1b_gallery.py`
+`main()`. Produced `figs/l1b_gallery_matched_1e-3_{1,2,3}.png`. Notes and
+questions are in Q&A/Matched 1e-3 1.
+
+- **Run:** ~25 min, for 36 new L1B downloads. The cache now holds 72
+  granules, 128 GB.
+- **Found:** panel 1902347/131 was distorted because its PACE pixel falls in
+  OCI **tilt-change** scans (L1B `scan_quality_flags` bit 1). Checking all
+  72 gallery matchups found one more inside the flagged scans (5906574/66,
+  high gallery) and one ~77 scans away (1902601/80). I corrected my earlier
+  "swath edge" note for 5906574/66 in Q&A/High 1e-3 1.
+- **Learned:**
+  - The tilt flip happens near the sub-solar latitude and spans ~195 scans
+    per granule.
+  - During the flip, the along-track ground step grows from ~1.2 to ~4 km
+    per scan.
+  - PAB's L2-based matchups do not see this flag. It may deserve a quality
+    cut, and I raised that as a question.
+  - First impression only: the matched (ratio ≈ 1) gallery looks clearer
+    near the pixels than the high (ratio ≈ 2) gallery, and its median
+    granule cloud cover is lower (64 % against 74 %).
+
+### 2026-11-24 (Low 1e-3 gallery prompt 1: JSON only; not run)
+
+Created `papers/bbp/galleries/low_1e-3.json` (`ratio_target` = 0.5,
+otherwise as `high_1e-3.json`). Registered it as figure 4 in
+`py/l1b_gallery.py` `main()`. As instructed, nothing was downloaded and no
+figure was made. Read your answers to Q&A/Matched 1e-3 1: the tilt-change
+panels stay in, and there will be no tilt-change survey and no cloud tally.
+Notes and one question are in Q&A/Low 1e-3 gallery 1.
+
+- **Sizing (read-only DB query):** PACE/Argo ≈ 0.5 is about 3× rarer than
+  ≈ 1 or ≈ 2 at Argo 1e-3: 16 matchups within score 0.15, against 47–48 for
+  the other targets. The top 36 reach score 0.228 (ratios 0.41–0.63),
+  against ≤ 0.13 for the high and matched galleries.
+- **Learned:** at Argo bbp(700) ≈ 1e-3, PACE is much more often high than
+  low relative to Argo, so the low gallery's tail is looser.
+
+### 2026-11-24 (Low 1e-3 gallery prompt 2: built the 36-panel low gallery)
+
+Built `figs/l1b_gallery_low_1e-3_{1,2,3}.png` from the unchanged
+`galleries/low_1e-3.json`, keeping 36 panels per the user's answer. Notes are
+in Q&A/Low 1e-3 gallery 2.
+
+- **Run:**
+  - 35 new L1B downloads (cache: 107 granules, 190 GB).
+  - The first two attempts stopped part-way, at different granules, on
+    **HTTP 500 from NASA CMR** (the L1B granule search).
+  - Added `fetch_l1b()` to `py/l1b_gallery.py`: 4 attempts with a doubling
+    wait starting at 30 s.
+  - The third run hit one more 500 error, recovered on the first retry, and
+    finished.
+- **Learned:** CMR's granule search fails intermittently under a long series
+  of lookups, so any multi-granule download loop needs retries.
 

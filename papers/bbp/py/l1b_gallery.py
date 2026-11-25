@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+import time
 from pathlib import Path
 
 import matplotlib as mpl
@@ -69,6 +70,10 @@ PIXEL_COLOR = pl.PIXEL_COLOR      # orange: PACE pixel and its circle
 ARGO_COLOR = pl.ARGO_COLOR        # cyan: circle around the Argo profile
 PAD_COLOR = "#e6d9b8"             # outside the granule (not grey: not cloud)
 SCALE_KM = 50.0                   # default length of the scale bar
+
+#: Retries of an L1B lookup/download (NASA CMR intermittently returns 500).
+N_TRY = 4
+WAIT_S = 30.0                     # first wait; doubled after each failure
 
 RC = {
     "font.size": 10, "axes.titlesize": 10.5, "legend.fontsize": 10,
@@ -101,6 +106,26 @@ def select_matchups(cfg: dict):
 
 # ── data per panel ────────────────────────────────────────────────────────────
 
+def fetch_l1b(wmo: int, cycle: int, m: dict) -> Path:
+    """The L1B file of the matchup in :data:`L1B_DIR`, downloaded if missing.
+
+    Wraps :func:`plot_L1B.l1b_path` in :data:`N_TRY` attempts with a doubling
+    wait, because the CMR granule search behind the download intermittently
+    fails with HTTP 500 (seen twice while building the low 1e-3 gallery).
+    """
+    wait = WAIT_S
+    for i in range(N_TRY):
+        try:
+            return pl.l1b_path(wmo, cycle, m, download=True, l1b_dir=L1B_DIR)
+        except Exception as e:                       # network / CMR errors
+            if i == N_TRY - 1:
+                raise
+            print(f"    L1B fetch failed ({type(e).__name__}: {str(e)[:80]}); "
+                  f"retry {i + 2}/{N_TRY} in {wait:.0f} s", flush=True)
+            time.sleep(wait)
+            wait *= 2
+
+
 def load_panel(row, plot_cfg: dict) -> dict:
     """Read everything one panel needs for the matchup in ``row``.
 
@@ -120,7 +145,7 @@ def load_panel(row, plot_cfg: dict) -> dict:
     wmo, cycle = int(row["wmo"]), int(row["cycle"])
     hw = float(plot_cfg["half_width_km"])
     m = pl.find_matchup(wmo, cycle)
-    path = pl.l1b_path(wmo, cycle, m, download=True, l1b_dir=L1B_DIR)
+    path = fetch_l1b(wmo, cycle, m)
     box = pl.load_l1b_box(path, m["scan"], m["pixel"], hw, plot_cfg["wave"])
     with netCDF4.Dataset(path) as ds:                  # granule size
         n_scan, n_pix = ds["geolocation_data"]["latitude"].shape
@@ -321,6 +346,8 @@ FIGURES = {
        "figs/l1b_gallery_high_1e-3_{1,2,3}.png)",
     3: "matched 1e-3 gallery, top 36 (galleries/matched_1e-3.json -> "
        "figs/l1b_gallery_matched_1e-3_{1,2,3}.png)",
+    4: "low 1e-3 gallery, top 36 (galleries/low_1e-3.json -> "
+       "figs/l1b_gallery_low_1e-3_{1,2,3}.png)",
 }
 
 
@@ -330,6 +357,7 @@ def main(flg):
     1: the test gallery, :file:`galleries/test.json`.
     2: the high 1e-3 gallery, :file:`galleries/high_1e-3.json` (3 pages).
     3: the matched 1e-3 gallery, :file:`galleries/matched_1e-3.json` (3 pages).
+    4: the low 1e-3 gallery, :file:`galleries/low_1e-3.json` (3 pages).
     """
     if isinstance(flg, str) and flg.endswith(".json"):
         build_gallery(Path(flg))
@@ -339,6 +367,8 @@ def main(flg):
         build_gallery(GALLERY_DIR / "high_1e-3.json")
     elif int(flg) == 3:
         build_gallery(GALLERY_DIR / "matched_1e-3.json")
+    elif int(flg) == 4:
+        build_gallery(GALLERY_DIR / "low_1e-3.json")
     else:
         raise ValueError(f"Unknown figure {flg}; choose from {FIGURES} or a .json")
 
